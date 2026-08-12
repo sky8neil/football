@@ -1,0 +1,21 @@
+{
+  "name": "football-mvp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "赛事预言家 MVP 核心领域层（阶段 1：项目骨架与纯领域层）",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "typescript": "^5.5.0",
+    "vitest": "^2.1.0"
+  }
+}

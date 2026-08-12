@@ -1,0 +1,1611 @@
+openapi: 3.1.0
+info:
+  title: 赛事预言家 MVP API v1
+  version: 1.0.0
+  description: |
+    依据《赛事预言家 MVP 核心机器可执行规范 v1.0》第 23~30 节。
+    已对齐等级、解锁、分享卡查询、管理员异常查询、赛果修正与结算重试端点；其余端点按实现进度补齐。
+    Base path: /v1
+servers:
+  - url: https://api.example.com/v1
+    description: MVP 生产环境
+tags:
+  - name: session
+  - name: profile
+  - name: matches
+  - name: predictions
+  - name: rankings
+  - name: levels
+  - name: unlocks
+  - name: share-card
+  - name: admin
+paths:
+  /session/init:
+    post:
+      tags: [session]
+      summary: 初始化用户会话
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SessionInitRequest'
+      responses:
+        '200':
+          description: 已存在用户
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionInitEnvelope'
+        '201':
+          description: 创建用户成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionInitEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+  /matches:
+    get:
+      tags: [matches]
+      summary: 获取公开比赛列表
+      parameters:
+        - name: from
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+          description: ISO8601 UTC 起始时间（默认 server_now - 24h）
+        - name: to
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+          description: ISO8601 UTC 结束时间（默认 server_now + 30d）
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/MatchStatus'
+        - name: limit
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/Limit'
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/Cursor'
+      responses:
+        '200':
+          description: 比赛列表分页数据
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MatchesEnvelope'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+  /matches/{match_id}:
+    get:
+      tags: [matches]
+      summary: 获取比赛详情
+      parameters:
+        - name: match_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: 比赛详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MatchDetailEnvelope'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+  /predictions:
+    post:
+      tags: [predictions]
+      summary: 提交比分预测
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PredictionSubmitRequest'
+      responses:
+        '200':
+          description: 幂等重放成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PredictionSubmitEnvelope'
+        '201':
+          description: 预测创建成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PredictionSubmitEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/PredictionRejected'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+  /predictions/me:
+    get:
+      tags: [predictions]
+      summary: 获取我的历史预测
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: season_id
+          in: query
+          required: false
+          schema:
+            type: string
+            const: 2026_2027
+        - name: limit
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/Limit'
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/Cursor'
+      responses:
+        '200':
+          description: 我的历史预测分页数据
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PredictionHistoryEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+  /predictions/me/{prediction_id}:
+    get:
+      tags: [predictions]
+      summary: 获取我的单条历史预测
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: prediction_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: 当前用户的预测详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PredictionDetailEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+  /profiles/{user_id}:
+    get:
+      tags: [profile]
+      summary: 获取公开用户战绩
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: 公开用户战绩
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicProfileEnvelope'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+  /profile/me:
+    get:
+      tags: [profile]
+      summary: 获取我的完整用户资料
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: 当前用户完整资料
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MyProfileEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+    patch:
+      tags: [profile]
+      summary: 更新我的用户资料
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProfilePatchRequest'
+      responses:
+        '200':
+          description: 更新后的当前用户资料
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MyProfileEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+    delete:
+      tags: [profile]
+      summary: 注销我的用户账号
+      security:
+        - BearerAuth: []
+      responses:
+        '204':
+          description: 注销成功且无 response body
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+  /levels/me:
+    get:
+      tags: [levels]
+      summary: 获取我的等级统计
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: 当前用户等级统计
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LevelsEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+  /unlocks/me:
+    get:
+      tags: [unlocks]
+      summary: 获取我的解锁资源
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: 默认资源与已解锁记录
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnlocksEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+  /share-card/me:
+    get:
+      tags: [share-card]
+      summary: 获取我的分享卡数据
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: season_id
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [2026_2027]
+        - name: round_id
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29", "30", "31", "32", "33", "34", "35", "36", "37", "38"]
+      responses:
+        '200':
+          description: 分享卡数据
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ShareCardEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+  /rankings:
+    get:
+      tags: [rankings]
+      summary: 获取周榜或月榜
+      parameters:
+        - name: period_type
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/PeriodType'
+        - name: period_key
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/Limit'
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/Cursor'
+      responses:
+        '200':
+          description: 周期排行榜分页数据
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RankingEnvelope'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+  /admin/anomalies:
+    get:
+      tags: [admin]
+      summary: 查询同步异常
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [open, resolved]
+        - name: blocking
+          in: query
+          required: false
+          schema:
+            type: boolean
+        - name: limit
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/Limit'
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/Cursor'
+      responses:
+        '200':
+          description: 异常分页数据
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminAnomaliesEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+  /admin/matches/{match_id}/result-corrections:
+    post:
+      tags: [admin]
+      summary: 修正比赛正式赛果
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: match_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminResultCorrectionRequest'
+      responses:
+        '201':
+          description: 赛果修正成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminResultCorrectionEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+  /admin/matches/{match_id}/retry-settlement:
+    post:
+      tags: [admin]
+      summary: 重试失败结算
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: match_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: 结算重试结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminRetrySettlementEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+  /admin/rebuild/users/{user_id}:
+    post:
+      tags: [admin]
+      summary: 重建用户统计
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: 用户统计重建结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminRebuildUserStatsEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+  /admin/rebuild/rankings:
+    post:
+      tags: [admin]
+      summary: 重建周期排行榜
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminRebuildRankingsRequest'
+      responses:
+        '200':
+          description: 周期排行榜重建结果
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminRebuildRankingsEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    SchemaVersion:
+      type: integer
+      const: 1
+      description: 核心业务文档 schema_version 固定为 1（规范 2.5）
+    MatchStatus:
+      type: string
+      enum: [scheduled, live, finished, postponed, cancelled, abandoned]
+    SettlementStatus:
+      type: string
+      enum: [pending, waiting, settling, settled, correcting, failed, voided]
+    Result:
+      type: string
+      enum: [HOME, DRAW, AWAY]
+    ResultSource:
+      type: string
+      enum: [provider, admin]
+    PeriodType:
+      type: string
+      enum: [week, month]
+    MatchScore:
+      type: integer
+      enum: [0, 3, 12]
+      description: 单场计分结果（规范 9.2）
+    RegularScore:
+      type: object
+      properties:
+        regular_home_score:
+          type: integer
+          minimum: 0
+          maximum: 99
+          nullable: true
+        regular_away_score:
+          type: integer
+          minimum: 0
+          maximum: 99
+          nullable: true
+      additionalProperties: false
+    MatchTeam:
+      type: object
+      additionalProperties: false
+      required: [team_id, name]
+      properties:
+        team_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+    MatchListItem:
+      type: object
+      additionalProperties: false
+      required: [match_id, league_id, season_id, round_id, home_team, away_team, kickoff_at, prediction_deadline_at, prediction_closed_at, match_status, regular_home_score, regular_away_score, can_predict, can_predict_reason]
+      properties:
+        match_id:
+          type: string
+          format: uuid
+        league_id:
+          type: string
+          const: premier_league
+        season_id:
+          type: string
+          const: 2026_2027
+        round_id:
+          type: string
+        home_team:
+          $ref: '#/components/schemas/MatchTeam'
+        away_team:
+          $ref: '#/components/schemas/MatchTeam'
+        kickoff_at:
+          type: string
+          format: date-time
+        prediction_deadline_at:
+          type: string
+          format: date-time
+          nullable: true
+        prediction_closed_at:
+          type: string
+          format: date-time
+          nullable: true
+        match_status:
+          $ref: '#/components/schemas/MatchStatus'
+        regular_home_score:
+          type: integer
+          minimum: 0
+          maximum: 99
+          nullable: true
+        regular_away_score:
+          type: integer
+          minimum: 0
+          maximum: 99
+          nullable: true
+        can_predict:
+          type: boolean
+        can_predict_reason:
+          type: string
+          enum: [AUTH_REQUIRED, USER_DELETED, ALREADY_SUBMITTED, KICKOFF_UNCONFIRMED, NOT_SCHEDULED, CLOSED]
+          nullable: true
+    MatchesData:
+      type: object
+      additionalProperties: false
+      required: [items, page]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/MatchListItem'
+        page:
+          $ref: '#/components/schemas/Page'
+    MatchesEnvelope:
+      type: object
+      required: [data, request_id]
+      properties:
+        data:
+          $ref: '#/components/schemas/MatchesData'
+        request_id:
+          type: string
+    MyMatchPrediction:
+      type: object
+      additionalProperties: false
+      required: [prediction_id, pred_home_score, pred_away_score, derived_result, submitted_at, match_score, wdl_hit, exact_hit]
+      properties:
+        prediction_id:
+          type: string
+          format: uuid
+        pred_home_score:
+          type: integer
+          minimum: 0
+          maximum: 20
+        pred_away_score:
+          type: integer
+          minimum: 0
+          maximum: 20
+        derived_result:
+          $ref: '#/components/schemas/Result'
+        submitted_at:
+          type: string
+          format: date-time
+        match_score:
+          type: integer
+          enum: [0, 3, 12]
+          nullable: true
+        wdl_hit:
+          type: boolean
+          nullable: true
+        exact_hit:
+          type: boolean
+          nullable: true
+    MatchDetailData:
+      allOf:
+        - $ref: '#/components/schemas/MatchListItem'
+        - type: object
+          required: [my_prediction]
+          properties:
+            my_prediction:
+              allOf:
+                - $ref: '#/components/schemas/MyMatchPrediction'
+              nullable: true
+    MatchDetailEnvelope:
+      type: object
+      required: [data, request_id]
+      properties:
+        data:
+          $ref: '#/components/schemas/MatchDetailData'
+        request_id:
+          type: string
+    SuccessEnvelope:
+      type: object
+      description: 非分页成功响应（规范 23.2）
+      required: [data, request_id]
+      properties:
+        data: {}
+        request_id:
+          type: string
+    ShareCardData:
+      type: object
+      additionalProperties: false
+      required: [user_id, display_name, favorite_team_id, season_level, round_id, round_predictions, round_wdl_hits, round_exact_hits, round_score, career_points]
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        display_name:
+          type: string
+        favorite_team_id:
+          type: string
+          format: uuid
+          nullable: true
+        season_level:
+          type: integer
+          minimum: 1
+          maximum: 8
+        round_id:
+          type: string
+          pattern: '^(0[1-9]|[12][0-9]|3[0-8])$'
+        round_predictions:
+          type: integer
+          minimum: 0
+        round_wdl_hits:
+          type: integer
+          minimum: 0
+        round_exact_hits:
+          type: integer
+          minimum: 0
+        round_score:
+          type: integer
+          minimum: 0
+        career_points:
+          type: integer
+          minimum: 0
+    ShareCardEnvelope:
+      type: object
+      required: [data, request_id]
+      properties:
+        data:
+          $ref: '#/components/schemas/ShareCardData'
+        request_id:
+          type: string
+    RankingItem:
+      type: object
+      additionalProperties: false
+      required: [global_rank, user_id, display_name, favorite_team_id, period_score, valid_predictions, wdl_hits, exact_hits, wdl_accuracy_percent, last_scoring_match_at]
+      properties:
+        global_rank:
+          type: integer
+          minimum: 1
+        user_id:
+          type: string
+          format: uuid
+        display_name:
+          type: string
+        favorite_team_id:
+          type: string
+          format: uuid
+          nullable: true
+        period_score:
+          type: integer
+          minimum: 0
+        valid_predictions:
+          type: integer
+          minimum: 3
+        wdl_hits:
+          type: integer
+          minimum: 0
+        exact_hits:
+          type: integer
+          minimum: 0
+        wdl_accuracy_percent:
+          type: string
+        last_scoring_match_at:
+          type: string
+          format: date-time
+          nullable: true
+    RankingData:
+      type: object
+      additionalProperties: false
+      required: [items, page]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/RankingItem'
+        page:
+          $ref: '#/components/schemas/Page'
+    RankingEnvelope:
+      type: object
+      required: [data, request_id]
+      properties:
+        data:
+          $ref: '#/components/schemas/RankingData'
+        request_id:
+          type: string
+    SessionInitRequest:
+      type: object
+      additionalProperties: false
+      required: [nickname]
+      properties:
+        nickname:
+          type: string
+          minLength: 1
+          maxLength: 32
+    SessionInitData:
+      type: object
+      additionalProperties: false
+      required: [user_id, nickname, favorite_team_id, status, career_points, career_level]
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        nickname:
+          type: string
+        favorite_team_id:
+          type: string
+          format: uuid
+          nullable: true
+        status:
+          type: string
+          const: active
+        career_points:
+          type: integer
+          minimum: 0
+        career_level:
+          type: integer
+          minimum: 1
+          maximum: 8
+    SessionInitEnvelope:
+      type: object
+      required: [data, request_id]
+      properties:
+        data:
+          $ref: '#/components/schemas/SessionInitData'
+        request_id:
+          type: string
+    PredictionSubmitRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotency_key, match_id, home_score, away_score]
+      properties:
+        idempotency_key:
+          $ref: '#/components/schemas/IdempotencyKey'
+        match_id:
+          type: string
+          format: uuid
+        home_score:
+          type: integer
+          minimum: 0
+          maximum: 20
+        away_score:
+          type: integer
+          minimum: 0
+          maximum: 20
+    PredictionSubmitData:
+      type: object
+      additionalProperties: false
+      required: [prediction_id, match_id, pred_home_score, pred_away_score, derived_result, submitted_at, scoring_rule_version]
+      properties:
+        prediction_id:
+          type: string
+          format: uuid
+        match_id:
+          type: string
+          format: uuid
+        pred_home_score:
+          type: integer
+          minimum: 0
+          maximum: 20
+        pred_away_score:
+          type: integer
+          minimum: 0
+          maximum: 20
+        derived_result:
+          $ref: '#/components/schemas/Result'
+        submitted_at:
+          type: string
+          format: date-time
+        scoring_rule_version:
+          type: string
+          const: scoring_v1
+    PredictionSubmitEnvelope:
+      type: object
+      required: [data, request_id]
+      properties:
+        data:
+          $ref: '#/components/schemas/PredictionSubmitData'
+        request_id:
+          type: string
+    PredictionDetailData:
+      type: object
+      additionalProperties: false
+      required: [prediction_id, match_id, pred_home_score, pred_away_score, derived_result, submitted_at, scoring_rule_version, match_status, regular_home_score, regular_away_score, match_score, wdl_hit, exact_hit]
+      properties:
+        prediction_id:
+          type: string
+          format: uuid
+        match_id:
+          type: string
+          format: uuid
+        pred_home_score:
+          type: integer
+          minimum: 0
+          maximum: 20
+        pred_away_score:
+          type: integer
+          minimum: 0
+          maximum: 20
+        derived_result:
+          $ref: '#/components/schemas/Result'
+        submitted_at:
+          type: string
+          format: date-time
+        scoring_rule_version:
+          type: string
+          const: scoring_v1
+        match_status:
+          $ref: '#/components/schemas/MatchStatus'
+        regular_home_score:
+          type: integer
+          minimum: 0
+          maximum: 99
+          nullable: true
+        regular_away_score:
+          type: integer
+          minimum: 0
+          maximum: 99
+          nullable: true
+        match_score:
+          type: integer
+          enum: [0, 3, 12]
+          nullable: true
+        wdl_hit:
+          type: boolean
+          nullable: true
+        exact_hit:
+          type: boolean
+          nullable: true
+    PredictionDetailEnvelope:
+      type: object
+      required: [data, request_id]
+      properties:
+        data:
+          $ref: '#/components/schemas/PredictionDetailData'
+        request_id:
+          type: string
+    PredictionHistoryItem:
+      type: object
+      additionalProperties: false
+      required: [prediction_id, match_id, league_id, season_id, round_id, home_team_id, away_team_id, kickoff_at, pred_home_score, pred_away_score, derived_result, submitted_at, scoring_rule_version, match_status, regular_home_score, regular_away_score, match_score, wdl_hit, exact_hit]
+      properties:
+        prediction_id:
+          type: string
+          format: uuid
+        match_id:
+          type: string
+          format: uuid
+        league_id:
+          type: string
+          const: premier_league
+        season_id:
+          type: string
+          const: 2026_2027
+        round_id:
+          type: string
+        home_team_id:
+          type: string
+          format: uuid
+        away_team_id:
+          type: string
+          format: uuid
+        kickoff_at:
+          type: string
+          format: date-time
+        pred_home_score:
+          type: integer
+          minimum: 0
+          maximum: 20
+        pred_away_score:
+          type: integer
+          minimum: 0
+          maximum: 20
+        derived_result:
+          $ref: '#/components/schemas/Result'
+        submitted_at:
+          type: string
+          format: date-time
+        scoring_rule_version:
+          type: string
+          const: scoring_v1
+        match_status:
+          $ref: '#/components/schemas/MatchStatus'
+        regular_home_score:
+          type: integer
+          minimum: 0
+          maximum: 99
+          nullable: true
+        regular_away_score:
+          type: integer
+          minimum: 0
+          maximum: 99
+          nullable: true
+        match_score:
+          type: integer
+          enum: [0, 3, 12]
+          nullable: true
+        wdl_hit:
+          type: boolean
+          nullable: true
+        exact_hit:
+          type: boolean
+          nullable: true
+    PredictionHistoryData:
+      type: object
+      additionalProperties: false
+      required: [items, page]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/PredictionHistoryItem'
+        page:
+          $ref: '#/components/schemas/Page'
+    PredictionHistoryEnvelope:
+      type: object
+      required: [data, request_id]
+      properties:
+        data:
+          $ref: '#/components/schemas/PredictionHistoryData'
+        request_id:
+          type: string
+    PublicProfileData:
+      type: object
+      additionalProperties: false
+      required: [user_id, display_name, favorite_team_id, career_points, career_valid_predictions, career_wdl_accuracy_percent, career_level, career_best_level]
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        display_name:
+          type: string
+        favorite_team_id:
+          type: string
+          format: uuid
+          nullable: true
+        career_points:
+          type: integer
+          minimum: 0
+        career_valid_predictions:
+          type: integer
+          minimum: 0
+        career_wdl_accuracy_percent:
+          type: string
+          nullable: true
+        career_level:
+          type: integer
+          minimum: 1
+          maximum: 8
+        career_best_level:
+          type: integer
+          minimum: 1
+          maximum: 8
+    PublicProfileEnvelope:
+      type: object
+      required: [data, request_id]
+      properties:
+        data:
+          $ref: '#/components/schemas/PublicProfileData'
+        request_id:
+          type: string
+    MyProfileData:
+      type: object
+      additionalProperties: false
+      required: [user_id, nickname, favorite_team_id, career_points, career_valid_predictions, career_wdl_hits, career_exact_hits, career_wdl_accuracy_percent, career_level, career_best_level]
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        nickname:
+          type: string
+        favorite_team_id:
+          type: string
+          format: uuid
+          nullable: true
+        career_points:
+          type: integer
+          minimum: 0
+        career_valid_predictions:
+          type: integer
+          minimum: 0
+        career_wdl_hits:
+          type: integer
+          minimum: 0
+        career_exact_hits:
+          type: integer
+          minimum: 0
+        career_wdl_accuracy_percent:
+          type: string
+          nullable: true
+        career_level:
+          type: integer
+          minimum: 1
+          maximum: 8
+        career_best_level:
+          type: integer
+          minimum: 1
+          maximum: 8
+    MyProfileEnvelope:
+      type: object
+      required: [data, request_id]
+      properties:
+        data:
+          $ref: '#/components/schemas/MyProfileData'
+        request_id:
+          type: string
+    ProfilePatchRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        nickname:
+          type: string
+          minLength: 1
+          maxLength: 32
+        favorite_team_id:
+          type: string
+          format: uuid
+          nullable: true
+    LevelStatsData:
+      type: object
+      additionalProperties: false
+      required: [valid_predictions, wdl_hits, wdl_accuracy_percent, level, best_level]
+      properties:
+        valid_predictions:
+          type: integer
+          minimum: 0
+        wdl_hits:
+          type: integer
+          minimum: 0
+        wdl_accuracy_percent:
+          type: string
+          nullable: true
+        level:
+          type: integer
+          minimum: 1
+          maximum: 8
+        best_level:
+          type: integer
+          minimum: 1
+          maximum: 8
+    SeasonLevelStatsData:
+      allOf:
+        - $ref: '#/components/schemas/LevelStatsData'
+        - type: object
+          required: [season_id]
+          properties:
+            season_id:
+              type: string
+              const: 2026_2027
+    LevelsData:
+      type: object
+      additionalProperties: false
+      required: [season, career]
+      properties:
+        season:
+          $ref: '#/components/schemas/SeasonLevelStatsData'
+        career:
+          $ref: '#/components/schemas/LevelStatsData'
+    LevelsEnvelope:
+      type: object
+      required: [data, request_id]
+      properties:
+        data:
+          $ref: '#/components/schemas/LevelsData'
+        request_id:
+          type: string
+    UnlockRecord:
+      type: object
+      additionalProperties: false
+      required: [unlock_id, unlock_code, threshold_points, source_version, unlocked_at]
+      properties:
+        unlock_id:
+          type: string
+          format: uuid
+        unlock_code:
+          type: string
+        threshold_points:
+          type: integer
+          minimum: 0
+        source_version:
+          type: string
+          const: unlock_v1
+        unlocked_at:
+          type: string
+          format: date-time
+    UnlocksData:
+      type: object
+      additionalProperties: false
+      required: [default_resources, unlocked]
+      properties:
+        default_resources:
+          type: array
+          items:
+            type: string
+            enum: [avatar_frame, profile_card, share_card]
+          minItems: 3
+          maxItems: 3
+        unlocked:
+          type: array
+          items:
+            $ref: '#/components/schemas/UnlockRecord'
+    UnlocksEnvelope:
+      type: object
+      required: [data, request_id]
+      properties:
+        data:
+          $ref: '#/components/schemas/UnlocksData'
+        request_id:
+          type: string
+    AdminResultCorrectionRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_result_version, regular_home_score, regular_away_score, reason]
+      properties:
+        expected_result_version:
+          type: integer
+          minimum: 0
+        regular_home_score:
+          type: integer
+          minimum: 0
+          maximum: 99
+        regular_away_score:
+          type: integer
+          minimum: 0
+          maximum: 99
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 500
+    AdminResultCorrectionData:
+      type: object
+      additionalProperties: false
+      required: [match_id, result_version, regular_home_score, regular_away_score, result_source, settlement_status, audit_id]
+      properties:
+        match_id:
+          type: string
+          format: uuid
+        result_version:
+          type: integer
+          minimum: 1
+        regular_home_score:
+          type: integer
+          minimum: 0
+          maximum: 99
+        regular_away_score:
+          type: integer
+          minimum: 0
+          maximum: 99
+        result_source:
+          type: string
+          const: admin
+        settlement_status:
+          $ref: '#/components/schemas/SettlementStatus'
+        audit_id:
+          type: string
+          format: uuid
+    AdminResultCorrectionEnvelope:
+      type: object
+      required: [data, request_id]
+      properties:
+        data:
+          $ref: '#/components/schemas/AdminResultCorrectionData'
+        request_id:
+          type: string
+    AdminRetrySettlementData:
+      type: object
+      additionalProperties: false
+      required: [match_id, settlement_id, result_version, outcome, processed_count, skipped_applied_count, audit_id]
+      properties:
+        match_id:
+          type: string
+          format: uuid
+        settlement_id:
+          type: string
+          format: uuid
+        result_version:
+          type: integer
+          minimum: 1
+        outcome:
+          type: string
+          enum: [settled, failed]
+        processed_count:
+          type: integer
+          minimum: 0
+        skipped_applied_count:
+          type: integer
+          minimum: 0
+        audit_id:
+          type: string
+          format: uuid
+    AdminRetrySettlementEnvelope:
+      type: object
+      required: [data, request_id]
+      properties:
+        data:
+          $ref: '#/components/schemas/AdminRetrySettlementData'
+        request_id:
+          type: string
+    AdminRebuildUserStatsData:
+      type: object
+      additionalProperties: false
+      required: [user_id, rebuilt_season_count, audit_id]
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        rebuilt_season_count:
+          type: integer
+          minimum: 0
+        audit_id:
+          type: string
+          format: uuid
+    AdminRebuildUserStatsEnvelope:
+      type: object
+      required: [data, request_id]
+      properties:
+        data:
+          $ref: '#/components/schemas/AdminRebuildUserStatsData'
+        request_id:
+          type: string
+    AdminRebuildRankingsRequest:
+      type: object
+      additionalProperties: false
+      required: [period_type, period_key, reason]
+      properties:
+        period_type:
+          $ref: '#/components/schemas/PeriodType'
+        period_key:
+          type: string
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 500
+    AdminRebuildRankingsData:
+      type: object
+      additionalProperties: false
+      required: [period_type, period_key, rebuilt_entry_count, audit_id]
+      properties:
+        period_type:
+          $ref: '#/components/schemas/PeriodType'
+        period_key:
+          type: string
+        rebuilt_entry_count:
+          type: integer
+          minimum: 0
+        audit_id:
+          type: string
+          format: uuid
+    AdminRebuildRankingsEnvelope:
+      type: object
+      required: [data, request_id]
+      properties:
+        data:
+          $ref: '#/components/schemas/AdminRebuildRankingsData'
+        request_id:
+          type: string
+    Anomaly:
+      type: object
+      additionalProperties: false
+      required: [anomaly_id, anomaly_key, match_id, type, blocking, status, first_seen_at, last_seen_at, occurrence_count, details, resolved_at, resolution]
+      properties:
+        anomaly_id:
+          type: string
+          format: uuid
+        anomaly_key:
+          type: string
+        match_id:
+          type: string
+          format: uuid
+        type:
+          type: string
+          enum: [LIVE_SYNC_STALE, LIVE_TOO_LONG, FINISHED_NO_SCORE, INVALID_FINAL_SCORE, PROVIDER_STATE_CONFLICT, PROVIDER_DATA_INVALID, UNEXPECTED_PROVIDER_STATUS, TEAM_CHANGE_AFTER_PREDICTION, KICKOFF_CHANGE_AFTER_ANCHOR, ADMIN_PROVIDER_RESULT_CONFLICT]
+        blocking:
+          type: boolean
+        status:
+          type: string
+          enum: [open, resolved]
+        first_seen_at:
+          type: string
+          format: date-time
+        last_seen_at:
+          type: string
+          format: date-time
+        occurrence_count:
+          type: integer
+          minimum: 1
+        details:
+          type: object
+        resolved_at:
+          type: string
+          format: date-time
+          nullable: true
+        resolution:
+          type: string
+          nullable: true
+    AdminAnomaliesData:
+      type: object
+      required: [items, page]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Anomaly'
+        page:
+          $ref: '#/components/schemas/Page'
+    AdminAnomaliesEnvelope:
+      type: object
+      required: [data, request_id]
+      properties:
+        data:
+          $ref: '#/components/schemas/AdminAnomaliesData'
+        request_id:
+          type: string
+    Page:
+      type: object
+      required: [next_cursor, has_more]
+      properties:
+        next_cursor:
+          type: string
+          nullable: true
+        has_more:
+          type: boolean
+    PagedData:
+      type: object
+      required: [items, page]
+      properties:
+        items:
+          type: array
+        page:
+          $ref: '#/components/schemas/Page'
+    PagedEnvelope:
+      type: object
+      description: 分页成功响应（规范 23.2）
+      required: [data, request_id]
+      properties:
+        data:
+          $ref: '#/components/schemas/PagedData'
+        request_id:
+          type: string
+    ErrorEnvelope:
+      type: object
+      description: 错误响应（规范 23.6）；message 仅供展示，程序判断使用 code
+      required: [code, message, request_id, details]
+      properties:
+        code:
+          type: string
+          example: VALIDATION_ERROR
+        message:
+          type: string
+          example: 请求参数错误
+        request_id:
+          type: string
+        details:
+          nullable: true
+    IdempotencyKey:
+      type: string
+      format: uuid
+      description: 预测业务幂等键，必须是 UUID v4（规范 23.3）
+    Cursor:
+      type: string
+      description: 服务端 opaque cursor（规范 23.8）；客户端不得解析或构造
+    Limit:
+      type: integer
+      default: 20
+      minimum: 1
+      maximum: 100
+  responses:
+    ValidationError:
+      description: 422 VALIDATION_ERROR
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    NotFound:
+      description: 404 *_NOT_FOUND
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Conflict:
+      description: 409 业务冲突
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Unauthorized:
+      description: 401 UNAUTHORIZED（缺少可信身份；预测 POST 另见 49.2 错误码）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    PredictionRejected:
+      description: "409 预测拒绝（49.2 映射）：USER_DELETED / PREDICTION_ALREADY_SUBMITTED / MATCH_NOT_PREDICTABLE / PREDICTION_LOCKED"
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Forbidden:
+      description: 403 FORBIDDEN
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    RateLimited:
+      description: 429 RATE_LIMITED
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'

@@ -1,0 +1,9 @@
+node_modules/
+dist/
+coverage/
+*.log
+.env
+.env.*
+.codex-supervisor/
+.opencode-supervisor/
+scripts/__pycache__/
