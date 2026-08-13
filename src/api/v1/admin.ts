@@ -288,11 +288,7 @@ export async function postAdminRetrySettlement(
       kind: outcome.kind,
     });
   }
-  if (
-    outcome.kind !== "settled" &&
-    outcome.kind !== "failed" &&
-    outcome.kind !== "correcting"
-  ) {
+  if (outcome.kind !== "settled" && outcome.kind !== "failed") {
     throw internalError("管理员 retry 未返回可对外返回的执行结果");
   }
   if (
@@ -312,7 +308,7 @@ export async function postAdminRetrySettlement(
         match_id: matchId,
         settlement_id: outcome.settlement_id,
         result_version: outcome.result_version,
-        outcome: outcome.kind === "failed" ? "failed" : "settled",
+        outcome: outcome.kind,
         processed_count: outcome.processed_count,
         skipped_applied_count: outcome.skipped_applied_count,
         audit_id: outcome.audit_log.audit_id,

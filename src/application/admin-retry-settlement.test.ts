@@ -19,7 +19,10 @@ import type {
 } from "../domain/types.js";
 import { InMemoryRepository } from "../infrastructure/repositories.js";
 import { FirstSettlementCode } from "./first-settlement.js";
-import { AdminRetrySettlementService } from "./admin-retry-settlement.js";
+import {
+  ADMIN_RETRY_SETTLEMENT_AUDIT_REASON,
+  AdminRetrySettlementService,
+} from "./admin-retry-settlement.js";
 
 const NOW = new Date("2026-08-09T00:00:00.000Z");
 const FINISH_AT = new Date(NOW.getTime() - 10 * 60 * 1000);
@@ -192,6 +195,10 @@ async function setup(matchOverrides: Partial<Match> = {}) {
 }
 
 describe("AdminRetrySettlementService", () => {
+  it("使用冻结的固定系统审计 reason", () => {
+    expect(ADMIN_RETRY_SETTLEMENT_AUDIT_REASON).toBe("管理员重试结算");
+  });
+
   it("只接受可信 active 管理员，并按 match_id 复用 RetrySettlementService", async () => {
     const { repo, match, settlement } = await setup();
     const service = new AdminRetrySettlementService(repo);
@@ -208,6 +215,7 @@ describe("AdminRetrySettlementService", () => {
         action: "retry_settlement",
         entity_type: "settlement",
         entity_id: settlement.settlement_id,
+        reason: ADMIN_RETRY_SETTLEMENT_AUDIT_REASON,
       },
     });
     expect((await repo.settlements.findById(settlement.settlement_id))?.status).toBe(
@@ -252,6 +260,7 @@ describe("AdminRetrySettlementService", () => {
           action: "retry_settlement",
           entity_type: "settlement",
           entity_id: settlement.settlement_id,
+          reason: ADMIN_RETRY_SETTLEMENT_AUDIT_REASON,
           old_value: {
             settlement_status: "failed",
             phase: "apply_items",
@@ -428,6 +437,46 @@ describe("AdminRetrySettlementService", () => {
     );
   });
 
+  it.each([SettlementStatus.Settling, SettlementStatus.Correcting])(
+    "match settlement_status=%s 时优先返回 SETTLEMENT_ALREADY_RUNNING，即使没有 failed settlement",
+    async (settlementStatus) => {
+      const { repo, match, settlement } = await setup({ settlement_status: settlementStatus });
+      await repo.settlements.update({
+        ...settlement,
+        status: SettlementDocStatus.Settled,
+        phase: SettlementPhase.Done,
+        settled_at: NOW,
+        last_error_code: null,
+        last_error_message: null,
+      });
+      const worker = vi.fn(async () => {});
+
+      await expect(
+        new AdminRetrySettlementService(repo, worker).retry(
+          TRUSTED_OPENID,
+          match.match_id,
+          NOW,
+        ),
+      ).rejects.toMatchObject({ code: "SETTLEMENT_ALREADY_RUNNING" });
+      expect(worker).not.toHaveBeenCalled();
+    },
+  );
+
+  it("存在普通 running settlement 时优先返回 SETTLEMENT_ALREADY_RUNNING", async () => {
+    const { repo, match, settlement } = await setup();
+    await repo.settlements.update({
+      ...settlement,
+      status: SettlementDocStatus.Running,
+      phase: SettlementPhase.ApplyItems,
+    });
+    const worker = vi.fn(async () => {});
+
+    await expect(
+      new AdminRetrySettlementService(repo, worker).retry(TRUSTED_OPENID, match.match_id, NOW),
+    ).rejects.toMatchObject({ code: "SETTLEMENT_ALREADY_RUNNING" });
+    expect(worker).not.toHaveBeenCalled();
+  });
+
   it("match 处于非法状态（pending）时 admin retry fail closed，抛 MATCH_STATE_CONFLICT", async () => {
     const { repo, match, settlement } = await setup({
       settlement_status: SettlementStatus.Pending,
@@ -520,8 +569,8 @@ describe("AdminRetrySettlementService", () => {
     const { repo, match, settlement } = await setup();
     await repo.settlements.update({
       ...settlement,
-      status: SettlementDocStatus.Running,
-      phase: SettlementPhase.ApplyItems,
+      status: SettlementDocStatus.Pending,
+      phase: SettlementPhase.Prepare,
     });
     const service = new AdminRetrySettlementService(repo);
 

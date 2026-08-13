@@ -1,5 +1,6 @@
 import { conflictError } from "../../domain/errors.js";
 import type { UnlocksData, UnlocksQueryService } from "../../application/unlocks.js";
+import { assertUnknownFields } from "./validation.js";
 import {
   defaultApiRateLimiter,
   type RateLimiter,
@@ -7,16 +8,32 @@ import {
 
 export interface GetMyUnlocksInput {
   authenticated_user_id?: string | null;
+  query?: unknown;
   server_now: Date;
   request_id: string;
   rate_limiter?: RateLimiter;
 }
+
+const UNLOCKS_QUERY_FIELDS = new Set<string>();
 
 export interface GetMyUnlocksSuccessResponse {
   status: 200;
   body: {
     data: UnlocksData;
     request_id: string;
+  };
+}
+
+function toPublicUnlocksData(data: UnlocksData): UnlocksData {
+  return {
+    default_resources: [...data.default_resources],
+    unlocked: data.unlocked.map((unlock) => ({
+      unlock_id: unlock.unlock_id,
+      unlock_code: unlock.unlock_code,
+      threshold_points: unlock.threshold_points,
+      source_version: unlock.source_version,
+      unlocked_at: unlock.unlocked_at,
+    })),
   };
 }
 
@@ -32,6 +49,10 @@ export async function getMyUnlocks(
   input: GetMyUnlocksInput,
 ): Promise<GetMyUnlocksSuccessResponse> {
   const userId = requireAuthenticatedUserId(input.authenticated_user_id);
+  assertUnknownFields(
+    (input.query === undefined ? {} : input.query) as Record<string, unknown>,
+    UNLOCKS_QUERY_FIELDS,
+  );
   (input.rate_limiter ?? defaultApiRateLimiter).check(
     "authenticated_reads",
     userId,
@@ -40,7 +61,7 @@ export async function getMyUnlocks(
   return service.getUnlocks(userId).then((data) => ({
     status: 200 as const,
     body: {
-      data,
+      data: toPublicUnlocksData(data),
       request_id: input.request_id,
     },
   }));

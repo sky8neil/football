@@ -4591,11 +4591,489 @@ rebuild_period_rankings 后与 applied settlement_items + period 归属规则完
 
 以下问题见 `REVERSE_REVIEW__v1.0.md`，本版不冻结，后续可继续补充：
 
-- H3 管理端 reason / retry 决策表统一
 - H4 第 48 节与 0.1 冲突裁决机械化
-- H5 部分 API 响应 schema 补全
-- 全部 U 类（时钟注入、jitter 确定性、SLO 非门禁等）
+- H5 其余 API 响应 schema 补全（已冻结切片见 49.9、49.10、49.11）
+- 尚未由 49.14 冻结的 U 类（调度频率、SLO 非门禁等）
+
+## 49.7 阶段 A1：管理端写操作 reason 来源与审计规则
+
+以下规则冻结为管理端四个写操作的最小契约：
+
+| 写操作 | 审计 reason 来源 | HTTP body 是否包含 reason |
+|---|---|---|
+| `POST /v1/admin/matches/:match_id/result-corrections` | 管理员 HTTP body 的必填 `reason`，原样写入 `admin_audit_logs.reason` | 是，必填，1..500 |
+| `POST /v1/admin/rebuild/rankings` | 管理员 HTTP body 的必填 `reason`，原样写入 `admin_audit_logs.reason` | 是，必填，1..500 |
+| `POST /v1/admin/matches/:match_id/retry-settlement` | 固定系统 reason：`管理员重试结算` | 否；不得添加 body/request reason 字段 |
+| `POST /v1/admin/rebuild/users/:user_id` | 固定系统 reason：`管理员用户统计重建` | 否；不得添加 body/request reason 字段 |
+
+四个写操作成功执行时都必须在同一业务变化中追加一条 `admin_audit_logs`。审计 `reason` 不得为空；成功响应继续只返回既有有限 `data` 摘要与 `audit_id`，不得返回完整审计记录或内部对象。
+
+本小节只冻结 reason 来源与审计规则，不扩展 retry 的其他前置条件、目标选择或错误码决策。
+
+## 49.8 阶段 A1.2：管理员 retry-settlement 决策表
+
+本小节冻结 `POST /v1/admin/matches/:match_id/retry-settlement` 的决策顺序、目标复用、错误映射与成功响应。前置拒绝优先于目标选择；任何前置拒绝都不得新建 settlement、settlement_items 或积分。
+
+### 决策表
+
+| 状态/条件 | 目标 | HTTP + code | 响应 |
+|---|---|---|---|
+| 未提供可信管理员身份，或身份不是 active admin | 无 | `401 UNAUTHORIZED` 或 `403 FORBIDDEN` | 既有错误 Envelope |
+| `match_id` 非法 UUID | 无 | `422 VALIDATION_ERROR` | 既有错误 Envelope；不调用 application |
+| 管理员写接口限流命中 | 无 | `429 RATE_LIMITED` | 既有错误 Envelope；不调用 application |
+| match 不存在 | 无 | `404 MATCH_NOT_FOUND` | 既有错误 Envelope |
+| match 为 `settling` 或 `correcting`，或同一 match 存在任意 `status=running` 的 settlement | 无；优先于 failed target 选择 | `409 SETTLEMENT_ALREADY_RUNNING` | 既有错误 Envelope |
+| match 为 `failed`，且存在结构合法的 failed target，`is_correction=false` | 选择 `result_version > settled_result_version` 的最小未处理 failed settlement；复用原 settlement 与 items；match `failed -> settling` | `200` | 既有成功 Envelope；`outcome` 为 `settled` 或 `failed`，`processed_count` / `skipped_applied_count` 为本次 retry 计数，`audit_id` 必有 |
+| match 为 `failed`，且存在结构合法的 failed target，`is_correction=true` | 同上；复用原 correction settlement 与 items，使用其 immutable `result_version`；match `failed -> correcting` | `200` | 同上；不得跳到当前最新 result_version |
+| match=`waiting` 且存在结构合法的 failed target | 按同一最小未处理版本选择并复用 target；普通 target 按既有状态机进入 `settling` | `200` | 同上；该兼容路径来自第 30.4 节“或存在 failed settlement”，不新增 settlement 或积分规则 |
+| 没有 failed settlement，且 `match.settlement_status != failed` | 无 | `409 SETTLEMENT_NOT_READY` | 既有错误 Envelope |
+| `match.settlement_status=failed`，但找不到对应 failed settlement | 无 | `500 INTERNAL_ERROR` | 既有错误 Envelope；不得新建 settlement 或积分 |
+| failed target、settlement 版本序列、`rule_version`、`is_correction` 或其他目标数据冲突 | 无；Fail Closed，不猜测目标 | `500 INTERNAL_ERROR` | 既有错误 Envelope；不得新建 settlement 或积分 |
+| match=`settled` 且 failed target 已处于 settled 版本范围，或 settled 快照与当前版本不一致 | 无；Fail Closed，不回退已结算版本 | `500 INTERNAL_ERROR` | 既有错误 Envelope；不得新建 settlement 或积分 |
+| 存在 failed target，但 match 状态无法按既有状态机转移（例如当前已测 `pending`） | 无 | `409 MATCH_STATE_CONFLICT` | 既有错误 Envelope；不处理 items |
+
+其中“结构合法”至少包括第 48.5 节规定的中间版本缺失、同版本重复和数据互相冲突均不存在；failed target 必须属于该 match，且 `result_version > settled_result_version`。普通与 correction retry 均只处理 pending/failed items，已 applied item 只计入 `skipped_applied_count`。
+
+正常处理完成或处理后失败都返回第 48.2 节既有 `200` 成功 Envelope：`data.outcome` 仅为 `settled|failed`，并包含 `match_id`、被复用的 `settlement_id`、target `result_version`、本次 retry 的 `processed_count`、`skipped_applied_count` 与必填 `audit_id`。错误响应继续使用统一错误 Envelope；本表不扩展其他管理员写操作能力。
+
+## 49.9 阶段 A2.1：GET /v1/predictions/me 响应合同
+
+本小节只冻结 `GET /v1/predictions/me`；不改变 49.1 的身份来源或 OpenAPI 中现有的认证表达。
+
+### 成功 Envelope
+
+成功返回 `200`，严格使用第 23.2 节分页 Envelope：
+
+```json
+{
+  "data": {
+    "items": [],
+    "page": {
+      "next_cursor": null,
+      "has_more": false
+    }
+  },
+  "request_id": "trace-request-id"
+}
+```
+
+`data.items` 为空时必须是 `[]`；`page.next_cursor` 无下一页时必须是 `null`。`request_id` 为字符串。
+
+### item 字段
+
+每个 item 是当前实现已提供的扁平对象，必须包含下列字段，不得省略，也不得添加本合同未定义的公开字段：
+
+| 字段 | 类型 | nullable | 语义 |
+|---|---|---|---|
+| `prediction_id` | UUID v4 string | 否 | 预测 ID |
+| `match_id` | UUID v4 string | 否 | 比赛 ID |
+| `league_id` | string，固定 `premier_league` | 否 | 比赛联赛 |
+| `season_id` | string，固定 `2026_2027` | 否 | 比赛赛季 |
+| `round_id` | string | 否 | 比赛轮次 |
+| `home_team_id` | UUID v4 string | 否 | 主队 ID |
+| `away_team_id` | UUID v4 string | 否 | 客队 ID |
+| `kickoff_at` | ISO 8601 UTC date-time string | 否 | 比赛开球时间 |
+| `pred_home_score` | integer `0..20` | 否 | 用户预测主队比分 |
+| `pred_away_score` | integer `0..20` | 否 | 用户预测客队比分 |
+| `derived_result` | enum `HOME\|DRAW\|AWAY` | 否 | 由预测比分推导的胜平负 |
+| `submitted_at` | ISO 8601 UTC date-time string | 否 | 提交时间 |
+| `scoring_rule_version` | string，固定 `scoring_v1` | 否 | 计分规则版本 |
+| `match_status` | enum `scheduled\|live\|finished\|postponed\|cancelled\|abandoned` | 否 | 当前比赛状态 |
+| `regular_home_score` | integer `0..99` | 是 | 当前正式常规时间主队比分 |
+| `regular_away_score` | integer `0..99` | 是 | 当前正式常规时间客队比分 |
+| `match_score` | enum `0\|3\|12` | 是 | 当前预测得分 |
+| `wdl_hit` | boolean | 是 | 当前胜平负命中状态 |
+| `exact_hit` | boolean | 是 | 当前准确比分命中状态 |
+
+正式比分只使用 90 分钟常规时间比分（9.1）。正式比分缺失时，`regular_home_score`、`regular_away_score`、`match_score`、`wdl_hit`、`exact_hit` 均返回 `null`；不得用空字符串、`0` 或省略字段表达缺失。取消比赛也保持预测结算字段为 `null`，遵循 9.4/21.8。
+
+本合同冻结的 match 基础信息仅为上述 `match_id`、联赛/赛季/轮次、主客队 ID 和 `kickoff_at`。`§26.2` 没有唯一规定球队名称或 `home_team`/`away_team` 嵌套对象的公开形状；该部分标记为 `SPEC_GAP`，本切片不增加字段、不规定前端展示名来源。
+
+### 排序与 cursor
+
+结果严格按以下稳定 keyset 顺序：
+
+```text
+submitted_at DESC, prediction_id DESC
+```
+
+`prediction_id` 是同一 `submitted_at` 下的唯一 tie-breaker。`next_cursor` 仅在 `has_more=true` 时返回；它指向当前页最后一项的位置。cursor 是服务端生成的 opaque `base64url + HMAC` 游标，绑定当前解析后的 `season_id`、最后一项的 `submitted_at` 和 `prediction_id`；客户端不得解析或构造，签名无效返回 `422 VALIDATION_ERROR`。MVP cursor 不过期。
+
+带 cursor 的请求必须继续使用 cursor 绑定的 `season_id`；显式 `season_id` 与其冲突返回 `422 VALIDATION_ERROR`。`limit` 不属于筛选条件，可以在后续页改变。`has_more=false` 时 `next_cursor=null`。
+
+### 输入与失败映射
+
+查询参数只有：
+
+```text
+season_id optional; default 2026_2027; only 2026_2027
+limit optional; default 20; integer 1..100
+cursor optional; opaque string
+```
+
+HTTP query 中 `season_id`、`limit`、`cursor` 分别按字符串、十进制整数字符串、字符串解析；未知参数、类型错误、非法赛季或非法 limit 由 handler 返回 `422 VALIDATION_ERROR`。cursor 的签名、内容和绑定条件由 application query 校验；无效 cursor 同样返回 `422 VALIDATION_ERROR`，不返回历史数据。
+
+失败映射：
+
+| 条件 | HTTP | code |
+|---|---:|---|
+| 缺少可信身份 | 401 | `UNAUTHORIZED` |
+| 可信身份对应用户已注销 | 409 | `USER_DELETED` |
+| 可信身份无法解析为现有用户 | 404 | `USER_NOT_FOUND` |
+| 查询参数或 cursor 校验失败 | 422 | `VALIDATION_ERROR` |
+| 已认证读取限流命中 | 429 | `RATE_LIMITED` |
+| 预测或比赛事实数据不一致 | 500 | `INTERNAL_ERROR` |
+
+所有失败均使用第 23.6 节错误 Envelope。上述合同不冻结其他预测接口、认证 scheme、A2.2 的其他响应 schema，也不启动 A3/A4。
+
+## 49.10 阶段 A2.2：GET /v1/unlocks/me 响应合同
+
+本小节冻结 `GET /v1/unlocks/me` 的前端公开响应；只使用第 18.2 节和当前 unlock query 实现已有的资源代码、记录字段与历史保留规则。不冻结未由现有规范和实现唯一确定的资源展示名称、图标、URL 或其他 UI 元数据，并保留 `SPEC_GAP`。
+
+### 成功 Envelope 与资源清单
+
+成功返回 `200`，严格使用第 23.2 节非分页成功 Envelope：
+
+```json
+{
+  "data": {
+    "default_resources": ["avatar_frame", "profile_card", "share_card"],
+    "unlocked": []
+  },
+  "request_id": "trace-request-id"
+}
+```
+
+`data` 必须包含 `default_resources` 和 `unlocked`；`request_id` 为字符串。`default_resources` 固定为以下三个资源代码，顺序固定，不得增加资源或附带前端展示字段：
+
+```text
+[avatar_frame, profile_card, share_card]
+```
+
+没有历史 unlock 时，`unlocked` 必须是空数组 `[]`。
+
+### unlocked item
+
+每个 item 必须只包含以下五个字段，均必填且不 nullable：
+
+| 字段 | 类型 | 语义 |
+|---|---|---|
+| `unlock_id` | UUID v4 string | 解锁记录 ID |
+| `unlock_code` | enum `profile_card_style_1\|favorite_team_name_accent\|favorite_team_avatar_frame_1` | 第 18.2 节实际 unlock 代码 |
+| `threshold_points` | integer enum `30\|100\|200` | 首次满足条件时的生涯积分阈值 |
+| `source_version` | string，固定 `unlock_v1` | 解锁配置版本 |
+| `unlocked_at` | ISO 8601 UTC date-time string | 解锁时间，输出 UTC |
+
+`unlocked` 返回该用户的全部历史 unlock，不因当前 `career_points` 下降而隐藏，也不因赛果修正回收。当前实现已有稳定排序，冻结为：
+
+```text
+threshold_points ASC, unlock_id ASC
+```
+
+除上述字段外，`unlock` item 不公开名称、图标、资源 URL、描述、展示分类或其他 UI 内容；这些字段的公开形状是 `SPEC_GAP`，本切片停止在未定义部分。
+
+### 参数与失败映射
+
+该接口无 query、path 或 request body 参数；未定义参数按第 23.4 节返回 `422 VALIDATION_ERROR`。当前实现的失败映射固定为：
+
+| 条件 | HTTP | code |
+|---|---:|---|
+| 缺少认证用户 | 401 | `UNAUTHORIZED` |
+| 认证用户不存在 | 404 | `USER_NOT_FOUND` |
+| 认证用户已注销 | 409 | `USER_DELETED` |
+| 认证用户 ID 非法 | 422 | `VALIDATION_ERROR` |
+| authenticated reads 限流命中 | 429 | `RATE_LIMITED` |
+| 用户或 unlock 事实读取失败 | 500 | `INTERNAL_ERROR` |
+
+所有失败均使用第 23.6 节错误 Envelope。认证 OpenAPI security scheme 不在本切片修改范围内；其现有表达与第 49.1 节可信 openid 注入模型之间的 `SPEC_GAP/H4` 保持记录。本小节不冻结其他 A2/A3/A4 接口；`admin-anomalies` 见 49.11。
+
+## 49.11 阶段 A2.3：GET /v1/admin/anomalies 响应合同
+
+本小节冻结 `GET /v1/admin/anomalies` 的前端公开响应、查询参数、稳定分页和失败映射。不改变第 49.1 节可信 `openid` 来源，也不修改 OpenAPI 现有认证 security scheme；该表达与可信上下文模型的差异继续保留为 `SPEC_GAP/H4`。
+
+### 成功 Envelope
+
+成功返回 `200`，严格使用第 23.2 节分页成功 Envelope：
+
+```json
+{
+  "data": {
+    "items": [],
+    "page": {
+      "next_cursor": null,
+      "has_more": false
+    }
+  },
+  "request_id": "trace-request-id"
+}
+```
+
+`data.items` 必须是数组；没有记录时为 `[]`。`page.next_cursor` 只有在 `has_more=true` 时返回游标，否则必须为 `null`。`request_id` 为字符串。
+
+### anomaly item 字段
+
+每个 item 只包含以下字段，不得添加内部数据库对象或其他未冻结字段：
+
+| 字段 | 类型 | nullable | 语义 |
+|---|---|---|---|
+| `anomaly_id` | UUID v4 string | 否 | 异常记录 ID |
+| `anomaly_key` | string，固定为 `match_id:type` | 否 | 第 21.18 节唯一异常键 |
+| `match_id` | UUID v4 string | 否 | 关联比赛 ID |
+| `type` | 第 21.18 节十项 anomaly type enum | 否 | 异常类型 |
+| `blocking` | boolean | 否 | 是否阻塞业务 |
+| `status` | enum `open\|resolved` | 否 | 当前异常状态 |
+| `first_seen_at` | ISO 8601 UTC date-time string | 否 | 首次发现时间 |
+| `last_seen_at` | ISO 8601 UTC date-time string | 否 | 最近一次发现时间 |
+| `occurrence_count` | integer `>=1` | 否 | 同一记录累计出现次数 |
+| `details` | object，公开值固定为 `{}` | 否 | 受控公开投影，见下文 |
+| `resolved_at` | ISO 8601 UTC date-time string | 是 | resolve 时间 |
+| `resolution` | string | 是 | 自动或管理员 resolve 原因 |
+
+`details` 的内部字段形状无法从第 21.18、30.2 或其他现有冻结规范唯一推出；这是 `SPEC_GAP/H5`。本切片不冻结 arbitrary JSON schema，也不透传内部原始 Provider payload、Provider/API 密钥或运维字段。由于 item 仍必须保留第 21.18 节定义的 `details object` 字段，API 采用最小受控投影：公开值始终为空 JSON 对象 `{}`；未来若需要公开诊断字段，必须另行冻结字段白名单和脱敏边界。
+
+### 查询参数
+
+HTTP query 参数只有：
+
+```text
+status=open|resolved optional; default no filter
+blocking=true|false optional; default no filter
+limit optional; default 20; integer 1..100
+cursor optional; opaque string
+```
+
+HTTP query 中 `status`、`blocking`、`limit`、`cursor` 按字符串解析。未知参数、缺失值以外的 `null`、错误类型、非法 enum、非法 boolean 或不在 `1..100` 的整数均返回 `422 VALIDATION_ERROR`。
+
+### 排序与 cursor
+
+结果严格按以下稳定 keyset 顺序：
+
+```text
+last_seen_at DESC, anomaly_id DESC
+```
+
+同一 `last_seen_at` 使用 `anomaly_id` 作为唯一 tie-breaker。`cursor` 是服务端生成的 `base64url + HMAC` opaque token，客户端不得解析或构造；MVP cursor 不过期。游标绑定首次请求解析后的 `status`、`blocking` 筛选值，以及当前页最后一项的 `last_seen_at`、`anomaly_id`。
+
+后续请求带 cursor 时，省略 `status` 或 `blocking` 表示继承 cursor 中的筛选值；显式值与 cursor 绑定值不一致返回 `422 VALIDATION_ERROR`。`limit` 不属于筛选条件，可以在后续页改变。keyset 条件为：
+
+```text
+last_seen_at < cursor.last_seen_at
+OR (
+  last_seen_at == cursor.last_seen_at
+  AND anomaly_id < cursor.anomaly_id
+)
+```
+
+### resolved 记录
+
+未传 `status` 时，open 与 resolved 记录均按同一排序返回；`status=resolved` 只返回 resolved 记录。resolved item 仍保留全部冻结字段，`status="resolved"`，`resolved_at` 必须为 UTC 时间字符串，`resolution` 必须为非空字符串；不会因为已 resolved 而省略记录、`details`、`occurrence_count` 或历史时间。open item 的 `resolved_at` 和 `resolution` 均为 `null`。
+
+### 鉴权、限流与失败映射
+
+所有失败均使用第 23.6 节错误 Envelope；`message` 仅供展示，程序判断使用 `code`。
+
+| 条件 | HTTP | code |
+|---|---:|---|
+| 缺少可信 `openid` | 401 | `UNAUTHORIZED` |
+| 可信 `openid` 无对应管理员、管理员非 active 或 role 不是 `admin` | 403 | `FORBIDDEN` |
+| 未知 query、参数值/类型非法、cursor 签名或内容无效、cursor 筛选冲突 | 422 | `VALIDATION_ERROR` |
+| `admin_apis` 限流命中，默认 60 requests/min/admin | 429 | `RATE_LIMITED` |
+| anomaly 事实记录或分页事实不一致 | 500 | `INTERNAL_ERROR` |
+
+事实不一致包括返回记录不符合第 21.18 节 schema、`anomaly_key != match_id:type`、时间无效、计数非法、`details` 不是 object，或 open/resolved 与 `resolved_at`/`resolution` 的 nullable 组合不一致。此类失败不得把原始事实或内部诊断放入公开错误 `details`。
+
+## 49.12 阶段 A3.1：provider-fixture-sync 业务时钟契约
+
+本小节只冻结 `provider-fixture-sync` 单 fixture application 入口及其直接调用边界的业务时钟语义；不启动 A3 后续 retry/jitter/lease，也不改变 Provider 行为或调度器行为。
+
+### `server_now` 输入与传递
+
+`ProviderFixtureSyncService.applyFixture(raw_fixture, payload, server_now)` 的 `server_now` 必须是可信服务端传入的有效 `Date`，并作为本次同步调用的唯一业务时钟。有效性至少要求：值为 `Date` 实例且 `getTime()` 不是 `NaN`。
+
+入口及其直接下游在同一次调用中必须使用同一个 `server_now` 时间点；不得通过无参 `new Date()`、`Date.now()` 或其他本地墙钟重新取得业务时间。已组装的 Provider job runner 也必须把收到的 `server_now` 原样传给 fixture loader 和 `applyFixture`。
+
+Provider payload 中的 kickoff/status/score 时间或事实仍按第 31 节解析；它们是 Provider 数据，不得被 `server_now` 替换，也不得反过来作为服务端业务时钟。
+
+### 必须由 `server_now` 决定的同步语义
+
+在本入口及直接下游中，以下判断和事实时间必须由注入的 `server_now` 决定：
+
+- scheduled 到达 `prediction_deadline_at` 的关闭判断，以及 live/finished 触发的立即关闭；具体按 49.4，postponed 不因旧 deadline 自动关闭。
+- 成功同步后对 `LIVE_SYNC_STALE`、`LIVE_TOO_LONG`、`FINISHED_NO_SCORE` 等已定义时间谓词的评估；阈值公式仍以第 33 节为准。
+- 本次 Provider 观察产生或更新的 `matches`、`match_results`、`provider_snapshots`、`anomalies` 及相关事实时间字段，包括 `created_at`、`updated_at`、`prediction_closed_at`、`finish_detected_at`、`resolved_at`；不得使用当前进程墙钟替代。
+- 直接 loader 若按同步窗口筛选 fixture，其窗口起点、终点和本轮筛选也必须从传入的 `server_now` 计算。该项只冻结输入一致性，不冻结窗口之外的调度频率。
+
+状态映射、Provider 数据合法性、状态回退、球队/开球变更保护和正式比分来源分别继续遵守第 31 节及既有状态机；本小节不新增状态或 Provider 特殊处理。
+
+### 无效时间与未定义语义
+
+- `server_now` 无效时，入口必须 Fail Closed，返回既有 `VALIDATION_ERROR`（`field=server_now`），并在事实写入、锁获取、Provider IO 或其他业务推进前停止。
+- 本入口或直接下游遇到规范没有定义的时间组合时，不得猜测时间、继续写入或改变 Provider 结果；应 Fail Closed，并记录为 `SPEC_GAP` 供后续冻结。
+- 当前切片已用固定服务端时间合同测试验证：即使进程墙钟不同，业务判断和 Provider 事实时间仍使用注入值。
+
+### 不在本切片冻结的内容
+
+以下内容仍不属于 A3.1：
+
+- `future_schedule`、`full_schedule_verify`、`near_match`、`live_match`、`post_finish_verify` 的触发频率、调度器实现和生产运行时限。
+- Provider HTTP client、凭证、网络 IO、quota 行为以及 Provider 返回内容之外的新业务行为。
+- retry 次数/等待序列、jitter 随机源、lease 获取/续租/接管/失败停止点及其墙钟实现。
+
+这些未冻结项继续是 A3 后续的 `SPEC_GAP`；本切片不以它们的实现状态推导或扩展 `provider-fixture-sync` 业务语义。`provider-sync-job` 中的 lease 续租墙钟不属于本入口业务事实时间契约，留待后续 A3 冻结。
+
+## 49.13 阶段 A3.2：provider-sync-job loader 重试契约
+
+本小节只冻结 `provider-sync-job` 的 loader 阶段重试、jitter、等待注入和 `sync_logs` 最小可观察语义；不启动 lease 获取/续租/接管规则、调度器频率或真实 Provider client 行为。OpenAPI 认证 security scheme 不在本切片修改范围内，`SPEC_GAP/H4` 保持不变。
+
+### 错误分类
+
+按现有 Provider error 类型和 `provider-sync-job` 实现，loader 错误分类固定如下：
+
+| loader 错误 | 是否 retry | 规则 |
+|---|---:|---|
+| `ProviderHttpError` 且 `status=408` | 是 | 视为暂时 HTTP 错误 |
+| `ProviderHttpError` 且 `status>=500` | 是 | 视为暂时 Provider HTTP 错误 |
+| 普通 `Error`，且不属于 `DomainError` 或 `ProviderError` | 是 | 视为普通网络/暂时错误 |
+| `ProviderQuotaExceededError` | 否 | 停止本次高频自动 retry |
+| `ProviderDataError` | 否 | Provider 数据错误 Fail Closed |
+| 其他 `ProviderError` | 否 | 未声明为暂时错误 |
+| `DomainError` | 否 | 应用/校验错误 Fail Closed |
+| 其他 `ProviderHttpError` status | 否 | 只有 408 和 `status>=500` 属于本合同 retry 集合 |
+
+Provider client 将 HTTP 429 转换为 `ProviderQuotaExceededError`；即使 loader 直接抛出未转换的 `ProviderHttpError(429)`，也不属于本合同 retry 集合。单 fixture 应用阶段的失败不进入 loader retry。
+
+### 尝试次数与等待
+
+一次 job 先立即执行第 1 次 loader 调用。可 retry 错误最多安排 5 次 retry，因此最多发生 6 次 loader 调用；每次 retry 在下一次 loader 调用前等待，等待基准序列固定为：
+
+```text
+retry 1: 1m
+retry 2: 2m
+retry 3: 5m
+retry 4: 10m
+retry 5: 30m
+```
+
+第 5 次 retry 的等待后发生第 6 次 loader 调用；该第 6 次调用仍失败时，不再 sleep，直接记录为最终失败。不可 retry 错误不 sleep，直接结束本次 job。`attempt_count` 统计实际 loader 调用次数，不统计 sleep 次数；该 retry 规则不扩大到 scheduler 或 lease。
+
+### Jitter 与测试注入
+
+每次等待先将分钟数转换为毫秒 `base_ms`，再按现有实现计算：
+
+```text
+Math.round(base_ms * (1 + 0.20 * (2 * random() - 1)))
+```
+
+`random` 是 `ProviderFixtureSyncRetryOptions.random?: () => number` 注入的随机源；job 未注入时使用既有默认 `Math.random`，测试使用固定返回值即可确定性复现。合同边界按 `random=0/0.5/1` 固定为 `0.8/1.0/1.2 * base_ms`，结果取整数毫秒；随机源每次实际 sleep 调用一次。测试通过 `sleep?: (delay_ms: number) => Promise<void>` 注入已完成 Promise，不等待真实 1/2/5/10/30 分钟，只断言等待参数和调用次数。
+
+### `sync_logs` 最小可观察语义
+
+成功取得 job lock 后、首次 loader 调用前插入一条 `status=running` 日志：`attempt_count=1`、`finished_at=null`、`items_read/items_changed/items_failed=0`、错误字段为 `null`。loader retry 发生时，在 sleep 前更新同一日志为 `running`，写入当前失败后的 `attempt_count`、`last_error_code` 和 `last_error_message`，不写 `finished_at` 或虚构 item 统计。
+
+loader 成功后更新为 `success`，`attempt_count` 为实际总尝试次数，`finished_at=server_now`，写入本批次 item 统计并清空错误字段。不可 retry 或 retry 耗尽后更新为 `failed`，`attempt_count` 为实际总尝试次数，`finished_at=server_now`、`items_failed=1`，并保留最终错误 code/message。Quota 错误因此只产生一次 loader 尝试和最终失败日志；锁未取得时仍跳过且不创建 sync log。
+
+### SPEC_GAP
+
+- 32.8 没有定义除本小节既有 Provider 类型、HTTP 状态和普通 `Error` 之外的新错误类型/状态如何分类；本合同不扩展 retry 集合。未来新增 Provider error type 或特殊 HTTP status 必须另行冻结。
+- 32.8 提到 Provider 明确 reset 时间，但现有 `provider-sync-job` 只对 quota 停止本次高频 retry；`resetAt` 的等待、调度器交接和下一 scheduled run 的精确时机未由当前切片唯一确定，留待后续调度/lease 相关切片，不在此处猜测。
+- 现有规范没有规定生产随机源的 seed、跨进程重放或按 `sync_job_id` 派生的算法。本小节只冻结现有可注入函数和边界测试确定性，不新增 hash/seed 算法；如需生产级 jitter 可重放性，需另行冻结。
+
+## 49.14 阶段 A3.3：provider-sync-job job lease 合同
+
+本小节只冻结 `provider-sync-job` 的 job lock 获取、续租、续租失败停止、释放和 lease 到期接管语义；不改变 `provider-fixture-sync` 的业务事实时间、不启动 scheduler、不改变其他 settlement 或维护任务的 lease 规则。OpenAPI 认证 security scheme 不在本切片修改范围内，`SPEC_GAP/H4` 保持不变。
+
+### 获取与跳过
+
+1. 每个 `job_type` 只使用同类任务锁 key：
+
+   ```text
+   sync:{job_type}
+   ```
+
+2. `server_now` 必须先通过既有有效时间校验；无效时在获取锁、写日志、loader 和 fixture 写入前 Fail Closed。
+3. 每次成功尝试使用新的 `owner_id`，初次 `lease_until` 为：
+
+   ```text
+   server_now + FIXED_CONFIG_V1.JOB_LEASE_MINUTES
+   ```
+
+   当前固定配置 `JOB_LEASE_MINUTES = 10`，所以初次 lease 为 `server_now` 后 10 分钟。该初次 lease 时间是本次任务 lease 的合同输入，不使用进程墙钟。
+4. `jobLocks.acquire` 必须保持原子 compare-and-set。获取失败表示已有未过期 owner：本次 job 返回 `skipped(lock_held)`，不调用 loader、不写 `sync_logs`，也不创建第二套业务写入。
+
+### 续租与事实时间
+
+成功获取锁后，现有 job 在每个 lease 时长的一半到达时尝试续租。当前固定配置下续租节点为获取后的 5 分钟；续租使用：
+
+```text
+lease_until = current lease wall-clock now + 10 minutes
+```
+
+这里的 wall-clock 只用于定时触发和计算锁的操作性到期边界。`load(server_now)`、`applyFixture(..., server_now)`、`sync_logs.started_at/finished_at` 以及其他业务事实时间仍全部使用同一次注入的 `server_now`，不得由续租墙钟替代。
+
+`renew(lock_key, owner_id, lease_until)` 只允许当前 owner 且 lease 尚未到期时成功；返回 `false` 或抛异常均视为续租失败。首次观察到续租失败后立即停止后续定时续租尝试。
+
+### 续租失败后的停止边界
+
+续租健康状态在以下既有业务边界检查：
+
+- 每次 loader 调用开始前；
+- 每个 fixture 的 `applyFixture` 调用开始前；
+- 成功 `sync_log` 更新开始前。
+
+续租失败或异常被观察后，job 在下一个上述检查点抛出既有 `INTERNAL_ERROR`，不再开始新的 loader、fixture 应用或 success log 写入；已开始且正在等待的异步调用不被强行取消。job 进入既有 failed log 路径，记录 `finished_at=server_now` 和最终错误，并在 `finally` 中释放自身 owner 的锁。failed log 是停止结果的最小可观察记录，不是继续处理业务事实。
+
+### 释放与接管
+
+- 只有成功获取锁的本次 job 才执行 `finally release(lock_key, owner_id)`。
+- repository 的 release 对非 owner 为空操作；因此一个 job 不得释放其他 owner 的 lease。
+- 同一 `lock_key` 在 `lease_until` 未到期时拒绝其他 owner；当 `lease_until <= lock repository wall-clock now` 时视为到期，新的 owner 可通过同一原子 acquire 接管。
+- 续租失败的旧 owner 不得通过 renew 恢复或覆盖已被新 owner 接管的 lease；新 owner 的 acquire/lease 结果独立于旧 owner 的释放调用。
+
+### SPEC_GAP
+
+- 本小节只使用现有固定配置和 `provider-sync-job` 已实现的半 lease 续租节点；其他任务、settlement lock 的续租周期和调度器频率未在此冻结。
+- 规范没有定义跨进程/跨节点 wall-clock 偏差、锁存储端 server time 或续租 RPC 已发出但结果尚未返回时的竞态；本小节不新增分布式锁重构或时钟同步协议。
+- scheduler 如何触发下一次 job、lease 接管后的调度交接和 Provider client 的真实网络行为不在本切片定义。
+
+## 49.15 阶段 A4：`settlement_status` 写入审查与收口
+
+本小节记录 A4 对 `src/**/*.ts` 的完整检索、业务调用链和最终分类；不新增状态、结算/重试规则或 API 字段。分类含义：
+
+- **(a) 初始 `pending`**：新建 match 时的初始值。
+- **(b) 合法状态机转移**：业务状态变化统一经 `transitionMatchSettlementStatus`，由 11.2/49.3 合法表校验后调用 `matches.updateSettlementStatus`。
+- **(c) 非业务初始化/fixture**：测试/数据构造，或只保持既有状态、不产生 settlement 状态变化的 fixture 路径。
+- **(d) 真实缺口**：业务路径直接在完整 `matches.update` 中改变 `settlement_status`，绕过既有 transition 入口。
+
+### 审查清单
+
+| 写入点与调用链 | 分类与结论 | 允许转移/处理 | 回归测试 |
+|---|---|---|---|
+| `provider-schedule-sync.buildMatch` → `discover` → `matches.insert` | (a)，保留 | 新 match 初始 `pending`，不是状态转移 | `provider-schedule-sync.test.ts` |
+| `ProviderResultSyncService.applyFinishedFixture` → `matchResults.insert` → `transitionMatchSettlementStatus` → `matches.update` | 原为 (d)，已修复为 (b) | `pending→waiting`；已结算或结算中出现新版本按既有规则进入/保持 `correcting`；同状态保持 | `provider-result-sync.test.ts`：首次 FT transition 合同、Provider 赛果修正 |
+| `ProviderStatusSyncService.applyCancelledFixture` → match 事实 update → `transitionMatchSettlementStatus` | 原为 (d)，已修复为 (b) | `pending/waiting/settling/failed→voided`；已 `settled` 记录 blocking anomaly，不作废历史 | `provider-status-sync.test.ts`：cancelled transition 合同、settled conflict |
+| `ProviderStatusSyncService.applyAbandonedFixture` → match 状态 update | (c)，保留 match fixture 语义 | 仅更新 `match_status=abandoned`，保持既有 `settlement_status`；当前不再显式写同值 `pending` | `provider-status-sync.test.ts`：ABD 保持 pending |
+| `AdminResultCorrectionService.correct` → `matchResults.insert` → `transitionMatchSettlementStatus` → match 事实 update → audit | 原为 (d)，已修复为 (b) | 未结算首次结果保持/进入 `waiting`；已结算结果按合法表进入 `correcting`；transition 先执行以避免 `settled` 中间态违反 result-version invariant | `admin-result-correction.test.ts`：修正 transition 合同、首次结果 |
+| `FirstSettlementService`、`RetrySettlementService`、`CorrectionSettlementService` 的起态、失败和 finalize | (b)，保留 | 全部已使用既有 transition；finalize 先写 `settled_result_version`，再转 `settled/correcting` | 各 service tests、`settlement-state-machine.test.ts`、repository/invariant tests |
+| `AdminRetrySettlementService` | (b)，保留 | 只选择目标并校验合法边，实际状态写入委托 First/Retry/Correction service | `admin-retry-settlement.test.ts` |
+| `matches.updateSettlementStatus` repository 边界 | (b) 的底层写入口 | 仅由 transition helper 调用；保留其并发安全的局部状态更新，不在 repository 重写业务状态机 | `repositories.test.ts`、各 transition 合同测试 |
+| 测试 fixture、类型/schema/invariant/read-only 查询中的 `settlement_status` | (c)，保留 | 仅构造、约束或读取事实，不是业务状态写入 | 对应 domain/application/repository tests |
+
+### A4 结论
+
+确认存在 3 条真实 (d) 缺口：Provider 合法 FT 结果、Provider cancelled、管理员赛果修正。三条路径均先补最小 RED 合同测试，再改为复用 `transitionMatchSettlementStatus` 并通过 GREEN；`settled→correcting` 路径保持既有 invariant 顺序，未放宽约束。除新建 match 的初始 `pending` 和 (c) 路径外，生产业务不再直接写 `settlement_status`。
+
+本审查没有修改状态机转移表、结算/重试规则、A 阶段已冻结 API 或 OpenAPI 认证 security scheme。认证表达的后续关闭记录见 49.16。
+
+## 49.16 H4：Auth OpenAPI 诚实表达关闭记录
+
+本节只关闭 OpenAPI 合同层的 `SPEC_GAP/H4`，不实现网关、云函数、部署或客户端登录流程。
+
+- `src/api/v1/openapi.yaml` 已删除全部 `BearerAuth`、`bearerFormat: JWT` 与 Bearer security 声明；不新增 JWT、Cookie、session token 或客户端可填写的身份 Header/security scheme。
+- 文档根级固定 `x-trusted-runtime-openid`：身份字段为 `openid`，由 `gateway_or_runtime` 注入，且 `client_supply_forbidden: true`。
+- 所有现有 Auth required operation（含 `POST /v1/session/init`）固定 `x-requires-trusted-openid: true`；公开读接口不写该标记。该标记只表达可信运行时依赖，不是客户端请求参数。
+- 401 继续只表示缺少可信身份并使用 `UNAUTHORIZED`；已注销用户保持 `409 USER_DELETED`，非 active admin 保持 `403 FORBIDDEN`。本记录不改变既有 handler、业务字段或错误码。
+- H4 合同测试与既有 API 测试继续直接注入 `trusted_openid`；具体平台字段、网关注入点、本地模拟和平台登录流程仍留给 B3，且不得反向改变本 API 合同。
 
 ---
 
-> 编码 Agent：第 49 节已冻结，直接执行；与正文冲突时以本节约定为准，不得再标 SPEC_GAP。
+> 编码 Agent：第 49 节已冻结，直接执行；本节明确保留的 `SPEC_GAP` 只阻止未定义部分扩展，不得影响已冻结合同。

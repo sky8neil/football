@@ -5,7 +5,18 @@ info:
   description: |
     依据《赛事预言家 MVP 核心机器可执行规范 v1.0》第 23~30 节。
     已对齐等级、解锁、分享卡查询、管理员异常查询、赛果修正与结算重试端点；其余端点按实现进度补齐。
+    鉴权模型：依赖部署网关/运行环境注入的可信 openid；见根级 x-trusted-runtime-openid。客户端不得传身份凭证。
     Base path: /v1
+x-trusted-runtime-openid:
+  required_for: auth_required_operations
+  identity_field: openid
+  injection: gateway_or_runtime
+  client_supply_forbidden: true
+  notes: >
+    身份由部署网关/运行环境注入可信 openid（或等价运行时字段）。
+    后端不签发 JWT/Cookie/session token。
+    客户端不得在 body/query/header 中提交 openid、user_id 或 JWT 作为业务身份。
+    具体网关字段映射由 B3 实现，不改变本 API 合同。
 servers:
   - url: https://api.example.com/v1
     description: MVP 生产环境
@@ -24,8 +35,7 @@ paths:
     post:
       tags: [session]
       summary: 初始化用户会话
-      security:
-        - BearerAuth: []
+      x-requires-trusted-openid: true
       requestBody:
         required: true
         content:
@@ -126,8 +136,7 @@ paths:
     post:
       tags: [predictions]
       summary: 提交比分预测
-      security:
-        - BearerAuth: []
+      x-requires-trusted-openid: true
       requestBody:
         required: true
         content:
@@ -159,8 +168,12 @@ paths:
     get:
       tags: [predictions]
       summary: 获取我的历史预测
-      security:
-        - BearerAuth: []
+      description: |
+        成功响应按 submitted_at DESC、prediction_id DESC 稳定排序。
+        next_cursor 仅在 has_more=true 时返回；cursor 是绑定 season_id、submitted_at 和 prediction_id
+        的 base64url + HMAC opaque 游标，客户端不得解析或构造。正式比分缺失时，regular_home_score、
+        regular_away_score、match_score、wdl_hit、exact_hit 均为 null。
+      x-requires-trusted-openid: true
       parameters:
         - name: season_id
           in: query
@@ -168,6 +181,7 @@ paths:
           schema:
             type: string
             const: 2026_2027
+            default: 2026_2027
         - name: limit
           in: query
           required: false
@@ -188,19 +202,20 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
-          $ref: '#/components/responses/NotFound'
+          $ref: '#/components/responses/PredictionHistoryNotFound'
         '409':
-          $ref: '#/components/responses/Conflict'
+          $ref: '#/components/responses/PredictionHistoryConflict'
         '429':
           $ref: '#/components/responses/RateLimited'
         '422':
           $ref: '#/components/responses/ValidationError'
+        '500':
+          $ref: '#/components/responses/InternalError'
   /predictions/me/{prediction_id}:
     get:
       tags: [predictions]
       summary: 获取我的单条历史预测
-      security:
-        - BearerAuth: []
+      x-requires-trusted-openid: true
       parameters:
         - name: prediction_id
           in: path
@@ -251,8 +266,7 @@ paths:
     get:
       tags: [profile]
       summary: 获取我的完整用户资料
-      security:
-        - BearerAuth: []
+      x-requires-trusted-openid: true
       responses:
         '200':
           description: 当前用户完整资料
@@ -273,8 +287,7 @@ paths:
     patch:
       tags: [profile]
       summary: 更新我的用户资料
-      security:
-        - BearerAuth: []
+      x-requires-trusted-openid: true
       requestBody:
         required: true
         content:
@@ -301,8 +314,7 @@ paths:
     delete:
       tags: [profile]
       summary: 注销我的用户账号
-      security:
-        - BearerAuth: []
+      x-requires-trusted-openid: true
       responses:
         '204':
           description: 注销成功且无 response body
@@ -320,8 +332,7 @@ paths:
     get:
       tags: [levels]
       summary: 获取我的等级统计
-      security:
-        - BearerAuth: []
+      x-requires-trusted-openid: true
       responses:
         '200':
           description: 当前用户等级统计
@@ -343,8 +354,11 @@ paths:
     get:
       tags: [unlocks]
       summary: 获取我的解锁资源
-      security:
-        - BearerAuth: []
+      description: |
+        无 query、path 或 request body 参数。成功响应使用非分页 data/request_id envelope。
+        default_resources 固定按 avatar_frame、profile_card、share_card 顺序返回；unlocked 为空时返回 []。
+        unlocked 按 threshold_points ASC、unlock_id ASC 稳定排序，并包含全部历史 unlock，不因当前积分隐藏。
+      x-requires-trusted-openid: true
       responses:
         '200':
           description: 默认资源与已解锁记录
@@ -355,19 +369,20 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
-          $ref: '#/components/responses/NotFound'
+          $ref: '#/components/responses/UnlocksUserNotFound'
         '409':
-          $ref: '#/components/responses/Conflict'
+          $ref: '#/components/responses/UnlocksUserDeleted'
         '429':
           $ref: '#/components/responses/RateLimited'
         '422':
           $ref: '#/components/responses/ValidationError'
+        '500':
+          $ref: '#/components/responses/InternalError'
   /share-card/me:
     get:
       tags: [share-card]
       summary: 获取我的分享卡数据
-      security:
-        - BearerAuth: []
+      x-requires-trusted-openid: true
       parameters:
         - name: season_id
           in: query
@@ -438,8 +453,11 @@ paths:
     get:
       tags: [admin]
       summary: 查询同步异常
-      security:
-        - BearerAuth: []
+      description: |
+        成功响应按 last_seen_at DESC、anomaly_id DESC 稳定排序。
+        cursor 绑定 status、blocking、last_seen_at 和 anomaly_id；客户端不得解析或构造。
+        details 保留为受控空 object；内部 provider payload、密钥和运维字段不公开。
+      x-requires-trusted-openid: true
       parameters:
         - name: status
           in: query
@@ -477,12 +495,13 @@ paths:
           $ref: '#/components/responses/RateLimited'
         '422':
           $ref: '#/components/responses/ValidationError'
+        '500':
+          $ref: '#/components/responses/InternalError'
   /admin/matches/{match_id}/result-corrections:
     post:
       tags: [admin]
       summary: 修正比赛正式赛果
-      security:
-        - BearerAuth: []
+      x-requires-trusted-openid: true
       parameters:
         - name: match_id
           in: path
@@ -515,12 +534,13 @@ paths:
           $ref: '#/components/responses/RateLimited'
         '422':
           $ref: '#/components/responses/ValidationError'
+        '500':
+          $ref: '#/components/responses/InternalError'
   /admin/matches/{match_id}/retry-settlement:
     post:
       tags: [admin]
       summary: 重试失败结算
-      security:
-        - BearerAuth: []
+      x-requires-trusted-openid: true
       parameters:
         - name: match_id
           in: path
@@ -547,12 +567,13 @@ paths:
           $ref: '#/components/responses/RateLimited'
         '422':
           $ref: '#/components/responses/ValidationError'
+        '500':
+          $ref: '#/components/responses/InternalError'
   /admin/rebuild/users/{user_id}:
     post:
       tags: [admin]
       summary: 重建用户统计
-      security:
-        - BearerAuth: []
+      x-requires-trusted-openid: true
       parameters:
         - name: user_id
           in: path
@@ -579,12 +600,13 @@ paths:
           $ref: '#/components/responses/RateLimited'
         '422':
           $ref: '#/components/responses/ValidationError'
+        '500':
+          $ref: '#/components/responses/InternalError'
   /admin/rebuild/rankings:
     post:
       tags: [admin]
       summary: 重建周期排行榜
-      security:
-        - BearerAuth: []
+      x-requires-trusted-openid: true
       requestBody:
         required: true
         content:
@@ -608,12 +630,9 @@ paths:
           $ref: '#/components/responses/RateLimited'
         '422':
           $ref: '#/components/responses/ValidationError'
+        '500':
+          $ref: '#/components/responses/InternalError'
 components:
-  securitySchemes:
-    BearerAuth:
-      type: http
-      scheme: bearer
-      bearerFormat: JWT
   schemas:
     SchemaVersion:
       type: integer
@@ -1276,9 +1295,11 @@ components:
           format: uuid
         unlock_code:
           type: string
+          enum: [profile_card_style_1, favorite_team_name_accent, favorite_team_avatar_frame_1]
         threshold_points:
           type: integer
           minimum: 0
+          enum: [30, 100, 200]
         source_version:
           type: string
           const: unlock_v1
@@ -1292,6 +1313,7 @@ components:
       properties:
         default_resources:
           type: array
+          const: [avatar_frame, profile_card, share_card]
           items:
             type: string
             enum: [avatar_frame, profile_card, share_card]
@@ -1299,6 +1321,7 @@ components:
           maxItems: 3
         unlocked:
           type: array
+          minItems: 0
           items:
             $ref: '#/components/schemas/UnlockRecord'
     UnlocksEnvelope:
@@ -1488,15 +1511,19 @@ components:
           minimum: 1
         details:
           type: object
+          additionalProperties: false
+          const: {}
         resolved_at:
           type: string
           format: date-time
           nullable: true
         resolution:
           type: string
+          minLength: 1
           nullable: true
     AdminAnomaliesData:
       type: object
+      additionalProperties: false
       required: [items, page]
       properties:
         items:
@@ -1507,6 +1534,7 @@ components:
           $ref: '#/components/schemas/Page'
     AdminAnomaliesEnvelope:
       type: object
+      additionalProperties: false
       required: [data, request_id]
       properties:
         data:
@@ -1579,8 +1607,38 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorEnvelope'
+    PredictionHistoryNotFound:
+      description: 404 USER_NOT_FOUND
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    UnlocksUserNotFound:
+      description: 404 USER_NOT_FOUND
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
     Conflict:
       description: 409 业务冲突
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    PredictionHistoryConflict:
+      description: "409 用户状态冲突：USER_DELETED"
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    UnlocksUserDeleted:
+      description: 409 USER_DELETED
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    InternalError:
+      description: 500 INTERNAL_ERROR
       content:
         application/json:
           schema:

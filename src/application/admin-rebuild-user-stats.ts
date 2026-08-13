@@ -21,7 +21,7 @@ const REBUILD_LEASE_MILLISECONDS = FIXED_CONFIG_V1.JOB_LEASE_MINUTES * 60 * 1000
 /** 第 48.3 节冻结的管理员审计 action。 */
 export const ADMIN_REBUILD_USER_STATS_AUDIT_ACTION = AdminAuditAction.RebuildUserStats;
 
-const ADMIN_REBUILD_USER_STATS_AUDIT_REASON = "管理员用户统计重建";
+export const ADMIN_REBUILD_USER_STATS_AUDIT_REASON = "管理员用户统计重建";
 
 function userStatsAuditValue(
   user: User,

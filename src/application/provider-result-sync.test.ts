@@ -3,6 +3,7 @@ import { Provider, ResultSource, SettlementStatus, MatchStatus, AnomalyStatus, A
 import type { Match, MatchProviderMapping, MatchResult } from "../domain/types.js";
 import { newUuid } from "../domain/ids.js";
 import { InMemoryRepository } from "../infrastructure/repositories.js";
+import type { AppRepository, UnitOfWork } from "../infrastructure/repositories.js";
 import type { NormalizedFixture } from "../provider/fixture-mapper.js";
 import { ProviderResultSyncService } from "./provider-result-sync.js";
 
@@ -103,6 +104,47 @@ async function setup(
   return repo;
 }
 
+function withSettlementWriteGuard(
+  repo: InMemoryRepository,
+  writes: Array<{ kind: "update" | "updateSettlementStatus"; value: Partial<Match> }>,
+): AppRepository {
+  const guardedRepo = Object.create(repo) as AppRepository;
+  Object.defineProperty(guardedRepo, "withTransaction", {
+    value: <T>(fn: (tx: UnitOfWork) => Promise<T>) =>
+      repo.withTransaction((tx) =>
+        {
+          const guardedTx = Object.create(tx) as UnitOfWork;
+          Object.defineProperty(guardedTx, "matches", {
+            value: {
+              ...tx.matches,
+              update: async (updated: Match) => {
+                const current = await tx.matches.findById(updated.match_id);
+                if (current !== null && current.settlement_status !== updated.settlement_status) {
+                  throw new Error("raw settlement_status update");
+                }
+                writes.push({ kind: "update", value: updated });
+                return tx.matches.update(updated);
+              },
+              updateSettlementStatus: async (
+                matchId: string,
+                status: Match["settlement_status"],
+                updatedAt: Date,
+              ) => {
+                writes.push({
+                  kind: "updateSettlementStatus",
+                  value: { match_id: matchId, settlement_status: status, updated_at: updatedAt },
+                });
+                return tx.matches.updateSettlementStatus(matchId, status, updatedAt);
+              },
+            },
+          });
+          return fn(guardedTx);
+        },
+      ),
+  });
+  return guardedRepo;
+}
+
 describe("ProviderResultSyncService", () => {
   it("无效 server_now 在事务和 Provider 事实写入前 Fail Closed", async () => {
     const repo = await setup();
@@ -169,6 +211,30 @@ describe("ProviderResultSyncService", () => {
         payload,
       }),
     ]);
+  });
+
+  it("首次 FT 的 settlement_status 变化必须经过既有 transition repository 入口", async () => {
+    const repo = await setup();
+    const writes: Array<{
+      kind: "update" | "updateSettlementStatus";
+      value: Partial<Match>;
+    }> = [];
+
+    const outcome = await new ProviderResultSyncService(
+      withSettlementWriteGuard(repo, writes),
+    ).applyFinishedFixture(makeFixture(), {}, NOW);
+
+    expect(outcome).toMatchObject({ settlement_status: SettlementStatus.Waiting });
+    expect(writes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "updateSettlementStatus",
+          value: expect.objectContaining({
+            settlement_status: SettlementStatus.Waiting,
+          }),
+        }),
+      ]),
+    );
   });
 
   it("合法 FT 观察到有效比分后 resolve 既有 INVALID_FINAL_SCORE anomaly", async () => {

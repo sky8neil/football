@@ -37,7 +37,7 @@ export type AdminRetrySettlementOutcome = (RetrySettlementOutcome | CorrectionSe
 };
 
 export const ADMIN_RETRY_SETTLEMENT_AUDIT_ACTION = AdminAuditAction.RetrySettlement;
-const ADMIN_RETRY_SETTLEMENT_AUDIT_REASON = "管理员重试结算";
+export const ADMIN_RETRY_SETTLEMENT_AUDIT_REASON = "管理员重试结算";
 
 function auditValue(snapshot: SettlementRetryAuditSnapshot): Record<string, unknown> {
   return {
@@ -123,33 +123,32 @@ export class AdminRetrySettlementService implements RetrySettlementCommand {
       }
 
       const allSettlements = await tx.settlements.findByMatch(matchId);
+      if (
+        match.settlement_status === SettlementStatus.Settling ||
+        match.settlement_status === SettlementStatus.Correcting
+      ) {
+        throw conflictError("SETTLEMENT_ALREADY_RUNNING", "比赛已有结算任务正在运行");
+      }
+
+      const runningSettlement = allSettlements.find(
+        (settlement) => settlement.status === SettlementDocStatus.Running,
+      );
+      if (runningSettlement !== undefined) {
+        throw conflictError("SETTLEMENT_ALREADY_RUNNING", "比赛已有结算任务正在运行", {
+          settlement_id: runningSettlement.settlement_id,
+          result_version: runningSettlement.result_version,
+        });
+      }
+
       const failedSettlements = allSettlements.filter(
         (settlement) => settlement.status === SettlementDocStatus.Failed,
       );
-      const runningCorrection = allSettlements.find(
-        (settlement) =>
-          settlement.status === SettlementDocStatus.Running &&
-          settlement.is_correction &&
-          settlement.result_version === match.settled_result_version + 1,
-      );
-      if (runningCorrection !== undefined) {
-        throw conflictError("SETTLEMENT_ALREADY_RUNNING", "比赛已有修正结算任务正在运行", {
-          settlement_id: runningCorrection.settlement_id,
-          result_version: runningCorrection.result_version,
-        });
-      }
       const targetSettlement = selectFailedSettlementTarget(
         match,
         failedSettlements,
         allSettlements,
       );
       if (targetSettlement.is_correction) {
-        if (
-          match.settlement_status === SettlementStatus.Settling ||
-          match.settlement_status === SettlementStatus.Correcting
-        ) {
-          throw conflictError("SETTLEMENT_ALREADY_RUNNING", "比赛已有结算任务正在运行");
-        }
         if (!validateSettlementTransition(match.settlement_status, SettlementStatus.Correcting)) {
           throw conflictError(
             "MATCH_STATE_CONFLICT",
@@ -163,12 +162,6 @@ export class AdminRetrySettlementService implements RetrySettlementCommand {
           is_correction: true as const,
           result_version: targetSettlement.result_version,
         };
-      }
-      if (
-        match.settlement_status === SettlementStatus.Settling ||
-        match.settlement_status === SettlementStatus.Correcting
-      ) {
-        throw conflictError("SETTLEMENT_ALREADY_RUNNING", "比赛已有结算任务正在运行");
       }
       if (!validateSettlementTransition(match.settlement_status, SettlementStatus.Settling)) {
         throw conflictError(

@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { AdminRole, AdminStatus, AnomalyStatus, AnomalyType } from "../../domain/enums.js";
 import type { Admin, Anomaly } from "../../domain/types.js";
@@ -10,6 +11,7 @@ import {
   validateAdminAnomaliesQuery,
 } from "./admin-anomalies.js";
 import { InMemoryRateLimiter } from "./rate-limit.js";
+import { mapErrorToHttp } from "./validation.js";
 
 const ADMIN_ID = "00000000-0000-4000-8000-000000000001";
 const MATCH_ID = "00000000-0000-4000-8000-000000000010";
@@ -30,13 +32,15 @@ function makeAdmin(): Admin {
 
 function makeAnomaly(overrides: Partial<Anomaly> = {}): Anomaly {
   const anomalyId = overrides.anomaly_id ?? newUuid();
+  const matchId = overrides.match_id ?? MATCH_ID;
+  const type = overrides.type ?? AnomalyType.LiveSyncStale;
   const lastSeenAt = overrides.last_seen_at ?? NOW;
   return {
     schema_version: 1,
     anomaly_id: anomalyId,
-    anomaly_key: overrides.anomaly_key ?? `${MATCH_ID}:LIVE_SYNC_STALE:${anomalyId}`,
-    match_id: MATCH_ID,
-    type: AnomalyType.LiveSyncStale,
+    anomaly_key: overrides.anomaly_key ?? `${matchId}:${type}`,
+    match_id: matchId,
+    type,
     blocking: false,
     status: AnomalyStatus.Open,
     first_seen_at: overrides.first_seen_at ?? lastSeenAt,
@@ -69,7 +73,24 @@ describe("GET /v1/admin/anomalies query", () => {
       { limit: "0" },
       { limit: "101" },
       { cursor: "not-a-cursor" },
+      { status: null },
+      { blocking: null },
+      { limit: null },
+      { cursor: null },
       { extra: "x" },
+    ]) {
+      expect(() => validateAdminAnomaliesQuery(query)).toThrowError(
+        expect.objectContaining({ code: "VALIDATION_ERROR" }),
+      );
+    }
+  });
+
+  it("拒绝 HTTP query 中的非字符串值", () => {
+    for (const query of [
+      { status: true },
+      { blocking: false },
+      { limit: 2 },
+      { cursor: 123 },
     ]) {
       expect(() => validateAdminAnomaliesQuery(query)).toThrowError(
         expect.objectContaining({ code: "VALIDATION_ERROR" }),
@@ -88,10 +109,12 @@ describe("AdminAnomaliesService", () => {
     }));
     await repo.anomalies.insert(makeAnomaly({
       anomaly_id: "00000000-0000-4000-8000-000000000002",
-      last_seen_at: new Date("2026-08-08T23:59:00.000Z"),
+      match_id: "00000000-0000-4000-8000-000000000011",
+      last_seen_at: new Date("2026-08-09T00:00:00.000Z"),
     }));
     await repo.anomalies.insert(makeAnomaly({
       anomaly_id: "00000000-0000-4000-8000-000000000001",
+      match_id: "00000000-0000-4000-8000-000000000012",
       last_seen_at: new Date("2026-08-08T23:58:00.000Z"),
     }));
 
@@ -152,6 +175,49 @@ describe("AdminAnomaliesService", () => {
         cursor: null,
       }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    const missingIdentity = await service.list(undefined, {
+      status: null,
+      blocking: null,
+      limit: 20,
+      cursor: null,
+    }).catch((error: unknown) => error);
+    expect(mapErrorToHttp(missingIdentity, "request-anomalies-unauthorized")).toMatchObject({
+      status: 401,
+      body: { code: "UNAUTHORIZED", request_id: "request-anomalies-unauthorized" },
+    });
+
+    const disabledRepo = new InMemoryRepository();
+    await disabledRepo.admins.insert({
+      ...makeAdmin(),
+      admin_id: "00000000-0000-4000-8000-000000000013",
+      openid: "disabled-admin-openid",
+      status: AdminStatus.Disabled,
+    });
+    const disabledAdmin = await new AdminAnomaliesService(disabledRepo, CURSOR_SECRET).list(
+      "disabled-admin-openid",
+      { status: null, blocking: null, limit: 20, cursor: null },
+    ).catch((error: unknown) => error);
+    expect(mapErrorToHttp(disabledAdmin, "request-anomalies-forbidden")).toMatchObject({
+      status: 403,
+      body: { code: "FORBIDDEN", request_id: "request-anomalies-forbidden" },
+    });
+  });
+
+  it("事实记录不一致映射为 500 INTERNAL_ERROR", async () => {
+    const repo = new InMemoryRepository();
+    await repo.admins.insert(makeAdmin());
+    await repo.anomalies.insert(makeAnomaly({ last_seen_at: new Date("invalid") }));
+
+    const error = await new AdminAnomaliesService(repo, CURSOR_SECRET).list(
+      "trusted-admin-openid",
+      { status: null, blocking: null, limit: 20, cursor: null },
+    ).catch((caught: unknown) => caught);
+
+    expect(mapErrorToHttp(error, "request-anomalies-internal")).toMatchObject({
+      status: 500,
+      body: { code: "INTERNAL_ERROR", request_id: "request-anomalies-internal" },
+    });
   });
 });
 
@@ -186,6 +252,65 @@ describe("admin anomalies API", () => {
     expect(response.body.data.page).toEqual({ next_cursor: null, has_more: false });
   });
 
+  it("details 未冻结公开字段时不透传内部诊断或敏感字段", async () => {
+    const repo = new InMemoryRepository();
+    await repo.admins.insert(makeAdmin());
+    await repo.anomalies.insert(makeAnomaly({
+      details: {
+        field: "fixture",
+        raw_provider_payload: { fixture: { id: 39 } },
+        provider_api_key: "secret",
+      },
+    }));
+
+    const response = await getAdminAnomalies(new AdminAnomaliesService(repo, CURSOR_SECRET), {
+      trusted_openid: "trusted-admin-openid",
+      query: {},
+      server_now: NOW,
+      request_id: "request-anomalies-details-1",
+    });
+
+    expect(response.body.data.items[0]?.details).toEqual({});
+  });
+
+  it("resolved 记录保留 UTC resolution 字段，item 只输出冻结字段", async () => {
+    const repo = new InMemoryRepository();
+    await repo.admins.insert(makeAdmin());
+    await repo.anomalies.insert(makeAnomaly({
+      anomaly_id: "00000000-0000-4000-8000-000000000007",
+      status: AnomalyStatus.Resolved,
+      blocking: true,
+      first_seen_at: new Date("2026-08-08T22:00:00.000Z"),
+      last_seen_at: new Date("2026-08-09T00:00:00.000Z"),
+      occurrence_count: 2,
+      details: { internal: "diagnostic" },
+      resolved_at: new Date("2026-08-08T23:00:00.000Z"),
+      resolution: "provider_valid_final_score",
+    }));
+
+    const response = await getAdminAnomalies(new AdminAnomaliesService(repo, CURSOR_SECRET), {
+      trusted_openid: "trusted-admin-openid",
+      query: { status: "resolved" },
+      server_now: NOW,
+      request_id: "request-anomalies-resolved-1",
+    });
+
+    expect(response.body.data.items).toEqual([{
+      anomaly_id: "00000000-0000-4000-8000-000000000007",
+      anomaly_key: `${MATCH_ID}:LIVE_SYNC_STALE`,
+      match_id: MATCH_ID,
+      type: AnomalyType.LiveSyncStale,
+      blocking: true,
+      status: AnomalyStatus.Resolved,
+      first_seen_at: "2026-08-08T22:00:00.000Z",
+      last_seen_at: "2026-08-09T00:00:00.000Z",
+      occurrence_count: 2,
+      details: {},
+      resolved_at: "2026-08-08T23:00:00.000Z",
+      resolution: "provider_valid_final_score",
+    }]);
+  });
+
   it("cursor 翻页省略筛选参数时继承 cursor 绑定的筛选", async () => {
     const repo = new InMemoryRepository();
     await repo.admins.insert(makeAdmin());
@@ -195,6 +320,7 @@ describe("admin anomalies API", () => {
     }));
     await repo.anomalies.insert(makeAnomaly({
       anomaly_id: "00000000-0000-4000-8000-000000000006",
+      match_id: "00000000-0000-4000-8000-000000000011",
       last_seen_at: new Date("2026-08-09T00:00:00.000Z"),
     }));
 
@@ -240,5 +366,18 @@ describe("admin anomalies API", () => {
     await expect(getAdminAnomalies(service, input)).rejects.toMatchObject({
       code: "RATE_LIMITED",
     });
+  });
+
+  it("声明 admin anomalies 的冻结 OpenAPI contract", async () => {
+    const specification = await readFile(new URL("./openapi.yaml", import.meta.url), "utf8");
+    expect(specification).toMatch(
+      /  \/admin\/anomalies:\n    get:[\s\S]*?AdminAnomaliesEnvelope[\s\S]*?'500':\n          \$ref: '#\/components\/responses\/InternalError'/,
+    );
+    expect(specification).toMatch(
+      /    Anomaly:\n      type: object\n      additionalProperties: false\n      required: \[anomaly_id, anomaly_key, match_id, type, blocking, status, first_seen_at, last_seen_at, occurrence_count, details, resolved_at, resolution\]/,
+    );
+    expect(specification).toMatch(
+      /        details:\n          type: object\n          additionalProperties: false\n          const: \{\}/,
+    );
   });
 });

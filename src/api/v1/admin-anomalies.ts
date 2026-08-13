@@ -18,6 +18,8 @@ const ADMIN_ANOMALIES_QUERY_FIELDS = new Set([
   "cursor",
 ]);
 
+export type AdminAnomalyDetails = Record<string, never>;
+
 export interface AdminAnomalyResponse {
   anomaly_id: string;
   anomaly_key: string;
@@ -28,7 +30,7 @@ export interface AdminAnomalyResponse {
   first_seen_at: string;
   last_seen_at: string;
   occurrence_count: number;
-  details: Record<string, unknown>;
+  details: AdminAnomalyDetails;
   resolved_at: string | null;
   resolution: string | null;
 }
@@ -73,7 +75,8 @@ function mapAnomaly(anomaly: Anomaly): AdminAnomalyResponse {
     first_seen_at: anomaly.first_seen_at.toISOString(),
     last_seen_at: anomaly.last_seen_at.toISOString(),
     occurrence_count: anomaly.occurrence_count,
-    details: anomaly.details,
+    // 21.18 only freezes details as an object; its members are not a public contract.
+    details: {},
     resolved_at: anomaly.resolved_at?.toISOString() ?? null,
     resolution: anomaly.resolution,
   };

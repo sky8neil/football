@@ -15,6 +15,7 @@ import type {
 } from "../domain/types.js";
 import { newUuid } from "../domain/ids.js";
 import { InMemoryRepository } from "../infrastructure/repositories.js";
+import type { AppRepository, UnitOfWork } from "../infrastructure/repositories.js";
 import type { NormalizedFixture } from "../provider/fixture-mapper.js";
 import { ProviderStatusSyncService } from "./provider-status-sync.js";
 
@@ -169,6 +170,47 @@ async function setup(match = makeMatch()) {
   await repo.matches.insert(match);
   await repo.matchProviderMappings.insert(makeMapping());
   return { repo, match };
+}
+
+function withSettlementWriteGuard(
+  repo: InMemoryRepository,
+  writes: Array<{ kind: "update" | "updateSettlementStatus"; value: Partial<Match> }>,
+): AppRepository {
+  const guardedRepo = Object.create(repo) as AppRepository;
+  Object.defineProperty(guardedRepo, "withTransaction", {
+    value: <T>(fn: (tx: UnitOfWork) => Promise<T>) =>
+      repo.withTransaction((tx) =>
+        {
+          const guardedTx = Object.create(tx) as UnitOfWork;
+          Object.defineProperty(guardedTx, "matches", {
+            value: {
+              ...tx.matches,
+              update: async (updated: Match) => {
+                const current = await tx.matches.findById(updated.match_id);
+                if (current !== null && current.settlement_status !== updated.settlement_status) {
+                  throw new Error("raw settlement_status update");
+                }
+                writes.push({ kind: "update", value: updated });
+                return tx.matches.update(updated);
+              },
+              updateSettlementStatus: async (
+                matchId: string,
+                status: Match["settlement_status"],
+                updatedAt: Date,
+              ) => {
+                writes.push({
+                  kind: "updateSettlementStatus",
+                  value: { match_id: matchId, settlement_status: status, updated_at: updatedAt },
+                });
+                return tx.matches.updateSettlementStatus(matchId, status, updatedAt);
+              },
+            },
+          });
+          return fn(guardedTx);
+        },
+      ),
+  });
+  return guardedRepo;
 }
 
 describe("ProviderStatusSyncService", () => {
@@ -755,6 +797,33 @@ describe("ProviderStatusSyncService", () => {
         payload: { provider: "fixture" },
       }),
     ]);
+  });
+
+  it("scheduled -> cancelled 的 settlement_status 变化必须经过既有 transition repository 入口", async () => {
+    const { repo } = await setup();
+    const writes: Array<{
+      kind: "update" | "updateSettlementStatus";
+      value: Partial<Match>;
+    }> = [];
+
+    await expect(
+      new ProviderStatusSyncService(withSettlementWriteGuard(repo, writes)).applyCancelledFixture(
+        makeCancelledFixture(),
+        { provider: "fixture" },
+        FIRST_NOW,
+      ),
+    ).resolves.toMatchObject({ kind: "applied", match_status: MatchStatus.Cancelled });
+
+    expect(writes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "updateSettlementStatus",
+          value: expect.objectContaining({
+            settlement_status: SettlementStatus.Voided,
+          }),
+        }),
+      ]),
+    );
   });
 
   it("scheduled -> abandoned 时保留 pending 结算，不写正式结果", async () => {

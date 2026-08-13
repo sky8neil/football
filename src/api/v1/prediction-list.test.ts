@@ -56,8 +56,11 @@ describe("GET /v1/predictions/me", () => {
     });
     for (const query of [
       { season_id: "2025_2026" },
+      { season_id: null },
       { limit: "0" },
       { limit: "101" },
+      { limit: 2 },
+      { cursor: null },
       { extra: "x" },
     ]) {
       expect(() => validateMyPredictionsQuery(query)).toThrowError(
@@ -96,6 +99,29 @@ describe("GET /v1/predictions/me", () => {
     })).rejects.toMatchObject({ code: "UNAUTHORIZED" });
   });
 
+  it("handler 只输出冻结 item 字段，不泄漏 application 内部字段", async () => {
+    const itemWithInternalField = {
+      ...ITEM,
+      internal_only: "must-not-be-public",
+    } as PredictionHistoryItem;
+
+    const response = await getMyPredictions({
+      listMyPredictions: async () => ({
+        items: [itemWithInternalField],
+        has_more: false,
+        next_cursor: null,
+      }),
+    }, {
+      authenticated_user_id: "00000000-0000-4000-8000-000000000001",
+      query: {},
+      server_now: NOW,
+      request_id: "request-predictions-list-contract-1",
+    });
+
+    expect(response.body.data.items).toEqual([ITEM]);
+    expect(response.body.data.items[0]).not.toHaveProperty("internal_only");
+  });
+
   it("limits authenticated history reads to 120 requests per minute", async () => {
     const rateLimiter = new InMemoryRateLimiter();
     const input = {
@@ -125,7 +151,34 @@ describe("GET /v1/predictions/me", () => {
       /    PredictionHistoryData:[\s\S]*?required: \[items, page\]/,
     );
     expect(specification).toMatch(
+      /    PredictionHistoryItem:[\s\S]*?required: \[prediction_id, match_id, league_id, season_id, round_id, home_team_id, away_team_id, kickoff_at, pred_home_score, pred_away_score, derived_result, submitted_at, scoring_rule_version, match_status, regular_home_score, regular_away_score, match_score, wdl_hit, exact_hit\]/,
+    );
+    expect(specification).toMatch(
+      /    PredictionHistoryItem:[\s\S]*?regular_home_score:[\s\S]*?type: integer[\s\S]*?nullable: true[\s\S]*?regular_away_score:[\s\S]*?type: integer[\s\S]*?nullable: true[\s\S]*?match_score:[\s\S]*?nullable: true[\s\S]*?wdl_hit:[\s\S]*?type: boolean[\s\S]*?nullable: true[\s\S]*?exact_hit:[\s\S]*?type: boolean[\s\S]*?nullable: true/,
+    );
+    expect(specification).toMatch(
+      /  \/predictions\/me:\n    get:[\s\S]*?submitted_at DESC、prediction_id DESC[\s\S]*?base64url \+ HMAC opaque[\s\S]*?正式比分缺失时，[\s\S]*?均为 null/,
+    );
+    expect(specification).toMatch(
+      /        - name: season_id[\s\S]*?const: 2026_2027[\s\S]*?default: 2026_2027/,
+    );
+    expect(specification).toMatch(
       /  \/predictions\/me:\n    get:[\s\S]*?'429':[\s\S]*?RateLimited/,
+    );
+    expect(specification).toMatch(
+      /  \/predictions\/me:\n    get:[\s\S]*?'409':[\s\S]*?PredictionHistoryConflict/,
+    );
+    expect(specification).toMatch(
+      /  \/predictions\/me:\n    get:[\s\S]*?'404':[\s\S]*?PredictionHistoryNotFound/,
+    );
+    expect(specification).toMatch(
+      /  \/predictions\/me:\n    get:[\s\S]*?'500':[\s\S]*?InternalError/,
+    );
+    expect(specification).toMatch(
+      /    PredictionHistoryConflict:\n      description: "409 .*USER_DELETED/,
+    );
+    expect(specification).toMatch(
+      /    PredictionHistoryNotFound:\n      description: 404 USER_NOT_FOUND/,
     );
   });
 });

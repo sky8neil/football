@@ -272,27 +272,31 @@ export class PredictionHistoryQueryService {
           prediction.prediction_id < cursor.prediction_id,
       );
     const page = remaining.slice(0, input.limit);
-    const items: PredictionHistoryItem[] = page.map(({ prediction, match }) => ({
-      prediction_id: prediction.prediction_id,
-      match_id: prediction.match_id,
-      league_id: match.league_id,
-      season_id: match.season_id,
-      round_id: match.round_id,
-      home_team_id: match.home_team_id,
-      away_team_id: match.away_team_id,
-      kickoff_at: match.kickoff_at.toISOString(),
-      pred_home_score: prediction.pred_home_score,
-      pred_away_score: prediction.pred_away_score,
-      derived_result: prediction.derived_result,
-      submitted_at: prediction.submitted_at.toISOString(),
-      scoring_rule_version: prediction.scoring_rule_version,
-      match_status: match.match_status,
-      regular_home_score: match.regular_home_score,
-      regular_away_score: match.regular_away_score,
-      match_score: prediction.match_score,
-      wdl_hit: prediction.wdl_hit,
-      exact_hit: prediction.exact_hit,
-    }));
+    const items: PredictionHistoryItem[] = page.map(({ prediction, match }) => {
+      const hasFormalScore =
+        match.regular_home_score !== null && match.regular_away_score !== null;
+      return {
+        prediction_id: prediction.prediction_id,
+        match_id: prediction.match_id,
+        league_id: match.league_id,
+        season_id: match.season_id,
+        round_id: match.round_id,
+        home_team_id: match.home_team_id,
+        away_team_id: match.away_team_id,
+        kickoff_at: match.kickoff_at.toISOString(),
+        pred_home_score: prediction.pred_home_score,
+        pred_away_score: prediction.pred_away_score,
+        derived_result: prediction.derived_result,
+        submitted_at: prediction.submitted_at.toISOString(),
+        scoring_rule_version: prediction.scoring_rule_version,
+        match_status: match.match_status,
+        regular_home_score: match.regular_home_score,
+        regular_away_score: match.regular_away_score,
+        match_score: hasFormalScore ? prediction.match_score : null,
+        wdl_hit: hasFormalScore ? prediction.wdl_hit : null,
+        exact_hit: hasFormalScore ? prediction.exact_hit : null,
+      };
+    });
 
     const hasMore = remaining.length > input.limit;
     const last = page.at(-1);

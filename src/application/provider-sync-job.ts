@@ -92,7 +92,11 @@ function defaultSleep(delayMs: number): Promise<void> {
 }
 
 function isRetryableLoaderError(error: unknown): boolean {
-  if (isQuotaExceededError(error) || error instanceof ProviderDataError) {
+  if (
+    error instanceof DomainError ||
+    isQuotaExceededError(error) ||
+    error instanceof ProviderDataError
+  ) {
     return false;
   }
   if (error instanceof ProviderHttpError) {
@@ -123,9 +127,11 @@ function startJobLockRenewal(
       .then((renewed) => {
         if (!renewed) {
           renewalFailure ??= internalError("Provider 同步锁续租失败");
+          clearInterval(timer);
         }
       }, () => {
         renewalFailure ??= internalError("Provider 同步锁续租失败");
+        clearInterval(timer);
       });
   }, leaseMs / 2);
 

@@ -14,6 +14,7 @@ import { validateSettlementTransition } from "../domain/settlement-state-machine
 import type { Match, MatchResult, ProviderSnapshot } from "../domain/types.js";
 import type { AppRepository, UnitOfWork } from "../infrastructure/repositories.js";
 import { persistAnomalyInTransaction } from "./anomaly-persistence.js";
+import { transitionMatchSettlementStatus } from "./first-settlement-service.js";
 import { assertValidServerNow } from "./period-finalize.js";
 
 export interface ProviderResultFixture {
@@ -285,10 +286,19 @@ export class ProviderResultSyncService {
       };
       const settlementStatus = settlementStatusAfterProviderResult(match);
       await tx.matchResults.insert(result);
+      await transitionMatchSettlementStatus(
+        tx,
+        match.match_id,
+        settlementStatus,
+        serverNow,
+      );
+      const transitionedMatch = await tx.matches.findById(match.match_id);
+      if (transitionedMatch === null) {
+        throw internalError("Provider 赛果同步状态转移后比赛不存在");
+      }
       await tx.matches.update({
-        ...match,
+        ...transitionedMatch,
         match_status: MatchStatus.Finished,
-        settlement_status: settlementStatus,
         regular_home_score: result.regular_home_score,
         regular_away_score: result.regular_away_score,
         result_version: resultVersion,

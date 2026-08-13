@@ -2,6 +2,7 @@ import { conflictError, validationError } from "../../domain/errors.js";
 import { isValidUuid } from "../../domain/ids.js";
 import type {
   PredictionDetailData,
+  PredictionHistoryItem,
   PredictionQueryService,
   PredictionHistoryQuery,
   PredictionHistoryQueryService,
@@ -171,15 +172,13 @@ export interface GetMyPredictionsSuccessResponse {
 }
 
 function parseHistoryLimit(value: unknown): number {
-  if (value === undefined || value === null) {
+  if (value === undefined) {
     return FIXED_CONFIG_V1.API_DEFAULT_LIMIT;
   }
   const parsed =
-    typeof value === "number"
-      ? value
-      : typeof value === "string" && /^\d+$/.test(value)
-        ? Number(value)
-        : Number.NaN;
+    typeof value === "string" && /^\d+$/.test(value)
+      ? Number(value)
+      : Number.NaN;
   if (
     !Number.isSafeInteger(parsed) ||
     parsed < 1 ||
@@ -194,18 +193,42 @@ export function validateMyPredictionsQuery(
   query: Record<string, unknown>,
 ): PredictionHistoryQuery {
   assertUnknownFields(query, PREDICTION_HISTORY_QUERY_FIELDS);
-  const seasonId = query.season_id ?? MVP_SEASON.season_id;
-  if (seasonId !== MVP_SEASON.season_id) {
+  const seasonId = query.season_id;
+  if (seasonId !== undefined && seasonId !== MVP_SEASON.season_id) {
     throw validationError("season_id 必须是已知赛季", { field: "season_id" });
   }
   const cursor = query.cursor;
-  if (cursor !== undefined && cursor !== null && typeof cursor !== "string") {
+  if (cursor !== undefined && typeof cursor !== "string") {
     throw validationError("cursor 格式无效", { field: "cursor" });
   }
   return {
     season_id: MVP_SEASON.season_id,
     limit: parseHistoryLimit(query.limit),
-    cursor: cursor === undefined || cursor === null ? null : cursor,
+    cursor: cursor === undefined ? null : cursor,
+  };
+}
+
+function toPublicPredictionHistoryItem(item: PredictionHistoryItem): PredictionHistoryItem {
+  return {
+    prediction_id: item.prediction_id,
+    match_id: item.match_id,
+    league_id: item.league_id,
+    season_id: item.season_id,
+    round_id: item.round_id,
+    home_team_id: item.home_team_id,
+    away_team_id: item.away_team_id,
+    kickoff_at: item.kickoff_at,
+    pred_home_score: item.pred_home_score,
+    pred_away_score: item.pred_away_score,
+    derived_result: item.derived_result,
+    submitted_at: item.submitted_at,
+    scoring_rule_version: item.scoring_rule_version,
+    match_status: item.match_status,
+    regular_home_score: item.regular_home_score,
+    regular_away_score: item.regular_away_score,
+    match_score: item.match_score,
+    wdl_hit: item.wdl_hit,
+    exact_hit: item.exact_hit,
   };
 }
 
@@ -225,7 +248,7 @@ export async function getMyPredictions(
     status: 200,
     body: {
       data: {
-        items: result.items,
+        items: result.items.map(toPublicPredictionHistoryItem),
         page: {
           next_cursor: result.next_cursor,
           has_more: result.has_more,

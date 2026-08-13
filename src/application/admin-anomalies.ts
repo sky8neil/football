@@ -1,6 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { FIXED_CONFIG_V1 } from "../domain/config.js";
-import { AnomalyStatus } from "../domain/enums.js";
+import { AnomalyStatus, AnomalyType, SCHEMA_VERSION } from "../domain/enums.js";
 import { internalError, validationError } from "../domain/errors.js";
 import { isValidUuid } from "../domain/ids.js";
 import type { Anomaly } from "../domain/types.js";
@@ -38,7 +38,7 @@ function isAnomalyStatus(value: unknown): value is AnomalyStatus {
 }
 
 function parseOptionalStatus(value: unknown): AnomalyStatus | null {
-  if (value === undefined || value === null) {
+  if (value === undefined) {
     return null;
   }
   if (!isAnomalyStatus(value)) {
@@ -48,28 +48,25 @@ function parseOptionalStatus(value: unknown): AnomalyStatus | null {
 }
 
 function parseOptionalBlocking(value: unknown): boolean | null {
-  if (value === undefined || value === null) {
+  if (value === undefined) {
     return null;
   }
-  if (value === true || value === "true") {
+  if (value === "true") {
     return true;
   }
-  if (value === false || value === "false") {
+  if (value === "false") {
     return false;
   }
   throw validationError("blocking 必须是 true 或 false", { field: "blocking" });
 }
 
 function parseLimit(value: unknown): number {
-  if (value === undefined || value === null) {
+  if (value === undefined) {
     return FIXED_CONFIG_V1.API_DEFAULT_LIMIT;
   }
-  const parsed =
-    typeof value === "number"
-      ? value
-      : typeof value === "string" && /^\d+$/.test(value)
-        ? Number(value)
-        : Number.NaN;
+  const parsed = typeof value === "string" && /^\d+$/.test(value)
+    ? Number(value)
+    : Number.NaN;
   if (
     !Number.isSafeInteger(parsed) ||
     parsed < 1 ||
@@ -87,7 +84,6 @@ export function validateAdminAnomaliesQueryValues(
   const cursor = input.cursor;
   if (
     cursor !== undefined &&
-    cursor !== null &&
     (typeof cursor !== "string" || !isOpaqueCursorShape(cursor))
   ) {
     throw validationError("cursor 格式无效", { field: "cursor" });
@@ -96,7 +92,7 @@ export function validateAdminAnomaliesQueryValues(
     status: parseOptionalStatus(input.status),
     blocking: parseOptionalBlocking(input.blocking),
     limit: parseLimit(input.limit),
-    cursor: cursor === undefined || cursor === null ? null : cursor,
+    cursor: cursor === undefined ? null : cursor,
   };
 }
 
@@ -223,6 +219,43 @@ function assertQuery(input: AdminAnomaliesQuery): void {
   }
 }
 
+function isAnomalyType(value: unknown): value is Anomaly["type"] {
+  return Object.values(AnomalyType).includes(value as Anomaly["type"]);
+}
+
+function isValidDate(value: unknown): value is Date {
+  return value instanceof Date && Number.isFinite(value.getTime());
+}
+
+function assertAnomalyFact(anomaly: Anomaly): void {
+  const validDetails =
+    typeof anomaly.details === "object" && anomaly.details !== null && !Array.isArray(anomaly.details);
+  const validResolution =
+    anomaly.status === AnomalyStatus.Open
+      ? anomaly.resolved_at === null && anomaly.resolution === null
+      : isValidDate(anomaly.resolved_at) &&
+        typeof anomaly.resolution === "string" &&
+        anomaly.resolution.length > 0;
+
+  if (
+    anomaly.schema_version !== SCHEMA_VERSION ||
+    !isValidUuid(anomaly.anomaly_id) ||
+    !isValidUuid(anomaly.match_id) ||
+    anomaly.anomaly_key !== `${anomaly.match_id}:${anomaly.type}` ||
+    !isAnomalyType(anomaly.type) ||
+    typeof anomaly.blocking !== "boolean" ||
+    !isAnomalyStatus(anomaly.status) ||
+    !isValidDate(anomaly.first_seen_at) ||
+    !isValidDate(anomaly.last_seen_at) ||
+    !Number.isSafeInteger(anomaly.occurrence_count) ||
+    anomaly.occurrence_count < 1 ||
+    !validDetails ||
+    !validResolution
+  ) {
+    throw internalError("anomaly 事实数据不一致");
+  }
+}
+
 export class AdminAnomaliesService {
   private readonly authorization = new AdminAuthorizationService();
   private readonly cursorCodec: AnomalyCursorCodec;
@@ -271,7 +304,13 @@ export class AdminAnomaliesService {
       limit: input.limit,
     };
     const page = await this.repo.anomalies.findPage(pageQuery);
+    for (const anomaly of page.items) {
+      assertAnomalyFact(anomaly);
+    }
     const lastItem = page.items.at(-1);
+    if (page.has_more && lastItem === undefined) {
+      throw internalError("anomaly 分页事实数据不一致");
+    }
     return {
       items: page.items,
       has_more: page.has_more,

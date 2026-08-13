@@ -15,6 +15,7 @@ import type { Match, ProviderSnapshot } from "../domain/types.js";
 import type { AppRepository, UnitOfWork } from "../infrastructure/repositories.js";
 import type { NormalizedFixture } from "../provider/fixture-mapper.js";
 import { persistAnomalyInTransaction } from "./anomaly-persistence.js";
+import { transitionMatchSettlementStatus } from "./first-settlement-service.js";
 import { assertValidServerNow } from "./period-finalize.js";
 import { tryParseProviderRoundId } from "./provider-schedule-sync.js";
 
@@ -903,9 +904,14 @@ export class ProviderStatusSyncService {
       await tx.matches.update({
         ...match,
         match_status: MatchStatus.Cancelled,
-        settlement_status: nextSettlementStatus,
         updated_at: serverNow,
       });
+      await transitionMatchSettlementStatus(
+        tx,
+        match.match_id,
+        nextSettlementStatus,
+        serverNow,
+      );
       if (!sameStatus) {
         await saveSnapshot(
           tx,
@@ -993,7 +999,6 @@ export class ProviderStatusSyncService {
       await tx.matches.update({
         ...match,
         match_status: MatchStatus.Abandoned,
-        settlement_status: SettlementStatus.Pending,
         updated_at: serverNow,
       });
       await saveSnapshot(

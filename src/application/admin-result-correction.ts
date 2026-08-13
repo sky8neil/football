@@ -15,6 +15,7 @@ import { assertValidServerNow } from "./period-finalize.js";
 import type { AdminAuditLog, Match, MatchResult } from "../domain/types.js";
 import type { AppRepository } from "../infrastructure/repositories.js";
 import { AdminAuthorizationService } from "./admin.js";
+import { transitionMatchSettlementStatus } from "./first-settlement-service.js";
 
 export interface AdminResultCorrectionInput {
   expected_result_version: number;
@@ -158,17 +159,30 @@ export class AdminResultCorrectionService {
         created_at: serverNow,
       };
       await tx.matchResults.insert(result);
+      await transitionMatchSettlementStatus(
+        tx,
+        match.match_id,
+        settlementStatus,
+        serverNow,
+      );
+      const transitionedMatch = await tx.matches.findById(match.match_id);
+      if (transitionedMatch === null) {
+        throw internalError("管理员赛果修正状态转移后比赛不存在");
+      }
 
       const updatedMatch: Match = {
-        ...match,
+        ...transitionedMatch,
         regular_home_score: input.regular_home_score,
         regular_away_score: input.regular_away_score,
         result_version: result.result_version,
         result_source: ResultSource.Admin,
-        settlement_status: settlementStatus,
         updated_at: serverNow,
       };
       await tx.matches.update(updatedMatch);
+      const persistedMatch: Match = {
+        ...updatedMatch,
+        settlement_status: settlementStatus,
+      };
 
       if (tx.adminAuditLogs === undefined) {
         throw internalError("admin_audit_logs repository port 未配置");
@@ -187,7 +201,7 @@ export class AdminResultCorrectionService {
           result_source: match.result_source,
           settlement_status: match.settlement_status,
         }),
-        new_value: auditValue(updatedMatch),
+        new_value: auditValue(persistedMatch),
         reason: input.reason,
         created_at: serverNow,
       };
@@ -195,7 +209,7 @@ export class AdminResultCorrectionService {
 
       return {
         admin_id: admin.admin_id,
-        match: updatedMatch,
+        match: persistedMatch,
         result,
         audit_log: auditLog,
       };

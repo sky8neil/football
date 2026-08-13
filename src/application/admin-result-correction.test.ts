@@ -12,6 +12,7 @@ import {
 } from "../domain/enums.js";
 import type { Admin, Match, MatchResult } from "../domain/types.js";
 import { InMemoryRepository } from "../infrastructure/repositories.js";
+import type { AppRepository, UnitOfWork } from "../infrastructure/repositories.js";
 
 const NOW = new Date("2026-08-09T00:00:00.000Z");
 
@@ -99,12 +100,57 @@ async function seedSettledMatch(
   return match;
 }
 
+function withSettlementWriteGuard(
+  repo: InMemoryRepository,
+  writes: Array<{ kind: "update" | "updateSettlementStatus"; value: Partial<Match> }>,
+): AppRepository {
+  const guardedRepo = Object.create(repo) as AppRepository;
+  Object.defineProperty(guardedRepo, "withTransaction", {
+    value: <T>(fn: (tx: UnitOfWork) => Promise<T>) =>
+      repo.withTransaction((tx) =>
+        {
+          const guardedTx = Object.create(tx) as UnitOfWork;
+          Object.defineProperty(guardedTx, "matches", {
+            value: {
+              ...tx.matches,
+              update: async (updated: Match) => {
+                const current = await tx.matches.findById(updated.match_id);
+                if (current !== null && current.settlement_status !== updated.settlement_status) {
+                  throw new Error("raw settlement_status update");
+                }
+                writes.push({ kind: "update", value: updated });
+                return tx.matches.update(updated);
+              },
+              updateSettlementStatus: async (
+                matchId: string,
+                status: Match["settlement_status"],
+                updatedAt: Date,
+              ) => {
+                writes.push({
+                  kind: "updateSettlementStatus",
+                  value: { match_id: matchId, settlement_status: status, updated_at: updatedAt },
+                });
+                return tx.matches.updateSettlementStatus(matchId, status, updatedAt);
+              },
+            },
+          });
+          return fn(guardedTx);
+        },
+      ),
+  });
+  return guardedRepo;
+}
+
 describe("AdminResultCorrectionService", () => {
   it("active admin 可修正赛果，并追加 immutable result、排队 correcting 和审计", async () => {
     const repo = new InMemoryRepository();
     const match = await seedSettledMatch(repo);
+    const writes: Array<{
+      kind: "update" | "updateSettlementStatus";
+      value: Partial<Match>;
+    }> = [];
 
-    const outcome = await new AdminResultCorrectionService(repo).correct(
+    const outcome = await new AdminResultCorrectionService(withSettlementWriteGuard(repo, writes)).correct(
       "admin-openid",
       match.match_id,
       correction(),
@@ -149,6 +195,16 @@ describe("AdminResultCorrectionService", () => {
     expect(await repo.adminAuditLogs.findByEntity("match", match.match_id)).toEqual([
       outcome.audit_log,
     ]);
+    expect(writes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "updateSettlementStatus",
+          value: expect.objectContaining({
+            settlement_status: SettlementStatus.Correcting,
+          }),
+        }),
+      ]),
+    );
   });
 
   it("v0 finished match 可由管理员写入首次正式结果并保持 waiting", async () => {

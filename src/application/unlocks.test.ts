@@ -75,6 +75,37 @@ describe("UnlocksQueryService", () => {
     });
   });
 
+  it("returns an empty unlocked list and keeps the existing stable order", async () => {
+    const emptyRepo = new InMemoryRepository();
+    await emptyRepo.users.insert(makeUser());
+    await expect(new UnlocksQueryService(emptyRepo).getUnlocks(USER_ID)).resolves.toEqual({
+      default_resources: ["avatar_frame", "profile_card", "share_card"],
+      unlocked: [],
+    });
+
+    const repo = new InMemoryRepository();
+    await repo.users.insert(makeUser());
+    const later = makeUnlock({
+      unlock_id: "00000000-0000-4000-8000-000000000102",
+      unlock_code: "favorite_team_name_accent",
+      threshold_points: 100,
+    });
+    const earlier = makeUnlock({
+      unlock_id: "00000000-0000-4000-8000-000000000101",
+      unlock_code: "profile_card_style_1",
+      threshold_points: 30,
+    });
+    await repo.unlocks.insert(later);
+    await repo.unlocks.insert(earlier);
+
+    await expect(new UnlocksQueryService(repo).getUnlocks(USER_ID)).resolves.toMatchObject({
+      unlocked: [
+        { unlock_id: earlier.unlock_id },
+        { unlock_id: later.unlock_id },
+      ],
+    });
+  });
+
   it("rejects deleted and invalid users", async () => {
     const repo = new InMemoryRepository();
     await repo.users.insert(makeUser({ status: "deleted", deleted_at: NOW }));
@@ -84,6 +115,9 @@ describe("UnlocksQueryService", () => {
     });
     await expect(new UnlocksQueryService(repo).getUnlocks("not-a-uuid")).rejects.toMatchObject({
       code: "VALIDATION_ERROR",
+    });
+    await expect(new UnlocksQueryService(new InMemoryRepository()).getUnlocks(USER_ID)).rejects.toMatchObject({
+      code: "USER_NOT_FOUND",
     });
   });
 });

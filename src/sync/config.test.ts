@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { SyncJobType } from "../domain/enums.js";
 import { ProviderQuotaExceededError } from "../provider/http.js";
 import {
@@ -67,6 +67,20 @@ describe("重试策略（规范 32.8）", () => {
     expect(applyJitter(10, 20, () => 0.5)).toBe(10);
     expect(applyJitter(10, 20, () => 0)).toBe(8);
     expect(applyJitter(10, 20, () => 1)).toBe(12);
+  });
+
+  it("使用注入随机源时，毫秒等待边界为 base 的 0.8..1.2 倍", () => {
+    const random = vi.fn()
+      .mockReturnValueOnce(0)
+      .mockReturnValueOnce(0.5)
+      .mockReturnValueOnce(1);
+
+    expect([
+      applyJitter(60_000, 20, random),
+      applyJitter(60_000, 20, random),
+      applyJitter(60_000, 20, random),
+    ]).toEqual([48_000, 60_000, 72_000]);
+    expect(random).toHaveBeenCalledTimes(3);
   });
 
   it("quota 超限停止高频自动重试（等 reset 或下一正常 run）", () => {

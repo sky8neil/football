@@ -113,6 +113,13 @@ describe("mapErrorToHttp", () => {
     expect(mapErrorToHttp(conflictError("INTERNAL_ERROR", "m"), "r").status).toBe(500);
   });
 
+  it("事实账本数据不一致对外统一为 500 INTERNAL_ERROR", () => {
+    const mapped = mapErrorToHttp(conflictError("INVALID_LEDGER", "m"), "r");
+
+    expect(mapped.status).toBe(500);
+    expect(mapped.body.code).toBe("INTERNAL_ERROR");
+  });
+
   it("非 DomainError → 500 INTERNAL_ERROR", () => {
     const mapped = mapErrorToHttp(new Error("boom"), "req-2");
     expect(mapped.status).toBe(500);

@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import { AdminRole, AdminStatus, MatchStatus, Result, SettlementStatus } from "../domain/enums.js";
 import type { Admin, Match, Prediction, User, UserSeasonStats } from "../domain/types.js";
 import { InMemoryRepository } from "../infrastructure/repositories.js";
-import { AdminRebuildUserStatsService } from "./admin-rebuild-user-stats.js";
+import {
+  ADMIN_REBUILD_USER_STATS_AUDIT_REASON,
+  AdminRebuildUserStatsService,
+} from "./admin-rebuild-user-stats.js";
 import { userStatsRebuildLockKey } from "./stats-rebuild-service.js";
 
 const NOW = new Date("2026-08-09T00:00:00.000Z");
@@ -119,6 +122,10 @@ function makeSeasonStats(): UserSeasonStats {
 }
 
 describe("AdminRebuildUserStatsService", () => {
+  it("使用冻结的固定系统审计 reason", () => {
+    expect(ADMIN_REBUILD_USER_STATS_AUDIT_REASON).toBe("管理员用户统计重建");
+  });
+
   it("无效 server_now 在获取 maintenance lock 前 Fail Closed", async () => {
     const repo = new InMemoryRepository();
     await seedAdminAndUser(repo);
@@ -183,6 +190,7 @@ describe("AdminRebuildUserStatsService", () => {
       action: "rebuild_user_stats",
       entity_type: "user",
       entity_id: USER_ID,
+      reason: ADMIN_REBUILD_USER_STATS_AUDIT_REASON,
       old_value: {
         career_points: 99,
         career_valid_predictions: 9,

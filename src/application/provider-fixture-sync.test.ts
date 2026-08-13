@@ -250,6 +250,38 @@ describe("ProviderFixtureSyncService", () => {
     });
   });
 
+  it("业务判断和 Provider 事实写入只使用注入的 server_now", async () => {
+    const repo = new InMemoryRepository();
+    const match = makeMatch();
+    await seedMatch(repo, match, "1100008");
+    const serverNow = new Date("2026-08-09T00:07:00.000Z");
+
+    vi.useFakeTimers({ now: new Date("2026-08-10T12:00:00.000Z") });
+    try {
+      await expect(
+        new ProviderFixtureSyncService(repo).applyFixture(
+          makeFixture("1100008", "FT", { home: 2, away: 1 }),
+          { fixture: { id: 1100008 }, score: { fulltime: { home: 2, away: 1 } } },
+          serverNow,
+        ),
+      ).resolves.toMatchObject({ kind: "applied", match_id: match.match_id });
+
+      await expect(repo.matches.findById(match.match_id)).resolves.toMatchObject({
+        prediction_closed_at: serverNow,
+        finish_detected_at: serverNow,
+        updated_at: serverNow,
+      });
+      await expect(repo.matchResults.findByMatchAndVersion(match.match_id, 1)).resolves.toMatchObject({
+        created_at: serverNow,
+      });
+      await expect(repo.providerSnapshots.findByEntity("match", match.match_id)).resolves.toEqual([
+        expect.objectContaining({ created_at: serverNow }),
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("mapper 发现非法正式比分时不改比赛，追加 snapshot 与 blocking anomaly", async () => {
     const repo = new InMemoryRepository();
     const match = makeMatch();

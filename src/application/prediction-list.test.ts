@@ -4,7 +4,10 @@ import type { Match, Prediction, User } from "../domain/types.js";
 import { DomainError } from "../domain/errors.js";
 import { newUuid } from "../domain/ids.js";
 import { InMemoryRepository } from "../infrastructure/repositories.js";
-import { PredictionHistoryQueryService } from "./prediction-query.js";
+import {
+  PredictionHistoryCursorCodec,
+  PredictionHistoryQueryService,
+} from "./prediction-query.js";
 
 const USER_ID = "00000000-0000-4000-8000-000000000001";
 const OTHER_USER_ID = "00000000-0000-4000-8000-000000000002";
@@ -147,9 +150,9 @@ describe("PredictionHistoryQueryService.listMyPredictions", () => {
       match_status: "scheduled",
       regular_home_score: null,
       regular_away_score: null,
-      match_score: 12,
-      wdl_hit: true,
-      exact_hit: true,
+      match_score: null,
+      wdl_hit: null,
+      exact_hit: null,
       season_id: "2026_2027",
     })]);
     expect(first.has_more).toBe(true);
@@ -163,6 +166,13 @@ describe("PredictionHistoryQueryService.listMyPredictions", () => {
     expect(second.items.map((item) => item.prediction_id)).toEqual([
       "00000000-0000-4000-8000-000000000020",
     ]);
+    expect(second.items[0]).toEqual(expect.objectContaining({
+      regular_home_score: 2,
+      regular_away_score: 1,
+      match_score: 12,
+      wdl_hit: true,
+      exact_hit: true,
+    }));
     expect(second.next_cursor).toBeNull();
   });
 
@@ -192,5 +202,42 @@ describe("PredictionHistoryQueryService.listMyPredictions", () => {
       limit: 20,
       cursor: null,
     })).resolves.toMatchObject({ items: [] });
+  });
+
+  it("已注销用户返回 USER_DELETED", async () => {
+    const repo = await setup();
+    const deleted = makeUser("00000000-0000-4000-8000-000000000003");
+    deleted.status = UserStatus.Deleted;
+    deleted.nickname = null;
+    deleted.deleted_at = NOW;
+    await repo.users.insert(deleted);
+
+    await expect(new PredictionHistoryQueryService(repo, "prediction-list-secret").listMyPredictions(
+      deleted.user_id,
+      { season_id: "2026_2027", limit: 20, cursor: null },
+    )).rejects.toMatchObject({ code: "USER_DELETED" });
+  });
+
+  it("可信身份不存在时返回 USER_NOT_FOUND", async () => {
+    const repo = await setup();
+
+    await expect(new PredictionHistoryQueryService(repo, "prediction-list-secret").listMyPredictions(
+      "00000000-0000-4000-8000-000000000099",
+      { season_id: "2026_2027", limit: 20, cursor: null },
+    )).rejects.toMatchObject({ code: "USER_NOT_FOUND" });
+  });
+
+  it("拒绝签名有效但 season_id 不匹配的 cursor", async () => {
+    const repo = await setup();
+    const cursor = new PredictionHistoryCursorCodec("prediction-list-secret").encode({
+      season_id: "2025_2026",
+      submitted_at: "2026-08-08T13:00:00.000Z",
+      prediction_id: "00000000-0000-4000-8000-000000000021",
+    });
+
+    await expect(new PredictionHistoryQueryService(repo, "prediction-list-secret").listMyPredictions(
+      USER_ID,
+      { season_id: "2026_2027", limit: 20, cursor },
+    )).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
   });
 });

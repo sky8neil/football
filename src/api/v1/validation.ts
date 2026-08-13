@@ -84,10 +84,15 @@ export function mapErrorToHttp(error: unknown, requestId: string): MappedHttpErr
     if (status === undefined) {
       status = 500;
     }
+    const code = error.code === "AUTH_REQUIRED"
+      ? "UNAUTHORIZED"
+      : status === 500
+        ? "INTERNAL_ERROR"
+        : error.code;
     return {
       status,
       body: {
-        code: error.code,
+        code,
         message: error.message,
         request_id: requestId,
         details: error.details,
