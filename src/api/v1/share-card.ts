@@ -42,7 +42,7 @@ export async function getShareCardMe(
     throw conflictError("UNAUTHORIZED", "需要登录后访问分享卡");
   }
 
-  (input.rate_limiter ?? defaultApiRateLimiter).check(
+  await (input.rate_limiter ?? defaultApiRateLimiter).check(
     "authenticated_reads",
     input.authenticated_user_id,
     input.server_now,

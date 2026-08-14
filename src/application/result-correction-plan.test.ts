@@ -21,6 +21,7 @@ function makePlanInput(
     matchStatus: string;
     settlementStatus: string;
     source: ResultSource;
+    settledResultVersion: number;
   }> = {},
 ) {
   return {
@@ -32,6 +33,7 @@ function makePlanInput(
     matchStatus: FINISHED,
     settlementStatus: WAITING,
     source: PROVIDER,
+    settledResultVersion: 0,
     ...overrides,
   };
 }
@@ -46,6 +48,7 @@ function plan(input = makePlanInput()) {
     input.matchStatus,
     input.settlementStatus,
     input.source,
+    input.settledResultVersion,
   );
 }
 
@@ -111,6 +114,7 @@ describe("planResultCorrection - 赛果修正版本计划", () => {
             nextHome: 2,
             nextAway: 0,
             settlementStatus: SettlementStatus.Settled,
+            settledResultVersion: 1,
           }),
         ),
       ).toMatchObject({
@@ -118,6 +122,52 @@ describe("planResultCorrection - 赛果修正版本计划", () => {
       is_correction: true,
       needs_correction_settlement: true,
     });
+  });
+
+  it("settled_result_version=1 且 status=correcting：needs_correction_settlement=true", () => {
+    expect(
+      plan(
+        makePlanInput({
+          currentResultVersion: 1,
+          currentHome: 2,
+          currentAway: 1,
+          nextHome: 1,
+          nextAway: 1,
+          settlementStatus: SettlementStatus.Correcting,
+          settledResultVersion: 1,
+        }),
+      ).needs_correction_settlement,
+    ).toBe(true);
+  });
+
+  it("settled_result_version=1 且 status=failed：needs_correction_settlement=true", () => {
+    expect(
+      plan(
+        makePlanInput({
+          currentResultVersion: 1,
+          currentHome: 2,
+          currentAway: 1,
+          nextHome: 1,
+          nextAway: 1,
+          settlementStatus: SettlementStatus.Failed,
+          settledResultVersion: 1,
+        }),
+      ).needs_correction_settlement,
+    ).toBe(true);
+  });
+
+  it("settled_result_version=0 且 status=settling：needs_correction_settlement=false", () => {
+    expect(
+      plan(makePlanInput({ settlementStatus: SettlementStatus.Settling }))
+        .needs_correction_settlement,
+    ).toBe(false);
+  });
+
+  it("settled_result_version=0 且 status=failed：needs_correction_settlement=false", () => {
+    expect(
+      plan(makePlanInput({ settlementStatus: SettlementStatus.Failed }))
+        .needs_correction_settlement,
+    ).toBe(false);
   });
 
   it("match_status 非 finished 抛 MATCH_NOT_FINISHED", () => {

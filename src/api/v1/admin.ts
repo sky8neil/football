@@ -124,13 +124,17 @@ export function validateAdminRebuildRankingsPayload(
   };
 }
 
-function checkAdminRateLimit(
+async function checkAdminRateLimit(
   trustedOpenid: string | null | undefined,
   serverNow: Date,
   rateLimiter: RateLimiter | undefined,
-): void {
+): Promise<void> {
   if (typeof trustedOpenid === "string" && trustedOpenid.length > 0) {
-    (rateLimiter ?? defaultApiRateLimiter).check("admin_apis", trustedOpenid, serverNow);
+    await (rateLimiter ?? defaultApiRateLimiter).check(
+      "admin_apis",
+      trustedOpenid,
+      serverNow,
+    );
   }
 }
 
@@ -201,7 +205,7 @@ export async function postAdminResultCorrection(
 ): Promise<PostAdminResultCorrectionSuccessResponse> {
   const matchId = validateAdminMatchId(input.match_id);
   const correction = validateAdminResultCorrectionPayload(input.body);
-  checkAdminRateLimit(input.trusted_openid, input.server_now, input.rate_limiter);
+  await checkAdminRateLimit(input.trusted_openid, input.server_now, input.rate_limiter);
   const outcome = await service.correct(
     input.trusted_openid,
     matchId,
@@ -271,7 +275,7 @@ export async function postAdminRetrySettlement(
   input: PostAdminRetrySettlementInput,
 ): Promise<PostAdminRetrySettlementSuccessResponse> {
   const matchId = validateAdminMatchId(input.match_id);
-  checkAdminRateLimit(input.trusted_openid, input.server_now, input.rate_limiter);
+  await checkAdminRateLimit(input.trusted_openid, input.server_now, input.rate_limiter);
   const outcome: AdminRetrySettlementOutcome = await service.retry(
     input.trusted_openid,
     matchId,
@@ -344,7 +348,7 @@ export async function postAdminRebuildUserStats(
   input: PostAdminRebuildUserStatsInput,
 ): Promise<PostAdminRebuildUserStatsSuccessResponse> {
   const userId = validateAdminUserId(input.user_id);
-  checkAdminRateLimit(input.trusted_openid, input.server_now, input.rate_limiter);
+  await checkAdminRateLimit(input.trusted_openid, input.server_now, input.rate_limiter);
   const outcome: AdminRebuildUserStatsOutcome = await service.rebuild(
     input.trusted_openid,
     userId,
@@ -401,7 +405,7 @@ export async function postAdminRebuildRankings(
   input: PostAdminRebuildRankingsInput,
 ): Promise<PostAdminRebuildRankingsSuccessResponse> {
   const rebuild = validateAdminRebuildRankingsPayload(input.body);
-  checkAdminRateLimit(input.trusted_openid, input.server_now, input.rate_limiter);
+  await checkAdminRateLimit(input.trusted_openid, input.server_now, input.rate_limiter);
   const outcome: AdminRebuildRankingsOutcome = await service.rebuild(
     input.trusted_openid,
     rebuild.period_type,

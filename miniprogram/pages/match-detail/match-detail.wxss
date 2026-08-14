@@ -1,0 +1,29 @@
+.page {
+  padding: 32rpx;
+}
+
+.card {
+  background: #fff;
+  padding: 24rpx;
+  margin-bottom: 16rpx;
+}
+
+.form {
+  margin-top: 16rpx;
+}
+
+.score {
+  background: #fff;
+  padding: 16rpx;
+  margin-bottom: 16rpx;
+}
+
+.loading,
+.error,
+.hint {
+  min-height: 80rpx;
+}
+
+.hint {
+  margin-bottom: 16rpx;
+}

@@ -168,7 +168,6 @@ export class ProviderFixtureSyncJobService {
     serverNow: Date,
   ): Promise<ProviderFixtureSyncJobOutcome> {
     assertValidServerNow(serverNow);
-    const syncLogs = requireSyncLogs(this.repo);
     const lockKey = jobLockKey(jobType);
     const ownerId = newUuid();
     const leaseUntil = new Date(
@@ -178,6 +177,28 @@ export class ProviderFixtureSyncJobService {
     if (!acquired) {
       return { kind: "skipped", job_type: jobType, reason: "lock_held" };
     }
+
+    try {
+      return await this.executeHeldByCaller(jobType, load, serverNow, ownerId);
+    } finally {
+      await this.repo.jobLocks.release(lockKey, ownerId);
+    }
+  }
+
+  /**
+   * P1-2（方案 A）无锁批次核心：供已持有 `sync:{job_type}` 锁的调用方（如
+   * SchedulerTick runner 接线）复用 loader + apply + sync_logs，不再 acquire/release。
+   * ownerId 必须等于持锁方（tick）的 ownerId，保证 lease 续租与 acquire owner 一致。
+   */
+  async executeHeldByCaller(
+    jobType: SyncJobType,
+    load: ProviderFixtureBatchLoader,
+    serverNow: Date,
+    ownerId: string,
+  ): Promise<ProviderFixtureSyncJobOutcome> {
+    assertValidServerNow(serverNow);
+    const syncLogs = requireSyncLogs(this.repo);
+    const lockKey = jobLockKey(jobType);
 
     const runningLog: SyncLog = {
       schema_version: SCHEMA_VERSION,
@@ -287,7 +308,6 @@ export class ProviderFixtureSyncJobService {
       }
     } finally {
       lockRenewal.stop();
-      await this.repo.jobLocks.release(lockKey, ownerId);
     }
   }
 }

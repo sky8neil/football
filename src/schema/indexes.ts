@@ -83,6 +83,12 @@ export const UNIQUE_INDEXES: readonly IndexDef[] = [
     unique: true,
   },
   { collection: "job_locks", name: "uk_lock_key", fields: ["lock_key"], unique: true },
+  {
+    collection: "deleted_openid_mappings",
+    name: "uk_deleted_openid",
+    fields: ["original_openid"],
+    unique: true,
+  },
 ] as const;
 
 export const QUERY_INDEXES: readonly IndexDef[] = [
@@ -192,6 +198,12 @@ export const QUERY_INDEXES: readonly IndexDef[] = [
     collection: "anomalies",
     name: "ix_anomalies_match",
     fields: ["match_id", "status"],
+    unique: false,
+  },
+  {
+    collection: "deleted_openid_mappings",
+    name: "idx_deleted_user_id",
+    fields: ["deleted_user_id"],
     unique: false,
   },
 ] as const;

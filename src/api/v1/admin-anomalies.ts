@@ -88,7 +88,7 @@ export async function getAdminAnomalies(
 ): Promise<GetAdminAnomaliesSuccessResponse> {
   const query = validateAdminAnomaliesQuery(input.query);
   if (typeof input.trusted_openid === "string" && input.trusted_openid.length > 0) {
-    (input.rate_limiter ?? defaultApiRateLimiter).check(
+    await (input.rate_limiter ?? defaultApiRateLimiter).check(
       "admin_apis",
       input.trusted_openid,
       input.server_now,

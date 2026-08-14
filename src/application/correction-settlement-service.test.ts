@@ -494,6 +494,7 @@ describe("CorrectionSettlementService.correct - 版本推进", () => {
         repo.withTransaction((tx) =>
           fn({
             users: tx.users,
+            deletedOpenidMappings: tx.deletedOpenidMappings,
             matches: {
               ...tx.matches,
               update: async (updated: Match) => {
@@ -803,6 +804,7 @@ describe("CorrectionSettlementService.correct - 部分失败恢复", () => {
 
     const racingRepo: AppRepository = {
       users: repo.users,
+      deletedOpenidMappings: repo.deletedOpenidMappings,
       matches: repo.matches,
       predictions: repo.predictions,
       matchResults: repo.matchResults,
@@ -836,6 +838,7 @@ describe("CorrectionSettlementService.correct - 部分失败恢复", () => {
           };
           return fn({
             users: tx.users,
+            deletedOpenidMappings: tx.deletedOpenidMappings,
             matches,
             predictions: tx.predictions,
             matchResults: tx.matchResults,

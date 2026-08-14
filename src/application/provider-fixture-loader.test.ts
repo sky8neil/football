@@ -206,6 +206,30 @@ describe("createLiveMatchLoader", () => {
     expect(getFixtures).toHaveBeenCalledTimes(1);
   });
 
+  it("P1-3 硬下界：kickoff 早于 server_now - 24h 的 fixture 不得进入 live 批", async () => {
+    const at = (fixtureId: number, offsetHours: number): ApiFootballFixture => {
+      const kickoff = new Date(NOW.getTime() + offsetHours * 60 * 60 * 1000);
+      return makeApiFixture({
+        fixtureId,
+        date: kickoff.toISOString(),
+        timestamp: kickoff.getTime() / 1000,
+      });
+    };
+    const getFixtures = vi.fn(async () => [
+      at(1100025, -25),
+      at(1100026, -36),
+      at(1100027, -23.5),
+      at(1100028, 1),
+    ] as readonly ApiFootballFixture[]);
+
+    const loader = createLiveMatchLoader({ getFixtures });
+
+    await expect(loader(NOW)).resolves.toEqual([
+      { fixture: at(1100027, -23.5), payload: { fixture: at(1100027, -23.5) } },
+      { fixture: at(1100028, 1), payload: { fixture: at(1100028, 1) } },
+    ]);
+  });
+
   it("无效 server_now 时 fail closed 且不调用 Provider client", async () => {
     const getFixtures = vi.fn(async () => [] as readonly ApiFootballFixture[]);
     const loader = createLiveMatchLoader({ getFixtures });

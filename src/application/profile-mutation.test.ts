@@ -168,18 +168,66 @@ describe("ProfileMutationService.deleteMyProfile", () => {
     await expect(repo.users.findByOpenid(user.openid)).resolves.toBeNull();
   });
 
-  it("用户不存在或已注销时拒绝写入", async () => {
+  it("用户不存在或已注销时拒绝写入，且不产生 mapping", async () => {
     const repo = new InMemoryRepository();
     const service = new ProfileMutationService(repo);
 
     await expect(service.deleteMyProfile(makeUser().user_id, NOW)).rejects.toMatchObject({
       code: "USER_NOT_FOUND",
     });
+    expect(await repo.deletedOpenidMappings.findByOriginalOpenid("openid-profile-mutation")).toBeNull();
 
     const user = makeUser();
     await repo.users.insert({ ...user, status: UserStatus.Deleted, nickname: null });
     await expect(service.deleteMyProfile(user.user_id, NOW)).rejects.toMatchObject({
       code: "USER_DELETED",
+    });
+    expect(await repo.deletedOpenidMappings.findByOriginalOpenid(user.openid)).toBeNull();
+  });
+
+  it("D1：注销同事务写入 deleted_openid_mappings（original_openid → user_id）", async () => {
+    const repo = new InMemoryRepository();
+    const user = makeUser();
+    await repo.users.insert(user);
+
+    await new ProfileMutationService(repo).deleteMyProfile(user.user_id, NOW);
+
+    const mapping = await repo.deletedOpenidMappings.findByOriginalOpenid(user.openid);
+    expect(mapping).toMatchObject({
+      original_openid: user.openid,
+      deleted_user_id: user.user_id,
+      deleted_at: NOW,
+      created_at: NOW,
+      updated_at: NOW,
+      schema_version: 1,
+    });
+    const byUserId = await repo.deletedOpenidMappings.findByDeletedUserId(user.user_id);
+    expect(byUserId).toBe(mapping);
+  });
+
+  it("D9：同 openid 重注册后再注销，mapping upsert 到新 deleted_user_id，旧 user 仍墓碑", async () => {
+    const repo = new InMemoryRepository();
+    const service = new ProfileMutationService(repo);
+    const first = makeUser();
+    await repo.users.insert(first);
+    await service.deleteMyProfile(first.user_id, NOW);
+
+    const second = makeUser({ user_id: "00000000-0000-4000-8000-000000000020", nickname: "Alice" });
+    await repo.users.insert(second);
+    const later = new Date("2026-08-10T00:00:00.000Z");
+    await service.deleteMyProfile(second.user_id, later);
+
+    const mapping = await repo.deletedOpenidMappings.findByOriginalOpenid(first.openid);
+    expect(mapping).toMatchObject({
+      deleted_user_id: second.user_id,
+      deleted_at: later,
+      created_at: NOW,
+      updated_at: later,
+    });
+    const firstUser = await repo.users.findById(first.user_id);
+    expect(firstUser).toMatchObject({
+      openid: `deleted:${first.user_id}`,
+      status: UserStatus.Deleted,
     });
   });
 

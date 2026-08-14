@@ -68,26 +68,31 @@ export function computeSettlementItemDelta(
 }
 
 /**
- * result_version 顺序校验（规范 11.2）：
- * - new === applied + 1：正常推进
+ * result_version 顺序校验：
  * - new === applied：幂等重放
- * - new > applied + 1：RESULT_VERSION_SKIPPED，不得跳过中间版本
  * - new < applied：RESULT_VERSION_STALE，不得回退应用旧版本
+ * - applied === 0 且 new >= 1（§15.2）：首次应用（old=0）允许直达任意 >=1 的正式版本，
+ *   例如 waiting 内 v1->v2->v3 后首次结算直接应用最新 v3。
+ * - new === applied + 1（§15.3）：已 applied 后的修正/结算链必须连续 +1
+ * - 其余：RESULT_VERSION_SKIPPED，已结算后不得跳过中间版本
  */
 export function assertResultVersionOrder(
   appliedResultVersion: number,
   newResultVersion: number,
 ): void {
-  if (newResultVersion === appliedResultVersion + 1) {
-    return;
-  }
   if (newResultVersion === appliedResultVersion) {
     return;
   }
-  if (newResultVersion > appliedResultVersion + 1) {
-    throw conflictError("RESULT_VERSION_SKIPPED", "result_version 不得跳过中间版本");
+  if (newResultVersion < appliedResultVersion) {
+    throw conflictError("RESULT_VERSION_STALE", "result_version 不得回退到旧版本");
   }
-  throw conflictError("RESULT_VERSION_STALE", "result_version 不得回退到旧版本");
+  if (appliedResultVersion === 0 && newResultVersion >= 1) {
+    return;
+  }
+  if (newResultVersion === appliedResultVersion + 1) {
+    return;
+  }
+  throw conflictError("RESULT_VERSION_SKIPPED", "result_version 不得跳过中间版本");
 }
 
 /**

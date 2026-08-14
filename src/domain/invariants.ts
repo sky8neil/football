@@ -63,6 +63,7 @@ export function assertSeasonStatsInvariants(stats: UserSeasonStats): void {
     stats.wdl_hits <= stats.valid_predictions,
     "season wdl_hits <= valid_predictions",
   );
+  assert(stats.best_level >= stats.level, "season best_level >= level");
 }
 
 export function assertRankingInvariants(entry: RankingEntry): void {

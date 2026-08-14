@@ -10,8 +10,6 @@
 import {
   MatchStatus,
   type MatchStatus as MatchStatusType,
-  SettlementStatus,
-  type SettlementStatus as SettlementStatusType,
 } from "./enums.js";
 
 export const MATCH_STATUSES: readonly MatchStatusType[] = [
@@ -21,16 +19,6 @@ export const MATCH_STATUSES: readonly MatchStatusType[] = [
   MatchStatus.Postponed,
   MatchStatus.Cancelled,
   MatchStatus.Abandoned,
-] as const;
-
-export const SETTLEMENT_STATUSES: readonly SettlementStatusType[] = [
-  SettlementStatus.Pending,
-  SettlementStatus.Waiting,
-  SettlementStatus.Settling,
-  SettlementStatus.Settled,
-  SettlementStatus.Correcting,
-  SettlementStatus.Failed,
-  SettlementStatus.Voided,
 ] as const;
 
 /** 规范 10.2 Provider 自动允许的转移。 */

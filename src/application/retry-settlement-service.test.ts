@@ -309,6 +309,7 @@ describe("RetrySettlementService.retry - 成功路径", () => {
         repo.withTransaction((tx) =>
           fn({
             users: tx.users,
+            deletedOpenidMappings: tx.deletedOpenidMappings,
             matches: {
               ...tx.matches,
               update: async (updated: Match) => {
@@ -364,6 +365,7 @@ describe("RetrySettlementService.retry - 成功路径", () => {
         repo.withTransaction((tx) =>
           fn({
             users: tx.users,
+            deletedOpenidMappings: tx.deletedOpenidMappings,
             matches: {
               ...tx.matches,
               update: async (updated: Match) => {

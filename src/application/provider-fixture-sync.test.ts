@@ -7,9 +7,9 @@ import {
   SettlementStatus,
 } from "../domain/enums.js";
 import { newUuid } from "../domain/ids.js";
-import type { Match, Team, TeamProviderMapping } from "../domain/types.js";
+import type { Match, ProviderSnapshot, Team, TeamProviderMapping } from "../domain/types.js";
 import type { ApiFootballFixture } from "../provider/types.js";
-import { InMemoryRepository } from "../infrastructure/repositories.js";
+import { InMemoryRepository, type AppRepository, type UnitOfWork } from "../infrastructure/repositories.js";
 import { ProviderFixtureSyncService } from "./provider-fixture-sync.js";
 
 const NOW = new Date("2026-08-09T00:00:00.000Z");
@@ -125,6 +125,65 @@ async function seedChangedTeams(repo: InMemoryRepository): Promise<{
   await repo.teamProviderMappings.insert(makeTeamMapping(homeTeamId, "1001"));
   await repo.teamProviderMappings.insert(makeTeamMapping(awayTeamId, "1002"));
   return { home_team_id: homeTeamId, away_team_id: awayTeamId };
+}
+
+function makeSuccessSnapshot(
+  matchId: string,
+  providerMatchId: string,
+  createdAt: Date,
+): ProviderSnapshot {
+  return {
+    schema_version: 1,
+    snapshot_id: newUuid(),
+    provider: Provider.ApiFootball,
+    entity_type: "match",
+    entity_id: matchId,
+    provider_entity_id: providerMatchId,
+    event_type: "status_changed",
+    payload: { sync: "success" },
+    created_at: createdAt,
+  };
+}
+
+function withSettlementWriteGuard(
+  repo: InMemoryRepository,
+  writes: Array<{ kind: "update" | "updateSettlementStatus"; value: Partial<Match> }>,
+): AppRepository {
+  const guardedRepo = Object.create(repo) as AppRepository;
+  Object.defineProperty(guardedRepo, "withTransaction", {
+    value: <T>(fn: (tx: UnitOfWork) => Promise<T>) =>
+      repo.withTransaction((tx) =>
+        {
+          const guardedTx = Object.create(tx) as UnitOfWork;
+          Object.defineProperty(guardedTx, "matches", {
+            value: {
+              ...tx.matches,
+              update: async (updated: Match) => {
+                const current = await tx.matches.findById(updated.match_id);
+                if (current !== null && current.settlement_status !== updated.settlement_status) {
+                  throw new Error("raw settlement_status update");
+                }
+                writes.push({ kind: "update", value: updated });
+                return tx.matches.update(updated);
+              },
+              updateSettlementStatus: async (
+                matchId: string,
+                status: Match["settlement_status"],
+                updatedAt: Date,
+              ) => {
+                writes.push({
+                  kind: "updateSettlementStatus",
+                  value: { match_id: matchId, settlement_status: status, updated_at: updatedAt },
+                });
+                return tx.matches.updateSettlementStatus(matchId, status, updatedAt);
+              },
+            },
+          });
+          return fn(guardedTx);
+        },
+      ),
+  });
+  return guardedRepo;
 }
 
 describe("ProviderFixtureSyncService", () => {
@@ -276,13 +335,14 @@ describe("ProviderFixtureSyncService", () => {
       });
       await expect(repo.providerSnapshots.findByEntity("match", match.match_id)).resolves.toEqual([
         expect.objectContaining({ created_at: serverNow }),
+        expect.objectContaining({ created_at: serverNow }),
       ]);
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it("mapper 发现非法正式比分时不改比赛，追加 snapshot 与 blocking anomaly", async () => {
+  it("mapper 发现非法正式比分时不写分，标记 finished 并追加 snapshot 与 blocking anomaly", async () => {
     const repo = new InMemoryRepository();
     const match = makeMatch();
     await seedMatch(repo, match, "1100003");
@@ -298,7 +358,14 @@ describe("ProviderFixtureSyncService", () => {
       match_id: match.match_id,
       anomaly_types: [AnomalyType.InvalidFinalScore],
     });
-    expect(await repo.matches.findById(match.match_id)).toEqual(match);
+    expect(await repo.matches.findById(match.match_id)).toMatchObject({
+      match_status: MatchStatus.Finished,
+      finish_detected_at: NOW,
+      regular_home_score: null,
+      regular_away_score: null,
+      result_version: 0,
+      settlement_status: SettlementStatus.Waiting,
+    });
     expect(
       await repo.anomalies.findByKey(`${match.match_id}:${AnomalyType.InvalidFinalScore}`),
     ).toMatchObject({
@@ -363,6 +430,250 @@ describe("ProviderFixtureSyncService", () => {
     ).resolves.toMatchObject({
       status: AnomalyStatus.Open,
       blocking: true,
+    });
+  });
+
+  it("live 且 10 分钟无成功同步时，conflict 路径也评估并 open LIVE_SYNC_STALE", async () => {
+    const repo = new InMemoryRepository();
+    const staleSince = new Date(NOW.getTime() - 11 * 60 * 1000);
+    const match = makeMatch({
+      match_status: MatchStatus.Live,
+      period_anchor_at: new Date("2026-08-08T12:00:00.000Z"),
+    });
+    await seedMatch(repo, match, "1100090");
+    await repo.providerSnapshots.insert(makeSuccessSnapshot(match.match_id, "1100090", staleSince));
+
+    await expect(
+      new ProviderFixtureSyncService(repo).applyFixture(
+        makeFixture("1100090", "NS"),
+        { fixture: { id: 1100090, status: "NS" } },
+        NOW,
+      ),
+    ).resolves.toMatchObject({
+      kind: "conflict",
+      match_id: match.match_id,
+      anomaly_type: AnomalyType.ProviderStateConflict,
+    });
+
+    await expect(
+      repo.anomalies.findByKey(`${match.match_id}:${AnomalyType.LiveSyncStale}`),
+    ).resolves.toMatchObject({
+      status: AnomalyStatus.Open,
+      blocking: false,
+      details: { last_successful_sync_at: staleSince.toISOString() },
+    });
+  });
+
+  it("live stale 后成功 apply live fixture 会刷新成功时间并 resolve LIVE_SYNC_STALE", async () => {
+    const repo = new InMemoryRepository();
+    const staleSince = new Date(NOW.getTime() - 11 * 60 * 1000);
+    const match = makeMatch({
+      match_status: MatchStatus.Live,
+      period_anchor_at: new Date("2026-08-08T12:00:00.000Z"),
+    });
+    await seedMatch(repo, match, "1100091");
+    await repo.providerSnapshots.insert(makeSuccessSnapshot(match.match_id, "1100091", staleSince));
+    const service = new ProviderFixtureSyncService(repo);
+
+    await expect(
+      service.applyFixture(makeFixture("1100091", "NS"), {}, NOW),
+    ).resolves.toMatchObject({ kind: "conflict", match_id: match.match_id });
+
+    await expect(
+      service.applyFixture(makeFixture("1100091", "1H"), {}, new Date(NOW.getTime() + 60_000)),
+    ).resolves.toMatchObject({ match_id: match.match_id });
+
+    await expect(
+      repo.anomalies.findByKey(`${match.match_id}:${AnomalyType.LiveSyncStale}`),
+    ).resolves.toMatchObject({
+      status: AnomalyStatus.Resolved,
+      resolution: "last successful sync within threshold",
+      resolved_at: new Date(NOW.getTime() + 60_000),
+    });
+  });
+
+  it("live 且 2 分钟前刚成功同步时，失败路径不 open LIVE_SYNC_STALE", async () => {
+    const repo = new InMemoryRepository();
+    const lastOk = new Date(NOW.getTime() - 2 * 60 * 1000);
+    const match = makeMatch({
+      match_status: MatchStatus.Live,
+      period_anchor_at: new Date("2026-08-08T12:00:00.000Z"),
+    });
+    await seedMatch(repo, match, "1100092");
+    await repo.providerSnapshots.insert(makeSuccessSnapshot(match.match_id, "1100092", lastOk));
+
+    await expect(
+      new ProviderFixtureSyncService(repo).applyFixture(
+        makeFixture("1100092", "NS"),
+        { fixture: { id: 1100092, status: "NS" } },
+        NOW,
+      ),
+    ).resolves.toMatchObject({ kind: "conflict", match_id: match.match_id });
+
+    await expect(
+      repo.anomalies.findByKey(`${match.match_id}:${AnomalyType.LiveSyncStale}`),
+    ).resolves.toBeNull();
+  });
+
+  it("mapper fail-closed 的 FT 无分观察会标记 finished + finish_detected_at，不写比分", async () => {
+    const repo = new InMemoryRepository();
+    const match = makeMatch();
+    await seedMatch(repo, match, "1100100");
+
+    const result = await new ProviderFixtureSyncService(repo).applyFixture(
+      makeFixture("1100100", "FT", { home: null, away: 1 }),
+      { fixture: { id: 1100100 }, score: { fulltime: { home: null, away: 1 } } },
+      NOW,
+    );
+
+    expect(result).toMatchObject({
+      kind: "failed",
+      match_id: match.match_id,
+      anomaly_types: [AnomalyType.InvalidFinalScore],
+    });
+    await expect(repo.matches.findById(match.match_id)).resolves.toMatchObject({
+      match_status: MatchStatus.Finished,
+      finish_detected_at: NOW,
+      period_anchor_at: match.kickoff_at,
+      regular_home_score: null,
+      regular_away_score: null,
+      result_version: 0,
+      settlement_status: SettlementStatus.Waiting,
+    });
+    await expect(
+      repo.anomalies.findByKey(`${match.match_id}:${AnomalyType.InvalidFinalScore}`),
+    ).resolves.toMatchObject({
+      status: AnomalyStatus.Open,
+      blocking: true,
+    });
+    expect(await repo.providerSnapshots.findByEntity("match", match.match_id)).toHaveLength(1);
+  });
+
+  it("无分 finished 超过 20 分钟时 FINISHED_NO_SCORE open blocking，未到则不开", async () => {
+    const repo = new InMemoryRepository();
+    const match = makeMatch();
+    await seedMatch(repo, match, "1100101");
+    const service = new ProviderFixtureSyncService(repo);
+    const invalidFixture = makeFixture("1100101", "FT", { home: null, away: 1 });
+    const payload = { fixture: { id: 1100101 }, score: { fulltime: { home: null, away: 1 } } };
+
+    await service.applyFixture(invalidFixture, payload, NOW);
+
+    await service.applyFixture(
+      invalidFixture,
+      payload,
+      new Date(NOW.getTime() + 19 * 60 * 1000),
+    );
+    await expect(
+      repo.anomalies.findByKey(`${match.match_id}:${AnomalyType.FinishedNoScore}`),
+    ).resolves.toBeNull();
+
+    await service.applyFixture(
+      invalidFixture,
+      payload,
+      new Date(NOW.getTime() + 21 * 60 * 1000),
+    );
+    await expect(
+      repo.anomalies.findByKey(`${match.match_id}:${AnomalyType.FinishedNoScore}`),
+    ).resolves.toMatchObject({
+      status: AnomalyStatus.Open,
+      blocking: true,
+    });
+  });
+
+  it("无分 finished 后合法 FT 到达：写分、进入 waiting 并 resolve 两规则", async () => {
+    const repo = new InMemoryRepository();
+    const match = makeMatch();
+    await seedMatch(repo, match, "1100102");
+    const service = new ProviderFixtureSyncService(repo);
+    const invalidFixture = makeFixture("1100102", "FT", { home: null, away: 1 });
+    const invalidPayload = { fixture: { id: 1100102 }, score: { fulltime: { home: null, away: 1 } } };
+
+    await service.applyFixture(invalidFixture, invalidPayload, NOW);
+
+    await service.applyFixture(
+      invalidFixture,
+      invalidPayload,
+      new Date(NOW.getTime() + 21 * 60 * 1000),
+    );
+    await expect(
+      repo.anomalies.findByKey(`${match.match_id}:${AnomalyType.FinishedNoScore}`),
+    ).resolves.toMatchObject({ status: AnomalyStatus.Open, blocking: true });
+
+    const legalAt = new Date(NOW.getTime() + 25 * 60 * 1000);
+    await expect(
+      service.applyFixture(
+        makeFixture("1100102", "FT", { home: 2, away: 1 }),
+        { fixture: { id: 1100102 }, score: { fulltime: { home: 2, away: 1 } } },
+        legalAt,
+      ),
+    ).resolves.toMatchObject({ kind: "applied", match_id: match.match_id, result_version: 1 });
+
+    await expect(repo.matches.findById(match.match_id)).resolves.toMatchObject({
+      match_status: MatchStatus.Finished,
+      settlement_status: SettlementStatus.Waiting,
+      regular_home_score: 2,
+      regular_away_score: 1,
+      result_version: 1,
+      finish_detected_at: NOW,
+    });
+    await expect(
+      repo.anomalies.findByKey(`${match.match_id}:${AnomalyType.FinishedNoScore}`),
+    ).resolves.toMatchObject({ status: AnomalyStatus.Resolved });
+    await expect(
+      repo.anomalies.findByKey(`${match.match_id}:${AnomalyType.InvalidFinalScore}`),
+    ).resolves.toMatchObject({ status: AnomalyStatus.Resolved });
+  });
+  it("首次无分 FT 的 settlement_status 变化必须经过既有 transition repository 入口", async () => {
+    const repo = new InMemoryRepository();
+    const match = makeMatch();
+    await seedMatch(repo, match, "1100200");
+    const writes: Array<{ kind: "update" | "updateSettlementStatus"; value: Partial<Match> }> = [];
+
+    const outcome = await new ProviderFixtureSyncService(
+      withSettlementWriteGuard(repo, writes),
+    ).applyFixture(
+      makeFixture("1100200", "FT", { home: null, away: 1 }),
+      { fixture: { id: 1100200 }, score: { fulltime: { home: null, away: 1 } } },
+      NOW,
+    );
+
+    expect(outcome).toMatchObject({ kind: "failed", match_id: match.match_id });
+    expect(writes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "updateSettlementStatus",
+          value: expect.objectContaining({
+            settlement_status: SettlementStatus.Waiting,
+          }),
+        }),
+      ]),
+    );
+  });
+
+  it("settlement 已 waiting 时再次无分观察保持 waiting，不重复非法转移", async () => {
+    const repo = new InMemoryRepository();
+    const match = makeMatch();
+    await seedMatch(repo, match, "1100201");
+    const service = new ProviderFixtureSyncService(repo);
+    const fixture = makeFixture("1100201", "FT", { home: null, away: 1 });
+    const payload = { fixture: { id: 1100201 }, score: { fulltime: { home: null, away: 1 } } };
+
+    await service.applyFixture(fixture, payload, NOW);
+    await expect(repo.matches.findById(match.match_id)).resolves.toMatchObject({
+      settlement_status: SettlementStatus.Waiting,
+    });
+
+    await expect(
+      service.applyFixture(fixture, payload, new Date(NOW.getTime() + 60_000)),
+    ).resolves.toMatchObject({ kind: "failed", match_id: match.match_id });
+    await expect(repo.matches.findById(match.match_id)).resolves.toMatchObject({
+      match_status: MatchStatus.Finished,
+      settlement_status: SettlementStatus.Waiting,
+      regular_home_score: null,
+      regular_away_score: null,
+      result_version: 0,
+      finish_detected_at: NOW,
     });
   });
 });

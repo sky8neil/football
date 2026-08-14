@@ -1,0 +1,56 @@
+<view class="page">
+  <view wx:if="{{state === 'loading'}}" class="loading"></view>
+  <view wx:elif="{{state === 'error'}}" class="error">
+    <view>{{errorMessage}}</view>
+    <button bindtap="onRetry">retry</button>
+  </view>
+  <view wx:else>
+    <view class="card">
+      <view>{{match.home_team.name}}</view>
+      <view>{{match.away_team.name}}</view>
+      <view>{{match.kickoff_at}}</view>
+      <view>{{match.match_status}}</view>
+      <view wx:if="{{match.match_status === 'scheduled'}}">未开赛</view>
+      <view wx:elif="{{match.match_status === 'live'}}">进行中</view>
+      <view wx:elif="{{match.match_status === 'finished'}}">已结束</view>
+      <view wx:elif="{{match.match_status === 'postponed'}}">延期</view>
+      <view wx:elif="{{match.match_status === 'cancelled'}}">取消</view>
+      <view wx:elif="{{match.match_status === 'abandoned'}}">废弃/腰斩</view>
+      <view wx:if="{{match.prediction_deadline_at}}">{{match.prediction_deadline_at}}</view>
+      <view wx:if="{{match.prediction_closed_at}}">{{match.prediction_closed_at}}</view>
+      <view>{{regularScoreText}}</view>
+    </view>
+
+    <view wx:if="{{myPrediction}}" class="card">
+      <view>{{myPredictionScore}}</view>
+      <view>{{myPrediction.derived_result}}</view>
+      <view>{{myPrediction.submitted_at}}</view>
+      <view>{{myMatchScoreText}}</view>
+      <view>{{myWdlHitText}}</view>
+      <view>{{myExactHitText}}</view>
+    </view>
+
+    <view wx:if="{{identityMissing}}" class="hint">{{submitDisabledReason}}</view>
+    <view wx:elif="{{userDeleted}}" class="hint">{{submitDisabledReason}}</view>
+    <view wx:elif="{{!canSubmit && submitDisabledReason}}" class="hint">{{submitDisabledReason}}</view>
+
+    <view wx:if="{{canSubmit}}" class="form">
+      <input
+        class="score"
+        type="number"
+        value="{{homeScore}}"
+        bindinput="onHomeScoreInput"
+        disabled="{{submitting}}"
+      />
+      <input
+        class="score"
+        type="number"
+        value="{{awayScore}}"
+        bindinput="onAwayScoreInput"
+        disabled="{{submitting}}"
+      />
+      <button bindtap="onSubmit" disabled="{{submitting}}" loading="{{submitting}}">submit</button>
+    </view>
+    <view wx:if="{{formError}}" class="error">{{formError}}</view>
+  </view>
+</view>

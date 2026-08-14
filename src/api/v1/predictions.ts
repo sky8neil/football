@@ -88,7 +88,7 @@ export async function postPrediction(
   input: PostPredictionInput,
 ): Promise<PostPredictionSuccessResponse> {
   const userId = requireAuthenticatedUserId(input.authenticated_user_id);
-  (input.rate_limiter ?? defaultApiRateLimiter).check(
+  await (input.rate_limiter ?? defaultApiRateLimiter).check(
     "predictions",
     userId,
     input.server_now,
@@ -133,7 +133,7 @@ export async function getMyPrediction(
   input: GetMyPredictionInput,
 ): Promise<GetMyPredictionSuccessResponse> {
   const userId = requireAuthenticatedUserIdForRead(input.authenticated_user_id);
-  (input.rate_limiter ?? defaultApiRateLimiter).check(
+  await (input.rate_limiter ?? defaultApiRateLimiter).check(
     "authenticated_reads",
     userId,
     input.server_now,
@@ -237,7 +237,7 @@ export async function getMyPredictions(
   input: GetMyPredictionsInput,
 ): Promise<GetMyPredictionsSuccessResponse> {
   const userId = requireAuthenticatedUserIdForRead(input.authenticated_user_id);
-  (input.rate_limiter ?? defaultApiRateLimiter).check(
+  await (input.rate_limiter ?? defaultApiRateLimiter).check(
     "authenticated_reads",
     userId,
     input.server_now,

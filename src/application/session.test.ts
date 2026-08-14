@@ -50,6 +50,10 @@ class RaceInsertRepository implements AppRepository {
     };
   }
 
+  get deletedOpenidMappings() {
+    return this.base.deletedOpenidMappings;
+  }
+
   get matches() {
     return this.base.matches;
   }
@@ -149,16 +153,75 @@ describe("SessionService.init", () => {
     ).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
   });
 
-  it("已删除用户 init 抛 USER_DELETED", async () => {
+  it("D7：已注销（墓碑 openid + mapping）openid 重注册 → 创建全新 active 用户（201），不再 409", async () => {
+    const repo = new InMemoryRepository();
+    const oldUser = makeUser({
+      user_id: "00000000-0000-4000-8000-000000000101",
+      openid: "openid_deleted",
+      status: "deleted",
+      deleted_at: serverNow(),
+    });
+    // 方案 B 正常模型：注销后 users.openid 为墓碑值，原 openid 只存在于 mapping。
+    await repo.users.insert({ ...oldUser, openid: `deleted:${oldUser.user_id}` });
+    await repo.deletedOpenidMappings.upsert({
+      schema_version: 1,
+      original_openid: "openid_deleted",
+      deleted_user_id: oldUser.user_id,
+      deleted_at: serverNow(),
+      created_at: serverNow(),
+      updated_at: serverNow(),
+    });
+
+    const service = new SessionService(repo);
+    const result = await service.init(
+      { openid: "openid_deleted", nickname: "Reregistered" },
+      serverNow(),
+    );
+
+    expect(result.created).toBe(true);
+    expect(result.user.status).toBe(UserStatus.Active);
+    expect(result.user.user_id).not.toBe(oldUser.user_id);
+    expect(result.user.openid).toBe("openid_deleted");
+    // mapping 保持指向旧 deleted_user_id；active 优先保证隔离。
+    const mapping = await repo.deletedOpenidMappings.findByOriginalOpenid("openid_deleted");
+    expect(mapping?.deleted_user_id).toBe(oldUser.user_id);
+  });
+
+  it("D11：无 mapping 的历史墓碑用户可重注册（创建新 active 用户）", async () => {
+    const repo = new InMemoryRepository();
+    const oldUserId = "00000000-0000-4000-8000-000000000102";
+    await repo.users.insert(
+      makeUser({
+        user_id: oldUserId,
+        openid: `deleted:${oldUserId}`,
+        status: "deleted",
+        deleted_at: serverNow(),
+      }),
+    );
+    const service = new SessionService(repo);
+    const result = await service.init(
+      { openid: "openid_legacy_no_mapping", nickname: "New" },
+      serverNow(),
+    );
+    expect(result.created).toBe(true);
+    expect(result.user.user_id).not.toBe(oldUserId);
+    expect(await repo.deletedOpenidMappings.findByOriginalOpenid("openid_legacy_no_mapping"))
+      .toBeNull();
+  });
+
+  it("迁移前脏数据（deleted 用户仍持原 openid）Fail Closed：不复活、不 409、不创建", async () => {
     const repo = new InMemoryRepository();
     await repo.users.insert(
-      makeUser({ openid: "openid_deleted", status: "deleted", deleted_at: serverNow() }),
+      makeUser({ openid: "openid_dirty_deleted", status: "deleted", deleted_at: serverNow() }),
     );
     const service = new SessionService(repo);
     const err = await service
-      .init({ openid: "openid_deleted", nickname: "Deleted" }, serverNow())
+      .init({ openid: "openid_dirty_deleted", nickname: "Dirty" }, serverNow())
       .catch((e) => e);
-    expect(err).toMatchObject({ code: "USER_DELETED" });
+    expect(err).toMatchObject({ code: "INTERNAL_ERROR" });
+    expect(await repo.users.findByOpenid("openid_dirty_deleted")).toMatchObject({
+      status: UserStatus.Deleted,
+    });
   });
 
   it("D28 session 并发创建同 openid 只有一个 active user", async () => {

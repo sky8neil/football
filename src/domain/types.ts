@@ -34,6 +34,20 @@ export interface BaseDoc {
   schema_version: number;
 }
 
+/**
+ * 注销身份映射（D-P1 方案 B，§4.5.1）。
+ *
+ * original_openid 全局唯一；只供可信 runtime openid 的 deleted 解析，不是登录凭证。
+ * 同 openid 重注册后再注销时通过 upsert 指向新的 deleted_user_id。
+ */
+export interface DeletedOpenidMapping extends BaseDoc {
+  original_openid: string;
+  deleted_user_id: string;
+  deleted_at: Date;
+  created_at: Date;
+  updated_at: Date;
+}
+
 export interface User extends BaseDoc {
   user_id: string;
   openid: string;

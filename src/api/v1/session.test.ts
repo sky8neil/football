@@ -3,7 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 import type { SessionInitResult } from "../../application/session.js";
 import type { User } from "../../domain/types.js";
 import { postSessionInit, validateSessionInitBody } from "./session.js";
-import { InMemoryRateLimiter } from "./rate-limit.js";
+import { InMemoryRateLimiter, RATE_LIMIT_DEFAULTS } from "./rate-limit.js";
+import { InMemoryRateLimitStore, SharedRateLimiter } from "./rate-limit-store.js";
 
 const NOW = new Date("2026-08-09T00:00:00.000Z");
 
@@ -135,5 +136,27 @@ describe("POST /v1/session/init", () => {
     expect(openapi).toMatch(
       /  \/session\/init:\n    post:[\s\S]*?'429':[\s\S]*?RateLimited/,
     );
+  });
+
+  it("SharedRateLimiter 超限时 handler 返回 429 RATE_LIMITED（await check）", async () => {
+    const init = vi.fn(async () => ({ user: makeUser(), created: false }));
+    const store = new InMemoryRateLimitStore();
+    const rateLimiter = new SharedRateLimiter(store);
+    const max = RATE_LIMIT_DEFAULTS.authenticated_reads.max_requests;
+    for (let attempt = 0; attempt < max; attempt += 1) {
+      await rateLimiter.check("authenticated_reads", "shared-openid", NOW);
+    }
+    const input = {
+      trusted_openid: "shared-openid",
+      body: { nickname: "Sky" },
+      server_now: NOW,
+      request_id: "request-shared-rate-limit",
+      rate_limiter: rateLimiter,
+    };
+
+    await expect(postSessionInit({ init }, input as never)).rejects.toMatchObject({
+      code: "RATE_LIMITED",
+    });
+    expect(init).not.toHaveBeenCalled();
   });
 });

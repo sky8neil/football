@@ -351,7 +351,13 @@ describe("ProviderFixtureSyncJobService", () => {
       items_changed: 0,
       items_failed: 1,
     });
-    expect(await repo.matches.findById(match.match_id)).toEqual(match);
+    await expect(repo.matches.findById(match.match_id)).resolves.toMatchObject({
+      match_status: MatchStatus.Finished,
+      finish_detected_at: NOW,
+      regular_home_score: null,
+      regular_away_score: null,
+      result_version: 0,
+    });
     expect(syncLogs.update).toHaveBeenCalledWith(expect.objectContaining({
       status: "success",
       items_read: 1,
@@ -551,6 +557,42 @@ describe("ProviderFixtureSyncJobService", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("executeHeldByCaller 不再 acquire/release，批次由持锁调用方复用（P1-2 方案 A）", async () => {
+    const repo = new InMemoryRepository();
+    const match = makeMatch();
+    await seedMatch(repo, match, "1100006");
+    const syncLogs = recordingSyncLogs();
+    const acquire = vi.fn(async (_lockKey: string, _ownerId: string, _leaseUntil: Date) => true);
+    const release = vi.fn(async (_lockKey: string, _ownerId: string) => undefined);
+    const service = new ProviderFixtureSyncJobService(
+      {
+        jobLocks: { acquire, renew: vi.fn(async () => true), release },
+        syncLogs,
+      },
+      new ProviderFixtureSyncService(repo),
+      { sleep: async () => undefined },
+    );
+    const load = vi.fn(async () => [
+      item(makeApiFixture({ fixtureId: 1100006, statusShort: "TBD" })),
+    ]);
+
+    await expect(
+      service.executeHeldByCaller(SyncJobType.FutureSchedule, load, NOW, "external-owner"),
+    ).resolves.toEqual({
+      kind: "completed",
+      job_type: SyncJobType.FutureSchedule,
+      items_read: 1,
+      items_changed: 1,
+      items_failed: 0,
+    });
+    expect(acquire).not.toHaveBeenCalled();
+    expect(release).not.toHaveBeenCalled();
+    expect(await repo.matches.findById(match.match_id)).toMatchObject({
+      match_status: MatchStatus.Scheduled,
+      kickoff_confirmed: false,
+    });
   });
 
   it("无效 server_now 时在获取 Provider job lock 前 Fail Closed", async () => {

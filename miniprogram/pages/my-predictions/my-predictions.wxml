@@ -1,0 +1,41 @@
+<view class="page">
+  <view wx:if="{{state === 'loading'}}" class="loading"></view>
+  <view wx:elif="{{state === 'empty'}}" class="empty">暂无预测</view>
+  <view wx:elif="{{state === 'unauthorized'}}" class="error">身份缺失</view>
+  <view wx:elif="{{state === 'userDeleted'}}" class="error">{{errorMessage}}</view>
+  <view wx:elif="{{state === 'userNotFound'}}" class="error">{{errorMessage}}</view>
+  <view wx:elif="{{state === 'rateLimited'}}" class="error">{{errorMessage}}</view>
+  <view wx:elif="{{state === 'error'}}" class="error">
+    <view>{{errorMessage}}</view>
+    <button bindtap="onRetry">retry</button>
+  </view>
+  <view wx:else>
+    <view
+      wx:for="{{items}}"
+      wx:key="prediction_id"
+      class="card"
+      data-match-id="{{item.match_id}}"
+      bindtap="onCardTap"
+    >
+      <view>{{item.round_id}}</view>
+      <view>{{item.home_team_id}}</view>
+      <view>{{item.away_team_id}}</view>
+      <view>{{item.kickoff_at}}</view>
+      <view>{{item.pred_home_score}} - {{item.pred_away_score}}</view>
+      <view>{{item.derived_result}}</view>
+      <view>{{item.match_status}}</view>
+      <view wx:if="{{item.match_status === 'scheduled'}}">未开赛</view>
+      <view wx:elif="{{item.match_status === 'live'}}">进行中</view>
+      <view wx:elif="{{item.match_status === 'finished'}}">已结束</view>
+      <view wx:elif="{{item.match_status === 'postponed'}}">延期</view>
+      <view wx:elif="{{item.match_status === 'cancelled'}}">取消</view>
+      <view wx:elif="{{item.match_status === 'abandoned'}}">废弃/腰斩</view>
+      <view>{{item.regularScoreText}}</view>
+      <view>{{item.matchScoreText}}</view>
+      <view>{{item.wdlHitText}}</view>
+      <view>{{item.exactHitText}}</view>
+    </view>
+    <view wx:if="{{errorMessage}}" class="error">{{errorMessage}}</view>
+    <button wx:if="{{hasMore}}" bindtap="onMore" disabled="{{loadingMore}}">更多</button>
+  </view>
+</view>

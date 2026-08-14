@@ -75,4 +75,13 @@ describe("L. 等级（规范 44-L）", () => {
     expect(() => calculateLevel(LevelScope.Season, -1, 0)).toThrow();
     expect(() => calculateLevel(LevelScope.Season, 5, 6)).toThrow();
   });
+
+  it("未知 scope 失败关闭", () => {
+    expect(() =>
+      sampleSizeLevel("monthly" as LevelScope, 30),
+    ).toThrow(/未知等级 scope/);
+    expect(() =>
+      calculateLevel("monthly" as LevelScope, 30, 20),
+    ).toThrow(/未知等级 scope/);
+  });
 });

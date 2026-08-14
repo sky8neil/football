@@ -149,6 +149,21 @@ npm run build       # tsc -p tsconfig.build.json 产出 dist/
 - 预测唯一约束 `UNIQUE(user_id, match_id)` 与 `UNIQUE(user_id, idempotency_key)`；`job_locks` 按 lease 过期可接管。
 - 不提交、不推送、不读取或修改任何凭证文件。
 
+## 阶段 B 状态
+
+- **B1 已完成：** CloudBase repository 骨架（`src/infrastructure/cloudbase-repository.ts`，**待真环境集成验证**）：配置 Fail Closed、集合名约定 `${namespace}_${collection}`、`CloudBaseUserRepository` 代表性方法（`findByOpenid` / insert / update）+ 未接线方法 Fail Closed 占位、单元级测试（注入 fake database，无真实网络/库）。
+- **待配置项（B1，需要用户环境）：** 真实 CloudBase 数据库集成验证（唯一约束/事务/原子语义）、其余 ~19 个 repository 接线。
+- **未接线纪律：** 未接线方法必须 Fail Closed 抛错，**不静默返回 null/空数组/空结果**，防止生产误判数据不存在。
+- **B2 已完成：** `FetchProviderHttpClient`（Node 内置 fetch，零新增依赖）、mock HTTP 全链路测试（请求参数/超时/网络错误/429/408/5xx/其他4xx/JSON 失败/raw payload 保留）。错误分类严格按 MVP §49.13；网络/超时错误不包装成 `ProviderError`，以保证 loader retry 语义。
+- **待配置项（B2，需要用户环境）：** 真实 API-Football key 注入与**非生产 dry-run 端到端同步演练**（无 key 无法本地演练）。
+- **B3 已完成：** 微信云函数入口（`src/cloud-function/index.ts`，**待真环境部署验证**）：`context.OPENID` 注入为内部 trusted openid（prod 只认运行时 OPENID，dev/test 可 mock）、`request_id`、错误 envelope（`mapErrorToHttp`）、日志脱敏（只记 request_id/method/path/status/code）；fake context / fake assemble 单元测试（`src/cloud-function/index.test.ts`，无真实网络/云环境）；部署/回滚文档（`src/cloud-function/DEPLOY.md`）。业务 handler / `src/gateway/assemble.ts` 零改动。
+- **待配置项（B3，需要用户环境）：** 真实云开发环境部署验证（`cloud.getWXContext().OPENID` 生产路径）、环境键绑定（`FOOTBALL_ENVIRONMENT` / `FOOTBALL_MATCH_CURSOR_SECRET` / `FOOTBALL_CLOUD_ENVIRONMENT_ID` / `FOOTBALL_RESOURCE_NAMESPACE`；`FOOTBALL_MOCK_TRUSTED_OPENID` 仅 dev/test）。
+- **B4 已完成：** 生产调度 `SchedulerTick` 入口（`src/scheduler/tick.ts`）、锁冲突 / Provider 失败 / 账本 worker 失败 / 非法 `server_now` / 未知 `job_type` 故障演练测试（`src/scheduler/tick.test.ts`）、云函数定时触发器文档（`src/scheduler/triggers.md`）。tick 被触发一次执行一次，频率仍以冻结的 `SYNC_TASKS_V1` 为准，不内置定时循环；业务判断只用注入 `server_now`。
+- **B5 已完成：** RateLimitStore port（`src/api/v1/rate-limit-store.ts`）、SharedRateLimiter（与 InMemoryRateLimiter 同语义）、并发/窗口边界/多实例共享测试（`src/api/v1/rate-limit-store.test.ts`）、CloudBase adapter 骨架（`src/api/v1/cloudbase-rate-limit-store.ts`，**待真环境集成验证**）。现有端点、额度、429/`RATE_LIMITED` 与 identity key 语义未变；本地 dev 网关仍使用内存限流。
+- **待配置项（需要用户环境）：** 云函数定时触发器部署、dev/test/prod 环境键确认、生产 `job_locks` / 日志汇出接线。
+- **待配置项（B5，需要用户环境）：** 真实 CloudBase 原子计数验证、生产 gateway 组装切换共享限流。
+- 不提交 `.env`、Provider 密钥或其它凭证。
+
 本轮完成第 44 节 G43-G52 Provider 数据验收矩阵（fixture 主入口端到端）：合法 FT 创建 result v1；无/非法 fulltime 与未知状态/AET/PEN 记 blocking anomaly 且不结算；live goals 不入账；finished→live 不回退；admin 结果优先；有 prediction 时主客队变更 Fail Closed，无 prediction 且 scheduled 可更新。
 
 本轮补齐第 44 节 H53-H59 result_version 验收矩阵：初始 result_version=0；首次正式比分创建 v1；重复相同比分不新增版本；2:1→1:1 增到 v2；v1/v2/v3 不可变账本均永久保存且不可覆盖；waiting 内 v1→v2→v3 时首次结算直接以 v3 结算；v1 结算后 v2/v3 按 settled_result_version+1 顺序处理，禁止跳版本；并扩展 `matrix-44-coverage` 可追踪扫描。

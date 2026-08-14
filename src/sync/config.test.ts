@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { FIXED_CONFIG_V1 } from "../domain/config.js";
 import { SyncJobType } from "../domain/enums.js";
 import { ProviderQuotaExceededError } from "../provider/http.js";
 import {
@@ -61,6 +62,13 @@ describe("重试策略（规范 32.8）", () => {
     expect(nextRetryDelayMinutes(3)).toBe(10);
     expect(nextRetryDelayMinutes(4)).toBe(30);
     expect(nextRetryDelayMinutes(5)).toBeNull();
+  });
+
+  it("P2-2 重试上限双来源一致：delays.length === SYNC_MAX_RETRIES，越界均 null", () => {
+    expect(FIXED_CONFIG_V1.SYNC_RETRY_DELAYS_MINUTES.length).toBe(
+      FIXED_CONFIG_V1.SYNC_MAX_RETRIES,
+    );
+    expect(nextRetryDelayMinutes(FIXED_CONFIG_V1.SYNC_MAX_RETRIES)).toBeNull();
   });
 
   it("jitter ±20%（random=0.5 时无抖动，0/1 为边界）", () => {

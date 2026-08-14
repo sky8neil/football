@@ -128,7 +128,7 @@ export async function getMatches(
 ): Promise<GetMatchesSuccessResponse> {
   const query = validateMatchesQuery(input.query);
   const publicSource = requirePublicSource(input.public_source);
-  (input.rate_limiter ?? defaultApiRateLimiter).check(
+  await (input.rate_limiter ?? defaultApiRateLimiter).check(
     "public_reads",
     publicSource,
     input.server_now,
@@ -159,7 +159,7 @@ export async function getMatch(
 ): Promise<GetMatchSuccessResponse> {
   const matchId = validateMatchId(input.match_id);
   const publicSource = requirePublicSource(input.public_source);
-  (input.rate_limiter ?? defaultApiRateLimiter).check(
+  await (input.rate_limiter ?? defaultApiRateLimiter).check(
     "public_reads",
     publicSource,
     input.server_now,

@@ -53,16 +53,17 @@ export async function getMyUnlocks(
     (input.query === undefined ? {} : input.query) as Record<string, unknown>,
     UNLOCKS_QUERY_FIELDS,
   );
-  (input.rate_limiter ?? defaultApiRateLimiter).check(
+  await (input.rate_limiter ?? defaultApiRateLimiter).check(
     "authenticated_reads",
     userId,
     input.server_now,
   );
-  return service.getUnlocks(userId).then((data) => ({
-    status: 200 as const,
+  const data = await service.getUnlocks(userId);
+  return {
+    status: 200,
     body: {
       data: toPublicUnlocksData(data),
       request_id: input.request_id,
     },
-  }));
+  };
 }

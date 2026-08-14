@@ -125,7 +125,7 @@ export async function getPublicProfile(
 ): Promise<GetPublicProfileSuccessResponse> {
   const userId = validatePublicProfileUserId(input.user_id);
   const publicSource = requirePublicSource(input.public_source);
-  (input.rate_limiter ?? defaultApiRateLimiter).check(
+  await (input.rate_limiter ?? defaultApiRateLimiter).check(
     "public_reads",
     publicSource,
     input.server_now,
@@ -145,7 +145,7 @@ export async function getMyProfile(
   input: GetMyProfileInput,
 ): Promise<GetMyProfileSuccessResponse> {
   const userId = requireAuthenticatedUserId(input.authenticated_user_id);
-  (input.rate_limiter ?? defaultApiRateLimiter).check(
+  await (input.rate_limiter ?? defaultApiRateLimiter).check(
     "authenticated_reads",
     userId,
     input.server_now,
@@ -165,7 +165,7 @@ export async function patchMyProfile(
   input: PatchMyProfileInput,
 ): Promise<PatchMyProfileSuccessResponse> {
   const userId = requireAuthenticatedUserId(input.authenticated_user_id);
-  (input.rate_limiter ?? defaultApiRateLimiter).check(
+  await (input.rate_limiter ?? defaultApiRateLimiter).check(
     "profile_patch",
     userId,
     input.server_now,
@@ -186,7 +186,7 @@ export async function deleteMyProfile(
   input: DeleteMyProfileInput,
 ): Promise<DeleteMyProfileSuccessResponse> {
   const userId = requireAuthenticatedUserId(input.authenticated_user_id);
-  (input.rate_limiter ?? defaultApiRateLimiter).check(
+  await (input.rate_limiter ?? defaultApiRateLimiter).check(
     "profile_patch",
     userId,
     input.server_now,

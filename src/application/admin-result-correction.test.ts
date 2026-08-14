@@ -238,6 +238,89 @@ describe("AdminResultCorrectionService", () => {
     });
   });
 
+  it("settling + settled_result_version=0：admin 修正比分成功，settlement_status 保持 settling", async () => {
+    const repo = new InMemoryRepository();
+    const match = await seedSettledMatch(repo, {
+      settlement_status: SettlementStatus.Settling,
+      settled_result_version: 0,
+      settled_at: null,
+    });
+
+    const outcome = await new AdminResultCorrectionService(repo).correct(
+      "admin-openid",
+      match.match_id,
+      correction({ expected_result_version: 1, regular_home_score: 3, regular_away_score: 0 }),
+      NOW,
+    );
+
+    expect(outcome.match).toMatchObject({
+      result_version: 2,
+      settled_result_version: 0,
+      settlement_status: SettlementStatus.Settling,
+      regular_home_score: 3,
+      regular_away_score: 0,
+      result_source: ResultSource.Admin,
+    });
+    expect(await repo.matchResults.findByMatchAndVersion(match.match_id, 2)).toMatchObject({
+      result_version: 2,
+      regular_home_score: 3,
+      regular_away_score: 0,
+      source: ResultSource.Admin,
+    });
+    expect(await repo.adminAuditLogs.findByEntity("match", match.match_id)).toHaveLength(1);
+  });
+
+  it("failed + settled_result_version=0：admin 修正比分成功，settlement_status 保持 failed", async () => {
+    const repo = new InMemoryRepository();
+    const match = await seedSettledMatch(repo, {
+      settlement_status: SettlementStatus.Failed,
+      settled_result_version: 0,
+      settled_at: null,
+    });
+
+    const outcome = await new AdminResultCorrectionService(repo).correct(
+      "admin-openid",
+      match.match_id,
+      correction({ expected_result_version: 1, regular_home_score: 0, regular_away_score: 2 }),
+      NOW,
+    );
+
+    expect(outcome.match).toMatchObject({
+      result_version: 2,
+      settled_result_version: 0,
+      settlement_status: SettlementStatus.Failed,
+      regular_home_score: 0,
+      regular_away_score: 2,
+    });
+    expect(await repo.matchResults.findByMatchAndVersion(match.match_id, 2)).toMatchObject({
+      result_version: 2,
+      regular_home_score: 0,
+      regular_away_score: 2,
+    });
+  });
+
+  it("voided 状态：admin 修正被拒绝（MATCH_STATE_CONFLICT），不写结果与审计", async () => {
+    const repo = new InMemoryRepository();
+    const match = await seedSettledMatch(repo, {
+      settlement_status: SettlementStatus.Voided,
+      settled_result_version: 0,
+      settled_at: null,
+    });
+
+    await expect(
+      new AdminResultCorrectionService(repo).correct(
+        "admin-openid",
+        match.match_id,
+        correction(),
+        NOW,
+      ),
+    ).rejects.toMatchObject({ code: "MATCH_STATE_CONFLICT" });
+    expect(await repo.matchResults.findLatestByMatch(match.match_id)).toMatchObject({
+      result_version: 1,
+    });
+    expect(await repo.adminAuditLogs.findByEntity("match", match.match_id)).toEqual([]);
+  });
+
   it("缺少可信身份、未知 admin 或 disabled admin 均拒绝", async () => {
     const repo = new InMemoryRepository();
     const match = await seedSettledMatch(repo);

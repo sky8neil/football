@@ -429,6 +429,18 @@ export const COLLECTION_DEFINITIONS: readonly CollectionDef[] = [
     note: "UNIQUE(anomaly_key)；同 match+type 重复出现更新同一记录",
   },
   {
+    collection: "deleted_openid_mappings",
+    fields: {
+      original_openid: { type: "string", required: true, unique: true, note: "注销前微信 openid" },
+      deleted_user_id: { type: "string", required: true, note: "UUID；对应已注销 users.user_id" },
+      deleted_at: { type: "date", required: true },
+      created_at: { type: "date", required: true },
+      updated_at: { type: "date", required: true },
+      schema_version: { type: "int", required: true, default: 1 },
+    },
+    note: "UNIQUE(original_openid)；不可登录；只供可信 runtime openid 的 deleted 解析；MVP 永久保留（清理=SPEC_GAP）",
+  },
+  {
     collection: "job_locks",
     fields: {
       lock_key: { type: "string", required: true, unique: true },

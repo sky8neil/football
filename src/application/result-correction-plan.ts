@@ -42,6 +42,7 @@ export function planResultCorrection(
   matchStatus: string,
   settlementStatus: string,
   source: ResultSource,
+  settledResultVersion: number,
 ): ResultCorrectionPlan {
   if (currentResultVersion < 0) {
     throw conflictError(ResultCorrectionCode.InvalidResultVersion, "result_version 不能为负数");
@@ -70,7 +71,7 @@ export function planResultCorrection(
   return {
     next_result_version: currentResultVersion + 1,
     is_correction: currentResultVersion > 0,
-    needs_correction_settlement: settlementStatus === SettlementStatus.Settled,
+    needs_correction_settlement: settledResultVersion > 0,
     source,
   };
 }

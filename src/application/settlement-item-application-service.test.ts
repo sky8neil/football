@@ -509,6 +509,49 @@ describe("SettlementItemApplicationService", () => {
     expect((await repo.settlements.findById(settlement.settlement_id))?.status)
       .toBe(SettlementDocStatus.Settled);
   });
+
+  it("§15.2 首次 0 -> v3 真实 apply：prediction applied_result_version=3，不抛 RESULT_VERSION_SKIPPED", async () => {
+    const { repo, user, match, settlement } = await setup({
+      match: {
+        result_version: 3,
+        regular_home_score: 3,
+        regular_away_score: 1,
+        settlement_status: SettlementStatus.Settling,
+      },
+      settlement: { result_version: 3, is_correction: false },
+      item: {
+        old_score: MatchScoreValue.Miss,
+        new_score: MatchScoreValue.WdlHit,
+        score_delta: 3,
+        old_wdl_hit: false,
+        new_wdl_hit: true,
+        old_exact_hit: false,
+        new_exact_hit: false,
+        valid_prediction_delta: 1,
+        source_result_version: 3,
+      },
+    });
+
+    const outcome = await new SettlementItemApplicationService(repo).apply(
+      settlement.settlement_id,
+      "p1",
+      NOW,
+    );
+
+    expect(outcome.kind).toBe("applied");
+    expect(await repo.predictions.findById("p1")).toMatchObject({
+      match_score: MatchScoreValue.WdlHit,
+      wdl_hit: true,
+      exact_hit: false,
+      applied_result_version: 3,
+    });
+    expect(await repo.users.findById(user.user_id)).toMatchObject({
+      career_points: 3,
+      career_valid_predictions: 1,
+    });
+    expect(await repo.settlementItems.findBySettlementAndPrediction(settlement.settlement_id, "p1"))
+      .toMatchObject({ status: SettlementItemStatus.Applied });
+  });
 });
 
   it("第 15.8 节 ranking 周期锁被占用时 Fail Closed，不写入账本", async () => {

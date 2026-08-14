@@ -1,0 +1,44 @@
+<view class="page">
+  <view>
+    <button
+      data-period-type="week"
+      bindtap="onPeriodTap"
+      disabled="{{periodType === 'week'}}"
+    >week</button>
+    <button
+      data-period-type="month"
+      bindtap="onPeriodTap"
+      disabled="{{periodType === 'month'}}"
+    >month</button>
+  </view>
+  <view wx:if="{{state === 'loading'}}" class="loading"></view>
+  <view wx:elif="{{state === 'empty'}}" class="empty">暂无排行数据</view>
+  <view wx:elif="{{state === 'validationError'}}" class="error">
+    <view>{{errorMessage}}</view>
+    <button bindtap="onRetry">retry</button>
+  </view>
+  <view wx:elif="{{state === 'rateLimited'}}" class="error">{{errorMessage}}</view>
+  <view wx:elif="{{state === 'error'}}" class="error">
+    <view>{{errorMessage}}</view>
+    <button bindtap="onRetry">retry</button>
+  </view>
+  <view wx:elif="{{state === 'list'}}">
+    <view
+      wx:for="{{items}}"
+      wx:key="user_id"
+      class="card"
+    >
+      <view>{{item.global_rank}}</view>
+      <view>{{item.display_name}}</view>
+      <view>{{item.favoriteTeamText}}</view>
+      <view>{{item.period_score}}</view>
+      <view>{{item.valid_predictions}}</view>
+      <view>{{item.wdl_hits}}</view>
+      <view>{{item.exact_hits}}</view>
+      <view>{{item.wdl_accuracy_percent}}</view>
+      <view wx:if="{{item.last_scoring_match_at !== null}}">{{item.last_scoring_match_at}}</view>
+    </view>
+    <view wx:if="{{errorMessage}}" class="error">{{errorMessage}}</view>
+    <button wx:if="{{hasMore}}" bindtap="onMore" disabled="{{loadingMore}}">更多</button>
+  </view>
+</view>

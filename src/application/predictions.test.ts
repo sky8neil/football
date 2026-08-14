@@ -199,10 +199,10 @@ describe("PredictionService.submit - 服务端业务规则", () => {
     expect(code).toBe("USER_DELETED");
   });
 
-  it("用户注销后重复原幂等请求仍拒绝（USER_DELETED），不重放历史 prediction", async () => {
+  it("49.2 文末/§8.6：注销后同 key+同 payload 重放返回首次结果（不走 USER_DELETED）", async () => {
     const { service, user, match, repo } = await setup();
     const body = payload(match.match_id);
-    await service.submit(user.user_id, body, NOW());
+    const first = await service.submit(user.user_id, body, NOW());
 
     const current = await repo.users.findById(user.user_id);
     if (current === null) {
@@ -219,9 +219,41 @@ describe("PredictionService.submit - 服务端业务规则", () => {
       updated_at: NOW(),
     });
 
-    await expect(
-      service.submit(user.user_id, body, NOW()),
-    ).rejects.toMatchObject({ code: "USER_DELETED" });
+    const replay = await service.submit(user.user_id, body, NOW());
+    expect(replay.created).toBe(false);
+    expect(replay.prediction.prediction_id).toBe(first.prediction.prediction_id);
+  });
+
+  it("注销后同 key+不同 payload 仍抛 IDEMPOTENCY_KEY_REUSED", async () => {
+    const { service, user, match, repo } = await setup();
+    const key = newUuid();
+    const body = payload(match.match_id, undefined, key);
+    await service.submit(user.user_id, body, NOW());
+
+    const current = await repo.users.findById(user.user_id);
+    if (current === null) {
+      throw new Error("expected seeded user");
+    }
+    await repo.users.update({
+      ...current,
+      openid: `deleted:${current.user_id}`,
+      status: UserStatus.Deleted,
+      deleted_at: NOW(),
+      updated_at: NOW(),
+    });
+
+    const code = await codeOf(
+      service.submit(user.user_id, payload(match.match_id, { home_score: 9 }, key), NOW()),
+    );
+    expect(code).toBe("IDEMPOTENCY_KEY_REUSED");
+  });
+
+  it("注销后新 key 新提交抛 USER_DELETED", async () => {
+    const { service, user, match, repo } = await setup({
+      user: { status: "deleted" as UserStatus, deleted_at: NOW() },
+    });
+    const code = await codeOf(service.submit(user.user_id, payload(match.match_id), NOW()));
+    expect(code).toBe("USER_DELETED");
   });
 
   it("49.2 优先级4：非 scheduled 比赛抛 MATCH_NOT_PREDICTABLE", async () => {

@@ -61,6 +61,40 @@ describe("核心 invariant 入口强制 schema_version", () => {
     );
   });
 
+  it("17.6 对称：season stats 拒绝 best_level < level，接受 best_level >= level", () => {
+    const base = {
+      schema_version: SCHEMA_VERSION,
+      user_id: newUuid(),
+      season_id: "2026_2027",
+      points: 0,
+      valid_predictions: 0,
+      wdl_hits: 0,
+      exact_hits: 0,
+      updated_at: new Date("2026-08-01T00:00:00Z"),
+    };
+    expect(() =>
+      assertSeasonStatsInvariants({
+        ...base,
+        level: 4,
+        best_level: 3,
+      } as UserSeasonStats),
+    ).toThrow(expect.objectContaining({ code: "INTERNAL_ERROR" }));
+    expect(() =>
+      assertSeasonStatsInvariants({
+        ...base,
+        level: 3,
+        best_level: 3,
+      } as UserSeasonStats),
+    ).not.toThrow();
+    expect(() =>
+      assertSeasonStatsInvariants({
+        ...base,
+        level: 3,
+        best_level: 5,
+      } as UserSeasonStats),
+    ).not.toThrow();
+  });
+
   it("season stats / ranking / prediction / settlement / match 同样拒绝", () => {
     const season = {
       schema_version: 0,

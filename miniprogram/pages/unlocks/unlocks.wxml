@@ -1,0 +1,28 @@
+<view class="page">
+  <view wx:if="{{state === 'loading'}}" class="loading"></view>
+  <view wx:elif="{{state === 'empty'}}" class="empty">暂无解锁记录</view>
+  <view wx:elif="{{state === 'unauthorized'}}" class="error">{{errorMessage}}</view>
+  <view wx:elif="{{state === 'userNotFound'}}" class="error">{{errorMessage}}</view>
+  <view wx:elif="{{state === 'userDeleted'}}" class="error">{{errorMessage}}</view>
+  <view wx:elif="{{state === 'validationError'}}" class="error">
+    <view>{{errorMessage}}</view>
+    <button bindtap="onRetry">retry</button>
+  </view>
+  <view wx:elif="{{state === 'rateLimited'}}" class="error">{{errorMessage}}</view>
+  <view wx:elif="{{state === 'serverError'}}" class="error">
+    <view>{{errorMessage}}</view>
+    <button bindtap="onRetry">retry</button>
+  </view>
+  <view wx:elif="{{state === 'error'}}" class="error">
+    <view>{{errorMessage}}</view>
+    <button bindtap="onRetry">retry</button>
+  </view>
+  <view wx:elif="{{state === 'list'}}">
+    <view wx:for="{{items}}" wx:key="unlock_code" class="card">
+      <view>{{item.label}}</view>
+      <view>{{item.threshold_points}}</view>
+      <view>{{item.unlocked_at}}</view>
+      <view>{{item.progressText}}</view>
+    </view>
+  </view>
+</view>

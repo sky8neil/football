@@ -76,7 +76,7 @@ export async function postSessionInit(
   input: PostSessionInitInput,
 ): Promise<PostSessionInitSuccessResponse> {
   const openid = requireTrustedOpenid(input.trusted_openid);
-  (input.rate_limiter ?? defaultApiRateLimiter).check(
+  await (input.rate_limiter ?? defaultApiRateLimiter).check(
     "authenticated_reads",
     openid,
     input.server_now,

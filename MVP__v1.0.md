@@ -411,7 +411,96 @@ favorite_team_id = null
 - 已注销用户不能提交预测或访问个人私有接口。
 - 同一微信 openid 未来重新注册时，创建新的 `user_id`；不得自动关联旧账号。
 
+## 4.5.1 注销身份映射（D-P1 方案 B，已确认）
+
+### 目的
+
+第 4.5 节要求注销后 users 主记录移除原微信 `openid`（改写为墓碑值
+`deleted:<user_id>`），同时系统仍须在可信运行时持有原 openid 时识别
+「该微信身份对应一名已注销用户」，以便：
+
+- 私有读接口返回 409 `USER_DELETED`；
+- 公开读接口返回 `can_predict_reason=USER_DELETED`；
+- `POST /v1/predictions` 在旧 `user_id` 上执行第 8.6 节幂等重放。
+
+为此增加**专用注销身份映射**，与 users 主记录分离。
+
+### 存储
+
+新增集合 `deleted_openid_mappings`：
+
+- `original_openid`：注销前的微信 openid；**UNIQUE**。
+- `deleted_user_id`：对应已注销用户的 `user_id`。
+- `deleted_at` / `created_at` / `updated_at` / `schema_version`。
+
+### 与第 4.5 节的关系（不冲突声明）
+
+- users 主记录在注销后**必须**移除原 openid，并写入墓碑
+`openid = "deleted:" + user_id`。
+- `deleted_openid_mappings.original_openid` **不是** users 主记录的事实身份字段，
+也不是可登录凭证；它只供服务端在已持有**可信 runtime openid** 时做 deleted 判定。
+- 二者并存不违反「原 openid 必须从该用户记录移除」。
+
+### 禁止语义
+
+注销身份映射：
+
+- 不得用于恢复账号、重新激活 `status=deleted` 用户；
+- 不得作为客户端可提交的身份输入（body/query/header 均不可）；
+- 不得使旧账号“直接登录”或默认暴露私有历史 UI 以外的越权数据；
+- 私有历史的服务端定位仅用于：409 语义、幂等重放、以及公开场上的
+`USER_DELETED` 原因码；不得把旧用户的私有列表在 deleted 会话中完整返回。
+
+### 可信身份解析顺序（固定）
+
+在网关/application 边界，对请求的可信 openid 解析严格按以下顺序，命中即停：
+
+1. 无可信 openid → `anonymous`；
+2. `users` 中存在 `openid = 可信 openid` 且 `status=active` → `active`
+ （**永远优先于**任何注销映射）；
+3. 否则，若 `deleted_openid_mappings` 存在 `original_openid = 可信 openid`
+ → `deleted`（携带 `deleted_user_id`）；
+4. 否则 → `unregistered`。
+
+### 重注册隔离
+
+- 同一微信 openid 在仅有注销映射、无 active 用户时，`POST /v1/session/init`
+**创建全新** `user_id` 的 active 用户（HTTP 201），不得复用
+`deleted_user_id`。
+- 新用户不得继承或默认暴露旧用户的预测、结算、等级、排名与其它私有数据。
+- 解析时 active 优先，保证新用户存续期间不会被 mapping 误判为 deleted。
+- 新用户再次注销：按 4.5 墓碑化新用户，并将映射 upsert 为
+`original_openid → 新 deleted_user_id`。
+
+### 唯一性
+
+- `original_openid` 全局唯一；同一 openid 仅保留一条当前映射。
+- 多次注销（不同世代用户）通过 upsert 更新 `deleted_user_id`。
+
+### 保留期
+
+- MVP 默认永久保留映射行，以支持 deleted 识别与历史幂等重放定位。
+- 是否在 T 日后物理删除映射：**SPEC_GAP**（不阻塞本小节其它规则）；
+若未来清理，必须同时定义对幂等重放与 409 语义的影响并另版冻结。
+
+### HTTP 行为（与 49.1 / 49.2 / 8.6 对齐）
+
+| 身份 | 接口类型 | 行为 |
+|---|---|---|
+| deleted | 私有读（profile/me、predictions/me、unlocks/me、levels/me 等） | 409 `USER_DELETED` |
+| deleted | 公开读（matches 列表/详情、rankings 等） | 200；`can_predict=false`；`can_predict_reason=USER_DELETED`；`my_prediction=null` |
+| deleted | POST predictions 同 key+同 payload | 200 首次结果 |
+| deleted | POST predictions 同 key+不同 payload | 409 `IDEMPOTENCY_KEY_REUSED` |
+| deleted | POST predictions 新 key | 409 `USER_DELETED` |
+| active（含重注册后） | 正常 49.1/49.2 | 与旧用户数据隔离 |
+
+### 鉴权边界（不变）
+
+- 不修改 H4 / OpenAPI security scheme。
+- 不引入 JWT、Bearer、Cookie 或服务端 session token 作为登录凭证。
+- 身份只来自网关/运行时注入的可信 openid；禁止信任客户端传 openid。
 ---
+
 
 # 5. 联赛、球队、比赛与 Provider 身份
 
@@ -4450,6 +4539,7 @@ correction retry 必须：
 - 网关/运行环境注入**可信** `openid`（或等价字段）。
 - 后端**不**自行签发 JWT/Cookie/session token 作为登录凭证。
 - 后端**不**信任客户端 body/query 中的 `openid` / `user_id` 作为鉴权依据。
+- 已注销身份的解析顺序、重注册隔离与 HTTP 行为见 **§4.5.1（注销身份映射，D-P1 方案 B）**。
 
 ### 请求身份绑定
 
@@ -4471,7 +4561,11 @@ correction retry 必须：
 
 - 同 active openid 再次 init：返回 **200** 与既有用户；**忽略** body 中的新 `nickname`（不覆盖）。
 - openid 不存在：创建用户，返回 **201**。
-- openid 已注销：返回 **409 `USER_DELETED`**，不得复用该 openid 创建新用户以外的“复活”语义（新注册规则仍按第 4 节）。
+- 若可信 openid 经 §4.5.1 解析为 `deleted`（无 active 用户）：
+  - 非 `session/init` 的 Auth 私有读/写：409 `USER_DELETED`；
+  - `POST /v1/session/init`：**创建新 active 用户**（201），不得复活旧 `user_id`；
+  - 预测幂等重放仍绑定旧 `deleted_user_id`（仅当请求在未重注册、resolver 仍为 deleted 时）。
+- 若已重注册为 active，则 init 走 active 200 语义。
 
 ## 49.2 预测拒绝映射表（F2）
 

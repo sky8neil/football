@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { newUuid } from "../domain/ids.js";
 import type {
+  DeletedOpenidMapping,
   Match,
   MatchResult,
   Prediction,
@@ -1239,5 +1240,70 @@ describe("InMemoryRepository - job locks (lease)", () => {
     expect(await repo.jobLocks.acquire("lock:round_1", "owner_a", past())).toBe(true);
     expect(await repo.jobLocks.renew("lock:round_1", "owner_a", future())).toBe(false);
     expect(await repo.jobLocks.acquire("lock:round_1", "owner_b", future())).toBe(true);
+  });
+});
+
+describe("InMemoryRepository - deleted_openid_mappings", () => {
+  const NOW2 = new Date("2026-08-10T00:00:00.000Z");
+
+  function makeMapping(overrides: Partial<DeletedOpenidMapping> = {}): DeletedOpenidMapping {
+    return {
+      schema_version: 1,
+      original_openid: `openid_${newUuid()}`,
+      deleted_user_id: newUuid(),
+      deleted_at: NOW2,
+      created_at: NOW2,
+      updated_at: NOW2,
+      ...overrides,
+    } as DeletedOpenidMapping;
+  }
+
+  it("upsert 后可按 original_openid 与 deleted_user_id 查询", async () => {
+    const repo = new InMemoryRepository();
+    const mapping = makeMapping();
+    await repo.deletedOpenidMappings.upsert(mapping);
+    expect(await repo.deletedOpenidMappings.findByOriginalOpenid(mapping.original_openid)).toBe(mapping);
+    expect(await repo.deletedOpenidMappings.findByDeletedUserId(mapping.deleted_user_id)).toBe(mapping);
+    expect(await repo.deletedOpenidMappings.findByOriginalOpenid("missing")).toBeNull();
+  });
+
+  it("同 original_openid 再次 upsert 更新为新的 deleted_user_id（重注册再注销）", async () => {
+    const repo = new InMemoryRepository();
+    const first = makeMapping();
+    await repo.deletedOpenidMappings.upsert(first);
+    const second = makeMapping({
+      original_openid: first.original_openid,
+      deleted_user_id: newUuid(),
+      deleted_at: NOW2,
+      updated_at: NOW2,
+    });
+    await repo.deletedOpenidMappings.upsert(second);
+
+    const current = await repo.deletedOpenidMappings.findByOriginalOpenid(first.original_openid);
+    expect(current).toBe(second);
+    expect(current?.created_at).toBe(first.created_at);
+    expect(current?.deleted_user_id).toBe(second.deleted_user_id);
+    expect(await repo.deletedOpenidMappings.findByDeletedUserId(first.deleted_user_id)).toBeNull();
+  });
+
+  it("事务内 upsert 抛错时回滚，不留 mapping", async () => {
+    const repo = new InMemoryRepository();
+    await expect(
+      repo.withTransaction(async (tx) => {
+        await tx.deletedOpenidMappings.upsert(makeMapping());
+        throw new Error("boom");
+      }),
+    ).rejects.toThrow("boom");
+    expect(await repo.deletedOpenidMappings.findByOriginalOpenid("whatever")).toBeNull();
+    expect(repo).toBeDefined();
+  });
+
+  it("拒绝非 1 的 schema_version 且不落库", async () => {
+    const repo = new InMemoryRepository();
+    const mapping = makeMapping({ schema_version: 0 as 1 });
+    await expect(repo.deletedOpenidMappings.upsert(mapping)).rejects.toMatchObject({
+      code: "INTERNAL_ERROR",
+    });
+    expect(await repo.deletedOpenidMappings.findByOriginalOpenid(mapping.original_openid)).toBeNull();
   });
 });

@@ -27,21 +27,22 @@ function requireAuthenticatedUserId(value: unknown): string {
   return value;
 }
 
-export function getMyLevels(
+export async function getMyLevels(
   service: Pick<LevelsQueryService, "getLevels">,
   input: GetMyLevelsInput,
 ): Promise<GetMyLevelsSuccessResponse> {
   const userId = requireAuthenticatedUserId(input.authenticated_user_id);
-  (input.rate_limiter ?? defaultApiRateLimiter).check(
+  await (input.rate_limiter ?? defaultApiRateLimiter).check(
     "authenticated_reads",
     userId,
     input.server_now,
   );
-  return service.getLevels(userId).then((data) => ({
-    status: 200 as const,
+  const data = await service.getLevels(userId);
+  return {
+    status: 200,
     body: {
       data,
       request_id: input.request_id,
     },
-  }));
+  };
 }

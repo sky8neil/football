@@ -148,4 +148,24 @@ describe("decideFirstSettlement - 首次结算状态决策", () => {
       decideFirstSettlement(makeInput({ regular_home_score: 0, regular_away_score: -1 })),
     ).toEqual({ kind: "not_ready", code: FirstSettlementCode.NotReady });
   });
+  it("无分 waiting（rv=0 + 比分 null）首次结算决策 -> not_ready", () => {
+    expect(
+      decideFirstSettlement(
+        makeInput({ result_version: 0, regular_home_score: null, regular_away_score: null }),
+      ),
+    ).toEqual({ kind: "not_ready", code: FirstSettlementCode.NotReady });
+  });
+
+  it("无分 waiting 且已过 10 分钟保护期仍 -> not_ready", () => {
+    expect(
+      decideFirstSettlement(
+        makeInput({
+          result_version: 0,
+          regular_home_score: null,
+          regular_away_score: null,
+          server_now: new Date(FINISH_AT.getTime() + TEN_MINUTES_MS + 60_000),
+        }),
+      ),
+    ).toEqual({ kind: "not_ready", code: FirstSettlementCode.NotReady });
+  });
 });

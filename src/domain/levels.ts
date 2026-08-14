@@ -84,11 +84,11 @@ export function sampleSizeLevel(
       valid_predictions: validPredictions,
     });
   }
-  const caps =
-    scope === LevelScope.Season ? SEASON_SAMPLE_CAPS : CAREER_SAMPLE_CAPS;
   if (scope !== LevelScope.Season && scope !== LevelScope.Career) {
     throw validationError("未知等级 scope", { scope });
   }
+  const caps =
+    scope === LevelScope.Season ? SEASON_SAMPLE_CAPS : CAREER_SAMPLE_CAPS;
   for (const cap of caps) {
     if (validPredictions <= cap.upTo) {
       return cap.level;

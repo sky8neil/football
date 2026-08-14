@@ -17,6 +17,7 @@
  * 不影响其他事务已提交的数据。
  */
 import {
+  MatchStatus,
   SCHEMA_VERSION,
   type SettlementDocStatus,
   type SettlementItemStatus,
@@ -39,6 +40,7 @@ import type {
   Admin,
   AdminAuditLog,
   Anomaly,
+  DeletedOpenidMapping,
   JobLock,
   LevelHistoryEntry,
   Match,
@@ -116,6 +118,16 @@ export interface UserRepository {
   update(user: User): Promise<void>;
 }
 
+/**
+ * 注销身份映射仓储（D-P1 方案 B，§4.5.1）。
+ * original_openid 唯一；upsert 语义 = 同 original_openid 覆盖为最新 deleted_user_id。
+ */
+export interface DeletedOpenidMappingRepository {
+  findByOriginalOpenid(originalOpenid: string): Promise<DeletedOpenidMapping | null>;
+  findByDeletedUserId(userId: string): Promise<DeletedOpenidMapping | null>;
+  upsert(mapping: DeletedOpenidMapping): Promise<void>;
+}
+
 /** 公开比赛查询所需的球队只读 port；写入由 Provider 同步流程负责。 */
 export interface TeamRepository {
   findById(teamId: string): Promise<Team | null>;
@@ -142,12 +154,32 @@ export interface MatchProviderMappingRepository {
   insert(mapping: MatchProviderMapping): Promise<void>;
 }
 
+/**
+ * 计入"最近成功 Provider 同步"的快照 event_type（33.1 判定 last_successful_sync_at）；
+ * 排除 provider_error / provider_conflict / admin_conflict。
+ */
+const PROVIDER_SYNC_SUCCESS_EVENT_TYPES: ReadonlySet<ProviderSnapshot["event_type"]> = new Set([
+  "discovered",
+  "status_changed",
+  "kickoff_changed",
+  "result_observed",
+  "result_changed",
+]);
+
 /** Provider 关键快照只追加，按实体读取供同步异常与审计排查使用。 */
 export interface ProviderSnapshotRepository {
   findByEntity(
     entityType: ProviderSnapshot["entity_type"],
     entityId: string | null,
   ): Promise<ProviderSnapshot[]>;
+  /**
+   * 返回该实体最近一次成功类 Provider 同步快照（按 created_at 倒序取第一个成功 event_type），
+   * 供 LIVE_SYNC_STALE 决策作为 last_successful_sync_at；无成功记录时返回 null。
+   */
+  findLatestSuccessByEntity(
+    entityType: ProviderSnapshot["entity_type"],
+    entityId: string | null,
+  ): Promise<ProviderSnapshot | null>;
   insert(snapshot: ProviderSnapshot): Promise<void>;
 }
 
@@ -196,6 +228,8 @@ export interface SyncLogRepository {
 export interface MatchRepository {
   findById(matchId: string): Promise<Match | null>;
   findBySeason(seasonId: string): Promise<Match[]>;
+  /** 当前 match_status = live 的比赛（33.1 job 级 live 巡检用）。 */
+  findLive(): Promise<Match[]>;
   insert(match: Match): Promise<void>;
   update(match: Match): Promise<void>;
   /** 只更新结算状态与更新时间，保留并发写入的其它 match 字段。 */
@@ -313,6 +347,7 @@ export interface LevelHistoryRepository {
 
 export interface UnitOfWork {
   users: UserRepository;
+  deletedOpenidMappings: DeletedOpenidMappingRepository;
   /** Provider 同步适配器未实现时由应用层 Fail Closed。 */
   teamProviderMappings?: TeamProviderMappingRepository;
   /** Provider 同步适配器未实现时由应用层 Fail Closed。 */
@@ -356,6 +391,8 @@ interface InMemoryStore {
   syncLogsById: Map<string, SyncLog>;
   usersByOpenid: Map<string, User>;
   usersById: Map<string, User>;
+  deletedOpenidMappingsByOpenid: Map<string, DeletedOpenidMapping>;
+  deletedOpenidMappingsByUserId: Map<string, DeletedOpenidMapping>;
   teamsById: Map<string, Team>;
   teamProviderMappingsByKey: Map<string, TeamProviderMapping>;
   matchProviderMappingsByKey: Map<string, MatchProviderMapping>;
@@ -385,6 +422,8 @@ function createStore(): InMemoryStore {
     syncLogsById: new Map(),
     usersByOpenid: new Map(),
     usersById: new Map(),
+    deletedOpenidMappingsByOpenid: new Map(),
+    deletedOpenidMappingsByUserId: new Map(),
     teamsById: new Map(),
     teamProviderMappingsByKey: new Map(),
     matchProviderMappingsByKey: new Map(),
@@ -478,6 +517,17 @@ export class InMemoryRepository implements AppRepository {
     };
   }
 
+  get deletedOpenidMappings(): DeletedOpenidMappingRepository {
+    const self = this;
+    return {
+      findByOriginalOpenid: (openid) =>
+        self.findDeletedOpenidMappingByOriginalOpenid(openid),
+      findByDeletedUserId: (userId) =>
+        self.findDeletedOpenidMappingByDeletedUserId(userId),
+      upsert: (mapping) => self.upsertDeletedOpenidMapping(mapping),
+    };
+  }
+
   get teams(): TeamRepository {
     const self = this;
     return {
@@ -510,6 +560,8 @@ export class InMemoryRepository implements AppRepository {
     const self = this;
     return {
       findByEntity: (entityType, entityId) => self.findProviderSnapshotsByEntity(entityType, entityId),
+      findLatestSuccessByEntity: (entityType, entityId) =>
+        self.findLatestProviderSyncSuccess(entityType, entityId),
       insert: (snapshot) => self.insertProviderSnapshot(snapshot),
     };
   }
@@ -554,6 +606,7 @@ export class InMemoryRepository implements AppRepository {
     return {
       findById: (matchId) => self.findMatchById(matchId),
       findBySeason: (seasonId) => self.findMatchesBySeason(seasonId),
+      findLive: () => self.findLiveMatches(),
       insert: (match) => self.insertMatch(match),
       update: (match) => self.updateMatch(match),
       updateSettlementStatus: (matchId, settlementStatus, updatedAt) =>
@@ -663,7 +716,56 @@ export class InMemoryRepository implements AppRepository {
     };
   }
 
+  // ---- deleted_openid_mappings ----
+
+  private async findDeletedOpenidMappingByOriginalOpenid(
+    openid: string,
+  ): Promise<DeletedOpenidMapping | null> {
+    return this.store.deletedOpenidMappingsByOpenid.get(openid) ?? null;
+  }
+
+  private async findDeletedOpenidMappingByDeletedUserId(
+    userId: string,
+  ): Promise<DeletedOpenidMapping | null> {
+    return this.store.deletedOpenidMappingsByUserId.get(userId) ?? null;
+  }
+
+  private async upsertDeletedOpenidMapping(
+    mapping: DeletedOpenidMapping,
+  ): Promise<void> {
+    assertSchemaVersion(mapping.schema_version);
+    const old = this.store.deletedOpenidMappingsByOpenid.get(mapping.original_openid) ?? null;
+    if (old !== null && old.deleted_user_id !== mapping.deleted_user_id) {
+      const holder = this.store.deletedOpenidMappingsByUserId.get(old.deleted_user_id);
+      if (holder === old) {
+        this.store.deletedOpenidMappingsByUserId.delete(old.deleted_user_id);
+      }
+    }
+    this.store.deletedOpenidMappingsByOpenid.set(mapping.original_openid, mapping);
+    this.store.deletedOpenidMappingsByUserId.set(mapping.deleted_user_id, mapping);
+    this.logUndo(() => {
+      if (this.store.deletedOpenidMappingsByOpenid.get(mapping.original_openid) !== mapping) {
+        return;
+      }
+      if (old === null) {
+        this.store.deletedOpenidMappingsByOpenid.delete(mapping.original_openid);
+        if (this.store.deletedOpenidMappingsByUserId.get(mapping.deleted_user_id) === mapping) {
+          this.store.deletedOpenidMappingsByUserId.delete(mapping.deleted_user_id);
+        }
+        return;
+      }
+      this.store.deletedOpenidMappingsByOpenid.set(old.original_openid, old);
+      if (this.store.deletedOpenidMappingsByUserId.get(mapping.deleted_user_id) === mapping) {
+        this.store.deletedOpenidMappingsByUserId.set(mapping.deleted_user_id, old);
+      }
+      if (old.deleted_user_id !== mapping.deleted_user_id) {
+        this.store.deletedOpenidMappingsByUserId.set(old.deleted_user_id, old);
+      }
+    });
+  }
+
   // ---- users ----
+
 
   // ---- admins ----
 
@@ -861,6 +963,17 @@ export class InMemoryRepository implements AppRepository {
       .sort((a, b) => b.created_at.getTime() - a.created_at.getTime());
   }
 
+  private async findLatestProviderSyncSuccess(
+    entityType: ProviderSnapshot["entity_type"],
+    entityId: string | null,
+  ): Promise<ProviderSnapshot | null> {
+    const ordered = await this.findProviderSnapshotsByEntity(entityType, entityId);
+    return (
+      ordered.find((snapshot) => PROVIDER_SYNC_SUCCESS_EVENT_TYPES.has(snapshot.event_type)) ??
+      null
+    );
+  }
+
   private async insertProviderSnapshot(snapshot: ProviderSnapshot): Promise<void> {
     assertSchemaVersion(snapshot.schema_version);
     if (this.store.providerSnapshotsById.has(snapshot.snapshot_id)) {
@@ -884,6 +997,12 @@ export class InMemoryRepository implements AppRepository {
 
   private async findMatchesBySeason(seasonId: string): Promise<Match[]> {
     return [...this.store.matchesById.values()].filter((match) => match.season_id === seasonId);
+  }
+
+  private async findLiveMatches(): Promise<Match[]> {
+    return [...this.store.matchesById.values()].filter(
+      (match) => match.match_status === MatchStatus.Live,
+    );
   }
 
   private async insertMatch(match: Match): Promise<void> {

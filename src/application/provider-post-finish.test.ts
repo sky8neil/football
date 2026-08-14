@@ -63,7 +63,8 @@ async function seedMappedMatch(
     prediction_deadline_at: new Date(kickoffAt.getTime() - 10 * 60 * 1000),
     prediction_closed_at: kickoffAt,
     period_anchor_at: kickoffAt,
-    match_status: MatchStatus.Live,
+    match_status: MatchStatus.Finished,
+    finish_detected_at: NOW,
     settlement_status: SettlementStatus.Pending,
     regular_home_score: null,
     regular_away_score: null,
@@ -75,7 +76,6 @@ async function seedMappedMatch(
     settled_result_version: 0,
     result_source: null,
     scoring_rule_version: "scoring_v1",
-    finish_detected_at: null,
     settled_at: null,
     created_at: NOW,
     updated_at: NOW,
@@ -163,6 +163,123 @@ describe("ProviderPostFinishVerifyService", () => {
     });
     expect(getTeams).toHaveBeenCalledTimes(1);
     expect(getFixtures).toHaveBeenCalledTimes(1);
+  });
+
+  it("highFrequencyUntilFirstSettlement 下 finished+settled 场次被过滤出批次", async () => {
+    const repo = new InMemoryRepository();
+    await seedMappedMatch(repo, "1200042");
+    const mapping = await repo.matchProviderMappings.findByProviderAndExternalId(
+      Provider.ApiFootball,
+      "1200042",
+    );
+    const match = await repo.matches.findById(mapping!.match_id);
+    await repo.matches.update({
+      ...match!,
+      match_status: MatchStatus.Finished,
+      settlement_status: SettlementStatus.Settled,
+      regular_home_score: 2,
+      regular_away_score: 1,
+      result_version: 1,
+      settled_result_version: 1,
+      result_source: "provider",
+      settled_at: NOW,
+    });
+    await repo.matchResults.insert({
+      schema_version: 1,
+      match_id: mapping!.match_id,
+      result_version: 1,
+      regular_home_score: 2,
+      regular_away_score: 1,
+      source: "provider",
+      provider_status: "FT",
+      admin_id: null,
+      reason: null,
+      created_at: NOW,
+    });
+    const fixture = makeApiFixture({
+      fixtureId: 1200042,
+      statusShort: "FT",
+      fulltimeHome: 2,
+      fulltimeAway: 1,
+      date: "2026-08-10T12:00:00.000Z",
+      timestamp: Date.parse("2026-08-10T12:00:00.000Z") / 1000,
+      round: "Regular Season - 1",
+    });
+    const getTeams = vi.fn(async () => []);
+    const getFixtures = vi.fn(async () => [fixture] as readonly ApiFootballFixture[]);
+
+    const outcome = await new ProviderPostFinishVerifyService(repo, {
+      getTeams,
+      getFixtures,
+    }).run(NOW);
+
+    expect(outcome).toMatchObject({
+      kind: "completed",
+      fixtures: {
+        kind: "completed",
+        job_type: SyncJobType.PostFinishVerify,
+        items_read: 0,
+        items_changed: 0,
+        items_failed: 0,
+      },
+    });
+    expect(getFixtures).toHaveBeenCalledTimes(1);
+    await expect(repo.matches.findById(mapping!.match_id)).resolves.toMatchObject({
+      match_status: MatchStatus.Finished,
+      settlement_status: SettlementStatus.Settled,
+      result_version: 1,
+    });
+    await expect(repo.matchResults.findLatestByMatch(mapping!.match_id)).resolves.toMatchObject({
+      result_version: 1,
+    });
+  });
+
+  it("highFrequencyUntilFirstSettlement 下 finished+waiting 场次仍进入批次", async () => {
+    const repo = new InMemoryRepository();
+    await seedMappedMatch(repo, "1200043");
+    const mapping = await repo.matchProviderMappings.findByProviderAndExternalId(
+      Provider.ApiFootball,
+      "1200043",
+    );
+    const match = await repo.matches.findById(mapping!.match_id);
+    await repo.matches.update({
+      ...match!,
+      settlement_status: SettlementStatus.Waiting,
+    });
+    const fixture = makeApiFixture({
+      fixtureId: 1200043,
+      statusShort: "FT",
+      fulltimeHome: 2,
+      fulltimeAway: 1,
+      date: "2026-08-10T12:00:00.000Z",
+      timestamp: Date.parse("2026-08-10T12:00:00.000Z") / 1000,
+      round: "Regular Season - 1",
+    });
+    const getTeams = vi.fn(async () => []);
+    const getFixtures = vi.fn(async () => [fixture] as readonly ApiFootballFixture[]);
+
+    const outcome = await new ProviderPostFinishVerifyService(repo, {
+      getTeams,
+      getFixtures,
+    }).run(NOW);
+
+    expect(outcome).toMatchObject({
+      kind: "completed",
+      fixtures: {
+        kind: "completed",
+        job_type: SyncJobType.PostFinishVerify,
+        items_read: 1,
+        items_changed: 1,
+        items_failed: 0,
+      },
+    });
+    await expect(repo.matches.findById(mapping!.match_id)).resolves.toMatchObject({
+      match_status: MatchStatus.Finished,
+      settlement_status: SettlementStatus.Waiting,
+      result_version: 1,
+      regular_home_score: 2,
+      regular_away_score: 1,
+    });
   });
 
   it("post_finish_verify 锁被占用时跳过整个任务，不调用 Provider client", async () => {

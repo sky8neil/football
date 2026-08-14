@@ -66,21 +66,41 @@ function assertResultVersionShape(match: Match): void {
 }
 
 function nextSettlementStatus(match: Match): SettlementStatus {
-  const desired =
-    match.settled_result_version > 0
-      ? SettlementStatus.Correcting
-      : SettlementStatus.Waiting;
-  if (desired === match.settlement_status) {
-    return desired;
+  if (match.settled_result_version > 0) {
+    if (match.settlement_status === SettlementStatus.Correcting) {
+      return SettlementStatus.Correcting;
+    }
+    if (!validateSettlementTransition(match.settlement_status, SettlementStatus.Correcting)) {
+      throw conflictError(
+        "MATCH_STATE_CONFLICT",
+        "管理员赛果修正不能绕过结算状态机",
+        { from: match.settlement_status, to: SettlementStatus.Correcting },
+      );
+    }
+    return SettlementStatus.Correcting;
   }
-  if (!validateSettlementTransition(match.settlement_status, desired)) {
-    throw conflictError(
-      "MATCH_STATE_CONFLICT",
-      "管理员赛果修正不能绕过结算状态机",
-      { from: match.settlement_status, to: desired },
-    );
+
+  // settled_result_version == 0（§30.3：保持/进入 waiting）：settling/failed 保持。
+  if (match.settlement_status === SettlementStatus.Pending) {
+    if (!validateSettlementTransition(SettlementStatus.Pending, SettlementStatus.Waiting)) {
+      throw conflictError(
+        "MATCH_STATE_CONFLICT",
+        "管理员赛果修正不能绕过结算状态机",
+        { from: match.settlement_status, to: SettlementStatus.Waiting },
+      );
+    }
+    return SettlementStatus.Waiting;
   }
-  return desired;
+  if (
+    match.settlement_status === SettlementStatus.Waiting ||
+    match.settlement_status === SettlementStatus.Settling ||
+    match.settlement_status === SettlementStatus.Failed
+  ) {
+    return match.settlement_status;
+  }
+  throw conflictError("MATCH_STATE_CONFLICT", "管理员首次赛果与当前结算状态不一致", {
+    from: match.settlement_status,
+  });
 }
 
 function auditValue(next: {
@@ -144,6 +164,7 @@ export class AdminResultCorrectionService {
         match.match_status,
         match.settlement_status,
         ResultSource.Admin,
+        match.settled_result_version,
       );
       const settlementStatus = nextSettlementStatus(match);
       const result: MatchResult = {

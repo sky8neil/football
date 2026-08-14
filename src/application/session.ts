@@ -8,7 +8,7 @@
  * - 并发唯一冲突（uk_openid 竞争）：回读胜者，返回现有用户。
  */
 import { SCHEMA_VERSION, UserStatus } from "../domain/enums.js";
-import { conflictError, validationError } from "../domain/errors.js";
+import { internalError, validationError } from "../domain/errors.js";
 import { newUuid } from "../domain/ids.js";
 import type { User } from "../domain/types.js";
 import {
@@ -116,12 +116,17 @@ export class SessionService {
 
     const existing = await this.repo.users.findByOpenid(input.openid);
     if (existing !== null) {
-      if (existing.status !== UserStatus.Active) {
-        throw conflictError("USER_DELETED", "该账号已被注销");
+      if (existing.status === UserStatus.Active) {
+        return { user: existing, created: false };
       }
-      return { user: existing, created: false };
+      // D-P1 方案 B：正常模型下 deleted 用户的 openid 已是墓碑值 "deleted:<user_id>"，
+      // 不可能等于可信微信 openid。若仍命中（迁移前脏数据），Fail Closed：
+      // 不复活旧账号、不再 409；数据修复由迁移（§6.10）负责。
+      throw internalError("session init 命中非 active 用户 openid（脏数据，需先迁移）");
     }
 
+    // 无 active 用户：无论 mapping 是否存在都创建全新 active 用户（201 重注册）。
+    // mapping 继续指向旧 deleted_user_id；active 优先保证新用户不被误判 deleted。
     const user = buildUser(input.openid, input.nickname, serverNow);
     try {
       await this.repo.users.insert(user);
@@ -129,7 +134,7 @@ export class SessionService {
     } catch (err) {
       if (err instanceof UniqueConstraintError) {
         const winner = await this.repo.users.findByOpenid(input.openid);
-        if (winner !== null) {
+        if (winner !== null && winner.status === UserStatus.Active) {
           return { user: winner, created: false };
         }
       }

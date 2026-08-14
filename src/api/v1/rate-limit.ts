@@ -28,7 +28,11 @@ export const RATE_LIMIT_DEFAULTS = {
 export type RateLimitScope = keyof typeof RATE_LIMIT_DEFAULTS;
 
 export interface RateLimiter {
-  check(scope: RateLimitScope, identity: string, serverNow: Date): void;
+  check(
+    scope: RateLimitScope,
+    identity: string,
+    serverNow: Date,
+  ): void | Promise<void>;
 }
 
 interface WindowState {

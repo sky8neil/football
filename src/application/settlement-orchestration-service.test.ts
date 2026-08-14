@@ -257,6 +257,7 @@ describe("SettlementOrchestrationService 第 15.9 节 correction 队列推进", 
           let matchReadCount = 0;
           return fn({
             users: tx.users,
+            deletedOpenidMappings: tx.deletedOpenidMappings,
             matches: {
               ...tx.matches,
               findById: async (mid: string) => {

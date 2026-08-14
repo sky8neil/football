@@ -15,6 +15,7 @@ import {
   AnomalyStatus,
   MatchStatus,
   Provider,
+  Result,
   ResultSource,
   SettlementDocStatus,
   SettlementStatus,
@@ -26,6 +27,10 @@ import type { NormalizedFixture } from "../provider/fixture-mapper.js";
 import { ProviderResultSyncService } from "./provider-result-sync.js";
 import { FirstSettlementService } from "./first-settlement-service.js";
 import { CorrectionSettlementService } from "./correction-settlement-service.js";
+import {
+  createAtomicSettlementItemWorker,
+  SettlementItemApplicationService,
+} from "./settlement-item-application-service.js";
 import { continuePendingCorrections } from "./settlement-orchestration-service.js";
 import { nextSettlementVersion } from "./result-correction-plan.js";
 
@@ -241,7 +246,7 @@ describe("H. result_version（规范 44-H / 12）", () => {
     });
   });
 
-  it("H58 waiting 内 v1->v2->v3，首次 settlement 可直接结算 v3", async () => {
+  it("H58 waiting 内 v1->v2->v3，带 prediction + 原子 worker 的首次 settlement 可直接结算 v3", async () => {
     const waiting = makeMatch({
       match_status: MatchStatus.Finished,
       settlement_status: SettlementStatus.Waiting,
@@ -256,10 +261,49 @@ describe("H. result_version（规范 44-H / 12）", () => {
     await repo.matchResults.insert(makeResult({ result_version: 2, regular_home_score: 1, regular_away_score: 1 }));
     await repo.matchResults.insert(makeResult({ result_version: 3, regular_home_score: 0, regular_away_score: 1 }));
 
-    const service = new FirstSettlementService(repo, async () => {});
+    const userId = newUuid();
+    await repo.users.insert({
+      schema_version: 1,
+      user_id: userId,
+      openid: "openid_h58",
+      unionid: null,
+      nickname: "H58",
+      favorite_team_id: null,
+      status: "active",
+      career_points: 0,
+      career_valid_predictions: 0,
+      career_wdl_hits: 0,
+      career_exact_hits: 0,
+      career_level: 1,
+      career_best_level: 1,
+      deleted_at: null,
+      created_at: NOW,
+      updated_at: NOW,
+    });
+    await repo.predictions.insert({
+      schema_version: 1,
+      prediction_id: newUuid(),
+      user_id: userId,
+      match_id: MATCH_ID,
+      idempotency_key: newUuid(),
+      pred_home_score: 0,
+      pred_away_score: 1,
+      derived_result: Result.Away,
+      submitted_at: NOW,
+      scoring_rule_version: "scoring_v1",
+      match_score: null,
+      wdl_hit: null,
+      exact_hit: null,
+      applied_result_version: 0,
+      created_at: NOW,
+      updated_at: NOW,
+    });
+
+    const worker = createAtomicSettlementItemWorker(new SettlementItemApplicationService(repo));
+    const service = new FirstSettlementService(repo, worker);
     const outcome = await service.start(MATCH_ID, NOW, false);
 
-    expect(outcome).toMatchObject({ kind: "started" });
+    expect(outcome).toMatchObject({ kind: "started", processed_count: 1 });
     const settlements = await repo.settlements.findByMatch(MATCH_ID);
     expect(settlements).toHaveLength(1);
     expect(settlements[0]).toMatchObject({
@@ -270,6 +314,20 @@ describe("H. result_version（规范 44-H / 12）", () => {
     await expect(repo.matches.findById(MATCH_ID)).resolves.toMatchObject({
       settlement_status: SettlementStatus.Settled,
       settled_result_version: 3,
+    });
+    const applied = await repo.predictions.findByMatch(MATCH_ID);
+    expect(applied).toHaveLength(1);
+    expect(applied[0]).toMatchObject({
+      applied_result_version: 3,
+      match_score: 12,
+      wdl_hit: true,
+      exact_hit: true,
+    });
+    expect(await repo.users.findById(userId)).toMatchObject({
+      career_points: 12,
+      career_valid_predictions: 1,
+      career_wdl_hits: 1,
+      career_exact_hits: 1,
     });
   });
 

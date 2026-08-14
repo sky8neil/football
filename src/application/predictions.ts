@@ -133,11 +133,8 @@ export class PredictionService {
           throw notFoundError("MATCH");
         }
 
-        // 49.2 优先级 2（在幂等重放之前，已注销用户不重放历史预测）。
-        if (user.status !== UserStatus.Active) {
-          throw conflictError("USER_DELETED", REJECT_MESSAGE.USER_DELETED);
-        }
-
+        // §49.2 文末 / §8.6：同 key+同 payload 的幂等重放优先于失败表；
+        // USER_DELETED（优先级 2）只约束新提交，不挡重放。
         const byKey = await tx.predictions.findByUserAndIdempotencyKey(
           userId,
           idempotencyKey,
@@ -149,6 +146,11 @@ export class PredictionService {
           throw conflictError("IDEMPOTENCY_KEY_REUSED", "幂等键已被不同的预测请求使用", {
             idempotency_key: idempotencyKey,
           });
+        }
+
+        // 非重放的新提交：走 49.2 失败表（优先级 2 用户已注销）。
+        if (user.status !== UserStatus.Active) {
+          throw conflictError("USER_DELETED", REJECT_MESSAGE.USER_DELETED);
         }
 
         const byMatch = await tx.predictions.findByUserAndMatch(userId, matchId);

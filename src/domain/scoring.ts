@@ -76,10 +76,6 @@ export function calculateMatchScore(
   const exactHit =
     prediction.pred_home_score === result.regular_home_score &&
     prediction.pred_away_score === result.regular_away_score;
-  const wdlHit = !exactHit && compareResult(
-    prediction,
-    result,
-  );
 
   if (exactHit) {
     return {
@@ -88,7 +84,7 @@ export function calculateMatchScore(
       exact_hit: true,
     };
   }
-  if (wdlHit) {
+  if (compareResult(prediction, result)) {
     return {
       match_score: MatchScoreValue.WdlHit,
       wdl_hit: true,

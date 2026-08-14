@@ -36,6 +36,7 @@ export type ProviderLiveMatchOutcome =
 /** 贯通 32.4 的 T-2h 到 finished 任务入口；Provider client 由调用方注入。 */
 export class ProviderLiveMatchService {
   private readonly teamSync: ProviderTeamSyncService;
+  private readonly fixtureSync: ProviderFixtureSyncService;
   private readonly fixtureJob: ProviderFixtureSyncJobService;
   private readonly liveMatchLoader: ProviderFixtureBatchLoader;
 
@@ -45,10 +46,11 @@ export class ProviderLiveMatchService {
     retryOptions: ProviderFixtureSyncRetryOptions = {},
   ) {
     this.teamSync = new ProviderTeamSyncService(repo, client);
+    this.fixtureSync = new ProviderFixtureSyncService(repo);
     this.liveMatchLoader = createLiveMatchLoader(client);
     this.fixtureJob = new ProviderFixtureSyncJobService(
       repo,
-      new ProviderFixtureSyncService(repo),
+      this.fixtureSync,
       retryOptions,
     );
   }
@@ -70,6 +72,8 @@ export class ProviderLiveMatchService {
     if (teams === null) {
       throw internalError("live_match 已完成但未记录球队同步结果");
     }
+    // P0-1（33.1）：批次完成后巡检库内仍为 live 的 match，覆盖本批未触达的 stale。
+    await this.fixtureSync.patrolLiveMatches(serverNow);
     return { kind: "completed", teams, fixtures };
   }
 }

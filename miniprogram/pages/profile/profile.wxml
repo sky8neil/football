@@ -1,0 +1,40 @@
+<view class="page">
+  <view wx:if="{{state === 'loading'}}" class="loading"></view>
+  <view wx:elif="{{state === 'unauthorized'}}" class="error">{{errorMessage}}</view>
+  <view wx:elif="{{state === 'userDeleted'}}" class="error">{{errorMessage}}</view>
+  <view wx:elif="{{state === 'userNotFound'}}" class="error">{{errorMessage}}</view>
+  <view wx:elif="{{state === 'rateLimited'}}" class="error">{{errorMessage}}</view>
+  <view wx:elif="{{state === 'error'}}" class="error">
+    <view>{{errorMessage}}</view>
+    <button bindtap="onRetry">retry</button>
+  </view>
+  <view wx:elif="{{state === 'ready'}}">
+    <view class="card">
+      <view>资料</view>
+      <view>{{nickname}}</view>
+      <view>{{favoriteTeamText}}</view>
+      <view>{{careerPoints}}</view>
+      <view>{{careerValidPredictions}}</view>
+      <view>{{careerWdlHits}}</view>
+      <view>{{careerExactHits}}</view>
+      <view>{{careerWdlAccuracyText}}</view>
+      <view>{{careerLevel}}</view>
+      <view>{{careerBestLevel}}</view>
+    </view>
+    <view class="card">
+      <view>等级</view>
+      <view>{{seasonId}}</view>
+      <view>{{seasonValidPredictions}}</view>
+      <view>{{seasonWdlHits}}</view>
+      <view>{{seasonWdlAccuracyText}}</view>
+      <view>{{seasonLevel}}</view>
+      <view>{{seasonBestLevel}}</view>
+      <view>{{levelsCareerValidPredictions}}</view>
+      <view>{{levelsCareerWdlHits}}</view>
+      <view>{{levelsCareerWdlAccuracyText}}</view>
+      <view>{{levelsCareerLevel}}</view>
+      <view>{{levelsCareerBestLevel}}</view>
+    </view>
+    <button bindtap="onUnlocksTap">解锁</button>
+  </view>
+</view>

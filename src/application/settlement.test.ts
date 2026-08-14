@@ -204,13 +204,12 @@ describe("assertResultVersionOrder - 版本顺序校验", () => {
     expect(() => assertResultVersionOrder(1, 2)).not.toThrow();
   });
 
-  it("applied=0 直接 apply v2 抛 RESULT_VERSION_SKIPPED（不得跳过 v1）", () => {
-    expect(captureError(() => assertResultVersionOrder(0, 2))).toMatchObject({
-      code: "RESULT_VERSION_SKIPPED",
-    });
+  it("§15.2 首次应用：applied=0 可直接 apply v2/v3（old=0 视为尚未结算，直达最新版）", () => {
+    expect(() => assertResultVersionOrder(0, 2)).not.toThrow();
+    expect(() => assertResultVersionOrder(0, 3)).not.toThrow();
   });
 
-  it("applied=1 直接 apply v3 抛 RESULT_VERSION_SKIPPED（不得跳过 v2）", () => {
+  it("§15.3 已 applied>0 后直接 apply v3 抛 RESULT_VERSION_SKIPPED（不得跳版本）", () => {
     expect(captureError(() => assertResultVersionOrder(1, 3))).toMatchObject({
       code: "RESULT_VERSION_SKIPPED",
     });
@@ -222,11 +221,25 @@ describe("assertResultVersionOrder - 版本顺序校验", () => {
     });
   });
 
-  it("apply 时顺序校验：跳过 v1 抛 RESULT_VERSION_SKIPPED", () => {
+  it("幂等重放（applied=2 apply v2）通过", () => {
+    expect(() => assertResultVersionOrder(2, 2)).not.toThrow();
+  });
+
+  it("apply 时首次 0 -> v3 成功且 applied_result_version=3（§15.2）", () => {
     const prediction = makePrediction();
     const delta = computeSettlementItemDelta(prediction, result, V1);
+    const applied = applySettlementItemDelta(prediction, 3, delta);
+    expect(applied.applied_result_version).toBe(3);
+    expect(applied.match_score).toBe(MatchScoreValue.ExactHit);
+    expect(applied.wdl_hit).toBe(true);
+    expect(applied.exact_hit).toBe(true);
+  });
+
+  it("apply 时已 applied=1 直接 apply v3 抛 RESULT_VERSION_SKIPPED（§15.3）", () => {
+    const prediction = makePrediction(appliedWdl(1));
+    const delta = computeSettlementItemDelta(prediction, result, V1);
     expect(
-      captureError(() => applySettlementItemDelta(prediction, 2, delta)),
+      captureError(() => applySettlementItemDelta(prediction, 3, delta)),
     ).toMatchObject({
       code: "RESULT_VERSION_SKIPPED",
     });

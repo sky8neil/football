@@ -101,6 +101,11 @@ describe("Provider schedule discovery", () => {
         event_type: "discovered",
         payload: { fixture },
       }),
+      expect.objectContaining({
+        provider_entity_id: "1100100",
+        event_type: "status_changed",
+        payload: { sync: "success" },
+      }),
     ]);
   });
 

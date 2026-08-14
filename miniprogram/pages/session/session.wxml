@@ -1,0 +1,12 @@
+<view class="page">
+  <input
+    class="nickname"
+    value="{{nickname}}"
+    bindinput="onNicknameInput"
+    disabled="{{loading}}"
+  />
+  <button bindtap="onSubmit" disabled="{{loading}}" loading="{{loading}}">init</button>
+  <view wx:if="{{errorMessage}}" class="error">{{errorMessage}}</view>
+  <button wx:if="{{canRetry}}" bindtap="onRetry" disabled="{{loading}}">retry</button>
+  <button wx:if="{{canSkip}}" bindtap="onSkip">matches</button>
+</view>

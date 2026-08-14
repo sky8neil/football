@@ -57,7 +57,7 @@ export const SYNC_RETRY_V1 = {
 /** 第 attempt 次重试（0 起）对应的退避延迟分钟数；超出上限返回 null（不再自动重试）。 */
 export function nextRetryDelayMinutes(attempt: number): number | null {
   const delays = FIXED_CONFIG_V1.SYNC_RETRY_DELAYS_MINUTES;
-  if (attempt >= delays.length) {
+  if (attempt >= delays.length || attempt >= FIXED_CONFIG_V1.SYNC_MAX_RETRIES) {
     return null;
   }
   return delays[attempt] ?? null;

@@ -28,8 +28,10 @@ describe("结算状态机（规范 11 + 49.3）", () => {
       [S.Settling, S.Settled],
       [S.Settling, S.Failed],
       [S.Settling, S.Correcting],
+      [S.Settling, S.Voided],
       [S.Failed, S.Settling],
       [S.Failed, S.Correcting],
+      [S.Failed, S.Voided],
       [S.Settled, S.Correcting],
       [S.Correcting, S.Settled],
       [S.Correcting, S.Failed],
@@ -47,11 +49,9 @@ describe("结算状态机（规范 11 + 49.3）", () => {
       [S.Waiting, S.Settled],
       [S.Waiting, S.Correcting],
       [S.Waiting, S.Failed],
-      [S.Settling, S.Voided],
       [S.Settled, S.Settled],
       [S.Settled, S.Voided],
       [S.Correcting, S.Voided],
-      [S.Failed, S.Voided],
       [S.Voided, S.Waiting],
       [S.Voided, S.Settled],
     ];
@@ -60,11 +60,16 @@ describe("结算状态机（规范 11 + 49.3）", () => {
     }
   });
 
-  it("11.3 cancelled 且尚未 settled => voided", () => {
+  it("11.3/49.15 cancelled 且 settlement 未进入已结算 => voided", () => {
     expect(shouldVoidOnCancel(MatchStatus.Cancelled, S.Pending)).toBe(true);
     expect(shouldVoidOnCancel(MatchStatus.Cancelled, S.Waiting)).toBe(true);
     expect(shouldVoidOnCancel(MatchStatus.Cancelled, S.Settling)).toBe(true);
     expect(shouldVoidOnCancel(MatchStatus.Cancelled, S.Failed)).toBe(true);
+    expect(shouldVoidOnCancel(MatchStatus.Cancelled, S.Voided)).toBe(true);
+  });
+
+  it("49.15 cancelled 时 correcting 属已结算范畴，不自动 voided", () => {
+    expect(shouldVoidOnCancel(MatchStatus.Cancelled, S.Correcting)).toBe(false);
   });
 
   it("11.3 已 settled 后取消不算正常业务（不自动 voided）", () => {

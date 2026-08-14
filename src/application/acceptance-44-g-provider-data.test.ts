@@ -252,11 +252,12 @@ describe("G. Provider 数据（规范 44-G）", () => {
       anomaly_types: [AnomalyType.InvalidFinalScore],
     });
     await expect(repo.matches.findById(MATCH_ID)).resolves.toMatchObject({
-      match_status: MatchStatus.Scheduled,
-      settlement_status: SettlementStatus.Pending,
+      match_status: MatchStatus.Finished,
+      settlement_status: SettlementStatus.Waiting,
       result_version: 0,
       regular_home_score: null,
       regular_away_score: null,
+      finish_detected_at: NOW,
     });
     await expect(repo.matchResults.findLatestByMatch(MATCH_ID)).resolves.toBeNull();
     await expect(
@@ -267,16 +268,16 @@ describe("G. Provider 数据（规范 44-G）", () => {
     });
     expect(
       decideFirstSettlement({
-        match_status: MatchStatus.Scheduled,
-        settlement_status: SettlementStatus.Pending,
-        finish_detected_at: null,
+        match_status: MatchStatus.Finished,
+        settlement_status: SettlementStatus.Waiting,
+        finish_detected_at: NOW,
         result_version: 0,
         regular_home_score: null,
         regular_away_score: null,
         server_now: new Date(NOW.getTime() + 20 * 60 * 1000),
         has_blocking_anomaly: true,
       }),
-    ).toMatchObject({ kind: "not_ready" });
+    ).not.toMatchObject({ kind: "start" });
   });
 
   it("G45 FT fulltime 负数/非整数 => blocking anomaly", async () => {

@@ -826,6 +826,104 @@ describe("ProviderStatusSyncService", () => {
     );
   });
 
+  it("settling 结算中的比赛收到 cancelled 时进入 voided（49.15 例外边）", async () => {
+    const { repo } = await setup(
+      makeMatch({
+        match_status: MatchStatus.Postponed,
+        settlement_status: SettlementStatus.Settling,
+        prediction_closed_at: FIRST_NOW,
+        period_anchor_at: new Date("2026-08-09T01:00:00.000Z"),
+      }),
+    );
+    const service = new ProviderStatusSyncService(repo);
+
+    await expect(
+      service.applyCancelledFixture(
+        makeCancelledFixture(),
+        { provider: "fixture", settlement: "settling" },
+        SECOND_NOW,
+      ),
+    ).resolves.toEqual({
+      kind: "applied",
+      match_id: MATCH_ID,
+      match_status: MatchStatus.Cancelled,
+    });
+
+    await expect(repo.matches.findById(MATCH_ID)).resolves.toMatchObject({
+      match_status: MatchStatus.Cancelled,
+      settlement_status: SettlementStatus.Voided,
+    });
+    await expect(
+      repo.anomalies.findByKey(`${MATCH_ID}:${AnomalyType.ProviderStateConflict}`),
+    ).resolves.toBeNull();
+  });
+
+  it("failed 结算失败重试中的比赛收到 cancelled 时进入 voided（49.15 例外边）", async () => {
+    const { repo } = await setup(
+      makeMatch({
+        match_status: MatchStatus.Scheduled,
+        settlement_status: SettlementStatus.Failed,
+        prediction_closed_at: FIRST_NOW,
+        period_anchor_at: new Date("2026-08-09T01:00:00.000Z"),
+      }),
+    );
+    const service = new ProviderStatusSyncService(repo);
+
+    await expect(
+      service.applyCancelledFixture(
+        makeCancelledFixture(),
+        { provider: "fixture", settlement: "failed" },
+        SECOND_NOW,
+      ),
+    ).resolves.toEqual({
+      kind: "applied",
+      match_id: MATCH_ID,
+      match_status: MatchStatus.Cancelled,
+    });
+
+    await expect(repo.matches.findById(MATCH_ID)).resolves.toMatchObject({
+      match_status: MatchStatus.Cancelled,
+      settlement_status: SettlementStatus.Voided,
+    });
+  });
+
+  it("correcting 已结算修正中的比赛收到 cancelled 时保留现状并记录 blocking anomaly", async () => {
+    const correcting = makeMatch({
+      match_status: MatchStatus.Finished,
+      settlement_status: SettlementStatus.Correcting,
+      settled_result_version: 1,
+      result_version: 1,
+      regular_home_score: 2,
+      regular_away_score: 1,
+      result_source: "provider",
+      prediction_closed_at: FIRST_NOW,
+      period_anchor_at: new Date("2026-08-09T01:00:00.000Z"),
+      finish_detected_at: FIRST_NOW,
+      settled_at: FIRST_NOW,
+    });
+    const { repo } = await setup(correcting);
+    const service = new ProviderStatusSyncService(repo);
+
+    await expect(
+      service.applyCancelledFixture(
+        makeCancelledFixture(),
+        { status: "CANC", settlement: "correcting" },
+        SECOND_NOW,
+      ),
+    ).resolves.toEqual({
+      kind: "conflict",
+      match_id: MATCH_ID,
+      match_status: MatchStatus.Finished,
+      anomaly_type: AnomalyType.ProviderStateConflict,
+    });
+    await expect(repo.matches.findById(MATCH_ID)).resolves.toEqual(correcting);
+    await expect(repo.anomalies.findByKey(`${MATCH_ID}:${AnomalyType.ProviderStateConflict}`))
+      .resolves.toMatchObject({
+        blocking: true,
+        status: AnomalyStatus.Open,
+      });
+  });
+
   it("scheduled -> abandoned 时保留 pending 结算，不写正式结果", async () => {
     const { repo, match } = await setup();
     const service = new ProviderStatusSyncService(repo);

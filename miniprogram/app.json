@@ -1,0 +1,38 @@
+{
+  "pages": [
+    "pages/session/session",
+    "pages/matches/matches",
+    "pages/match-detail/match-detail",
+    "pages/my-predictions/my-predictions",
+    "pages/profile/profile",
+    "pages/unlocks/unlocks",
+    "pages/rankings/rankings"
+  ],
+  "window": {
+    "navigationBarTitleText": "",
+    "navigationBarBackgroundColor": "#ffffff",
+    "navigationBarTextStyle": "black",
+    "backgroundTextStyle": "light"
+  },
+  "tabBar": {
+    "list": [
+      {
+        "pagePath": "pages/matches/matches",
+        "text": "比赛"
+      },
+      {
+        "pagePath": "pages/my-predictions/my-predictions",
+        "text": "我的预测"
+      },
+      {
+        "pagePath": "pages/rankings/rankings",
+        "text": "排行榜"
+      },
+      {
+        "pagePath": "pages/profile/profile",
+        "text": "我的"
+      }
+    ]
+  },
+  "sitemapLocation": "sitemap.json"
+}

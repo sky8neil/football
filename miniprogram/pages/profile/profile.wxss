@@ -1,0 +1,14 @@
+.page {
+  padding: 32rpx;
+}
+
+.card {
+  background: #fff;
+  padding: 24rpx;
+  margin-bottom: 16rpx;
+}
+
+.loading,
+.error {
+  min-height: 80rpx;
+}

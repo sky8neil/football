@@ -373,6 +373,7 @@ describe("FirstSettlementService.start - 成功路径", () => {
         repo.withTransaction((tx) =>
           fn({
             users: tx.users,
+            deletedOpenidMappings: tx.deletedOpenidMappings,
             matches: {
               ...tx.matches,
               update: async (updated: Match) => {
@@ -428,6 +429,7 @@ describe("FirstSettlementService.start - 成功路径", () => {
         repo.withTransaction((tx) =>
           fn({
             users: tx.users,
+            deletedOpenidMappings: tx.deletedOpenidMappings,
             matches: {
               ...tx.matches,
               update: async (updated: Match) => {
@@ -614,6 +616,7 @@ describe("FirstSettlementService.start - 并发锁", () => {
     const { repo, match } = await setup();
     const lockedRepo: AppRepository = {
       users: repo.users,
+      deletedOpenidMappings: repo.deletedOpenidMappings,
       matches: repo.matches,
       predictions: repo.predictions,
       matchResults: repo.matchResults,
@@ -625,6 +628,7 @@ describe("FirstSettlementService.start - 并发锁", () => {
         repo.withTransaction((tx) =>
           fn({
             users: tx.users,
+            deletedOpenidMappings: tx.deletedOpenidMappings,
             matches: tx.matches,
             predictions: tx.predictions,
             matchResults: tx.matchResults,
@@ -747,6 +751,7 @@ describe("FirstSettlementService.start - 并发锁", () => {
       const baseLocks = repo.jobLocks;
       const failingRenewRepo: AppRepository = {
         users: repo.users,
+      deletedOpenidMappings: repo.deletedOpenidMappings,
         matches: repo.matches,
         predictions: repo.predictions,
         matchResults: repo.matchResults,

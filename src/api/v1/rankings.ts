@@ -96,7 +96,7 @@ export async function getRankings(
 ): Promise<GetRankingsSuccessResponse> {
   const query = validateRankingsQuery(input.query);
   const publicSource = requirePublicSource(input.public_source);
-  (input.rate_limiter ?? defaultApiRateLimiter).check(
+  await (input.rate_limiter ?? defaultApiRateLimiter).check(
     "public_reads",
     publicSource,
     input.server_now,

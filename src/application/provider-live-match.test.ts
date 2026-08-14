@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { MVP_SEASON } from "../domain/config.js";
 import {
+  AnomalyStatus,
+  AnomalyType,
   MatchStatus,
   Provider,
   SettlementStatus,
@@ -161,6 +163,59 @@ describe("ProviderLiveMatchService", () => {
     });
     expect(getTeams).toHaveBeenCalledTimes(1);
     expect(getFixtures).toHaveBeenCalledTimes(1);
+  });
+
+  it("批次未触达的库内 live match 在 job 后巡检评估 LIVE_SYNC_STALE", async () => {
+    const repo = new InMemoryRepository();
+    await seedMappedMatch(repo, "1200032");
+    const mapping = await repo.matchProviderMappings.findByProviderAndExternalId(
+      Provider.ApiFootball,
+      "1200032",
+    );
+    const match = await repo.matches.findById(mapping!.match_id);
+    const staleSince = new Date(NOW.getTime() - 11 * 60 * 1000);
+    await repo.matches.update({
+      ...match!,
+      match_status: MatchStatus.Live,
+      period_anchor_at: match!.kickoff_at,
+    });
+    await repo.providerSnapshots.insert({
+      schema_version: 1,
+      snapshot_id: newUuid(),
+      provider: Provider.ApiFootball,
+      entity_type: "match",
+      entity_id: match!.match_id,
+      provider_entity_id: "1200032",
+      event_type: "status_changed",
+      payload: { sync: "success" },
+      created_at: staleSince,
+    });
+
+    const getTeams = vi.fn(async () => []);
+    const getFixtures = vi.fn(async () => [] as readonly ApiFootballFixture[]);
+
+    const outcome = await new ProviderLiveMatchService(repo, {
+      getTeams,
+      getFixtures,
+    }).run(NOW);
+
+    expect(outcome).toMatchObject({
+      kind: "completed",
+      fixtures: {
+        kind: "completed",
+        job_type: SyncJobType.LiveMatch,
+        items_read: 0,
+        items_changed: 0,
+        items_failed: 0,
+      },
+    });
+    await expect(
+      repo.anomalies.findByKey(`${match!.match_id}:${AnomalyType.LiveSyncStale}`),
+    ).resolves.toMatchObject({
+      status: AnomalyStatus.Open,
+      blocking: false,
+      details: { last_successful_sync_at: staleSince.toISOString() },
+    });
   });
 
   it("live_match 锁被占用时跳过整个任务，不调用 Provider client", async () => {

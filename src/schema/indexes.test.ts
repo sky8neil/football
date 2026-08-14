@@ -77,6 +77,12 @@ describe("第 22 节数据库索引定义", () => {
         unique: true,
       },
       { collection: "job_locks", name: "uk_lock_key", fields: ["lock_key"], unique: true },
+      {
+        collection: "deleted_openid_mappings",
+        name: "uk_deleted_openid",
+        fields: ["original_openid"],
+        unique: true,
+      },
     ];
 
     const actualKeys = new Set(UNIQUE_INDEXES.map(keyOf));

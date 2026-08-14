@@ -1,4 +1,4 @@
-import { TeamStatus, UserStatus } from "../domain/enums.js";
+import { SCHEMA_VERSION, TeamStatus, UserStatus } from "../domain/enums.js";
 import {
   conflictError,
   internalError,
@@ -134,6 +134,22 @@ export class ProfileMutationService {
       if (user.status !== UserStatus.Active) {
         throw conflictError("USER_DELETED", "该账号已被注销");
       }
+      // 4.5 墓碑值不可作为 active 用户的事实身份；命中即内部数据异常。
+      if (user.openid.startsWith("deleted:")) {
+        throw internalError("active 用户 openid 使用了 deleted: 墓碑前缀");
+      }
+
+      // D-P1 方案 B：先写/更新注销身份映射（original_openid → 本 user_id），
+      // 再墓碑化 users 主记录；同一事务内 upsert 保证 deleted 解析不丢窗口。
+      const existing = await tx.deletedOpenidMappings.findByOriginalOpenid(user.openid);
+      await tx.deletedOpenidMappings.upsert({
+        schema_version: SCHEMA_VERSION,
+        original_openid: user.openid,
+        deleted_user_id: user.user_id,
+        deleted_at: serverNow,
+        created_at: existing?.created_at ?? serverNow,
+        updated_at: serverNow,
+      });
 
       await tx.users.update({
         ...user,

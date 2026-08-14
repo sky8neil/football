@@ -1,0 +1,19 @@
+{
+  "description": "",
+  "packOptions": {
+    "ignore": [],
+    "include": []
+  },
+  "setting": {
+    "urlCheck": false,
+    "es6": true,
+    "postcss": true,
+    "minified": true,
+    "enhance": true
+  },
+  "compileType": "miniprogram",
+  "appid": "touristappid",
+  "projectname": "football-v0",
+  "miniprogramRoot": "./",
+  "condition": {}
+}

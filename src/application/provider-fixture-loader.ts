@@ -140,8 +140,11 @@ export function createLiveMatchLoader(
     const latestKickoff = new Date(
       serverNow.getTime() + config.windowStartHoursBeforeKickoff * HOUR_MS,
     );
+    // P1-3（32.4）：收窄下界——live 窗口为 T-2h ~ finished，不扫"过去任意 kickoff"；
+    // 加 DAY_MS 硬下界避免跨日脏数据（超长 live 由 LIVE_TOO_LONG anomaly 巡检互补）。
+    const earliestKickoff = new Date(serverNow.getTime() - DAY_MS);
     const fixtures = await client.getFixtures({
-      dateFrom: formatUtcDate(new Date(serverNow.getTime() - DAY_MS)),
+      dateFrom: formatUtcDate(earliestKickoff),
       dateTo: formatUtcDate(latestKickoff),
       leagueId: MVP_SEASON.api_football_league_id,
       season: MVP_SEASON.api_football_season,
@@ -152,7 +155,11 @@ export function createLiveMatchLoader(
         fixture.fixture.timestamp,
         fixture.fixture.date,
       ).kickoffAt;
-      if (kickoff === null || kickoff.getTime() <= latestKickoff.getTime()) {
+      if (
+        kickoff === null ||
+        (kickoff.getTime() >= earliestKickoff.getTime() &&
+          kickoff.getTime() <= latestKickoff.getTime())
+      ) {
         return [{ fixture, payload: { fixture } }];
       }
       return [];
