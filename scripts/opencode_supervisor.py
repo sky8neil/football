@@ -33,8 +33,8 @@ BASE_PROMPT = """你是 /home/football 项目的编码 Agent。本轮任务**仅
 
 依据：
 1. DEV_PLAN_SEC49_FIX__v1.0.md 的 **F3** 小节
-2. SEC49_DIFF_REVIEW__v1.0.md finding #4（低）
-3. MVP__v1.0.md 第 49.1（再 init 忽略 body nickname）
+2. docs/SEC49_DIFF_REVIEW__v1.0.md finding #4（低）
+3. docs/MVP__v1.0.md 第 49.1（再 init 忽略 body nickname）
 
 F1/F2 已完成，不要改鉴权 code，不要改结算状态机入口。
 

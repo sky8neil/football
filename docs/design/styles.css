@@ -1,0 +1,4 @@
+/* 赛事预言家 Design System Web entry point.
+ * Keep this file import-only so future HTML / share-card work has one stable entry.
+ */
+@import url("./tokens.css");

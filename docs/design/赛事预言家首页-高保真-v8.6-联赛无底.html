@@ -1,0 +1,926 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="赛事预言家">
+  <title>赛事预言家</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --sky: #eef8ef;
+      --sky-deep: #d7efd8;
+      --paper: #ffffff;
+      --ink: #163024;
+      --ink-soft: #5b7166;
+      --ink-faint: #86a092;
+      --line: #dcead9;
+      --cobalt: #7ed56f;
+      --cobalt-deep: #2f8a3a;
+      --cobalt-soft: #e8f8df;
+      --cyan: #3aa37a;
+      --live: #f08a3c;
+      --hit: #718096;
+      --miss: #a0aec0;
+      --shadow: 0 10px 28px rgba(63, 138, 72, 0.10);
+      --radius-card: 16px;
+      --safe-top: env(safe-area-inset-top, 0px);
+      --safe-bottom: env(safe-area-inset-bottom, 0px);
+      --tabbar: 58px;
+    }
+
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    html, body {
+      margin: 0;
+      min-height: 100%;
+      background: #d5ead4;
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+    }
+    button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+    button:focus-visible { outline: 2px solid var(--cobalt); outline-offset: 2px; }
+    img { display: block; max-width: 100%; }
+
+    body {
+      display: grid;
+      place-items: center;
+      min-height: 100dvh;
+    }
+
+    #app {
+      width: 100%;
+      max-width: 430px;
+      min-height: 100dvh;
+      background:
+        radial-gradient(120% 56% at 92% -8%, rgba(255,255,255,0.95) 0%, rgba(255,255,255,0) 46%),
+        radial-gradient(80% 40% at 0% 18%, rgba(126,213,111,0.22) 0%, rgba(126,213,111,0) 55%),
+        linear-gradient(180deg, #f4fbf1 0%, #eef8ef 42%, #f3faf2 100%);
+      position: relative;
+      overflow: hidden;
+      padding-bottom: calc(var(--tabbar) + var(--safe-bottom) + 10px);
+    }
+
+    #app::before {
+      content: "";
+      position: absolute;
+      left: -18%;
+      top: 168px;
+      width: 136%;
+      height: 220px;
+      border: 1px solid rgba(63, 138, 72, 0.12);
+      border-radius: 50%;
+      pointer-events: none;
+    }
+
+    #app::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)' opacity='.035'/%3E%3C/svg%3E");
+      pointer-events: none;
+      mix-blend-mode: multiply;
+    }
+
+    .topbar,
+    .leagues,
+    .dates,
+    .hint,
+    .feed,
+    .tabbar { position: relative; z-index: 1; }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: calc(24px + var(--safe-top)) 16px 8px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+    }
+
+    .mark {
+      width: 32px;
+      height: 32px;
+      border-radius: 10px;
+      background: linear-gradient(160deg, #9ee48a 0%, #4caf50 100%);
+      box-shadow: 0 8px 16px rgba(63, 138, 72, 0.28), inset 0 1px 0 rgba(255,255,255,0.45);
+      display: grid;
+      place-items: center;
+      flex: 0 0 auto;
+    }
+
+    .brand-copy {
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+      min-width: 0;
+    }
+
+    .brand-copy strong {
+      font-size: 17px;
+      font-weight: 720;
+      letter-spacing: -0.4px;
+      line-height: 1.15;
+    }
+
+    .brand-copy span {
+      font-size: 10px;
+      color: var(--ink-faint);
+      letter-spacing: 0.6px;
+    }
+
+    .streak {
+      height: 28px;
+      padding: 0 10px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.72);
+      border: 1px solid rgba(255,255,255,0.9);
+      box-shadow: 0 4px 12px rgba(18, 32, 51, 0.04);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--ink-soft);
+      font-size: 11px;
+      margin-right: 86px;
+    }
+
+    .streak b {
+      color: var(--cobalt);
+      font-family: "Outfit", sans-serif;
+      font-weight: 700;
+    }
+
+    .leagues-wrap {
+      margin: 2px 16px 0 16px;
+      padding: 4px 8px 4px 8px;
+      display: flex;
+      align-items: center;
+      background: rgba(255, 255, 255, 0.46);
+      border: 1px solid rgba(255, 255, 255, 0.74);
+      border-radius: 20px;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.82), 0 6px 16px rgba(47, 106, 62, 0.05);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      min-height: 56px;
+    }
+
+    .leagues {
+      display: flex;
+      gap: 8px;
+      overflow-x: auto;
+      scrollbar-width: none;
+      padding: 0 0 0 4px;
+      min-width: 0;
+      flex: 1;
+    }
+    .leagues::-webkit-scrollbar { display: none; }
+
+    .league {
+      flex: 0 0 auto;
+      min-width: 52px;
+      height: auto;
+      padding: 2px 6px 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      color: var(--ink-soft);
+      font-size: 11px;
+      font-weight: 600;
+      border-radius: 0;
+      background: transparent;
+    }
+
+    .league img,
+    .league .csl-mark {
+      width: 28px;
+      height: 28px;
+      object-fit: contain;
+      filter: grayscale(0.15);
+      background: transparent;
+    }
+
+    .csl-mark {
+      display: grid;
+      place-items: center;
+      border-radius: 7px;
+      background: linear-gradient(180deg, #ff4d4f, #c81d25);
+      color: #fff;
+      font-size: 9px;
+      font-weight: 800;
+      letter-spacing: 0.2px;
+    }
+
+    .league.active {
+      color: var(--ink);
+      background: transparent;
+      box-shadow: none;
+    }
+
+    .league.active img { filter: none; }
+
+    .league.active::after {
+      content: "";
+      width: 12px;
+      height: 2px;
+      border-radius: 99px;
+      background: var(--cobalt);
+    }
+
+    .dates-wrap {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 16px 0;
+    }
+
+    .dates {
+      flex: 1;
+      display: flex;
+      gap: 6px;
+      overflow-x: auto;
+      scrollbar-width: none;
+      min-width: 0;
+    }
+    .dates::-webkit-scrollbar { display: none; }
+
+    .date {
+      flex: 0 0 56px;
+      height: 48px;
+      border-radius: 14px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 2px;
+      color: var(--ink-soft);
+    }
+
+    .date em {
+      font-style: normal;
+      font-size: 10px;
+      line-height: 1;
+    }
+
+    .date strong {
+      font-family: "Outfit", sans-serif;
+      font-size: 18px;
+      font-weight: 750;
+      letter-spacing: -0.6px;
+      line-height: 1;
+      color: var(--ink);
+    }
+
+    .date.active {
+      background: var(--paper);
+      box-shadow: var(--shadow);
+      color: var(--cobalt);
+    }
+
+    .date.active strong { color: var(--cobalt); }
+
+    .cal {
+      width: 48px;
+      height: 48px;
+      border-radius: 14px;
+      background: rgba(255,255,255,0.8);
+      border: 1px solid var(--line);
+      display: grid;
+      place-items: center;
+      flex: 0 0 auto;
+      color: var(--ink-soft);
+    }
+
+    .hint {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 18px 2px;
+      color: var(--ink-faint);
+      font-size: 11px;
+    }
+
+    .hint b {
+      color: var(--ink);
+      font-family: "Outfit", sans-serif;
+      font-weight: 650;
+    }
+
+    .hint .plus { color: var(--hit); }
+
+    .feed {
+      padding: 8px 16px 0;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      max-height: calc(100% - 204px);
+      overflow-y: auto;
+      scrollbar-width: none;
+    }
+    .feed::-webkit-scrollbar { display: none; }
+
+    .match {
+      background: var(--paper);
+      border: 1px solid rgba(255,255,255,0.92);
+      border-radius: var(--radius-card);
+      box-shadow: var(--shadow), inset 0 1px 0 rgba(255,255,255,0.95);
+      padding: 12px 12px 12px 14px;
+      position: relative;
+      overflow: visible;
+    }
+    .match.is-open {
+      background: linear-gradient(180deg, #ffffff 0%, #f4fbf0 100%);
+    }
+
+    .match::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 12px;
+      bottom: 12px;
+      width: 3px;
+      border-radius: 0 3px 3px 0;
+      background: var(--cobalt);
+    }
+
+    /* 状态色：未开赛=草坪绿，已提交=青绿，进行中=橙红，完场=石板灰 */
+    .match.is-submitted::before { background: var(--cyan); }
+    .match.is-live::before { background: #f08a3c; }
+    .match.is-done::before { background: #718096; }
+    .match.is-done.is-miss::before { background: #a0aec0; }
+
+    .match-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+      padding-left: 6px;
+    }
+
+    .kick {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--ink-soft);
+      font-size: 11px;
+      min-width: 0;
+      flex: 1;
+    }
+
+    .kick time {
+      font-family: "Outfit", sans-serif;
+      font-weight: 650;
+      color: var(--ink);
+      font-size: 12px;
+    }
+
+    .state {
+      height: 20px;
+      padding: 0 8px;
+      border-radius: 999px;
+      font-size: 10px;
+      font-weight: 650;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      background: var(--cobalt-soft);
+      color: var(--cobalt-deep);
+      flex: 0 0 auto;
+      white-space: nowrap;
+    }
+
+    .state.live {
+      background: rgba(255, 59, 92, 0.10);
+      color: var(--live);
+    }
+
+    .state.live i {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--live);
+      box-shadow: 0 0 0 4px rgba(255, 59, 92, 0.16);
+      animation: pulse 1.4s ease-out infinite;
+    }
+
+    .state.lock {
+      background: #e8fbf8;
+      color: #0b7f70;
+    }
+
+    .state.done {
+      background: #eef1f5;
+      color: #5d6d80;
+    }
+
+    @keyframes pulse {
+      50% { transform: scale(0.85); opacity: 0.7; }
+    }
+
+    .faceoff {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 64px minmax(0, 1fr);
+      align-items: center;
+      gap: 6px;
+      padding-left: 6px;
+    }
+
+    .team {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .team > div {
+      min-width: 0;
+      flex: 1;
+    }
+
+    .team.away { flex-direction: row-reverse; text-align: right; }
+
+    .crest {
+      width: 34px;
+      height: 34px;
+      border-radius: 11px;
+      display: grid;
+      place-items: center;
+      flex: 0 0 auto;
+      color: #fff;
+      font-family: "Outfit", sans-serif;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.2px;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.28);
+    }
+
+    .team b {
+      display: block;
+      font-size: 12.5px;
+      font-weight: 650;
+      letter-spacing: -0.2px;
+      line-height: 1.25;
+      white-space: nowrap;
+    }
+
+    .team small {
+      display: block;
+      margin-top: 2px;
+      font-size: 10px;
+      color: var(--ink-faint);
+      font-weight: 500;
+    }
+
+    .bug {
+      min-height: 44px;
+      height: auto;
+      padding: 6px 4px;
+      border-radius: 12px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 2px;
+      background: #f3f8f1;
+      border: 1px solid var(--line);
+    }
+
+    .bug strong {
+      font-family: "Outfit", sans-serif;
+      font-size: 16px;
+      font-weight: 750;
+      letter-spacing: -0.4px;
+      line-height: 1.1;
+    }
+
+    .bug em {
+      font-style: normal;
+      font-size: 9px;
+      letter-spacing: 0.08em;
+      color: var(--ink-faint);
+      font-weight: 650;
+    }
+
+    .match.is-live .bug,
+    .match.is-done .bug {
+      background: linear-gradient(180deg, #1a2b44 0%, #122033 100%);
+      border-color: #122033;
+      box-shadow: 0 8px 16px rgba(18, 32, 51, 0.18), inset 0 1px 0 rgba(255,255,255,0.12);
+      color: #fff;
+    }
+
+    .match.is-live .bug em { color: #ff8aa0; }
+    .match.is-done .bug em { color: rgba(255,255,255,0.55); }
+
+    .foot {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-top: 8px;
+      padding-left: 6px;
+      min-height: 32px;
+    }
+
+    .pred {
+      font-size: 12px;
+      color: var(--ink-soft);
+      white-space: nowrap;
+      flex: 0 1 auto;
+    }
+
+    .pred b {
+      font-family: "Outfit", sans-serif;
+      color: var(--ink);
+      font-weight: 700;
+    }
+
+    .cta {
+      min-height: 36px;
+      padding: 0 14px;
+      border-radius: 10px;
+      flex: 0 0 auto;
+      background: linear-gradient(180deg, #9ee48a 0%, #62c453 100%);
+      color: #163024;
+      font-size: 12px;
+      font-weight: 700;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      box-shadow: 0 8px 16px rgba(63, 138, 72, 0.22), inset 0 1px 0 rgba(255,255,255,0.45);
+    }
+
+    .cta:active { transform: translateY(1px); }
+
+    .lock-chip,
+    .live-chip,
+    .result {
+      height: 24px;
+      padding: 0 8px;
+      border-radius: 8px;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 11px;
+      font-weight: 650;
+      flex: 0 0 auto;
+      white-space: nowrap;
+    }
+
+    .lock-chip {
+      background: #f3f6fb;
+      color: var(--ink-soft);
+    }
+
+    .live-chip {
+      background: #f3f6fb;
+      color: var(--ink-faint);
+    }
+
+    .result.hit3 {
+      background: #e8fbf8;
+      color: #0b7f70;
+    }
+
+    .result.hit12 {
+      background: var(--cobalt-soft);
+      color: var(--cobalt-deep);
+    }
+
+    .result.miss {
+      background: #f3f6fb;
+      color: var(--ink-faint);
+    }
+
+    .result b {
+      font-family: "Outfit", sans-serif;
+      font-weight: 750;
+    }
+
+    .empty {
+      padding: 36px 12px;
+      text-align: center;
+      color: var(--ink-faint);
+      font-size: 13px;
+      display: none;
+    }
+
+    .empty.show { display: block; }
+    .feed.hide { display: none; }
+
+    .tabbar {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      width: 100%;
+      height: calc(var(--tabbar) + var(--safe-bottom));
+      padding: 6px 20px var(--safe-bottom);
+      background: rgba(255,255,255,0.92);
+      backdrop-filter: blur(16px);
+      border-top: 1px solid rgba(228, 236, 246, 0.9);
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      z-index: 5;
+    }
+
+    .nav {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 2px;
+      color: #98a4b3;
+      font-size: 10px;
+      font-weight: 650;
+    }
+
+    .nav svg { width: 22px; height: 22px; }
+    .nav.active { color: var(--cobalt); }
+
+    .ars { background: linear-gradient(160deg, #ef0107, #9b111e); }
+    .che { background: linear-gradient(160deg, #034694, #032b5a); }
+    .bar { background: linear-gradient(160deg, #a50044 0 50%, #004d98 50% 100%); }
+    .sev { background: linear-gradient(160deg, #f3f3f3, #d9d9d9); color: #c8102e; }
+    .psg { background: linear-gradient(160deg, #004170, #da291c); }
+    .om  { background: linear-gradient(160deg, #2fa4e7, #0b6aa2); }
+    .sh  { background: linear-gradient(160deg, #e30613, #8f0410); }
+    .sd  { background: linear-gradient(160deg, #f47920, #c2410c); }
+    .mci { background: linear-gradient(160deg, #6cabdd, #1c2c5b); }
+    .liv { background: linear-gradient(160deg, #c8102e, #7f0918); }
+    .rma { background: linear-gradient(160deg, #f4f6f8, #dee4ea); color: #1d4ed8; }
+    .atm { background: linear-gradient(160deg, #cb3524 0 50%, #272e61 50% 100%); }
+    .lyo { background: linear-gradient(160deg, #12233f, #0a1630); }
+    .lil { background: linear-gradient(160deg, #e01a22, #8f1016); }
+    .gz  { background: linear-gradient(160deg, #d4a017, #8a6a0b); }
+    .bj  { background: linear-gradient(160deg, #14833b, #0b5224); }
+
+    @media (min-width: 700px) {
+      body { background: #cfe6cb; padding: 16px 0; }
+      #app {
+        width: 390px;
+        height: 844px;
+        min-height: 844px;
+        border-radius: 40px;
+        box-shadow: 0 30px 80px rgba(18, 32, 51, 0.22);
+      }
+      .tabbar {
+        width: 100%;
+        border-radius: 0 0 40px 40px;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .state.live i { animation: none; }
+    }
+  </style>
+</head>
+<body>
+  <div id="app" data-screen-label="home">
+    <header class="topbar">
+      <div class="brand">
+        <div class="mark" aria-hidden="true">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+            <circle cx="9" cy="9" r="6.2" stroke="white" stroke-width="1.5"/>
+            <path d="M9 2.8c1.7 1.8 2.6 3.9 2.6 6.2S10.7 13.4 9 15.2C7.3 13.4 6.4 11.3 6.4 9S7.3 4.6 9 2.8z" stroke="white" stroke-width="1.3"/>
+            <path d="M3.2 9h11.6" stroke="white" stroke-width="1.3"/>
+            <circle cx="9" cy="9" r="1.3" fill="#c6f36b"/>
+          </svg>
+        </div>
+        <div class="brand-copy">
+          <strong>用户ID</strong>
+          <span>今天看哪场？</span>
+        </div>
+      </div>
+    </header>
+
+    <div class="leagues-wrap">
+      <nav class="leagues" aria-label="联赛">
+        <button class="league active" data-league="epl"><img src="assets/pl.svg" alt="">英超</button>
+        <button class="league" data-league="laliga"><img src="assets/laliga.svg" alt="">西甲</button>
+        <button class="league" data-league="ligue1"><img src="assets/ligue1.svg" alt="">法甲</button>
+        <button class="league" data-league="csl"><img src="assets/csl.png" alt="">中超</button>
+      </nav>
+    </div>
+
+    <div class="dates-wrap">
+      <div class="dates" aria-label="日期">
+        <button class="date active" data-day="17"><em>今天</em><strong>17</strong></button>
+        <button class="date" data-day="18"><em>明天</em><strong>18</strong></button>
+        <button class="date" data-day="19"><em>周三</em><strong>19</strong></button>
+        <button class="date" data-day="20"><em>周四</em><strong>20</strong></button>
+        <button class="date" data-day="21"><em>周五</em><strong>21</strong></button>
+      </div>
+      <button class="cal" aria-label="打开日历">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+          <rect x="2" y="3.2" width="12" height="10.6" rx="2" stroke="currentColor" stroke-width="1.4"/>
+          <path d="M2 6.4h12M5.2 2v2.4M10.8 2v2.4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+        </svg>
+      </button>
+    </div>
+
+    <div class="hint">
+      <span>今日可预测 <b id="openCount">6</b> · 已预测 <b id="doneCount">3</b></span>
+      <span>最近成绩 <b class="plus">+12</b></span>
+    </div>
+
+    <section class="feed" id="feed"></section>
+    <div class="empty" id="empty">这一天暂无比赛<br>下拉看看别的日期</div>
+
+    <nav class="tabbar" aria-label="底部导航">
+      <button class="nav active">
+        <svg viewBox="0 0 24 24" fill="none">
+          <rect x="3" y="8" width="18" height="11" rx="2.2" stroke="currentColor" stroke-width="1.7"/>
+          <path d="M8 8V6.4A2.4 2.4 0 0 1 10.4 4h3.2A2.4 2.4 0 0 1 16 6.4V8" stroke="currentColor" stroke-width="1.7"/>
+          <path d="M12 8v11M3 13.5h18" stroke="currentColor" stroke-width="1.7"/>
+        </svg>
+        比赛
+      </button>
+      <button class="nav">
+        <svg viewBox="0 0 24 24" fill="none">
+          <path d="M5 19V11M12 19V6M19 19v-8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+        </svg>
+        排行榜
+      </button>
+      <button class="nav">
+        <svg viewBox="0 0 24 24" fill="none">
+          <circle cx="12" cy="8" r="3.2" stroke="currentColor" stroke-width="1.7"/>
+          <path d="M5.4 19c1.3-3 3.7-4.5 6.6-4.5s5.3 1.5 6.6 4.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+        </svg>
+        我的
+      </button>
+    </nav>
+  </div>
+
+  <script>
+    const MATCHES = {
+      epl: [
+        { id: "a", cls: "is-open", state: "未开赛", stateCls: "", time: "20:30", meta: "英超 · 截止前 10 分钟",
+          home: ["ars","阿","阿森纳","主队"], away: ["che","切","切尔西","客队"],
+          bug: ["VS","20:30"], foot: "open" },
+        { id: "b", cls: "is-submitted", state: "已提交", stateCls: "lock", time: "03:00", meta: "西甲 · 预测已锁定",
+          home: ["bar","巴","巴塞罗那","主队"], away: ["sev","塞","塞维利亚","客队"],
+          bug: ["VS","已锁定"], foot: "lock", pred: "2 : 1" },
+        { id: "c", cls: "is-live", state: "进行中", stateCls: "live", time: "63′", meta: "法甲 · 下半场",
+          home: ["psg","巴","巴黎圣日耳曼","主队"], away: ["om","马","马赛","客队"],
+          bug: ["1 : 0","LIVE"], foot: "live", pred: "2 : 1" },
+        { id: "d", cls: "is-done", state: "完场", stateCls: "done", time: "已结束", meta: "中超 · 第 20 轮",
+          home: ["sh","海","上海海港","主队"], away: ["sd","泰","山东泰山","客队"],
+          bug: ["2 : 2","FT"], foot: "hit3", pred: "2 : 1" },
+        { id: "e", cls: "is-open", state: "未开赛", stateCls: "", time: "23:00", meta: "英超 · 还可以预测",
+          home: ["mci","城","曼城","主队"], away: ["liv","利","利物浦","客队"],
+          bug: ["VS","23:00"], foot: "open" }
+      ],
+      laliga: [
+        { id: "a", cls: "", state: "未开赛", stateCls: "", time: "03:00", meta: "北京时间",
+          home: ["bar","巴","巴塞罗那","主队"], away: ["sev","塞","塞维利亚","客队"],
+          bug: ["VS","03:00"], foot: "open" },
+        { id: "b", cls: "is-submitted", state: "已提交", stateCls: "lock", time: "01:15", meta: "预测已锁定",
+          home: ["rma","皇","皇家马德里","主队"], away: ["atm","马","马竞","客队"],
+          bug: ["VS","已锁定"], foot: "lock", pred: "2 : 1" },
+        { id: "c", cls: "is-live", state: "进行中", stateCls: "live", time: "51′", meta: "下半场",
+          home: ["bar","巴","巴塞罗那","主队"], away: ["sev","塞","塞维利亚","客队"],
+          bug: ["1 : 0","LIVE"], foot: "live", pred: "2 : 1" },
+        { id: "d", cls: "is-done is-miss", state: "完场", stateCls: "done", time: "已结束", meta: "第 1 轮",
+          home: ["atm","马","马竞","主队"], away: ["rma","皇","皇家马德里","客队"],
+          bug: ["1 : 0","FT"], foot: "miss", pred: "1 : 1" }
+      ],
+      ligue1: [
+        { id: "a", cls: "", state: "未开赛", stateCls: "", time: "03:00", meta: "北京时间",
+          home: ["psg","巴","巴黎圣日耳曼","主队"], away: ["om","马","马赛","客队"],
+          bug: ["VS","03:00"], foot: "open" },
+        { id: "b", cls: "is-submitted", state: "已提交", stateCls: "lock", time: "01:00", meta: "预测已锁定",
+          home: ["lyo","里","里昂","主队"], away: ["lil","里","里尔","客队"],
+          bug: ["VS","已锁定"], foot: "lock", pred: "1 : 0" },
+        { id: "c", cls: "is-live", state: "进行中", stateCls: "live", time: "63′", meta: "下半场",
+          home: ["psg","巴","巴黎圣日耳曼","主队"], away: ["om","马","马赛","客队"],
+          bug: ["1 : 0","LIVE"], foot: "live", pred: "2 : 1" },
+        { id: "d", cls: "is-done", state: "完场", stateCls: "done", time: "已结束", meta: "第 1 轮",
+          home: ["lil","里","里尔","主队"], away: ["lyo","里","里昂","客队"],
+          bug: ["2 : 1","FT"], foot: "hit12", pred: "2 : 1" }
+      ],
+      csl: [
+        { id: "a", cls: "", state: "未开赛", stateCls: "", time: "19:35", meta: "开赛前 10 分钟截止",
+          home: ["sh","海","上海海港","主队"], away: ["sd","泰","山东泰山","客队"],
+          bug: ["VS","19:35"], foot: "open" },
+        { id: "b", cls: "is-submitted", state: "已提交", stateCls: "lock", time: "19:35", meta: "预测已锁定",
+          home: ["bj","国","北京国安","主队"], away: ["gz","恒","上海申花","客队"],
+          bug: ["VS","已锁定"], foot: "lock", pred: "1 : 1" },
+        { id: "c", cls: "is-live", state: "进行中", stateCls: "live", time: "78′", meta: "下半场",
+          home: ["gz","申","上海申花","主队"], away: ["bj","国","北京国安","客队"],
+          bug: ["0 : 0","LIVE"], foot: "live", pred: "1 : 0" },
+        { id: "d", cls: "is-done", state: "完场", stateCls: "done", time: "已结束", meta: "第 20 轮",
+          home: ["sh","海","上海海港","主队"], away: ["sd","泰","山东泰山","客队"],
+          bug: ["2 : 2","FT"], foot: "hit3", pred: "2 : 1" }
+      ]
+    };
+
+    const feed = document.getElementById("feed");
+    const empty = document.getElementById("empty");
+    let league = "epl";
+    let day = "17";
+
+    function footHtml(m) {
+      if (m.foot === "open") {
+        return `<span class="pred">未开赛</span><button class="cta" type="button">去预测 <span>→</span></button>`;
+      }
+      if (m.foot === "lock") {
+        return `<span class="pred">我的预测 <b>${m.pred}</b></span><span class="lock-chip">已锁定 · 不可修改</span>`;
+      }
+      if (m.foot === "live") {
+        return `<span class="pred">我的预测 <b>${m.pred}</b></span><span class="live-chip">预测已关闭</span>`;
+      }
+      if (m.foot === "hit3") {
+        return `<span class="pred">我的预测 <b>${m.pred}</b></span><span class="result hit3"><b>+3</b> 赛果命中</span>`;
+      }
+      if (m.foot === "hit12") {
+        return `<span class="pred">我的预测 <b>${m.pred}</b></span><span class="result hit12"><b>+12</b> 精确命中</span>`;
+      }
+      return `<span class="pred">我的预测 <b>${m.pred}</b></span><span class="result miss"><b>+0</b> 未命中</span>`;
+    }
+
+    function card(m) {
+      const liveDot = m.stateCls === "live" ? "<i></i>" : "";
+      return `<article class="match ${m.cls}">
+        <div class="match-top">
+          <div class="kick"><time>${m.time}</time><span>${m.meta}</span></div>
+          <span class="state ${m.stateCls}">${liveDot}${m.state}</span>
+        </div>
+        <div class="faceoff">
+          <div class="team">
+            <i class="crest ${m.home[0]}">${m.home[1]}</i>
+            <div><b>${m.home[2]}</b><small>${m.home[3]}</small></div>
+          </div>
+          <div class="bug"><strong>${m.bug[0]}</strong><em>${m.bug[1]}</em></div>
+          <div class="team away">
+            <i class="crest ${m.away[0]}">${m.away[1]}</i>
+            <div><b>${m.away[2]}</b><small>${m.away[3]}</small></div>
+          </div>
+        </div>
+        <div class="foot">${footHtml(m)}</div>
+      </article>`;
+    }
+
+    function render() {
+      const has = day === "17";
+      feed.classList.toggle("hide", !has);
+      empty.classList.toggle("show", !has);
+      if (!has) return;
+      const list = MATCHES[league] || MATCHES.epl;
+      feed.innerHTML = list.map(card).join("");
+      feed.querySelectorAll(".cta").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          btn.textContent = "已进入预测";
+          btn.style.background = '#2f8a3a';
+          btn.style.color = '#fff';
+        });
+      });
+    }
+
+    document.querySelectorAll(".league").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll(".league").forEach((x) => x.classList.remove("active"));
+        btn.classList.add("active");
+        league = btn.dataset.league;
+        render();
+      });
+    });
+
+    document.querySelectorAll(".date").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll(".date").forEach((x) => x.classList.remove("active"));
+        btn.classList.add("active");
+        day = btn.dataset.day;
+        render();
+      });
+    });
+
+    render();
+
+    (function fitFrame() {
+      const app = document.getElementById("app");
+      function apply() {
+        if (window.innerWidth < 700) {
+          app.style.transform = "";
+          return;
+        }
+        const scale = Math.min(1, (window.innerHeight - 24) / 844);
+        app.style.transformOrigin = "center center";
+        app.style.transform = "scale(" + scale + ")";
+      }
+      apply();
+      window.addEventListener("resize", apply);
+    })();
+  </script>
+</body>
+</html>

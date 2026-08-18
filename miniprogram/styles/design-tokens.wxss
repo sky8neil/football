@@ -1,0 +1,148 @@
+/* 赛事预言家 Global UI Design System
+ * Source of truth: 8.6 HTML + miniprogram/pages/matches/matches.wxss
+ * 仅提供全局 token，不直接覆盖现有页面样式。
+ */
+page {
+  /* Primitive: brand / neutral */
+  --sp-green-300: #9ee48a;
+  --sp-green-400: #7ed56f;
+  --sp-green-500: #62c453;
+  --sp-green-700: #2f8a3a;
+  --sp-green-900: #163024;
+  --sp-mint-100: #e8f8df;
+  --sp-mint-200: #d7efd8;
+  --sp-mint-300: #dcead9;
+  --sp-neutral-0: #ffffff;
+  --sp-neutral-50: #f4fbf1;
+  --sp-neutral-100: #eef8ef;
+  --sp-neutral-200: #f3faf2;
+  --sp-neutral-500: #86a092;
+  --sp-neutral-600: #5b7166;
+  --sp-neutral-700: #718096;
+  --sp-neutral-800: #5d6d80;
+  --sp-neutral-900: #122033;
+  --sp-teal-500: #3aa37a;
+  --sp-teal-700: #0b7f70;
+  --sp-orange-500: #f08a3c;
+  --sp-orange-100: rgba(240, 138, 60, 0.12);
+  --sp-red-500: #c05621;
+  --sp-red-100: #fff4e5;
+  --sp-slate-100: #eef1f5;
+  --sp-slate-200: #f3f6fb;
+  --sp-slate-400: #a0aec0;
+
+  /* Semantic color */
+  --color-bg-page: var(--sp-neutral-100);
+  --color-bg-page-soft: var(--sp-neutral-50);
+  --color-bg-elevated: var(--sp-neutral-0);
+  --color-bg-overlay: rgba(18, 32, 51, 0.36);
+  --color-surface-card: var(--sp-neutral-0);
+  --color-surface-card-highlight: linear-gradient(180deg, #ffffff 0%, #f4fbf0 100%);
+  --color-surface-card-muted: var(--sp-slate-200);
+  --color-surface-glass: rgba(255, 255, 255, 0.46);
+  --color-surface-floating: rgba(255, 255, 255, 0.80);
+  --color-surface-dialog: var(--sp-neutral-0);
+  --color-surface-disabled: var(--sp-slate-200);
+  --color-text-primary: var(--sp-green-900);
+  --color-text-secondary: var(--sp-neutral-600);
+  --color-text-muted: var(--sp-neutral-500);
+  --color-text-inverse: var(--sp-neutral-0);
+  --color-border: var(--sp-mint-300);
+  --color-divider: rgba(220, 234, 217, 0.72);
+  --color-primary: var(--sp-green-400);
+  --color-primary-hover: var(--sp-green-500);
+  --color-primary-pressed: var(--sp-green-700);
+  --color-primary-soft: var(--sp-mint-100);
+  --color-success: var(--sp-teal-500);
+  --color-warning: var(--sp-orange-500);
+  --color-danger: var(--sp-red-500);
+  --color-info: var(--sp-teal-700);
+  --color-live: var(--sp-orange-500);
+  --color-locked: var(--sp-teal-700);
+  --color-finished: var(--sp-neutral-700);
+  --color-disabled: var(--sp-slate-400);
+
+  /* Match and prediction state */
+  --match-scheduled: var(--sp-green-400);
+  --match-predictable: var(--sp-green-400);
+  --match-submitted: var(--sp-teal-500);
+  --match-locked: var(--sp-teal-700);
+  --match-live: var(--sp-orange-500);
+  --match-finished: var(--sp-neutral-700);
+  --match-postponed: var(--sp-neutral-500);
+  --match-cancelled: var(--sp-slate-400);
+  --prediction-hit-result: var(--sp-teal-500);
+  --prediction-hit-exact: var(--sp-green-700);
+  --prediction-miss: var(--sp-slate-400);
+  --prediction-processing: var(--sp-orange-500);
+
+  /* Background recipes */
+  --background-page-default: radial-gradient(120% 56% at 92% -8%, rgba(255,255,255,0.95) 0%, rgba(255,255,255,0) 46%), radial-gradient(80% 40% at 0% 18%, rgba(126,213,111,0.22) 0%, rgba(126,213,111,0) 55%), linear-gradient(180deg, #f4fbf1 0%, #eef8ef 42%, #f3faf2 100%);
+  --background-page-soft: linear-gradient(180deg, #f4fbf1 0%, #eef8ef 100%);
+  --background-hero: radial-gradient(90% 100% at 100% 0%, rgba(158,228,138,0.28), transparent 68%), linear-gradient(160deg, #f4fbf1, #d7efd8);
+  --background-elevated: var(--sp-neutral-0);
+  --background-overlay: rgba(18, 32, 51, 0.36);
+
+  /* Typography */
+  --font-family-cn: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+  --font-family-number: "Outfit", -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+  --font-size-display: 40rpx;
+  --font-size-title-lg: 34rpx;
+  --font-size-title-md: 30rpx;
+  --font-size-title-sm: 28rpx;
+  --font-size-body-lg: 28rpx;
+  --font-size-body-md: 26rpx;
+  --font-size-body-sm: 24rpx;
+  --font-size-label-lg: 24rpx;
+  --font-size-label-md: 22rpx;
+  --font-size-label-sm: 20rpx;
+  --font-size-number-lg: 44rpx;
+  --font-size-number-md: 36rpx;
+  --font-size-number-sm: 28rpx;
+
+  /* Spacing: source values are rpx */
+  --space-1: 4rpx;
+  --space-2: 8rpx;
+  --space-3: 12rpx;
+  --space-4: 16rpx;
+  --space-5: 20rpx;
+  --space-6: 24rpx;
+  --space-8: 32rpx;
+  --space-10: 40rpx;
+  --space-12: 48rpx;
+  --space-16: 64rpx;
+  --page-padding-inline: 32rpx;
+  --section-gap: 16rpx;
+  --card-gap: 20rpx;
+  --card-padding: 24rpx;
+  --card-padding-leading: 28rpx;
+  --compact-row-gap: 12rpx;
+  --icon-text-gap: 16rpx;
+  --button-padding-inline: 28rpx;
+  --safe-area-top: env(safe-area-inset-top, 0px);
+  --safe-area-bottom: env(safe-area-inset-bottom, 0px);
+
+  /* Radius */
+  --radius-sm: 14rpx;
+  --radius-md: 20rpx;
+  --radius-lg: 28rpx;
+  --radius-card: 32rpx;
+  --radius-pill: 999rpx;
+  --radius-dialog: 40rpx;
+  --radius-mark: 20rpx;
+
+  /* Elevation */
+  --shadow-none: none;
+  --shadow-sm: 0 8rpx 20rpx rgba(63, 138, 72, 0.05);
+  --shadow-card: 0 20rpx 56rpx rgba(63, 138, 72, 0.10), inset 0 2rpx 0 rgba(255,255,255,0.95);
+  --shadow-elevated: 0 20rpx 56rpx rgba(63, 138, 72, 0.14);
+  --shadow-floating: 0 16rpx 32rpx rgba(63, 138, 72, 0.22), inset 0 2rpx 0 rgba(255,255,255,0.45);
+  --shadow-dialog: 0 28rpx 80rpx rgba(18, 32, 51, 0.18);
+
+  /* Interaction */
+  --motion-fast: 120ms;
+  --motion-normal: 220ms;
+  --motion-slow: 320ms;
+  --motion-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --tap-target-min: 88rpx;
+}

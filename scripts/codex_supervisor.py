@@ -28,7 +28,7 @@ CODEX_TIMEOUT_SECONDS = 3600
 VERIFY_TIMEOUT_SECONDS = 900
 MODEL = "grok-4.5"
 
-BASE_PROMPT = """你是 /home/football 项目的编码 Agent。严格以项目根目录 MVP__v1.0.md 为唯一业务规范（含第 48 节补充冻结决策，直接执行，不得再视为 SPEC_GAP）。每次先读取 MVP__v1.0.md、README.md、DEVELOPMENT_PLAN.md、当前代码和 git diff，再选择并实现一个最小且定义清晰的未完成切片；不要一次扩展多个模块。必须先写失败测试再实现。保持 TypeScript strict + ESM、现有 domain/application/infrastructure 边界、账本幂等、事务、锁、状态机和 Fail Closed 语义。不得连接真实微信、CloudBase、Provider 或外部 API，不读取、输出或保存任何凭证；不要提交或推送 Git。代码只保留最少量的防御性、健壮性要求，要避免代码过于工程化，只要功能没问题原则上即可通过。完成后运行 npm run typecheck、npm test -- --run、npm run build、git diff --check，并在最后报告实际结果、修改文件、剩余未完成项。
+BASE_PROMPT = """你是 /home/football 项目的编码 Agent。严格以项目根目录 docs/MVP__v1.0.md 为唯一业务规范（含第 48 节补充冻结决策，直接执行，不得再视为 SPEC_GAP）。每次先读取 docs/MVP__v1.0.md、README.md、docs/DEVELOPMENT_PLAN.md、当前代码和 git diff；再选择并实现一个最小且定义清晰的未完成切片；不要一次扩展多个模块。必须先写失败测试再实现。保持 TypeScript strict + ESM、现有 domain/application/infrastructure 边界、账本幂等、事务、锁、状态机和 Fail Closed 语义。不得连接真实微信、CloudBase、Provider 或外部 API，不读取、输出或保存任何凭证；不要提交或推送 Git。代码只保留最少量的防御性、健壮性要求，要避免代码过于工程化，只要功能没问题原则上即可通过。完成后运行 npm run typecheck、npm test -- --run、npm run build、git diff --check，并在最后报告实际结果、修改文件、剩余未完成项。
 
 重要：你的最后一条输出必须以一行机器可读状态结束，取以下三值之一，不要有其他文本混在同一行：
 - 本轮有完整代码成果且验证通过：SUPERVISOR_STATUS=PASS
@@ -110,7 +110,7 @@ def codex_prompt(round_no: int, blocked_keys: list[str], repair: bool = False, f
         skip = "已知被规范缺口阻塞的切片（不要选择这些）：" + ", ".join(blocked_keys) + "\n"
     if repair:
         return BASE_PROMPT + f"""\n这是第 {round_no} 轮的自动修复阶段（第 {failure} 次修复尝试之前）。上一轮或上一修复尝试的真实验证输出如下：\n---BEGIN ERROR---\n{failure[-30000:]}\n---END ERROR---\n{skip}请只修复这些实际错误，先补失败回归测试，再实现修复；修复后重新运行全部验证，并按要求输出 SUPERVISOR_STATUS 状态行。"""
-    return BASE_PROMPT + f"""\n这是自动串行开发第 {round_no}/{MAX_ROUNDS} 轮。{skip}请根据当前 DEVELOPMENT_PLAN.md 和代码状态自行选择下一个规范已定义、最小垂直切片。优先第 48 节已冻结但尚未实现的代码变更（管理员异常查询、管理员响应 data 对齐、correction retry、retry 审计、failed settlement 目标选择等）。如果一个切片完成后仍有其他切片，不要宣称整个 MVP 完成。"""
+    return BASE_PROMPT + f"""\n这是自动串行开发第 {round_no}/{MAX_ROUNDS} 轮。{skip}请根据当前 docs/DEVELOPMENT_PLAN.md 和代码状态自行选择下一个规范已定义、最小垂直切片。优先第 48 节已冻结但尚未实现的代码变更（管理员异常查询、管理员响应 data 对齐、correction retry、retry 审计、failed settlement 目标选择等）。如果一个切片完成后仍有其他切片，不要宣称整个 MVP 完成。"""
 
 
 def load_blocked(session_dir: Path) -> list[str]:

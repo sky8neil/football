@@ -1,38 +1,103 @@
 <view class="page">
-  <view wx:if="{{state === 'loading'}}" class="loading"></view>
-  <view wx:elif="{{state === 'empty'}}" class="empty"></view>
-  <view wx:elif="{{state === 'error'}}" class="error">{{errorMessage}}</view>
-  <view wx:else>
+  <view class="topbar">
+    <view class="brand">
+      <view class="mark">
+        <view class="mark-ring"></view>
+      </view>
+      <view class="brand-copy">
+        <text class="brand-name">用户ID</text>
+        <text class="brand-sub">今天看哪场？</text>
+      </view>
+    </view>
+  </view>
+
+  <view class="leagues-wrap">
+    <scroll-view class="leagues" scroll-x enable-flex>
+      <view
+        wx:for="{{leagues}}"
+        wx:key="id"
+        class="league {{item.id === selectedLeague ? 'active' : ''}}"
+        data-id="{{item.id}}"
+        bindtap="onLeagueTap"
+      >
+        <view class="league-logo {{item.mark}}">{{item.markText}}</view>
+        <text>{{item.name}}</text>
+      </view>
+    </scroll-view>
+  </view>
+
+  <view class="dates-wrap">
+    <scroll-view class="dates" scroll-x enable-flex>
+      <view
+        wx:for="{{dates}}"
+        wx:key="key"
+        class="date {{item.key === selectedDate ? 'active' : ''}}"
+        data-key="{{item.key}}"
+        bindtap="onDateTap"
+      >
+        <text class="date-label">{{item.label}}</text>
+        <text class="date-num">{{item.day}}</text>
+      </view>
+    </scroll-view>
+    <view class="cal" bindtap="onCalendarTap">
+      <text class="cal-icon">日</text>
+    </view>
+  </view>
+
+  <view class="hint">
+    <text>今日可预测 <text class="hint-num">{{openCount}}</text> · 已预测 <text class="hint-num">{{doneCount}}</text></text>
+    <text>最近成绩 <text class="hint-plus">+{{recentScore}}</text></text>
+  </view>
+
+  <view wx:if="{{state === 'loading'}}" class="loading">加载中</view>
+  <view wx:elif="{{state === 'empty'}}" class="empty">这一天暂无比赛\n下拉看看别的日期</view>
+  <view wx:elif="{{state === 'error'}}" class="error">
+    <text>{{errorMessage}}</text>
+    <button class="retry" bindtap="onRetry">重试</button>
+  </view>
+  <view wx:else class="feed">
     <view
       wx:for="{{items}}"
       wx:key="match_id"
-      class="card"
+      class="match {{item.cardClass}}"
       data-match-id="{{item.match_id}}"
       bindtap="onCardTap"
     >
-      <view>{{item.home_team.name}}</view>
-      <view>{{item.away_team.name}}</view>
-      <view>{{item.kickoff_at}}</view>
-      <view>{{item.match_status}}</view>
-      <view wx:if="{{item.match_status === 'scheduled'}}">未开赛</view>
-      <view wx:elif="{{item.match_status === 'live'}}">进行中</view>
-      <view wx:elif="{{item.match_status === 'finished'}}">已结束</view>
-      <view wx:elif="{{item.match_status === 'postponed'}}">延期</view>
-      <view wx:elif="{{item.match_status === 'cancelled'}}">取消</view>
-      <view wx:elif="{{item.match_status === 'abandoned'}}">废弃/腰斩</view>
-      <view wx:if="{{item.regular_home_score !== null}}">{{item.regular_home_score}}</view>
-      <view wx:if="{{item.regular_away_score !== null}}">{{item.regular_away_score}}</view>
-      <view wx:if="{{item.regular_home_score === null || item.regular_away_score === null}}">待结算/暂无比分</view>
-      <view>{{item.can_predict}}</view>
-      <view>{{item.can_predict_reason}}</view>
-      <view wx:if="{{item.can_predict && item.can_predict_reason === null}}">可提交</view>
-      <view wx:elif="{{item.can_predict_reason === 'AUTH_REQUIRED'}}">需登录态</view>
-      <view wx:elif="{{item.can_predict_reason === 'USER_DELETED'}}">账号已注销</view>
-      <view wx:elif="{{item.can_predict_reason === 'ALREADY_SUBMITTED'}}">已提交</view>
-      <view wx:elif="{{item.can_predict_reason === 'KICKOFF_UNCONFIRMED'}}">开球未确认</view>
-      <view wx:elif="{{item.can_predict_reason === 'NOT_SCHEDULED'}}">非可预测赛程态</view>
-      <view wx:elif="{{item.can_predict_reason === 'CLOSED'}}">预测已截止</view>
+      <view class="match-top">
+        <view class="kick">
+          <text class="kick-time">{{item.timeText}}</text>
+          <text class="kick-meta">{{item.metaText}}</text>
+        </view>
+        <view class="state {{item.stateClass}}">{{item.stateText}}</view>
+      </view>
+
+      <view class="faceoff">
+        <view class="team">
+          <view class="crest">{{item.homeMark}}</view>
+          <view class="team-copy">
+            <text class="team-name">{{item.home_team.name}}</text>
+            <text class="team-role">主队</text>
+          </view>
+        </view>
+        <view class="bug {{item.bugClass}}">
+          <text class="bug-score">{{item.scoreText}}</text>
+          <text class="bug-sub">{{item.scoreSub}}</text>
+        </view>
+        <view class="team away">
+          <view class="crest">{{item.awayMark}}</view>
+          <view class="team-copy">
+            <text class="team-name">{{item.away_team.name}}</text>
+            <text class="team-role">客队</text>
+          </view>
+        </view>
+      </view>
+
+      <view class="foot">
+        <text class="pred">{{item.predText}}</text>
+        <view wx:if="{{item.can_predict && item.can_predict_reason === null}}" class="cta">去预测 →</view>
+        <view wx:elif="{{item.reasonChip}}" class="chip {{item.chipClass}}">{{item.reasonChip}}</view>
+      </view>
     </view>
-    <button wx:if="{{hasMore}}" bindtap="onMore" disabled="{{loadingMore}}">更多</button>
+    <button wx:if="{{hasMore}}" class="more" bindtap="onMore" disabled="{{loadingMore}}">更多</button>
   </view>
 </view>
