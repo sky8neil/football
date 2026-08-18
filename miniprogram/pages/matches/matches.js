@@ -1,4 +1,3 @@
-const { createUuidV4, submitPrediction } = require("../../services/predictions.js");
 const { getTeamLogo, getLeagueLogo } = require("../../utils/logo-registry.js");
 
 const MOCK_MATCHES = [
@@ -65,7 +64,7 @@ Page({
   data: {
     state: "loading", items: [], errorMessage: "", hasMore: false, nextCursor: null, loadingMore: false,
     leagues: [], selectedLeague: "premier_league", dates: [], selectedDate: "", openCount: 0, doneCount: 0,
-    recentScore: 12, scrollIntoView: "",
+    recentScore: 12, scrollIntoView: "", contentTransition: "content-enter",
   },
   drafts: {}, uiStates: {}, submittedMap: {}, idempotencyKeys: {}, lastPayloads: {}, requestSerial: 0,
 
@@ -79,16 +78,16 @@ Page({
     const league = event.currentTarget.dataset.id;
     if (!league || league === this.data.selectedLeague) return;
     this.closeEditors();
-    this.setData({ selectedLeague: league, scrollIntoView: "", state: "loading", items: [], hasMore: false, nextCursor: null, openCount: 0, doneCount: 0 });
-    this.loadFirstPage();
+    this.setData({ selectedLeague: league, scrollIntoView: "", state: "loading", items: [], hasMore: false, nextCursor: null, openCount: 0, doneCount: 0, contentTransition: "content-exit" });
+    setTimeout(() => this.loadFirstPage(), 180);
   },
 
   onDateTap(event) {
     const date = event.currentTarget.dataset.key;
     if (!date || date === this.data.selectedDate) return;
     this.closeEditors();
-    this.setData({ selectedDate: date, state: "loading", items: [], scrollIntoView: "" });
-    this.loadFirstPage();
+    this.setData({ selectedDate: date, state: "loading", items: [], scrollIntoView: "", contentTransition: "content-exit" });
+    setTimeout(() => this.loadFirstPage(), 180);
   },
 
   onCalendarTap() { wx.showToast({ title: "日历选择即将开放", icon: "none" }); },
@@ -98,7 +97,7 @@ Page({
     const serial = ++this.requestSerial;
     const rawItems = MOCK_MATCHES.filter((item) => item.league_id === this.data.selectedLeague);
     const items = rawItems.map((item) => this.decorateItem(item));
-    this.setData({ state: items.length ? "list" : "empty", items, hasMore: false, nextCursor: null, errorMessage: "", loadingMore: false, openCount: items.filter((item) => item.showPredict).length, doneCount: items.filter((item) => item.can_predict_reason === "ALREADY_SUBMITTED").length });
+    this.setData({ state: items.length ? "list" : "empty", items, hasMore: false, nextCursor: null, errorMessage: "", loadingMore: false, openCount: items.filter((item) => item.showPredict).length, doneCount: items.filter((item) => item.can_predict_reason === "ALREADY_SUBMITTED").length, contentTransition: "content-enter" });
     return serial;
   },
 
@@ -121,7 +120,7 @@ Page({
     const hasScore = item.regular_home_score !== null && item.regular_home_score !== undefined && item.regular_away_score !== null && item.regular_away_score !== undefined;
     const homeId = item.home_team && item.home_team.team_id;
     const awayId = item.away_team && item.away_team.team_id;
-    const uiState = submitted ? "collapsed" : (this.uiStates[key] || "collapsed");
+    const uiState = submitted ? "submitted_locked" : (this.uiStates[key] || "collapsed");
     return Object.assign({}, item, view, chip, {
       key, uiState, editorVisible: uiState !== "collapsed", draft,
       showPredict: item.can_predict === true && item.can_predict_reason === null && !submitted,
@@ -169,27 +168,16 @@ Page({
     const matchId = event.currentTarget.dataset.matchId;
     const key = scope(this.data.selectedLeague, this.data.selectedDate, matchId);
     const item = this.data.items.find((entry) => entry.match_id === matchId);
-    if (this.uiStates[key] === "submitted_locked") { this.uiStates[key] = "collapsed"; this.refreshItems(); return; }
-    if (item && item.can_predict === false) return;
-    const draft = this.drafts[key] || { home: 0, away: 0 };
     if (!item || this.uiStates[key] === "submitting") return;
-    if (!this.idempotencyKeys[key] || JSON.stringify(this.lastPayloads[key]) !== JSON.stringify(draft)) { this.idempotencyKeys[key] = createUuidV4(); this.lastPayloads[key] = { ...draft }; }
+    const draft = this.drafts[key] || { home: 0, away: 0 };
     this.uiStates[key] = "submitting";
     this.refreshItems();
-    submitPrediction({ idempotencyKey: this.idempotencyKeys[key], matchId, homeScore: draft.home, awayScore: draft.away }).then((result) => {
-      if (result.statusCode === 200 || result.statusCode === 201) {
-        this.submittedMap[key] = { ...draft };
-        this.uiStates[key] = "collapsed";
-        delete this.idempotencyKeys[key];
-        delete this.lastPayloads[key];
-        delete this.drafts[key];
-        this.refreshItems();
-        return;
-      }
-      this.uiStates[key] = "editing";
-      this.setData({ submitErrors: { ...(this.data.submitErrors || {}), [key]: result.message || String(result.code || "提交失败") } });
+    setTimeout(() => {
+      this.submittedMap[key] = { ...draft };
+      this.uiStates[key] = "submitted_locked";
+      delete this.drafts[key];
       this.refreshItems();
-    }).catch(() => { this.uiStates[key] = "editing"; this.setData({ submitErrors: { ...(this.data.submitErrors || {}), [key]: "网络错误，请重试" } }); this.refreshItems(); });
+    }, 900);
   },
 
   onMore() {},

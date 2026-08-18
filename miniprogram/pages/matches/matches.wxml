@@ -1,17 +1,19 @@
 <view class="page">
+  <view class="topbar-spacer"></view>
   <view class="decor decor-arc"></view>
   <view class="topbar">
     <view class="brand">
       <view class="mark"><view class="mark-ring"></view></view>
       <view class="brand-copy">
         <text class="brand-name">用户ID</text>
-        <text class="brand-sub">今天看哪场？</text>
+        <text class="brand-name brand-sub">今天看哪场？</text>
       </view>
     </view>
   </view>
 
-  <view class="leagues-wrap">
-    <scroll-view class="leagues" scroll-x enable-flex scroll-with-animation>
+  <view class="content {{contentTransition}}">
+    <view class="leagues-wrap">
+      <scroll-view class="leagues" scroll-x enable-flex scroll-with-animation>
       <view wx:for="{{leagues}}" wx:key="id" class="league {{item.id === selectedLeague ? 'active' : ''}}" data-id="{{item.id}}" bindtap="onLeagueTap">
         <image class="league-logo" src="{{item.logo}}" mode="aspectFit"></image>
         <text>{{item.name}}</text>
@@ -63,4 +65,5 @@
     </view>
     <button wx:if="{{hasMore}}" class="more" bindtap="onMore" disabled="{{loadingMore}}">{{loadingMore ? '加载中…' : '更多'}}</button>
   </scroll-view>
+  </view>
 </view>
