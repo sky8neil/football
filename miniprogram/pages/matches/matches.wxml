@@ -8,7 +8,6 @@
         <text class="brand-sub">今天看哪场？</text>
       </view>
     </view>
-    <view class="streak"><text>最近成绩</text><text class="streak-value">+{{recentScore}}</text></view>
   </view>
 
   <view class="leagues-wrap">

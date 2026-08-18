@@ -1,6 +1,13 @@
-const { listMatches } = require("../../services/matches.js");
 const { createUuidV4, submitPrediction } = require("../../services/predictions.js");
 const { getTeamLogo, getLeagueLogo } = require("../../utils/logo-registry.js");
+
+const MOCK_MATCHES = [
+  { match_id: "mock-pl-001", league_id: "premier_league", league_name: "英超", round_id: "第1轮", kickoff_at: "2026-08-18T19:00:00+08:00", match_status: "scheduled", can_predict: true, can_predict_reason: null, regular_home_score: null, regular_away_score: null, home_team: { team_id: "arsenal", name: "阿森纳" }, away_team: { team_id: "chelsea", name: "切尔西" } },
+  { match_id: "mock-pl-002", league_id: "premier_league", league_name: "英超", round_id: "第1轮", kickoff_at: "2026-08-18T21:30:00+08:00", match_status: "scheduled", can_predict: true, can_predict_reason: null, regular_home_score: null, regular_away_score: null, home_team: { team_id: "liverpool", name: "利物浦" }, away_team: { team_id: "manchester-city", name: "曼城" } },
+  { match_id: "mock-laliga-001", league_id: "la_liga", league_name: "西甲", round_id: "第1轮", kickoff_at: "2026-08-18T22:00:00+08:00", match_status: "scheduled", can_predict: true, can_predict_reason: null, regular_home_score: null, regular_away_score: null, home_team: { team_id: "real-madrid", name: "皇家马德里" }, away_team: { team_id: "barcelona", name: "巴塞罗那" } },
+  { match_id: "mock-ligue-001", league_id: "ligue_1", league_name: "法甲", round_id: "第1轮", kickoff_at: "2026-08-18T20:00:00+08:00", match_status: "scheduled", can_predict: true, can_predict_reason: null, regular_home_score: null, regular_away_score: null, home_team: { team_id: "paris-saint-germain", name: "巴黎圣日耳曼" }, away_team: { team_id: "marseille", name: "马赛" } },
+  { match_id: "mock-csl-001", league_id: "chinese_super_league", league_name: "中超", round_id: "第1轮", kickoff_at: "2026-08-18T18:00:00+08:00", match_status: "scheduled", can_predict: true, can_predict_reason: null, regular_home_score: null, regular_away_score: null, home_team: { team_id: "beijing-guoan", name: "北京国安" }, away_team: { team_id: "shanghai-shenhua", name: "上海申花" } },
+];
 
 const LEAGUES = [
   { id: "premier_league", name: "英超" },
@@ -89,12 +96,10 @@ Page({
 
   loadFirstPage() {
     const serial = ++this.requestSerial;
-    const bounds = dayBounds(this.data.selectedDate);
-    this.setData({ state: "loading", items: [], errorMessage: "", hasMore: false, nextCursor: null });
-    listMatches({ from: bounds.from, to: bounds.to }).then((result) => {
-      if (serial !== this.requestSerial) return;
-      this.applyListResult(result, true);
-    }).catch(() => this.setData({ state: "error", errorMessage: "网络错误，请重试" }));
+    const rawItems = MOCK_MATCHES.filter((item) => item.league_id === this.data.selectedLeague);
+    const items = rawItems.map((item) => this.decorateItem(item));
+    this.setData({ state: items.length ? "list" : "empty", items, hasMore: false, nextCursor: null, errorMessage: "", loadingMore: false, openCount: items.filter((item) => item.showPredict).length, doneCount: items.filter((item) => item.can_predict_reason === "ALREADY_SUBMITTED").length });
+    return serial;
   },
 
   applyListResult(result, replace) {
@@ -187,10 +192,5 @@ Page({
     }).catch(() => { this.uiStates[key] = "editing"; this.setData({ submitErrors: { ...(this.data.submitErrors || {}), [key]: "网络错误，请重试" } }); this.refreshItems(); });
   },
 
-  onMore() {
-    if (this.data.loadingMore || !this.data.hasMore || this.data.nextCursor === null) return;
-    const bounds = dayBounds(this.data.selectedDate);
-    this.setData({ loadingMore: true });
-    listMatches({ from: bounds.from, to: bounds.to, cursor: this.data.nextCursor }).then((result) => this.applyListResult(result, false)).catch(() => this.setData({ loadingMore: false, errorMessage: "网络错误，请重试" }));
-  },
+  onMore() {},
 });
