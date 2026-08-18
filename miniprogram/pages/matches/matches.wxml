@@ -11,9 +11,8 @@
     </view>
   </view>
 
-  <view class="content {{contentTransition}}">
-    <view class="leagues-wrap">
-      <scroll-view class="leagues" scroll-x enable-flex scroll-with-animation>
+  <view class="leagues-wrap">
+    <scroll-view class="leagues" scroll-x enable-flex scroll-with-animation>
       <view wx:for="{{leagues}}" wx:key="id" class="league {{item.id === selectedLeague ? 'active' : ''}}" data-id="{{item.id}}" bindtap="onLeagueTap">
         <image class="league-logo" src="{{item.logo}}" mode="aspectFit"></image>
         <text>{{item.name}}</text>
@@ -32,11 +31,12 @@
 
   <view class="hint"><text>今日可预测 <text class="hint-num">{{openCount}}</text> · 已预测 <text class="hint-num">{{doneCount}}</text></text><text>最近成绩 <text class="hint-plus">+{{recentScore}}</text></text></view>
 
-  <view wx:if="{{state === 'loading'}}" class="loading">加载中</view>
-  <view wx:elif="{{state === 'empty'}}" class="empty">这一天暂无比赛
+  <view class="results {{resultsTransition}}">
+    <view wx:if="{{state === 'loading'}}" class="loading">加载中</view>
+    <view wx:elif="{{state === 'empty'}}" class="empty">这一天暂无比赛
 下拉看看别的日期</view>
-  <view wx:elif="{{state === 'error'}}" class="error"><text>{{errorMessage}}</text><button class="retry" bindtap="onRetry">重试</button></view>
-  <scroll-view wx:else class="feed" scroll-y scroll-with-animation scroll-into-view="{{scrollIntoView}}" bindtap="onFeedTap">
+    <view wx:elif="{{state === 'error'}}" class="error"><text>{{errorMessage}}</text><button class="retry" bindtap="onRetry">重试</button></view>
+    <scroll-view wx:else class="feed" scroll-y scroll-with-animation scroll-into-view="{{scrollIntoView}}" bindtap="onFeedTap">
     <view wx:for="{{items}}" wx:key="match_id" id="match-{{item.match_id}}" class="match {{item.cardClass}} {{item.uiState}}" data-match-id="{{item.match_id}}" bindtap="onCardTap">
       <view class="match-top"><view class="kick"><text class="kick-time">{{item.timeText}}</text><text class="kick-meta">{{item.metaText}}</text></view><view class="state {{item.stateClass}}">{{item.stateText}}</view></view>
       <view class="faceoff">
@@ -64,6 +64,6 @@
       </view>
     </view>
     <button wx:if="{{hasMore}}" class="more" bindtap="onMore" disabled="{{loadingMore}}">{{loadingMore ? '加载中…' : '更多'}}</button>
-  </scroll-view>
+    </scroll-view>
   </view>
 </view>

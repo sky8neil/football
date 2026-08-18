@@ -64,7 +64,7 @@ Page({
   data: {
     state: "loading", items: [], errorMessage: "", hasMore: false, nextCursor: null, loadingMore: false,
     leagues: [], selectedLeague: "premier_league", dates: [], selectedDate: "", openCount: 0, doneCount: 0,
-    recentScore: 12, scrollIntoView: "", contentTransition: "content-enter",
+    recentScore: 12, scrollIntoView: "", resultsTransition: "results-enter",
   },
   drafts: {}, uiStates: {}, submittedMap: {}, idempotencyKeys: {}, lastPayloads: {}, requestSerial: 0,
 
@@ -78,7 +78,7 @@ Page({
     const league = event.currentTarget.dataset.id;
     if (!league || league === this.data.selectedLeague) return;
     this.closeEditors();
-    this.setData({ selectedLeague: league, scrollIntoView: "", state: "loading", items: [], hasMore: false, nextCursor: null, openCount: 0, doneCount: 0, contentTransition: "content-exit" });
+    this.setData({ selectedLeague: league, scrollIntoView: "", state: "loading", items: [], hasMore: false, nextCursor: null, openCount: 0, doneCount: 0, resultsTransition: "results-exit" });
     setTimeout(() => this.loadFirstPage(), 180);
   },
 
@@ -86,7 +86,7 @@ Page({
     const date = event.currentTarget.dataset.key;
     if (!date || date === this.data.selectedDate) return;
     this.closeEditors();
-    this.setData({ selectedDate: date, state: "loading", items: [], scrollIntoView: "", contentTransition: "content-exit" });
+    this.setData({ selectedDate: date, state: "loading", items: [], scrollIntoView: "", resultsTransition: "results-exit" });
     setTimeout(() => this.loadFirstPage(), 180);
   },
 
@@ -97,7 +97,7 @@ Page({
     const serial = ++this.requestSerial;
     const rawItems = MOCK_MATCHES.filter((item) => item.league_id === this.data.selectedLeague);
     const items = rawItems.map((item) => this.decorateItem(item));
-    this.setData({ state: items.length ? "list" : "empty", items, hasMore: false, nextCursor: null, errorMessage: "", loadingMore: false, openCount: items.filter((item) => item.showPredict).length, doneCount: items.filter((item) => item.can_predict_reason === "ALREADY_SUBMITTED").length, contentTransition: "content-enter" });
+    this.setData({ state: items.length ? "list" : "empty", items, hasMore: false, nextCursor: null, errorMessage: "", loadingMore: false, openCount: items.filter((item) => item.showPredict).length, doneCount: items.filter((item) => item.can_predict_reason === "ALREADY_SUBMITTED").length, resultsTransition: "results-enter" });
     return serial;
   },
 
