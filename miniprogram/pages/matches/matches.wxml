@@ -1,103 +1,67 @@
 <view class="page">
+  <view class="decor decor-arc"></view>
   <view class="topbar">
     <view class="brand">
-      <view class="mark">
-        <view class="mark-ring"></view>
-      </view>
+      <view class="mark"><view class="mark-ring"></view></view>
       <view class="brand-copy">
         <text class="brand-name">用户ID</text>
         <text class="brand-sub">今天看哪场？</text>
       </view>
     </view>
+    <view class="streak"><text>最近成绩</text><text class="streak-value">+{{recentScore}}</text></view>
   </view>
 
   <view class="leagues-wrap">
-    <scroll-view class="leagues" scroll-x enable-flex>
-      <view
-        wx:for="{{leagues}}"
-        wx:key="id"
-        class="league {{item.id === selectedLeague ? 'active' : ''}}"
-        data-id="{{item.id}}"
-        bindtap="onLeagueTap"
-      >
-        <view class="league-logo {{item.mark}}">{{item.markText}}</view>
+    <scroll-view class="leagues" scroll-x enable-flex scroll-with-animation>
+      <view wx:for="{{leagues}}" wx:key="id" class="league {{item.id === selectedLeague ? 'active' : ''}}" data-id="{{item.id}}" bindtap="onLeagueTap">
+        <image class="league-logo" src="{{item.logo}}" mode="aspectFit"></image>
         <text>{{item.name}}</text>
       </view>
     </scroll-view>
   </view>
 
   <view class="dates-wrap">
-    <scroll-view class="dates" scroll-x enable-flex>
-      <view
-        wx:for="{{dates}}"
-        wx:key="key"
-        class="date {{item.key === selectedDate ? 'active' : ''}}"
-        data-key="{{item.key}}"
-        bindtap="onDateTap"
-      >
-        <text class="date-label">{{item.label}}</text>
-        <text class="date-num">{{item.day}}</text>
+    <scroll-view class="dates" scroll-x enable-flex scroll-with-animation>
+      <view wx:for="{{dates}}" wx:key="key" class="date {{item.key === selectedDate ? 'active' : ''}}" data-key="{{item.key}}" bindtap="onDateTap">
+        <text class="date-label">{{item.label}}</text><text class="date-num">{{item.day}}</text>
       </view>
     </scroll-view>
-    <view class="cal" bindtap="onCalendarTap">
-      <text class="cal-icon">日</text>
-    </view>
+    <view class="cal" bindtap="onCalendarTap"><text class="cal-icon">日</text></view>
   </view>
 
-  <view class="hint">
-    <text>今日可预测 <text class="hint-num">{{openCount}}</text> · 已预测 <text class="hint-num">{{doneCount}}</text></text>
-    <text>最近成绩 <text class="hint-plus">+{{recentScore}}</text></text>
-  </view>
+  <view class="hint"><text>今日可预测 <text class="hint-num">{{openCount}}</text> · 已预测 <text class="hint-num">{{doneCount}}</text></text><text>最近成绩 <text class="hint-plus">+{{recentScore}}</text></text></view>
 
   <view wx:if="{{state === 'loading'}}" class="loading">加载中</view>
-  <view wx:elif="{{state === 'empty'}}" class="empty">这一天暂无比赛\n下拉看看别的日期</view>
-  <view wx:elif="{{state === 'error'}}" class="error">
-    <text>{{errorMessage}}</text>
-    <button class="retry" bindtap="onRetry">重试</button>
-  </view>
-  <view wx:else class="feed">
-    <view
-      wx:for="{{items}}"
-      wx:key="match_id"
-      class="match {{item.cardClass}}"
-      data-match-id="{{item.match_id}}"
-      bindtap="onCardTap"
-    >
-      <view class="match-top">
-        <view class="kick">
-          <text class="kick-time">{{item.timeText}}</text>
-          <text class="kick-meta">{{item.metaText}}</text>
-        </view>
-        <view class="state {{item.stateClass}}">{{item.stateText}}</view>
-      </view>
-
+  <view wx:elif="{{state === 'empty'}}" class="empty">这一天暂无比赛
+下拉看看别的日期</view>
+  <view wx:elif="{{state === 'error'}}" class="error"><text>{{errorMessage}}</text><button class="retry" bindtap="onRetry">重试</button></view>
+  <scroll-view wx:else class="feed" scroll-y scroll-with-animation scroll-into-view="{{scrollIntoView}}" bindtap="onFeedTap">
+    <view wx:for="{{items}}" wx:key="match_id" id="match-{{item.match_id}}" class="match {{item.cardClass}} {{item.uiState}}" data-match-id="{{item.match_id}}" bindtap="onCardTap">
+      <view class="match-top"><view class="kick"><text class="kick-time">{{item.timeText}}</text><text class="kick-meta">{{item.metaText}}</text></view><view class="state {{item.stateClass}}">{{item.stateText}}</view></view>
       <view class="faceoff">
-        <view class="team">
-          <view class="crest">{{item.homeMark}}</view>
-          <view class="team-copy">
-            <text class="team-name">{{item.home_team.name}}</text>
-            <text class="team-role">主队</text>
-          </view>
-        </view>
-        <view class="bug {{item.bugClass}}">
-          <text class="bug-score">{{item.scoreText}}</text>
-          <text class="bug-sub">{{item.scoreSub}}</text>
-        </view>
-        <view class="team away">
-          <view class="crest">{{item.awayMark}}</view>
-          <view class="team-copy">
-            <text class="team-name">{{item.away_team.name}}</text>
-            <text class="team-role">客队</text>
-          </view>
-        </view>
+        <view class="team"><image class="crest" src="{{item.homeLogo}}" mode="aspectFit"></image><view class="team-copy"><text class="team-name">{{item.home_team.name}}</text><text class="team-role">主队</text></view></view>
+        <view class="bug {{item.bugClass}}"><text class="bug-score">{{item.scoreText}}</text><text class="bug-sub">{{item.scoreSub}}</text></view>
+        <view class="team away"><image class="crest" src="{{item.awayLogo}}" mode="aspectFit"></image><view class="team-copy"><text class="team-name">{{item.away_team.name}}</text><text class="team-role">客队</text></view></view>
       </view>
+      <view class="foot"><text class="pred">{{item.predText}}</text><button wx:if="{{item.showPredict}}" class="cta" data-match-id="{{item.match_id}}" catchtap="onPredictTap">去预测 <text>→</text></button><view wx:elif="{{item.reasonChip}}" class="chip {{item.chipClass}}">{{item.reasonChip}}</view></view>
 
-      <view class="foot">
-        <text class="pred">{{item.predText}}</text>
-        <view wx:if="{{item.can_predict && item.can_predict_reason === null}}" class="cta">去预测 →</view>
-        <view wx:elif="{{item.reasonChip}}" class="chip {{item.chipClass}}">{{item.reasonChip}}</view>
+      <view wx:if="{{item.editorVisible}}" class="pred-wrap" catchtap="stopCardTap">
+        <view class="pred-area">
+          <view class="pred-body">
+            <view wx:if="{{item.uiState !== 'submitted_locked'}}" class="pred-editor">
+              <view class="stepper-group"><view class="stepper-team"><image src="{{item.homeLogo}}" mode="aspectFit"></image><text>{{item.home_team.name}}</text></view><view class="stepper"><button catchtap="onScoreTap" data-match-id="{{item.match_id}}" data-side="home" data-delta="-1">−</button><text>{{item.draft.home}}</text><button catchtap="onScoreTap" data-match-id="{{item.match_id}}" data-side="home" data-delta="1">+</button></view></view>
+              <text class="stepper-sep">:</text>
+              <view class="stepper-group"><view class="stepper-team"><image src="{{item.awayLogo}}" mode="aspectFit"></image><text>{{item.away_team.name}}</text></view><view class="stepper"><button catchtap="onScoreTap" data-match-id="{{item.match_id}}" data-side="away" data-delta="-1">−</button><text>{{item.draft.away}}</text><button catchtap="onScoreTap" data-match-id="{{item.match_id}}" data-side="away" data-delta="1">+</button></view></view>
+            </view>
+            <view wx:if="{{item.uiState !== 'submitted_locked'}}" class="derived">即时判定 <text>{{item.derivedResult}}</text></view>
+            <view wx:if="{{item.uiState !== 'submitted_locked'}}" class="pred-hint">赛果命中 +3 · 精确比分 +12</view>
+            <view wx:if="{{item.uiState !== 'submitted_locked'}}" class="pred-actions"><button class="submit-btn" catchtap="onSubmitTap" data-match-id="{{item.match_id}}" loading="{{item.uiState === 'submitting'}}" disabled="{{item.uiState === 'submitting'}}">{{item.uiState === 'submitting' ? '提交中…' : '提交预测'}}</button><text class="submit-note">提交后无法修改</text></view>
+            <view wx:if="{{item.submitError}}" class="submit-err">{{item.submitError}}</view>
+            <view wx:if="{{item.uiState === 'submitted_locked'}}" class="pred-success">✓ 预测已提交</view>
+          </view>
+        </view>
       </view>
     </view>
-    <button wx:if="{{hasMore}}" class="more" bindtap="onMore" disabled="{{loadingMore}}">更多</button>
-  </view>
+    <button wx:if="{{hasMore}}" class="more" bindtap="onMore" disabled="{{loadingMore}}">{{loadingMore ? '加载中…' : '更多'}}</button>
+  </scroll-view>
 </view>
