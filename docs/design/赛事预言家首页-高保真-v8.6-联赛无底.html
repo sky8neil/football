@@ -201,24 +201,12 @@
       background: transparent;
     }
 
-    .league img,
-    .league .csl-mark {
+    .league img {
       width: 28px;
       height: 28px;
       object-fit: contain;
       filter: grayscale(0.15);
       background: transparent;
-    }
-
-    .csl-mark {
-      display: grid;
-      place-items: center;
-      border-radius: 7px;
-      background: linear-gradient(180deg, #ff4d4f, #c81d25);
-      color: #fff;
-      font-size: 9px;
-      font-weight: 800;
-      letter-spacing: 0.2px;
     }
 
     .league.active {
@@ -328,6 +316,28 @@
       scrollbar-width: none;
     }
     .feed::-webkit-scrollbar { display: none; }
+
+    .feed.view-exit {
+      opacity: 0;
+      transform: translateY(8px);
+      transition: opacity 0.18s ease, transform 0.18s ease;
+    }
+
+    .feed.view-enter {
+      animation: feed-view-enter 0.24s ease both;
+    }
+
+    @keyframes feed-view-enter {
+      from { opacity: 0; transform: translateY(-6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .pred-wrap,
+      .pred-wrap > .pred-area,
+      .feed.view-exit { transition: none; }
+      .feed.view-enter { animation: none; }
+    }
 
     .match {
       background: var(--paper);
@@ -452,16 +462,9 @@
     .crest {
       width: 34px;
       height: 34px;
-      border-radius: 11px;
-      display: grid;
-      place-items: center;
+      object-fit: contain;
       flex: 0 0 auto;
-      color: #fff;
-      font-family: "Outfit", sans-serif;
-      font-size: 11px;
-      font-weight: 800;
-      letter-spacing: 0.2px;
-      box-shadow: inset 0 1px 0 rgba(255,255,255,0.28);
+      background: transparent;
     }
 
     .team b {
@@ -607,6 +610,311 @@
       font-weight: 750;
     }
 
+    /* ---- 快速比分预测（Match Card 内展开） ----
+       展开/收回动画：grid-template-rows 0fr→1fr + opacity + 轻微位移
+       纯 CSS 驱动，双向平滑，无 Layout Shift */
+    .pred-wrap {
+      display: grid;
+      grid-template-rows: 0fr;
+      margin-top: 0;
+      margin-bottom: -2px;   /* 补偿折叠态 pred-area 的 1px 上下边框 */
+      opacity: 0;
+      transition:
+        grid-template-rows 0.32s cubic-bezier(0.4, 0, 0.2, 1),
+        margin-top 0.32s cubic-bezier(0.4, 0, 0.2, 1),
+        margin-bottom 0.32s cubic-bezier(0.4, 0, 0.2, 1),
+        opacity 0.22s ease;
+    }
+
+    .pred-wrap > .pred-area {
+      overflow: hidden;
+      min-height: 0;
+      margin: 0;
+      border-color: transparent;   /* 折叠态隐藏边框 */
+      transform: translateY(4px);
+      transition:
+        max-height 0.32s cubic-bezier(0.4, 0, 0.2, 1),
+        padding 0.32s cubic-bezier(0.4, 0, 0.2, 1),
+        transform 0.32s cubic-bezier(0.4, 0, 0.2, 1),
+        border-color 0.32s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .match.editing .pred-wrap,
+    .match.submitting .pred-wrap,
+    .match.submitted_locked .pred-wrap {
+      grid-template-rows: 1fr;
+      margin-top: 12px;
+      margin-bottom: 0;
+      opacity: 1;
+    }
+
+    .match.editing .pred-wrap > .pred-area,
+    .match.submitting .pred-wrap > .pred-area {
+      max-height: 260px;
+      border-color: var(--line);   /* 展开态恢复边框 */
+      transform: translateY(0);
+    }
+
+    /* 仅「提交成功：编辑区 → 反馈区」用 0.9s。
+       点页面收回走基类 0.32s，因为收回时会先去掉 submitted_locked。 */
+    .match.submitted_locked .pred-wrap > .pred-area {
+      position: relative;
+      max-height: 58px;
+      border-color: var(--line);
+      transform: translateY(0);
+      transition-duration: 0.9s;
+    }
+
+    .match.submitted_locked .pred-body {
+      box-sizing: border-box;
+    }
+
+    .match.submitted_locked .pred-success {
+      display: flex;
+      position: absolute;
+      inset: 0;
+      margin: 0;
+      z-index: 1;
+    }
+
+    .pred-area {
+      /* padding 移到 .pred-body，保证折叠态（0fr）高度真正归零 */
+      padding: 0;
+      max-height: 0;
+      border-radius: 14px;
+      background: linear-gradient(180deg, #f7fbf5 0%, #f0f8ee 100%);
+      border: 1px solid var(--line);
+      transition: max-height 0.32s cubic-bezier(0.4, 0, 0.2, 1),
+        padding 0.32s cubic-bezier(0.4, 0, 0.2, 1),
+        border-color 0.32s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .pred-body {
+      padding: 14px 12px 12px;
+      transition: padding 0.32s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .pred-editor {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .stepper-group {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+    }
+
+    .stepper-team {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      max-width: 100%;
+    }
+
+    .stepper-team .crest {
+      width: 22px;
+      height: 22px;
+    }
+
+    .stepper-team span {
+      font-size: 11px;
+      font-weight: 650;
+      color: var(--ink-soft);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 84px;
+    }
+
+    .stepper {
+      display: flex;
+      align-items: center;
+      gap: 2px;
+    }
+
+    .stepper button {
+      width: 34px;
+      height: 34px;
+      border-radius: 10px;
+      display: grid;
+      place-items: center;
+      font-size: 17px;
+      font-weight: 700;
+      color: var(--cobalt-deep);
+      background: #fff;
+      border: 1px solid var(--line);
+      box-shadow: 0 2px 4px rgba(63, 138, 72, 0.08);
+      flex: 0 0 auto;
+      touch-action: manipulation;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    .stepper button:active { transform: translateY(1px); background: var(--cobalt-soft); }
+
+    .stepper button:disabled {
+      opacity: 0.45;
+      background: #f3f6fb;
+      color: var(--ink-faint);
+      box-shadow: none;
+      transform: none;
+    }
+
+    .stepper .score {
+      min-width: 40px;
+      text-align: center;
+      font-family: "Outfit", sans-serif;
+      font-size: 22px;
+      font-weight: 750;
+      color: var(--ink);
+      font-variant-numeric: tabular-nums;
+      line-height: 1;
+    }
+
+    .stepper-sep {
+      font-family: "Outfit", sans-serif;
+      font-size: 20px;
+      font-weight: 700;
+      color: var(--ink-faint);
+      padding: 0 2px;
+    }
+
+    .derived {
+      margin-top: 10px;
+      text-align: center;
+      font-size: 12px;
+      font-weight: 650;
+      color: var(--ink-soft);
+    }
+
+    .derived b {
+      color: var(--cobalt-deep);
+      font-weight: 750;
+    }
+
+    .derived.tie b { color: var(--ink-soft); }
+    .derived.away b { color: var(--cyan); }
+
+    .pred-hint {
+      margin-top: 8px;
+      text-align: center;
+      font-size: 10.5px;
+      color: var(--ink-faint);
+    }
+
+    .pred-actions {
+      margin-top: 12px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .submit-btn {
+      width: 100%;
+      min-height: 42px;
+      border-radius: 12px;
+      background: linear-gradient(180deg, #9ee48a 0%, #62c453 100%);
+      color: #163024;
+      font-size: 14px;
+      font-weight: 750;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      box-shadow: 0 8px 16px rgba(63, 138, 72, 0.22), inset 0 1px 0 rgba(255,255,255,0.45);
+    }
+
+    .submit-btn:active { transform: translateY(1px); }
+
+    .submit-btn:disabled {
+      opacity: 0.6;
+      box-shadow: none;
+      transform: none;
+    }
+
+    .submit-note {
+      font-size: 10.5px;
+      color: var(--ink-faint);
+    }
+
+    .spin {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      border: 2px solid rgba(22, 48, 36, 0.25);
+      border-top-color: #163024;
+      animation: spin .7s linear infinite;
+      display: inline-block;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .submit-err {
+      margin-top: 8px;
+      text-align: center;
+      font-size: 11px;
+      color: var(--live);
+      font-weight: 650;
+    }
+
+    .pred-success {
+      display: none;
+      margin: 0;
+      text-align: center;
+      font-size: 12.5px;
+      font-weight: 700;
+      color: var(--cobalt-deep);
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      animation: pred-success-in 0.32s cubic-bezier(0.4, 0, 0.2, 1) both;
+    }
+
+    @keyframes pred-success-in {
+      from {
+        opacity: 0;
+        transform: translateY(4px) scale(0.98);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+      }
+    }
+
+    .pred-success i {
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: var(--cobalt-deep);
+      color: #fff;
+      font-style: normal;
+      font-size: 10px;
+      font-weight: 800;
+      display: grid;
+      place-items: center;
+    }
+
+    /* submitted_locked：保持展开显示「预测已提交」反馈，但隐藏编辑控件；
+       点击页面任意位置（或另一个「去预测」）时由 JS 收回。
+       用透明度隐藏、保留占位，才能让 max-height 从编辑高度平滑收到反馈高度。 */
+    .match.submitted_locked .pred-editor,
+    .match.submitted_locked .derived,
+    .match.submitted_locked .pred-hint,
+    .match.submitted_locked .pred-actions,
+    .match.submitted_locked .submit-err {
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .match.submitted_locked .cta { display: none; }
+
     .empty {
       padding: 36px 12px;
       text-align: center;
@@ -647,23 +955,6 @@
 
     .nav svg { width: 22px; height: 22px; }
     .nav.active { color: var(--cobalt); }
-
-    .ars { background: linear-gradient(160deg, #ef0107, #9b111e); }
-    .che { background: linear-gradient(160deg, #034694, #032b5a); }
-    .bar { background: linear-gradient(160deg, #a50044 0 50%, #004d98 50% 100%); }
-    .sev { background: linear-gradient(160deg, #f3f3f3, #d9d9d9); color: #c8102e; }
-    .psg { background: linear-gradient(160deg, #004170, #da291c); }
-    .om  { background: linear-gradient(160deg, #2fa4e7, #0b6aa2); }
-    .sh  { background: linear-gradient(160deg, #e30613, #8f0410); }
-    .sd  { background: linear-gradient(160deg, #f47920, #c2410c); }
-    .mci { background: linear-gradient(160deg, #6cabdd, #1c2c5b); }
-    .liv { background: linear-gradient(160deg, #c8102e, #7f0918); }
-    .rma { background: linear-gradient(160deg, #f4f6f8, #dee4ea); color: #1d4ed8; }
-    .atm { background: linear-gradient(160deg, #cb3524 0 50%, #272e61 50% 100%); }
-    .lyo { background: linear-gradient(160deg, #12233f, #0a1630); }
-    .lil { background: linear-gradient(160deg, #e01a22, #8f1016); }
-    .gz  { background: linear-gradient(160deg, #d4a017, #8a6a0b); }
-    .bj  { background: linear-gradient(160deg, #14833b, #0b5224); }
 
     @media (min-width: 700px) {
       body { background: #cfe6cb; padding: 16px 0; }
@@ -706,10 +997,10 @@
 
     <div class="leagues-wrap">
       <nav class="leagues" aria-label="联赛">
-        <button class="league active" data-league="epl"><img src="assets/pl.svg" alt="">英超</button>
-        <button class="league" data-league="laliga"><img src="assets/laliga.svg" alt="">西甲</button>
-        <button class="league" data-league="ligue1"><img src="assets/ligue1.svg" alt="">法甲</button>
-        <button class="league" data-league="csl"><img src="assets/csl.png" alt="">中超</button>
+        <button class="league active" data-league="epl"><img class="league-logo" data-league-id="premier_league" src="assets/logos/placeholders/team-placeholder.png" alt="" onerror="this.style.display='none'">英超</button>
+        <button class="league" data-league="laliga"><img class="league-logo" data-league-id="la_liga" src="assets/logos/placeholders/team-placeholder.png" alt="" onerror="this.style.display='none'">西甲</button>
+        <button class="league" data-league="ligue1"><img class="league-logo" data-league-id="ligue_1" src="assets/logos/placeholders/team-placeholder.png" alt="" onerror="this.style.display='none'">法甲</button>
+        <button class="league" data-league="csl"><img class="league-logo" data-league-id="chinese_super_league" src="assets/logos/placeholders/team-placeholder.png" alt="" onerror="this.style.display='none'">中超</button>
       </nav>
     </div>
 
@@ -761,78 +1052,530 @@
       </button>
     </nav>
   </div>
+<script>
+/* ---- Logo Asset Registry（内联自包含，勿手改；重新生成：python3 docs/design/scripts/inline-logo-assets.py） ---- */
+(function () {
+  const LOGO_MANIFEST = {
+  "version": 1,
+  "generated_at": "2026-08-18T06:15:03.461Z",
+  "source": "/root/football_logos",
+  "league_logos": {
+    "premier_league": "assets/logos/leagues/premier_league.png",
+    "la_liga": "assets/logos/leagues/la_liga.png",
+    "ligue_1": "assets/logos/leagues/ligue_1.png",
+    "chinese_super_league": "assets/logos/leagues/chinese_super_league.png"
+  },
+  "team_logos": {
+    "premier_league": {
+      "arsenal": "assets/logos/teams/premier-league/arsenal.png",
+      "aston-villa": "assets/logos/teams/premier-league/aston-villa.png",
+      "bournemouth": "assets/logos/teams/premier-league/bournemouth.png",
+      "brentford": "assets/logos/teams/premier-league/brentford.png",
+      "brighton": "assets/logos/teams/premier-league/brighton.png",
+      "chelsea": "assets/logos/teams/premier-league/chelsea.png",
+      "coventry-city": "assets/logos/teams/premier-league/coventry-city.png",
+      "crystal-palace": "assets/logos/teams/premier-league/crystal-palace.png",
+      "everton": "assets/logos/teams/premier-league/everton.png",
+      "fulham": "assets/logos/teams/premier-league/fulham.png",
+      "hull-city": "assets/logos/teams/premier-league/hull-city.png",
+      "ipswich": "assets/logos/teams/premier-league/ipswich.png",
+      "leeds-united": "assets/logos/teams/premier-league/leeds-united.png",
+      "liverpool": "assets/logos/teams/premier-league/liverpool.png",
+      "manchester-city": "assets/logos/teams/premier-league/manchester-city.png",
+      "manchester-united": "assets/logos/teams/premier-league/manchester-united.png",
+      "newcastle": "assets/logos/teams/premier-league/newcastle.png",
+      "nottingham-forest": "assets/logos/teams/premier-league/nottingham-forest.png",
+      "sunderland": "assets/logos/teams/premier-league/sunderland.png",
+      "tottenham": "assets/logos/teams/premier-league/tottenham.png"
+    },
+    "la_liga": {
+      "athletic-club": "assets/logos/teams/la-liga/athletic-club.png",
+      "atletico-madrid": "assets/logos/teams/la-liga/atletico-madrid.png",
+      "barcelona": "assets/logos/teams/la-liga/barcelona.png",
+      "celta": "assets/logos/teams/la-liga/celta.png",
+      "deportivo-la-coruna": "assets/logos/teams/la-liga/deportivo-la-coruna.png",
+      "deportivo": "assets/logos/teams/la-liga/deportivo.png",
+      "elche": "assets/logos/teams/la-liga/elche.png",
+      "espanyol": "assets/logos/teams/la-liga/espanyol.png",
+      "getafe": "assets/logos/teams/la-liga/getafe.png",
+      "levante": "assets/logos/teams/la-liga/levante.png",
+      "malaga": "assets/logos/teams/la-liga/malaga.png",
+      "osasuna": "assets/logos/teams/la-liga/osasuna.png",
+      "racing": "assets/logos/teams/la-liga/racing.png",
+      "rayo-vallecano": "assets/logos/teams/la-liga/rayo-vallecano.png",
+      "real-betis": "assets/logos/teams/la-liga/real-betis.png",
+      "real-madrid": "assets/logos/teams/la-liga/real-madrid.png",
+      "real-sociedad": "assets/logos/teams/la-liga/real-sociedad.png",
+      "sevilla": "assets/logos/teams/la-liga/sevilla.png",
+      "valencia": "assets/logos/teams/la-liga/valencia.png",
+      "villarreal": "assets/logos/teams/la-liga/villarreal.png"
+    },
+    "ligue_1": {
+      "angers": "assets/logos/teams/ligue-1/angers.png",
+      "as-monaco": "assets/logos/teams/ligue-1/as-monaco.png",
+      "auxerre": "assets/logos/teams/ligue-1/auxerre.png",
+      "brest": "assets/logos/teams/ligue-1/brest.png",
+      "le-havre-ac": "assets/logos/teams/ligue-1/le-havre-ac.png",
+      "le-mans": "assets/logos/teams/ligue-1/le-mans.png",
+      "lille": "assets/logos/teams/ligue-1/lille.png",
+      "lorient": "assets/logos/teams/ligue-1/lorient.png",
+      "lyon": "assets/logos/teams/ligue-1/lyon.png",
+      "marseille": "assets/logos/teams/ligue-1/marseille.png",
+      "nice": "assets/logos/teams/ligue-1/nice.png",
+      "paris-fc": "assets/logos/teams/ligue-1/paris-fc.png",
+      "paris-saint-germain": "assets/logos/teams/ligue-1/paris-saint-germain.png",
+      "rc-lens": "assets/logos/teams/ligue-1/rc-lens.png",
+      "rc-strasbourg-alsace": "assets/logos/teams/ligue-1/rc-strasbourg-alsace.png",
+      "rennes": "assets/logos/teams/ligue-1/rennes.png",
+      "toulouse": "assets/logos/teams/ligue-1/toulouse.png",
+      "troyes": "assets/logos/teams/ligue-1/troyes.png"
+    },
+    "chinese_super_league": {
+      "beijing-guoan": "assets/logos/teams/chinese-super-league/beijing-guoan.png",
+      "changchun-yatai": "assets/logos/teams/chinese-super-league/changchun-yatai.png",
+      "chengdu-rongcheng": "assets/logos/teams/chinese-super-league/chengdu-rongcheng.png",
+      "chongqing-tonglianglong": "assets/logos/teams/chinese-super-league/chongqing-tonglianglong.png",
+      "dalian-yingbo": "assets/logos/teams/chinese-super-league/dalian-yingbo.png",
+      "henan-songshan-longmen": "assets/logos/teams/chinese-super-league/henan-songshan-longmen.png",
+      "liaoning-tiening": "assets/logos/teams/chinese-super-league/liaoning-tiening.png",
+      "meizhou-hakka": "assets/logos/teams/chinese-super-league/meizhou-hakka.png",
+      "qingdao-hainiu": "assets/logos/teams/chinese-super-league/qingdao-hainiu.png",
+      "qingdao-west-coast": "assets/logos/teams/chinese-super-league/qingdao-west-coast.png",
+      "shandong-taishan": "assets/logos/teams/chinese-super-league/shandong-taishan.png",
+      "shanghai-port": "assets/logos/teams/chinese-super-league/shanghai-port.png",
+      "shanghai-shenhua": "assets/logos/teams/chinese-super-league/shanghai-shenhua.png",
+      "shenzhen-xinpengcheng": "assets/logos/teams/chinese-super-league/shenzhen-xinpengcheng.png",
+      "tianjin-jinmen-tiger": "assets/logos/teams/chinese-super-league/tianjin-jinmen-tiger.png",
+      "wuhan-three-towns": "assets/logos/teams/chinese-super-league/wuhan-three-towns.png",
+      "yunnan-yukun": "assets/logos/teams/chinese-super-league/yunnan-yukun.png",
+      "zhejiang-professional": "assets/logos/teams/chinese-super-league/zhejiang-professional.png"
+    }
+  },
+  "source_files": {
+    "premier_league": {
+      "arsenal": "arsenal.football-logos.cc.png",
+      "aston-villa": "aston-villa.football-logos.cc.png",
+      "bournemouth": "bournemouth.football-logos.cc.png",
+      "brentford": "brentford.football-logos.cc.png",
+      "brighton": "brighton.football-logos.cc.png",
+      "chelsea": "chelsea.football-logos.cc.png",
+      "coventry-city": "coventry-city.football-logos.cc.png",
+      "crystal-palace": "crystal-palace.football-logos.cc.png",
+      "everton": "everton.football-logos.cc.png",
+      "fulham": "fulham.football-logos.cc.png",
+      "hull-city": "hull-city.football-logos.cc.png",
+      "ipswich": "ipswich.football-logos.cc.png",
+      "leeds-united": "leeds-united.football-logos.cc.png",
+      "liverpool": "liverpool.football-logos.cc.png",
+      "manchester-city": "manchester-city.football-logos.cc.png",
+      "manchester-united": "manchester-united.football-logos.cc.png",
+      "newcastle": "newcastle.football-logos.cc.png",
+      "nottingham-forest": "nottingham-forest.football-logos.cc.png",
+      "sunderland": "sunderland.football-logos.cc.png",
+      "tottenham": "tottenham.football-logos.cc.png"
+    },
+    "la_liga": {
+      "athletic-club": "athletic-club.football-logos.cc.png",
+      "atletico-madrid": "atletico-madrid.football-logos.cc.png",
+      "barcelona": "barcelona.football-logos.cc.png",
+      "celta": "celta.football-logos.cc.png",
+      "deportivo-la-coruna": "deportivo-la-coruna.football-logos.cc.png",
+      "deportivo": "deportivo.football-logos.cc.png",
+      "elche": "elche.football-logos.cc.png",
+      "espanyol": "espanyol.football-logos.cc.png",
+      "getafe": "getafe.football-logos.cc.png",
+      "levante": "levante.football-logos.cc.png",
+      "malaga": "malaga.football-logos.cc.png",
+      "osasuna": "osasuna.football-logos.cc.png",
+      "racing": "racing.football-logos.cc.png",
+      "rayo-vallecano": "rayo-vallecano.football-logos.cc.png",
+      "real-betis": "real-betis.football-logos.cc.png",
+      "real-madrid": "real-madrid.football-logos.cc.png",
+      "real-sociedad": "real-sociedad.football-logos.cc.png",
+      "sevilla": "sevilla.football-logos.cc.png",
+      "valencia": "valencia.football-logos.cc.png",
+      "villarreal": "villarreal.football-logos.cc.png"
+    },
+    "ligue_1": {
+      "angers": "angers.football-logos.cc.png",
+      "as-monaco": "as-monaco.football-logos.cc.png",
+      "auxerre": "auxerre.football-logos.cc.png",
+      "brest": "brest.football-logos.cc.png",
+      "le-havre-ac": "le-havre-ac.football-logos.cc.png",
+      "le-mans": "le-mans.football-logos.cc.png",
+      "lille": "lille.football-logos.cc.png",
+      "lorient": "lorient.football-logos.cc.png",
+      "lyon": "lyon.football-logos.cc.png",
+      "marseille": "marseille.football-logos.cc.png",
+      "nice": "nice.football-logos.cc.png",
+      "paris-fc": "paris-fc.football-logos.cc.png",
+      "paris-saint-germain": "paris-saint-germain.football-logos.cc.png",
+      "rc-lens": "rc-lens.football-logos.cc.png",
+      "rc-strasbourg-alsace": "rc-strasbourg-alsace.football-logos.cc.png",
+      "rennes": "rennes.football-logos.cc.png",
+      "toulouse": "toulouse.football-logos.cc.png",
+      "troyes": "troyes.football-logos.cc.png"
+    },
+    "chinese_super_league": {
+      "beijing-guoan": "beijing-guoan.1df87f4d.png",
+      "changchun-yatai": "changchun-yatai.73366586.png",
+      "chengdu-rongcheng": "chengdu-rongcheng.2bc45ba4.png",
+      "chongqing-tonglianglong": "chongqing-tonglianglong.53547953.png",
+      "dalian-yingbo": "dalian-yingbo.69d1000a.png",
+      "henan-songshan-longmen": "henan-songshan-longmen.3cd0d41d.png",
+      "liaoning-tiening": "liaoning-tiening.2898060b.png",
+      "meizhou-hakka": "meizhou-hakka.2e5499a2.png",
+      "qingdao-hainiu": "qingdao-hainiu.c30126cd.png",
+      "qingdao-west-coast": "qingdao-west-coast.6d386f2c.png",
+      "shandong-taishan": "shandong-taishan.a66e8c94.png",
+      "shanghai-port": "shanghai-port.0aa038ca.png",
+      "shanghai-shenhua": "shanghai-shenhua.cbc94596.png",
+      "shenzhen-xinpengcheng": "shenzhen-xinpengcheng.adc9e767.png",
+      "tianjin-jinmen-tiger": "tianjin-jinmen-tiger.0607a525.png",
+      "wuhan-three-towns": "wuhan-three-towns.6be65d9a.png",
+      "yunnan-yukun": "yunnan-yukun.1030dde0.png",
+      "zhejiang-professional": "zhejiang-professional.4f74e6f0.png"
+    }
+  }
+};
+  const PLACEHOLDER = "data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22128%22%20height%3D%22128%22%20viewBox%3D%220%200%20128%20128%22%3E%3Crect%20x%3D%228%22%20y%3D%228%22%20width%3D%22112%22%20height%3D%22112%22%20rx%3D%2228%22%20fill%3D%22%23e9f0ea%22%2F%3E%3Ccircle%20cx%3D%2264%22%20cy%3D%2264%22%20r%3D%2240%22%20fill%3D%22none%22%20stroke%3D%22%235b7166%22%20stroke-width%3D%226%22%2F%3E%3Ccircle%20cx%3D%2264%22%20cy%3D%2264%22%20r%3D%2214%22%20fill%3D%22none%22%20stroke%3D%22%235b7166%22%20stroke-width%3D%224%22%2F%3E%3Cpath%20d%3D%22M64%2050v28M50%2064h28M51.5%2051.5l25%2025M76.5%2051.5l-25%2025%22%20stroke%3D%22%235b7166%22%20stroke-width%3D%224%22%20stroke-linecap%3D%22round%22%2F%3E%3C%2Fsvg%3E";
 
+  const TEAM_ALIASES = {
+    // 英超
+    "manchester-city": ["曼城", "曼彻斯特城", "Manchester City", "Man City", "曼市"],
+    "manchester-united": ["曼联", "曼彻斯特联", "Manchester United", "Man United", "Man Utd"],
+    "arsenal": ["阿森纳", "Arsenal", "枪手"],
+    "chelsea": ["切尔西", "Chelsea", "蓝军"],
+    "liverpool": ["利物浦", "Liverpool", "红军"],
+    "tottenham": ["热刺", "托特纳姆热刺", "Tottenham", "Spurs", "托特纳姆"],
+    "newcastle": ["纽卡斯尔", "纽卡", "Newcastle"],
+    "aston-villa": ["阿斯顿维拉", "维拉", "Aston Villa"],
+    "everton": ["埃弗顿", "Everton"],
+    "brighton": ["布莱顿", "Brighton", "布赖顿"],
+    "west-ham": ["西汉姆", "西汉姆联", "West Ham"],
+    "nottingham-forest": ["诺丁汉森林", "诺丁汉", "Nottingham Forest"],
+    "brentford": ["布伦特福德", "小蜜蜂", "Brentford"],
+    "bournemouth": ["伯恩茅斯", "Bournemouth"],
+    "fulham": ["富勒姆", "Fulham"],
+    "crystal-palace": ["水晶宫", "Crystal Palace"],
+    "leeds-united": ["利兹联", "利兹", "Leeds United"],
+    "ipswich": ["伊普斯维奇", "Ipswich"],
+    "coventry-city": ["考文垂", "Coventry City"],
+    "hull-city": ["赫尔城", "Hull City"],
+    "sunderland": ["桑德兰", "Sunderland"],
+    // 西甲
+    "real-madrid": ["皇家马德里", "皇马", "Real Madrid", "RM"],
+    "barcelona": ["巴塞罗那", "巴萨", "Barcelona", "FC Barcelona"],
+    "atletico-madrid": ["马德里竞技", "马竞", "Atletico Madrid", "Atlético Madrid"],
+    "sevilla": ["塞维利亚", "Sevilla", "Seville"],
+    "athletic-club": ["毕尔巴鄂竞技", "毕尔巴鄂", "Athletic Club", "Bilbao"],
+    "real-sociedad": ["皇家社会", "Real Sociedad"],
+    "villarreal": ["比利亚雷亚尔", "黄潜", "Villarreal"],
+    "real-betis": ["皇家贝蒂斯", "贝蒂斯", "Real Betis"],
+    "valencia": ["瓦伦西亚", "Valencia"],
+    "celta": ["塞尔塔", "Celta Vigo", "Celta"],
+    "osasuna": ["奥萨苏纳", "Osasuna"],
+    "getafe": ["赫塔菲", "Getafe"],
+    "espanyol": ["西班牙人", "Espanyol"],
+    "rayo-vallecano": ["巴列卡诺", "Rayo Vallecano"],
+    "deportivo": ["拉科鲁尼亚", "Deportivo", "Deportivo La Coruna"],
+    "deportivo-la-coruna": ["拉科鲁尼亚", "Deportivo La Coruna"],
+    "malaga": ["马拉加", "Málaga", "Malaga"],
+    "levante": ["莱万特", "Levante"],
+    "elche": ["埃尔切", "Elche"],
+    "racing": ["桑坦德竞技", "Racing Santander", "Racing"],
+    // 法甲
+    "paris-saint-germain": ["巴黎圣日耳曼", "巴黎", "PSG", "Paris Saint-Germain", "大巴黎"],
+    "marseille": ["马赛", "Marseille", "OM", "Olympique de Marseille"],
+    "lyon": ["里昂", "Lyon", "Olympique Lyonnais"],
+    "lille": ["里尔", "Lille", "LOSC"],
+    "as-monaco": ["摩纳哥", "Monaco"],
+    "nice": ["尼斯", "Nice", "OGC Nice"],
+    "rennes": ["雷恩", "Rennes", "Stade Rennais"],
+    "rc-lens": ["朗斯", "Lens"],
+    "rc-strasbourg-alsace": ["斯特拉斯堡", "Strasbourg"],
+    "toulouse": ["图卢兹", "Toulouse"],
+    "auxerre": ["欧塞尔", "Auxerre"],
+    "brest": ["布雷斯特", "Brest"],
+    "angers": ["昂热", "Angers"],
+    "le-havre-ac": ["勒阿弗尔", "Le Havre"],
+    "lorient": ["洛里昂", "Lorient"],
+    "troyes": ["特鲁瓦", "Troyes"],
+    "le-mans": ["勒芒", "Le Mans"],
+    "paris-fc": ["巴黎FC", "Paris FC"],
+    // 中超
+    "shanghai-port": ["上海海港", "上海港", "Shanghai Port", "海港"],
+    "shanghai-shenhua": ["上海申花", "申花", "Shanghai Shenhua"],
+    "beijing-guoan": ["北京国安", "国安", "Beijing Guoan"],
+    "shandong-taishan": ["山东泰山", "泰山", "Shandong Taishan", "山东鲁能"],
+    "chengdu-rongcheng": ["成都蓉城", "蓉城", "Chengdu Rongcheng"],
+    "zhejiang-professional": ["浙江队", "浙江", "Zhejiang Professional", "浙江绿城"],
+    "wuhan-three-towns": ["武汉三镇", "三镇", "Wuhan Three Towns"],
+    "tianjin-jinmen-tiger": ["天津津门虎", "津门虎", "Tianjin Jinmen Tiger", "天津泰达"],
+    "henan-songshan-longmen": ["河南嵩山龙门", "河南队", "Henan Songshan Longmen", "河南建业"],
+    "changchun-yatai": ["长春亚泰", "亚泰", "Changchun Yatai"],
+    "qingdao-west-coast": ["青岛西海岸", "西海岸", "Qingdao West Coast"],
+    "qingdao-hainiu": ["青岛海牛", "海牛", "Qingdao Hainiu"],
+    "meizhou-hakka": ["梅州客家", "梅州", "Meizhou Hakka"],
+    "dalian-yingbo": ["大连英博", "大连人", "Dalian Yingbo"],
+    "shenzhen-xinpengcheng": ["深圳新鹏城", "深圳", "Shenzhen Xinpengcheng"],
+    "chongqing-tonglianglong": ["重庆铜梁龙", "重庆", "Chongqing Tonglianglong"],
+    "liaoning-tiening": ["辽宁铁人", "辽宁", "Liaoning Tiening"],
+    "yunnan-yukun": ["云南玉昆", "云南", "Yunnan Yukun"],
+  };
+
+  const ALIAS_INDEX = {};
+  for (const [key, aliasList] of Object.entries(TEAM_ALIASES)) {
+    ALIAS_INDEX[key.toLowerCase()] = key;
+    for (const a of aliasList) ALIAS_INDEX[a.toLowerCase()] = key;
+  }
+
+  function resolveTeamKey(teamId) {
+    if (!teamId) return null;
+    const v = String(teamId).trim();
+    if (!v) return null;
+    return ALIAS_INDEX[v.toLowerCase()] || v.toLowerCase();
+  }
+
+  function getTeamLogo(leagueId, teamId) {
+    const league = LOGO_MANIFEST.team_logos[leagueId];
+    if (!league) return PLACEHOLDER;
+    const key = resolveTeamKey(teamId);
+    if (!key) return PLACEHOLDER;
+    return league[key] || PLACEHOLDER;
+  }
+
+  function getLeagueLogo(leagueId) {
+    return LOGO_MANIFEST.league_logos[leagueId] || null;
+  }
+
+  window.FootballLogoRegistry = {
+    getTeamLogo, getLeagueLogo, resolveTeamKey,
+    PLACEHOLDER, MANIFEST: LOGO_MANIFEST,
+    getAllTeams: () => LOGO_MANIFEST.team_logos,
+  };
+})();
+</script>
   <script>
     const MATCHES = {
+      // 英超（5 场，全英超球队）
       epl: [
         { id: "a", cls: "is-open", state: "未开赛", stateCls: "", time: "20:30", meta: "英超 · 截止前 10 分钟",
-          home: ["ars","阿","阿森纳","主队"], away: ["che","切","切尔西","客队"],
+          home: { teamId: "arsenal", leagueId: "premier_league", name: "阿森纳", role: "主队" }, away: { teamId: "chelsea", leagueId: "premier_league", name: "切尔西", role: "客队" },
           bug: ["VS","20:30"], foot: "open" },
-        { id: "b", cls: "is-submitted", state: "已提交", stateCls: "lock", time: "03:00", meta: "西甲 · 预测已锁定",
-          home: ["bar","巴","巴塞罗那","主队"], away: ["sev","塞","塞维利亚","客队"],
-          bug: ["VS","已锁定"], foot: "lock", pred: "2 : 1" },
-        { id: "c", cls: "is-live", state: "进行中", stateCls: "live", time: "63′", meta: "法甲 · 下半场",
-          home: ["psg","巴","巴黎圣日耳曼","主队"], away: ["om","马","马赛","客队"],
+        { id: "b", cls: "is-submitted", state: "已提交", stateCls: "lock", time: "21:00", meta: "英超 · 预测已锁定",
+          home: { teamId: "manchester-city", leagueId: "premier_league", name: "曼城", role: "主队" }, away: { teamId: "liverpool", leagueId: "premier_league", name: "利物浦", role: "客队" },
+          bug: ["VS","已锁定"], foot: "lock", pred: "2 : 1", prediction: { home: 2, away: 1 } },
+        { id: "c", cls: "is-live", state: "进行中", stateCls: "live", time: "63′", meta: "英超 · 下半场",
+          home: { teamId: "tottenham", leagueId: "premier_league", name: "热刺", role: "主队" }, away: { teamId: "newcastle", leagueId: "premier_league", name: "纽卡斯尔", role: "客队" },
           bug: ["1 : 0","LIVE"], foot: "live", pred: "2 : 1" },
-        { id: "d", cls: "is-done", state: "完场", stateCls: "done", time: "已结束", meta: "中超 · 第 20 轮",
-          home: ["sh","海","上海海港","主队"], away: ["sd","泰","山东泰山","客队"],
+        { id: "d", cls: "is-done", state: "完场", stateCls: "done", time: "已结束", meta: "英超 · 第 1 轮",
+          home: { teamId: "manchester-united", leagueId: "premier_league", name: "曼联", role: "主队" }, away: { teamId: "aston-villa", leagueId: "premier_league", name: "阿斯顿维拉", role: "客队" },
           bug: ["2 : 2","FT"], foot: "hit3", pred: "2 : 1" },
         { id: "e", cls: "is-open", state: "未开赛", stateCls: "", time: "23:00", meta: "英超 · 还可以预测",
-          home: ["mci","城","曼城","主队"], away: ["liv","利","利物浦","客队"],
+          home: { teamId: "brighton", leagueId: "premier_league", name: "布莱顿", role: "主队" }, away: { teamId: "brentford", leagueId: "premier_league", name: "布伦特福德", role: "客队" },
           bug: ["VS","23:00"], foot: "open" }
       ],
+      // 西甲（5 场，全西甲球队）
       laliga: [
-        { id: "a", cls: "", state: "未开赛", stateCls: "", time: "03:00", meta: "北京时间",
-          home: ["bar","巴","巴塞罗那","主队"], away: ["sev","塞","塞维利亚","客队"],
+        { id: "a", cls: "", state: "未开赛", stateCls: "", time: "03:00", meta: "西甲 · 北京时间",
+          home: { teamId: "barcelona", leagueId: "la_liga", name: "巴塞罗那", role: "主队" }, away: { teamId: "sevilla", leagueId: "la_liga", name: "塞维利亚", role: "客队" },
           bug: ["VS","03:00"], foot: "open" },
-        { id: "b", cls: "is-submitted", state: "已提交", stateCls: "lock", time: "01:15", meta: "预测已锁定",
-          home: ["rma","皇","皇家马德里","主队"], away: ["atm","马","马竞","客队"],
-          bug: ["VS","已锁定"], foot: "lock", pred: "2 : 1" },
-        { id: "c", cls: "is-live", state: "进行中", stateCls: "live", time: "51′", meta: "下半场",
-          home: ["bar","巴","巴塞罗那","主队"], away: ["sev","塞","塞维利亚","客队"],
+        { id: "b", cls: "is-submitted", state: "已提交", stateCls: "lock", time: "01:15", meta: "西甲 · 预测已锁定",
+          home: { teamId: "real-madrid", leagueId: "la_liga", name: "皇家马德里", role: "主队" }, away: { teamId: "atletico-madrid", leagueId: "la_liga", name: "马竞", role: "客队" },
+          bug: ["VS","已锁定"], foot: "lock", pred: "2 : 1", prediction: { home: 2, away: 1 } },
+        { id: "c", cls: "is-live", state: "进行中", stateCls: "live", time: "51′", meta: "西甲 · 下半场",
+          home: { teamId: "athletic-club", leagueId: "la_liga", name: "毕尔巴鄂竞技", role: "主队" }, away: { teamId: "real-sociedad", leagueId: "la_liga", name: "皇家社会", role: "客队" },
           bug: ["1 : 0","LIVE"], foot: "live", pred: "2 : 1" },
-        { id: "d", cls: "is-done is-miss", state: "完场", stateCls: "done", time: "已结束", meta: "第 1 轮",
-          home: ["atm","马","马竞","主队"], away: ["rma","皇","皇家马德里","客队"],
-          bug: ["1 : 0","FT"], foot: "miss", pred: "1 : 1" }
+        { id: "d", cls: "is-done is-miss", state: "完场", stateCls: "done", time: "已结束", meta: "西甲 · 第 1 轮",
+          home: { teamId: "villarreal", leagueId: "la_liga", name: "比利亚雷亚尔", role: "主队" }, away: { teamId: "valencia", leagueId: "la_liga", name: "瓦伦西亚", role: "客队" },
+          bug: ["1 : 0","FT"], foot: "miss", pred: "1 : 1" },
+        { id: "e", cls: "is-open", state: "未开赛", stateCls: "", time: "05:00", meta: "西甲 · 还可以预测",
+          home: { teamId: "real-betis", leagueId: "la_liga", name: "皇家贝蒂斯", role: "主队" }, away: { teamId: "osasuna", leagueId: "la_liga", name: "奥萨苏纳", role: "客队" },
+          bug: ["VS","05:00"], foot: "open" }
       ],
+      // 法甲（5 场，全法甲球队）
       ligue1: [
-        { id: "a", cls: "", state: "未开赛", stateCls: "", time: "03:00", meta: "北京时间",
-          home: ["psg","巴","巴黎圣日耳曼","主队"], away: ["om","马","马赛","客队"],
+        { id: "a", cls: "", state: "未开赛", stateCls: "", time: "03:00", meta: "法甲 · 北京时间",
+          home: { teamId: "paris-saint-germain", leagueId: "ligue_1", name: "巴黎圣日耳曼", role: "主队" }, away: { teamId: "marseille", leagueId: "ligue_1", name: "马赛", role: "客队" },
           bug: ["VS","03:00"], foot: "open" },
-        { id: "b", cls: "is-submitted", state: "已提交", stateCls: "lock", time: "01:00", meta: "预测已锁定",
-          home: ["lyo","里","里昂","主队"], away: ["lil","里","里尔","客队"],
-          bug: ["VS","已锁定"], foot: "lock", pred: "1 : 0" },
-        { id: "c", cls: "is-live", state: "进行中", stateCls: "live", time: "63′", meta: "下半场",
-          home: ["psg","巴","巴黎圣日耳曼","主队"], away: ["om","马","马赛","客队"],
+        { id: "b", cls: "is-submitted", state: "已提交", stateCls: "lock", time: "01:00", meta: "法甲 · 预测已锁定",
+          home: { teamId: "lyon", leagueId: "ligue_1", name: "里昂", role: "主队" }, away: { teamId: "lille", leagueId: "ligue_1", name: "里尔", role: "客队" },
+          bug: ["VS","已锁定"], foot: "lock", pred: "1 : 0", prediction: { home: 1, away: 0 } },
+        { id: "c", cls: "is-live", state: "进行中", stateCls: "live", time: "63′", meta: "法甲 · 下半场",
+          home: { teamId: "as-monaco", leagueId: "ligue_1", name: "摩纳哥", role: "主队" }, away: { teamId: "nice", leagueId: "ligue_1", name: "尼斯", role: "客队" },
           bug: ["1 : 0","LIVE"], foot: "live", pred: "2 : 1" },
-        { id: "d", cls: "is-done", state: "完场", stateCls: "done", time: "已结束", meta: "第 1 轮",
-          home: ["lil","里","里尔","主队"], away: ["lyo","里","里昂","客队"],
-          bug: ["2 : 1","FT"], foot: "hit12", pred: "2 : 1" }
+        { id: "d", cls: "is-done", state: "完场", stateCls: "done", time: "已结束", meta: "法甲 · 第 1 轮",
+          home: { teamId: "rennes", leagueId: "ligue_1", name: "雷恩", role: "主队" }, away: { teamId: "rc-lens", leagueId: "ligue_1", name: "朗斯", role: "客队" },
+          bug: ["2 : 1","FT"], foot: "hit12", pred: "2 : 1" },
+        { id: "e", cls: "is-open", state: "未开赛", stateCls: "", time: "05:00", meta: "法甲 · 还可以预测",
+          home: { teamId: "toulouse", leagueId: "ligue_1", name: "图卢兹", role: "主队" }, away: { teamId: "brest", leagueId: "ligue_1", name: "布雷斯特", role: "客队" },
+          bug: ["VS","05:00"], foot: "open" }
       ],
+      // 中超（5 场，全中超球队）
       csl: [
-        { id: "a", cls: "", state: "未开赛", stateCls: "", time: "19:35", meta: "开赛前 10 分钟截止",
-          home: ["sh","海","上海海港","主队"], away: ["sd","泰","山东泰山","客队"],
+        { id: "a", cls: "", state: "未开赛", stateCls: "", time: "19:35", meta: "中超 · 开赛前 10 分钟截止",
+          home: { teamId: "shanghai-port", leagueId: "chinese_super_league", name: "上海海港", role: "主队" }, away: { teamId: "shandong-taishan", leagueId: "chinese_super_league", name: "山东泰山", role: "客队" },
           bug: ["VS","19:35"], foot: "open" },
-        { id: "b", cls: "is-submitted", state: "已提交", stateCls: "lock", time: "19:35", meta: "预测已锁定",
-          home: ["bj","国","北京国安","主队"], away: ["gz","恒","上海申花","客队"],
-          bug: ["VS","已锁定"], foot: "lock", pred: "1 : 1" },
-        { id: "c", cls: "is-live", state: "进行中", stateCls: "live", time: "78′", meta: "下半场",
-          home: ["gz","申","上海申花","主队"], away: ["bj","国","北京国安","客队"],
+        { id: "b", cls: "is-submitted", state: "已提交", stateCls: "lock", time: "19:35", meta: "中超 · 预测已锁定",
+          home: { teamId: "beijing-guoan", leagueId: "chinese_super_league", name: "北京国安", role: "主队" }, away: { teamId: "shanghai-shenhua", leagueId: "chinese_super_league", name: "上海申花", role: "客队" },
+          bug: ["VS","已锁定"], foot: "lock", pred: "1 : 1", prediction: { home: 1, away: 1 } },
+        { id: "c", cls: "is-live", state: "进行中", stateCls: "live", time: "78′", meta: "中超 · 下半场",
+          home: { teamId: "chengdu-rongcheng", leagueId: "chinese_super_league", name: "成都蓉城", role: "主队" }, away: { teamId: "zhejiang-professional", leagueId: "chinese_super_league", name: "浙江队", role: "客队" },
           bug: ["0 : 0","LIVE"], foot: "live", pred: "1 : 0" },
-        { id: "d", cls: "is-done", state: "完场", stateCls: "done", time: "已结束", meta: "第 20 轮",
-          home: ["sh","海","上海海港","主队"], away: ["sd","泰","山东泰山","客队"],
-          bug: ["2 : 2","FT"], foot: "hit3", pred: "2 : 1" }
+        { id: "d", cls: "is-done", state: "完场", stateCls: "done", time: "已结束", meta: "中超 · 第 20 轮",
+          home: { teamId: "wuhan-three-towns", leagueId: "chinese_super_league", name: "武汉三镇", role: "主队" }, away: { teamId: "tianjin-jinmen-tiger", leagueId: "chinese_super_league", name: "天津津门虎", role: "客队" },
+          bug: ["2 : 2","FT"], foot: "hit3", pred: "2 : 1" },
+        { id: "e", cls: "is-open", state: "未开赛", stateCls: "", time: "20:00", meta: "中超 · 还可以预测",
+          home: { teamId: "henan-songshan-longmen", leagueId: "chinese_super_league", name: "河南队", role: "主队" }, away: { teamId: "changchun-yatai", leagueId: "chinese_super_league", name: "长春亚泰", role: "客队" },
+          bug: ["VS","20:00"], foot: "open" }
       ]
     };
 
     const feed = document.getElementById("feed");
     const empty = document.getElementById("empty");
+    const R = window.FootballLogoRegistry;
     let league = "epl";
     let day = "17";
 
+    const LEAGUE_ID_BY_TAB = {
+      epl: "premier_league",
+      laliga: "la_liga",
+      ligue1: "ligue_1",
+      csl: "chinese_super_league",
+    };
+
+    /* ---- 预测 UI 状态机 ----
+       uiState: collapsed | editing | submitting | submitted_locked
+       业务 matchStatus 独立：open(可预测) / lock(已提交) / live / done
+       两套状态互不混用。 */
+
+    const uiStates = {};          // scopeKey -> uiState
+    const drafts = {};            // scopeKey -> { home, away }（未提交草稿）
+    const submittedMap = {};      // scopeKey -> { home, away }（已提交预测，Mock 阶段存内存）
+
+    function scopeKey(matchId, leagueName = league, dayName = day) {
+      return `${leagueName}:${dayName}:${matchId}`;
+    }
+
+    function cardSelector(key) {
+      return `[data-state-key="${key}"]`;
+    }
+
+    function setUiState(key, state) {
+      uiStates[key] = state;
+      const el = document.querySelector(cardSelector(key));
+      if (!el) return;
+      el.classList.toggle("editing", state === "editing");
+      el.classList.toggle("submitting", state === "submitting");
+      el.classList.toggle("submitted_locked", state === "submitted_locked");
+      // 同步 foot 区按钮
+      const cta = el.querySelector(".cta");
+      if (cta) cta.style.display = state === "submitted_locked" ? "none" : "";
+    }
+
+    // 收回一张展开/锁定的卡片（editing / submitting / submitted_locked → collapsed）
+    function collapseCard(key) {
+      const state = uiStates[key];
+      if (state !== "editing" && state !== "submitting" && state !== "submitted_locked") return;
+      uiStates[key] = "collapsed";
+      const el = document.querySelector(cardSelector(key));
+      if (el) {
+        el.classList.remove("editing", "submitting", "submitted_locked");
+        const cta = el.querySelector(".cta");
+        if (cta) cta.style.display = "";
+      }
+      delete drafts[key];
+    }
+
+    function closeAllEditors(exceptKey) {
+      Object.keys(uiStates).forEach((key) => {
+        if (key === exceptKey) return;
+        if (uiStates[key] === "editing" || uiStates[key] === "submitting" || uiStates[key] === "submitted_locked") {
+          collapseCard(key);
+        }
+      });
+    }
+
+    let revealAnimToken = 0;
+
+    function revealExpandedCard(cardEl) {
+      const pad = 12;
+      const duration = 900;
+      const token = ++revealAnimToken;
+      const start = feed.scrollTop;
+      const t0 = performance.now();
+      const easeOut = (t) => 1 - Math.pow(1 - t, 3);
+      const desired = () => {
+        const max = Math.max(0, feed.scrollHeight - feed.clientHeight);
+        return Math.max(0, Math.min(cardEl.offsetTop + cardEl.offsetHeight - feed.clientHeight + pad, max));
+      };
+      const tick = (now) => {
+        if (token !== revealAnimToken || !cardEl.isConnected) return;
+        const p = Math.min(1, (now - t0) / duration);
+        feed.scrollTop = start + (desired() - start) * easeOut(p);
+        if (p < 1) requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    }
+
+    function deriveResult(home, away) {
+      if (home > away) return "主胜";
+      if (home === away) return "平局";
+      return "客胜";
+    }
+
+    function stepperHtml(id, side, value, team) {
+      const minus = `<button type="button" data-action="dec" data-side="${side}" aria-label="${team.name} 减分">−</button>`;
+      const plus = `<button type="button" data-action="inc" data-side="${side}" aria-label="${team.name} 加分">+</button>`;
+      return `<div class="stepper" data-match="${id}" data-side="${side}">
+        ${minus}<span class="score">${value}</span>${plus}
+      </div>`;
+    }
+
+    function predictionEditorHtml(m) {
+      const key = scopeKey(m.id);
+      const d = drafts[key] || { home: 0, away: 0 };
+      const result = deriveResult(d.home, d.away);
+      const resultCls = result === "主胜" ? "home" : result === "平局" ? "tie" : "away";
+      return `<div class="pred-area">
+        <div class="pred-body">
+          <div class="pred-editor">
+            <div class="stepper-group">
+              <div class="stepper-team">${crestHtml(m.home, LEAGUE_ID_BY_TAB[league])}<span>${m.home.name}</span></div>
+              ${stepperHtml(m.id, "home", d.home, m.home)}
+            </div>
+            <div class="stepper-sep">:</div>
+            <div class="stepper-group">
+              <div class="stepper-team">${crestHtml(m.away, LEAGUE_ID_BY_TAB[league])}<span>${m.away.name}</span></div>
+              ${stepperHtml(m.id, "away", d.away, m.away)}
+            </div>
+          </div>
+          <div class="derived ${resultCls}">即时判定 <b>${result}</b></div>
+          <div class="pred-hint">赛果命中 +3 · 精确比分 +12</div>
+          <div class="pred-actions">
+            <button class="submit-btn" type="button" data-action="submit">提交预测</button>
+            <span class="submit-note">提交后无法修改</span>
+          </div>
+          <div class="submit-err" hidden></div>
+          <div class="pred-success"><i>✓</i> 预测已提交</div>
+        </div>
+      </div>`;
+    }
+
+    function lockedHtml(m) {
+      // submitted_locked 复用 foot 区展示（紧凑），无需额外栏
+      return "";
+    }
+
     function footHtml(m) {
+      // 已提交的预测优先（render 重绘后保持锁定，不再显示「去预测」）
+      const sub = submittedMap[scopeKey(m.id)];
+      if (sub) {
+        return `<span class="pred">我的预测 <b>${sub.home} : ${sub.away}</b></span><span class="lock-chip">已锁定 · 不可修改</span>`;
+      }
       if (m.foot === "open") {
-        return `<span class="pred">未开赛</span><button class="cta" type="button">去预测 <span>→</span></button>`;
+        return `<span class="pred">未开赛</span><button class="cta" type="button" data-action="predict">去预测 <span>→</span></button>`;
       }
       if (m.foot === "lock") {
         return `<span class="pred">我的预测 <b>${m.pred}</b></span><span class="lock-chip">已锁定 · 不可修改</span>`;
@@ -849,41 +1592,215 @@
       return `<span class="pred">我的预测 <b>${m.pred}</b></span><span class="result miss"><b>+0</b> 未命中</span>`;
     }
 
+    function crestHtml(team, fallbackLeagueId) {
+      const leagueId = team.leagueId || fallbackLeagueId;
+      const logo = R.getTeamLogo(leagueId, team.teamId);
+      const fallback = "this.onerror=null;this.src='" + R.PLACEHOLDER + "'";
+      return `<img class="crest" src="${logo}" alt="${team.name}" loading="lazy" onerror="${fallback}">`;
+    }
+
     function card(m) {
+      const leagueId = LEAGUE_ID_BY_TAB[league];
       const liveDot = m.stateCls === "live" ? "<i></i>" : "";
-      return `<article class="match ${m.cls}">
+      return `<article class="match ${m.cls}" data-match-id="${m.id}" data-state-key="${scopeKey(m.id)}">
         <div class="match-top">
           <div class="kick"><time>${m.time}</time><span>${m.meta}</span></div>
           <span class="state ${m.stateCls}">${liveDot}${m.state}</span>
         </div>
         <div class="faceoff">
           <div class="team">
-            <i class="crest ${m.home[0]}">${m.home[1]}</i>
-            <div><b>${m.home[2]}</b><small>${m.home[3]}</small></div>
+            ${crestHtml(m.home, leagueId)}
+            <div><b>${m.home.name}</b><small>${m.home.role}</small></div>
           </div>
           <div class="bug"><strong>${m.bug[0]}</strong><em>${m.bug[1]}</em></div>
           <div class="team away">
-            <i class="crest ${m.away[0]}">${m.away[1]}</i>
-            <div><b>${m.away[2]}</b><small>${m.away[3]}</small></div>
+            ${crestHtml(m.away, leagueId)}
+            <div><b>${m.away.name}</b><small>${m.away.role}</small></div>
           </div>
         </div>
         <div class="foot">${footHtml(m)}</div>
+        <div class="pred-wrap">${predictionEditorHtml(m)}</div>
+        ${lockedHtml(m)}
       </article>`;
     }
 
-    function render() {
-      const has = day === "17";
-      feed.classList.toggle("hide", !has);
-      empty.classList.toggle("show", !has);
-      if (!has) return;
-      const list = MATCHES[league] || MATCHES.epl;
-      feed.innerHTML = list.map(card).join("");
-      feed.querySelectorAll(".cta").forEach((btn) => {
-        btn.addEventListener("click", () => {
-          btn.textContent = "已进入预测";
-          btn.style.background = '#2f8a3a';
-          btn.style.color = '#fff';
+    /* ---- Mock 提交（开发演示用，未来替换为真实 API） ----
+       正式逻辑：POST /v1/predictions { match_id, home_score, away_score }
+       返回 PREDICTION_ALREADY_SUBMITTED → 拉取已有预测转 submitted_locked
+       返回 PREDICTION_LOCKED → prediction_closed（禁用编辑，不保存） */
+    function mockSubmit(m, home, away) {
+      return new Promise((resolve, reject) => {
+        setTimeout(() => {
+          const fail = new URLSearchParams(location.search).get("failSubmit") === "1";
+          if (fail) {
+            reject(new Error("SUBMIT_FAILED"));
+          } else {
+            resolve({ matchId: m.id, home, away, locked: true });
+          }
+        }, 900);
+      });
+    }
+
+    function handleSubmit(m, key, btn) {
+      const d = drafts[key] || { home: 0, away: 0 };
+      setUiState(key, "submitting");
+      const el = document.querySelector(cardSelector(key));
+      const steppers = el.querySelectorAll(".stepper button");
+      steppers.forEach((b) => { b.disabled = true; });
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spin"></span> 提交中…';
+      mockSubmit(m, d.home, d.away)
+        .then((res) => {
+          // 提交成功：切到 submitted_locked，由 CSS 把编辑区收到反馈区；
+          // 保留 pred-body，才能让「预测已提交」垂直居中。
+          const el = document.querySelector(cardSelector(key));
+          m.prediction = { home: res.home, away: res.away };
+          m.foot = "lock";
+          m.pred = `${res.home} : ${res.away}`;
+          submittedMap[key] = { home: res.home, away: res.away };
+          uiStates[key] = "submitted_locked";
+          el.classList.remove("editing", "submitting");
+          el.classList.add("submitted_locked");
+          // 重新渲染 foot：我的预测 + 已锁定标签（与预置 lock 卡一致，紧凑）
+          const footEl = el.querySelector(".foot");
+          footEl.innerHTML = `<span class="pred">我的预测 <b>${m.pred}</b></span><span class="lock-chip">已锁定 · 不可修改</span>`;
+          delete drafts[key];
+          // 保留 submitted_locked，让成功反馈保持可见；后续点击页面任意位置
+          // 会通过 document 委托调用 collapseCard，并播放同一套收回动画。
+        })
+        .catch(() => {
+          // 提交失败：恢复 editing，保留比分
+          setUiState(key, "editing");
+          btn.disabled = false;
+          btn.textContent = "提交预测";
+          const el = document.querySelector(cardSelector(key));
+          const err = el.querySelector(".submit-err");
+          err.hidden = false;
+          err.textContent = "提交失败，请重试";
         });
+    }
+
+    let renderToken = 0;
+
+    function render(animated = false) {
+      const token = ++renderToken;
+      const apply = () => {
+        if (token !== renderToken) return;
+        const has = day === "17";
+        feed.classList.toggle("hide", !has);
+        empty.classList.toggle("show", !has);
+        if (!has) return;
+        const list = MATCHES[league] || MATCHES.epl;
+        feed.innerHTML = list.map(card).join("");
+        // 初始化当前联赛/日期的 UI 状态
+        list.forEach((m) => {
+          const key = scopeKey(m.id);
+          uiStates[key] = "collapsed";
+        });
+      };
+
+      if (!animated) {
+        apply();
+        return;
+      }
+
+      feed.classList.add("view-exit");
+      window.setTimeout(() => {
+        apply();
+        if (token !== renderToken) return;
+        feed.classList.remove("view-exit");
+        if (day === "17") {
+          feed.classList.add("view-enter");
+          window.setTimeout(() => feed.classList.remove("view-enter"), 260);
+        }
+      }, 180);
+    }
+
+    // 事件委托：只绑定一次（联赛/日期切换不会重复监听）
+    feed.addEventListener("click", (e) => {
+      const cardEl = e.target.closest(".match");
+      if (!cardEl) return;
+      const id = cardEl.dataset.matchId;
+      const key = scopeKey(id);
+      const m = (MATCHES[league] || []).find((x) => x.id === id);
+      if (!m) return;
+      const btn = e.target.closest("button");
+      if (!btn) return;
+      const action = btn.dataset.action;
+
+      if (action === "predict") {
+        // 同一时间只允许一张 editing：先收回当前所有展开/锁定的卡，再展开新的
+        if (uiStates[key] === "submitted_locked") return;
+        closeAllEditors(key);
+        drafts[key] = { home: 0, away: 0 };
+        setUiState(key, "editing");
+        // 重置展开区 DOM（收回再展开时残留旧比分，需同步回 0:0）
+        const area = cardEl.querySelector(".pred-area");
+        if (area) {
+          cardEl.querySelectorAll('.stepper .score').forEach((s) => { s.textContent = "0"; });
+          const derived = area.querySelector(".derived");
+          if (derived) {
+            derived.classList.remove("home", "tie", "away");
+            derived.classList.add("tie");
+            derived.innerHTML = '即时判定 <b>平局</b>';
+          }
+          const err = area.querySelector(".submit-err");
+          if (err) { err.hidden = true; err.textContent = ""; }
+        }
+        // 最后一张卡展开后底部会超出 .feed；nearest 不会滚。
+        // 展开过程中分两次按实际溢出距离下移，动画结束后再校正一次。
+        revealExpandedCard(cardEl);
+      } else if (action === "inc" || action === "dec") {
+        const side = btn.dataset.side;
+        if (uiStates[key] !== "editing") return;
+        const d = drafts[key];
+        const delta = action === "inc" ? 1 : -1;
+        const next = Math.max(0, d[side] + delta);
+        if (next === d[side]) return;
+        d[side] = next;
+        cardEl.querySelector(`.stepper[data-side="${side}"] .score`).textContent = next;
+        // 更新即时判定
+        const derived = cardEl.querySelector(".derived");
+        const result = deriveResult(d.home, d.away);
+        derived.textContent = "";
+        const b = document.createElement("b");
+        b.textContent = result;
+        derived.classList.remove("home", "tie", "away");
+        derived.classList.add(result === "主胜" ? "home" : result === "平局" ? "tie" : "away");
+        derived.append("即时判定 ", b);
+      } else if (action === "submit") {
+        if (uiStates[key] !== "editing") return;
+        handleSubmit(m, key, btn);
+      }
+    });
+
+    // 点击页面任意位置收回当前展开/锁定的卡片（「去预测」按钮除外——
+    // 它由 feed 委托先收回旧的再展开新的，这里跳过避免误收；
+    // 卡片内部交互（stepper / 提交）也不触发收回）
+    document.addEventListener("click", (e) => {
+      // 点击「去预测」按钮 → 交给 feed 委托处理，不在此收回
+      if (e.target.closest('button[data-action="predict"]')) return;
+      // 点击展开卡内部（stepper / 提交按钮等）→ 由 feed 委托处理，不收回
+      const insideCard = e.target.closest(".match");
+      if (insideCard && insideCard.classList.contains("editing")) return;
+      if (insideCard && insideCard.classList.contains("submitting")) return;
+      // 点击任意其他位置：收回所有非 collapsed 的卡片
+      let anyOpen = false;
+      Object.keys(uiStates).forEach((key) => {
+        if (uiStates[key] !== "collapsed") { anyOpen = true; collapseCard(key); }
+      });
+      if (anyOpen) {
+        // 收回后滚动回当前比赛附近（避免页面跳动）
+        if (insideCard) insideCard.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      }
+    });
+
+    // 注入真实联赛 Logo（找不到时保留文字，不破图）
+    function injectLeagueLogos() {
+      document.querySelectorAll(".league img").forEach((img) => {
+        const leagueId = img.dataset.leagueId;
+        const logo = R.getLeagueLogo(leagueId);
+        if (logo) img.src = logo;
       });
     }
 
@@ -892,7 +1809,8 @@
         document.querySelectorAll(".league").forEach((x) => x.classList.remove("active"));
         btn.classList.add("active");
         league = btn.dataset.league;
-        render();
+        closeAllEditors();
+        render(true);
       });
     });
 
@@ -901,10 +1819,12 @@
         document.querySelectorAll(".date").forEach((x) => x.classList.remove("active"));
         btn.classList.add("active");
         day = btn.dataset.day;
-        render();
+        closeAllEditors();
+        render(true);
       });
     });
 
+    injectLeagueLogos();
     render();
 
     (function fitFrame() {
