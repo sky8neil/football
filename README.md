@@ -60,6 +60,64 @@ Backend API Freeze Review 已通过，H4 已关闭；可以开始用户端前端
 
 首版页面范围固定为：会话初始化、比赛列表、比赛详情+预测提交、我的预测、我的资料/等级、解锁、排行榜。资料编辑、账号注销、公开他人资料、分享卡是可选二次切片；管理端页面不做。
 
+## 前端视觉规则（已定稿）
+
+以下规则以 `docs/design/赛事预言家首页-高保真-v8.6-联赛无底.html` 为唯一视觉基线，已经用户确认冻结。**后续任何前端开发必须遵守，不得擅自改变**；如需调整，先改首页视觉稿并重新确认。
+
+### 1. 视觉基线
+
+- 按 **390px** 宽度设计，兼容 375–430px；设计稿与实现必须同源（单文件 HTML 首页 + Global UI Design System）。
+- 视觉 Source of Truth：`docs/UI_DESIGN_SYSTEM.md`（token、语义色、组件状态）；颜色一律使用语义 token，不直接写 primitive HEX。
+- 页面布局、配色、卡片结构、Logo 位置是冻结基线：不重做页面、不改布局配色、不新增页面结构。
+- 背景三层配方（radial glow × 2 + 垂直渐变）、半透明联赛托盘、状态色左侧竖条是当前首页视觉签名，可复用但不强制每个页面复制。
+
+### 2. 比赛卡片与预测状态机（已冻结）
+
+- 卡片包含：`match-top`（时间/联赛 + 状态徽章）→ `faceoff`（主客队 + 比分区）→ `foot`（预测入口/结果）→ `pred-wrap`（展开预测区）。
+- 预测 UI 状态只允许四种，互不混用：
+
+  ```text
+  collapsed | editing | submitting | submitted_locked
+  ```
+
+- 业务状态独立：`open`（可预测）/ `lock`（已提交）/ `live` / `done`；UI 状态与业务状态分离，不互相推导。
+- **状态隔离 key 必须是 `联赛:日期:比赛ID`**（如 `epl:17:a`），禁止用裸比赛 ID、卡片索引或联赛索引共享状态。`drafts`、`uiStates`、`submittedMap` 全部按该 key 存储。
+- 同一时间最多一张卡处于 `editing`/`submitted_locked`；点另一张「去预测」时先收回旧卡再展开新卡。
+- 提交成功后进入 `submitted_locked`，显示「✓ 预测已提交」；**不自动收回**，点页面任意位置才收回。
+- 提交失败必须保留草稿比分并回到 `editing`，可重试。
+- 已提交（`submittedMap`）的卡在切换联赛/日期重绘后仍显示「我的预测 X:X · 已锁定」，不重新出现「去预测」。
+
+### 3. 动画规则（时长已定稿，不得自行改）
+
+| 场景 | 时长 | 实现 |
+|---|---|---|
+| 卡片展开/收回（editing ↔ collapsed） | 320ms | `grid-template-rows 0fr↔1fr` + opacity + 位移 |
+| 提交成功后编辑区 → 反馈区收缩 | **900ms** | `max-height` 可插值过渡 |
+| 点击页面收回（submitted_locked → collapsed） | 320ms | 走基类展开/收回过渡 |
+| 联赛/日期切换 | 淡出 180ms + 淡入 240ms | `view-exit` / `view-enter` |
+| 最后一张卡展开后自动滚动 | **900ms** | `requestAnimationFrame` 缓动，不直接改 scrollTop |
+| 展开卡片滚动对齐 | — | 卡片底部对齐 feed 可视区底部 + 12px 余量，考虑页面缩放比 |
+
+- 收回动画必须平滑过渡，禁止 `display:none` 瞬间消失；折叠态用 `0fr` + 负 margin 补偿，不留空白。
+- 编辑控件隐藏用 `opacity + pointer-events` 而不是 `display:none`，保证高度可插值。
+- 成功反馈文字必须相对可见反馈框垂直居中（绝对定位 `inset:0` + flex）。
+- 尊重 `prefers-reduced-motion: reduce`：动画全部关闭。
+
+### 4. 交互边界（已定稿）
+
+- 「去预测」按钮点击 → 由 feed 事件委托处理（先收回旧的再展开新的），页面级点击监听必须跳过它，避免误收。
+- 编辑中卡片内部（stepper、提交按钮）点击不触发页面收回；页面其他位置点击收回所有非 collapsed 卡片。
+- 点击 stepper 修改比分：非负、立即更新比分和主胜/平局/客胜判定；重新展开时草稿归零（0:0）。
+- 预测默认比分 0:0；收回后重开恢复 0:0，不残留旧比分 DOM。
+- 切换联赛/日期时先收回展开卡片，再淡出→重绘→淡入。
+
+### 5. Logo 与图像规格（已定稿）
+
+- Logo 源：`/root/football_logos`（只读）；运行时资源：`docs/design/assets/logos/`；生成脚本：`docs/design/scripts/generate-logo-manifest.js`、`inline-logo-assets.py`。
+- 查询入口：`logo-registry.js` 的 `getTeamLogo(leagueId, teamId)` / `getLeagueLogo(leagueId)`；队徽自带 `leagueId`；找不到回退占位图 `placeholders/team-placeholder.png`。
+- 尺寸：五大联赛球队队徽 128×128 px、联赛 Logo 256×256 px、中超队徽 512×512 px；全部 PNG 透明背景、sRGB。
+- 队徽/联赛 Logo 由 `data-league-id` / `data-team-id` 注入，不在业务数据里写死路径。
+
 ## 前端图像与资源规格
 
 图像资源应优先使用 SVG 或 PNG；图标保持统一线宽、圆角和品牌色，不使用带文字的图标，避免不同字号下出现重复文案。资源应放在 `miniprogram/assets/`，按 `icons/`、`tabbar/`、`illustrations/`、`brand/` 分类；不得把二进制资源提交到源码根目录或文档目录。
