@@ -1,8 +1,13 @@
 const { getTeamLogo, getLeagueLogo } = require("../../utils/logo-registry.js");
 
 const MOCK_MATCHES = [
-  { match_id: "mock-pl-001", league_id: "premier_league", league_name: "英超", round_id: "第1轮", kickoff_at: "2026-08-18T19:00:00+08:00", match_status: "scheduled", can_predict: true, can_predict_reason: null, regular_home_score: null, regular_away_score: null, home_team: { team_id: "arsenal", name: "阿森纳" }, away_team: { team_id: "chelsea", name: "切尔西" } },
-  { match_id: "mock-pl-002", league_id: "premier_league", league_name: "英超", round_id: "第1轮", kickoff_at: "2026-08-18T21:30:00+08:00", match_status: "scheduled", can_predict: true, can_predict_reason: null, regular_home_score: null, regular_away_score: null, home_team: { team_id: "liverpool", name: "利物浦" }, away_team: { team_id: "manchester-city", name: "曼城" } },
+  // 英超：与 HTML 设计稿一致，覆盖未开赛、已提交、进行中、完场命中、未开赛五种卡片。
+  { match_id: "mock-pl-001", league_id: "premier_league", league_name: "英超", round_id: "截止前 10 分钟", kickoff_at: "2026-08-18T20:30:00+08:00", match_status: "scheduled", can_predict: true, can_predict_reason: null, regular_home_score: null, regular_away_score: null, home_team: { team_id: "arsenal", name: "阿森纳" }, away_team: { team_id: "chelsea", name: "切尔西" } },
+  { match_id: "mock-pl-002", league_id: "premier_league", league_name: "英超", round_id: "预测已锁定", kickoff_at: "2026-08-18T21:00:00+08:00", match_status: "scheduled", can_predict: false, can_predict_reason: "ALREADY_SUBMITTED", regular_home_score: null, regular_away_score: null, my_prediction: { pred_home_score: 2, pred_away_score: 1 }, home_team: { team_id: "manchester-city", name: "曼城" }, away_team: { team_id: "liverpool", name: "利物浦" } },
+  { match_id: "mock-pl-003", league_id: "premier_league", league_name: "英超", round_id: "下半场", display_time: "63′", kickoff_at: "2026-08-18T21:30:00+08:00", match_status: "live", can_predict: false, can_predict_reason: "CLOSED", regular_home_score: 1, regular_away_score: 0, my_prediction: { pred_home_score: 2, pred_away_score: 1 }, home_team: { team_id: "tottenham", name: "热刺" }, away_team: { team_id: "newcastle", name: "纽卡斯尔" } },
+  { match_id: "mock-pl-004", league_id: "premier_league", league_name: "英超", round_id: "第 1 轮", display_time: "已结束", kickoff_at: "2026-08-18T18:00:00+08:00", match_status: "finished", can_predict: false, can_predict_reason: null, regular_home_score: 2, regular_away_score: 2, result_type: "hit3", my_prediction: { pred_home_score: 2, pred_away_score: 1 }, home_team: { team_id: "manchester-united", name: "曼联" }, away_team: { team_id: "aston-villa", name: "阿斯顿维拉" } },
+  { match_id: "mock-pl-005", league_id: "premier_league", league_name: "英超", round_id: "还可以预测", kickoff_at: "2026-08-18T23:00:00+08:00", match_status: "scheduled", can_predict: true, can_predict_reason: null, regular_home_score: null, regular_away_score: null, home_team: { team_id: "brighton", name: "布莱顿" }, away_team: { team_id: "brentford", name: "布伦特福德" } },
+
   { match_id: "mock-laliga-001", league_id: "la_liga", league_name: "西甲", round_id: "第1轮", kickoff_at: "2026-08-18T22:00:00+08:00", match_status: "scheduled", can_predict: true, can_predict_reason: null, regular_home_score: null, regular_away_score: null, home_team: { team_id: "real-madrid", name: "皇家马德里" }, away_team: { team_id: "barcelona", name: "巴塞罗那" } },
   { match_id: "mock-ligue-001", league_id: "ligue_1", league_name: "法甲", round_id: "第1轮", kickoff_at: "2026-08-18T20:00:00+08:00", match_status: "scheduled", can_predict: true, can_predict_reason: null, regular_home_score: null, regular_away_score: null, home_team: { team_id: "paris-saint-germain", name: "巴黎圣日耳曼" }, away_team: { team_id: "marseille", name: "马赛" } },
   { match_id: "mock-csl-001", league_id: "chinese_super_league", league_name: "中超", round_id: "第1轮", kickoff_at: "2026-08-18T18:00:00+08:00", match_status: "scheduled", can_predict: true, can_predict_reason: null, regular_home_score: null, regular_away_score: null, home_team: { team_id: "beijing-guoan", name: "北京国安" }, away_team: { team_id: "shanghai-shenhua", name: "上海申花" } },
@@ -16,6 +21,11 @@ const LEAGUES = [
 ];
 const WEEKDAYS = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
 const REASON_TEXT = { ALREADY_SUBMITTED: "已锁定 · 不可修改", AUTH_REQUIRED: "需登录后预测", USER_DELETED: "账号已注销", KICKOFF_UNCONFIRMED: "开球未确认", NOT_SCHEDULED: "非可预测赛程", CLOSED: "预测已关闭" };
+const RESULT_TEXT = {
+  hit3: { reasonChip: "+3 赛果命中", chipClass: "hit3" },
+  hit12: { reasonChip: "+12 精确命中", chipClass: "hit12" },
+  miss: { reasonChip: "+0 未命中", chipClass: "miss" },
+};
 const scope = (league, date, matchId) => `${league}:${date}:${matchId}`;
 const pad = (n) => (n < 10 ? `0${n}` : String(n));
 
@@ -53,11 +63,19 @@ function statusView(item) {
 }
 
 function reasonChip(item) {
+  if (item.result_type && RESULT_TEXT[item.result_type]) return RESULT_TEXT[item.result_type];
   if (item.can_predict && item.can_predict_reason === null) return { reasonChip: "", chipClass: "" };
-  if (REASON_TEXT[item.can_predict_reason]) return { reasonChip: REASON_TEXT[item.can_predict_reason], chipClass: item.can_predict_reason === "ALREADY_SUBMITTED" ? "lock" : "closed" };
   if (item.match_status === "live") return { reasonChip: "预测已关闭", chipClass: "live" };
+  if (REASON_TEXT[item.can_predict_reason]) return { reasonChip: REASON_TEXT[item.can_predict_reason], chipClass: item.can_predict_reason === "ALREADY_SUBMITTED" ? "lock" : "closed" };
   if (item.match_status === "finished") return { reasonChip: "已结束", chipClass: "lock" };
   return { reasonChip: "", chipClass: "" };
+}
+
+function formatPrediction(prediction) {
+  if (!prediction) return "";
+  const home = prediction.home === undefined ? prediction.pred_home_score : prediction.home;
+  const away = prediction.away === undefined ? prediction.pred_away_score : prediction.away;
+  return `我的预测 ${home} : ${away}`;
 }
 
 Page({
@@ -126,12 +144,12 @@ Page({
       showPredict: item.can_predict === true && item.can_predict_reason === null && !submitted,
       homeLogo: getTeamLogo(item.league_id || this.data.selectedLeague, homeId),
       awayLogo: getTeamLogo(item.league_id || this.data.selectedLeague, awayId),
-      timeText: kick ? `${pad(kick.hour)}:${pad(kick.minute)}` : "--:--",
+      timeText: item.display_time || (kick ? `${pad(kick.hour)}:${pad(kick.minute)}` : "--:--"),
       metaText: `${item.league_name || "英超"} · ${item.round_id || "本轮"}`,
       scoreText: hasScore ? `${item.regular_home_score} : ${item.regular_away_score}` : "VS",
-      scoreSub: item.match_status === "live" ? "LIVE" : item.match_status === "finished" ? (hasScore ? "FT" : "待结算") : kick ? `${pad(kick.hour)}:${pad(kick.minute)}` : "",
+      scoreSub: item.can_predict_reason === "ALREADY_SUBMITTED" ? "已锁定" : item.match_status === "live" ? "LIVE" : item.match_status === "finished" ? (hasScore ? "FT" : "待结算") : item.display_time || (kick ? `${pad(kick.hour)}:${pad(kick.minute)}` : ""),
       bugClass: item.match_status === "live" || item.match_status === "finished" ? "dark" : "",
-      predText: submitted ? `我的预测 ${submitted.home} : ${submitted.away}` : item.can_predict_reason === "ALREADY_SUBMITTED" ? "我的预测已提交" : item.match_status === "live" ? "比赛进行中" : item.match_status === "finished" ? (hasScore ? "完场" : "待结算/暂无比分") : "未开赛",
+      predText: submitted ? formatPrediction(submitted) : item.my_prediction ? formatPrediction(item.my_prediction) : item.match_status === "live" ? formatPrediction(item.my_prediction) : item.match_status === "finished" ? formatPrediction(item.my_prediction) : "未开赛",
       derivedResult: draft.home > draft.away ? "主胜" : draft.home < draft.away ? "客胜" : "平局",
       submitError: this.data.submitErrors ? this.data.submitErrors[key] : "",
     });
