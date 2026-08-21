@@ -7,7 +7,7 @@ page { background: #d5ead4; color: #163024; font-family: var(--font-family-cn); 
 .results-exit { animation: content-exit .18s ease both; }
 .results-enter { animation: content-enter .24s ease both; }
 .topbar-spacer { height: calc(76px + env(safe-area-inset-top)); }
-.topbar { position: absolute; left: 0; right: 0; top: env(safe-area-inset-top); height: 44px; z-index: 2; box-sizing: border-box; display: flex; align-items: center; padding: 0 32rpx; }
+.topbar { position: absolute; left: 0; right: 0; top: calc(env(safe-area-inset-top) + 32px); height: 44px; z-index: 2; box-sizing: border-box; display: flex; align-items: center; padding: 0 32rpx; }
 .brand { display: flex; align-items: center; gap: 20rpx; }
 .brand-copy { display: flex; align-items: center; gap: 18rpx; }
 .brand-name { font-size: 30rpx; font-weight: 700; letter-spacing: -1rpx; white-space: nowrap; }
