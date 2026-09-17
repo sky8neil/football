@@ -1,4 +1,5 @@
 <view class="page">
+  <image class="page-bg" src="/assets/images/home-pitch-bg.webp" mode="aspectFill"></image>
   <view class="topbar-spacer"></view>
   <view class="decor decor-arc"></view>
   <view class="topbar">

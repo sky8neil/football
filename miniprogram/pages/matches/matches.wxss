@@ -24,3 +24,42 @@ page { background: #d5ead4; color: #163024; font-family: var(--font-family-cn); 
 @keyframes pred-success-in { from { opacity: 0; transform: translateY(8rpx); } to { opacity: 1; transform: translateY(0); } }
 @keyframes content-exit { from { opacity: 1; transform: translateY(0); } to { opacity: 0; transform: translateY(8rpx); } }
 @keyframes content-enter { from { opacity: 0; transform: translateY(-8rpx); } to { opacity: 1; transform: translateY(0); } }
+
+/* =====================================================================
+   首页球场背景 + 玻璃卡（2026-09-16 改版）
+   视觉基线：docs/design/赛事预言家首页-高保真-v8.6-球场背景玻璃版.html
+   参数：白蒙层 65% + 素材降饱和 15%（已烘进图片）｜卡片玻璃 30%
+   素材：assets/images/home-pitch-bg.webp（780×1386，86KB）
+   重新生成素材：python3 docs/design/scripts/build-bg-assets.py
+   注：WXSS 的 background-image 不支持本地图片路径，所以背景用 <image> 组件层
+   ===================================================================== */
+page {
+  /* 文字增强档：背景图叠上来后，v8.6 原有的 #5b7166 / #86a092 在这张图上只有
+     1.1~4.7:1（小字会糊），压深一档后实测 5.0~7.9:1。
+     要恢复 v8.6 原色，删掉下面两行即可。 */
+  --color-text-secondary: #3b4f43;
+  --color-text-muted: #42564a;
+}
+
+/* 背景图层：铺满页面，压在所有内容之下 */
+.page-bg { position: absolute; left: 0; top: 0; width: 100%; height: 100%; z-index: 0; }
+
+/* 以下内容原本是静态定位，会被绝对定位的背景层盖住，必须显式抬起 */
+.leagues-wrap, .dates-wrap, .hint { position: relative; z-index: 1; }
+
+/* —— 玻璃卡 30% —— */
+.match { background: rgba(255,255,255,.30); border: 2rpx solid rgba(255,255,255,.78); box-shadow: 0 24rpx 60rpx rgba(23,60,35,.10), inset 0 2rpx 0 rgba(255,255,255,.60); backdrop-filter: blur(28rpx) saturate(1.06); -webkit-backdrop-filter: blur(28rpx) saturate(1.06); }
+.match.is-open { background: rgba(255,255,255,.38); }
+
+/* 卡内元素玻璃化（比分方块、预测编辑区） */
+.bug { background: rgba(255,255,255,.55); border-color: rgba(255,255,255,.72); }
+.pred-area { background: rgba(255,255,255,.42); border-color: rgba(255,255,255,.66); }
+
+/* 联赛托盘：与卡片同一档玻璃 */
+.leagues-wrap { background: rgba(255,255,255,.30); border-color: rgba(255,255,255,.78); }
+
+/* 日期选中态保持实心白，保证可读 */
+.date.active { background: #fff; }
+
+/* “最近成绩 +K” 的绿色在照片背景上实测仅 2.2:1，换深绿后 5.0:1 */
+.hint-plus { color: #1a5c26; }
