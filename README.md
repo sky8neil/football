@@ -8,7 +8,7 @@
 - **需求、冻结决策、开发计划、迁移与复盘文档**：统一位于 [`docs/`](docs/)，索引见 [`docs/INDEX.md`](docs/INDEX.md)
 - **API 合同**：[`src/api/v1/openapi.yaml`](src/api/v1/openapi.yaml)
 - **小程序代码**：[`miniprogram/`](miniprogram/)
-- **当前首页视觉稿**：[`docs/design/赛事预言家首页-高保真-v8.6-联赛无底.html`](docs/design/赛事预言家首页-高保真-v8.6-联赛无底.html)；小程序落地页为 `miniprogram/pages/matches/`
+- **当前首页视觉稿**：[`docs/design/赛事预言家首页-高保真-v8.6-联赛无底.html`](docs/design/赛事预言家首页-高保真-v8.6-联赛无底.html)（结构/交互基线）；[`docs/design/赛事预言家首页-高保真-v8.6-球场背景玻璃版.html`](docs/design/赛事预言家首页-高保真-v8.6-球场背景玻璃版.html)（含球场背景 + 玻璃卡，**当前配色基线**）；小程序落地页为 `miniprogram/pages/matches/`
 - **Global UI Design System**：[`docs/UI_DESIGN_SYSTEM.md`](docs/UI_DESIGN_SYSTEM.md)；WXSS tokens 为 `miniprogram/styles/design-tokens.wxss`
 
 文档目录已经统一收纳当前需求文档、业务规范、开发计划、API 冻结审查、迁移说明和反向 Review 文档。后续新增项目文档也应放入 `docs/`，README 只保留项目入口和开发约定。
@@ -62,7 +62,7 @@ Backend API Freeze Review 已通过，H4 已关闭；可以开始用户端前端
 
 ## 前端视觉规则（已定稿）
 
-以下规则以 `docs/design/赛事预言家首页-高保真-v8.6-联赛无底.html` 为唯一视觉基线，已经用户确认冻结。**后续任何前端开发必须遵守，不得擅自改变**；如需调整，先改首页视觉稿并重新确认。
+以下规则以 `docs/design/赛事预言家首页-高保真-v8.6-联赛无底.html`（页面结构、交互、动画）和 `docs/design/赛事预言家首页-高保真-v8.6-球场背景玻璃版.html`（背景与卡片质感）为视觉基线，已经用户确认冻结。**后续任何前端开发必须遵守，不得擅自改变**；如需调整，先改首页视觉稿并重新确认。
 
 ### 1. 视觉基线
 
@@ -115,8 +115,18 @@ Backend API Freeze Review 已通过，H4 已关闭；可以开始用户端前端
 
 - Logo 源：`/root/football_logos`（只读）；运行时资源：`docs/design/assets/logos/`；生成脚本：`docs/design/scripts/generate-logo-manifest.js`、`inline-logo-assets.py`。
 - 查询入口：`logo-registry.js` 的 `getTeamLogo(leagueId, teamId)` / `getLeagueLogo(leagueId)`；队徽自带 `leagueId`；找不到回退占位图 `placeholders/team-placeholder.png`。
-- 尺寸：五大联赛球队队徽 128×128 px、联赛 Logo 256×256 px、中超队徽 512×512 px；全部 PNG 透明背景、sRGB。
+- 尺寸：五大联赛球队队徽 128×128 px、联赛 Logo 256×256 px、**中超队徽 256×256 px**（2026-09-16 从 512 下调，为控主包体积）；全部 PNG 透明背景、sRGB。
 - 队徽/联赛 Logo 由 `data-league-id` / `data-team-id` 注入，不在业务数据里写死路径。
+
+### 6. 首页背景图与玻璃卡（2026-09-16 新增，已冻结）
+
+- **结构**：`<image class="page-bg" mode="aspectFill">` 绝对定位铺满页面 + 内容层抬 `z-index`。**不要用 WXSS 的 `background-image` 引本地图**——真机不生效；base64 会把 WXSS 撑到几百 KB。
+- **参数**：白蒙层 65% + 素材降饱和 15%（**已烘进素材**，比运行时再叠一层省体积）；卡片玻璃 30%。
+- **玻璃档位**：`.match` 30% ／ `.match.is-open` 38% ／ `.bug` 55% ／ `.pred-area` 42% ／ 联赛托盘 30%；日期选中态保持实心白。
+- **素材**：`miniprogram/assets/images/home-pitch-bg.webp`（780×1386，86 KB）。重新生成：`python3 docs/design/scripts/build-bg-assets.py`（源图 `docs/design/assets/bg/pitch-source.webp`）。
+- **文字对比度规则**：落在背景图或玻璃卡上的文字必须实测 **≥4.5:1**。首页因此把 `--color-text-secondary`（#5b7166→#3b4f43）、`--color-text-muted`（#86a092→#42564a）、`+K` 绿色（→#1a5c26）压深一档，写在 `matches.wxss` 的 `page` 作用域内（只影响首页）。**要恢复 v8.6 原色，删掉 matches.wxss 末尾那三行覆盖即可**，但小字会比背景糊。
+- **注意**：新增落在背景上的内容容器必须显式 `position: relative; z-index: 1`，否则会被绝对定位的背景层盖住。
+- **降级**：`backdrop-filter` 在部分安卓机型失效时会退化成纯半透明面板（文字对比度仍达标，因为底图已淡到 65%）。
 
 ## 前端图像与资源规格
 
