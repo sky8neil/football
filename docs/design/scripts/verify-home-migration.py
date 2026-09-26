@@ -1,9 +1,13 @@
-"""校验小程序落地与设计稿的一致性（移植保真度检查）——只比对两边的"追加块"
-1) HTML 稿追加 CSS  vs  matches.wxss 追加块：逐项比对取值
-2) 资源路径 / 图层数量 / z-index 抬升 / 语法 / 背景素材 65% 蒙层烘焙 / 日期条开放范围
-   / 顶栏 logo 与球标位图 / 测试文件不进包（packOptions.ignore）
-3) 本次改版不变式：vs 框保持实色；卡片为模糊（36rpx）、托盘为轻模糊（14rpx）（2026-09-26）
-4) 顶栏与联赛行的间距（2026-09-26 用户要求「分隔开一些」）：设计稿 10px ↔ 小程序 20rpx
+"""首页实现的自洽性与防回退校验。
+
+⚠️ V1 Design System 之后，本脚本的角色变了：
+   视觉事实来源是**小程序实现**（tokens + matches.wxss），设计稿 HTML 只作参考比对。
+   真正证明「视觉没变」的是 computed 快照回归（extract/diff-home-visuals.py）。
+   本脚本负责：取值与参考稿对齐 + 结构与不变式不倒退（便宜、无需浏览器）。
+
+因为 matches.wxss 已全面 token 化，所有取值比对都先把 var() 解析成实际值再比。
+覆盖：1) 取值 ↔ 设计稿参考  2) 资源/图层/z-index/语法/蒙层/日期条/logo/打包排除
+      3) 不变式（vs 框实色、卡片与托盘模糊档位）  4) 顶栏↔联赛行间距
 """
 import json
 import os
@@ -17,6 +21,8 @@ WXML = os.path.join(ROOT, "miniprogram/pages/matches/matches.wxml")
 JS = os.path.join(ROOT, "miniprogram/pages/matches/matches.js")
 BG = os.path.join(ROOT, "miniprogram/assets/images/home-pitch-bg.webp")
 PROJ = os.path.join(ROOT, "miniprogram/project.config.json")
+TOKENS = os.path.join(ROOT, "miniprogram/styles/design-tokens.wxss")
+APP_WXSS = os.path.join(ROOT, "miniprogram/app.wxss")
 
 fails, warns = [], []
 html_all = open(HTML, encoding="utf-8").read()
@@ -24,9 +30,46 @@ wxss_all = open(WXSS, encoding="utf-8").read()
 wxml = open(WXML, encoding="utf-8").read()
 js = open(JS, encoding="utf-8").read()
 
-# 只取追加块（两边各自的改版段落）
+# —— token 解析：把 var(--x) 递归展开成实际取值 ——
+# 否则「WXSS 只写了 var(--match-card-background)」会被判成失配。
+TOKEN_TEXT = open(TOKENS, encoding="utf-8").read()
+TOKEN_TEXT += "\n" + open(APP_WXSS, encoding="utf-8").read()
+TOKEN_DEFS = dict(re.findall(r"^\s*(--[\w-]+)\s*:\s*([^;]+);",
+                             re.sub(r"/\*[\s\S]*?\*/", "", TOKEN_TEXT), re.M))
+
+
+def resolve_vars(text: str, depth: int = 10) -> str:
+    seen = set()
+    for _ in range(depth):
+        def sub(m):
+            name = m.group(1)
+            seen.add(name)
+            return TOKEN_DEFS.get(name, m.group(0))
+        new = re.sub(r"var\((--[\w-]+)(?:\s*,\s*[^)]*)?\)", sub, text)
+        if new == text:
+            break
+        text = new
+    return text
+
+
+def compact_colors(text: str) -> str:
+    """把 rgba(255, 255, 255, 0.54) 统一成 rgba(255,255,255,.54)，与设计稿字面量对齐。"""
+    def rgba(m):
+        a = m.group(4)
+        a = a[1:] if a.startswith("0.") else a
+        return f"rgba({m.group(1)},{m.group(2)},{m.group(3)},{a})"
+    return re.sub(r"rgba\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(0?\.\d+|0|1)\s*\)", rgba, text)
+
+
+# 设计稿侧仍取「本次改版追加」段（设计稿自 V1 起降级为参考）
 html = html_all.split("本次改版追加")[1].split("</style>")[0]
-wxss = wxss_all.split("首页球场背景 + 玻璃卡（2026-09-16 改版）")[1]
+# 小程序侧：全部取值检查都跑在「已解析 token + 颜色紧凑化」的文本上。
+# 注意要把 token 定义本身也拼进来 —— 文字色这类语义 token 的定义在 tokens 文件里，
+# 页面上只写 var()，只看 WXSS 是找不到 `--text-secondary: #3b4f43` 的。
+token_raw = open(TOKENS, encoding="utf-8").read()
+SCAN = compact_colors(resolve_vars(TOKEN_TEXT)) + "\n" + compact_colors(resolve_vars(wxss_all))
+wxss_all = SCAN
+wxss = SCAN
 
 
 def norm_alpha(s: str) -> str:
@@ -44,17 +87,21 @@ def norm_alpha(s: str) -> str:
 
 GLASS_FROM_VAR = "0.30"
 
+# 小程序侧的模式一律写成「选择器 { 任意前置声明 … 目标属性」：
+# WXSS 现在由 token 驱动，声明顺序与设计稿不同，不能再假设目标属性紧跟花括号。
 PAIRS = [
-    ("玻璃卡主档", r"--glass:\s*([\d.]+)", r"^\.match \{ background: rgba\(255,255,255,\.(\d+)\)"),
-    ("玻璃卡高亮", r"--glass-open:\s*([\d.]+)", r"\.match\.is-open \{ background: rgba\(255,255,255,\.(\d+)\)"),
-    ("比分方块实色", r"\.bug \{ background: (linear-gradient\([^)]*\))", r"^\.bug \{ background: (linear-gradient\([^)]*\))"),
-    ("预测编辑区", r"\.pred-area \{ background: rgba\(255, 255, 255, ([\d.]+)\)", r"^\.pred-area \{ background: rgba\(255,255,255,\.(\d+)\)"),
+    ("玻璃卡主档", r"--glass:\s*([\d.]+)", r"^\.match \{[^}]*?background: rgba\(255,255,255,\.(\d+)\)"),
+    ("玻璃卡高亮", r"--glass-open:\s*([\d.]+)", r"^\.match\.is-open \{[^}]*?background: rgba\(255,255,255,\.(\d+)\)"),
+    ("比分方块实色", r"\.bug \{ background: (linear-gradient\([^)]*\))", r"^\.bug \{[^}]*?background: (linear-gradient\([^)]*\))"),
+    ("预测编辑区", r"\.pred-area \{ background: rgba\(255, 255, 255, ([\d.]+)\)", r"^\.pred-area \{[^}]*?background: rgba\(255,255,255,\.(\d+)\)"),
     # 设计稿这条规则现在以 margin-top 开头（2026-09-26 拉开联赛行间距），故用 [^}]*? 跳过前置声明；
     # html 变量本身只含追加块，仍只会匹配到那一条。
-    ("联赛托盘", r"\.leagues-wrap \{[^}]*?background: rgba\(255, 255, 255, ([\d.]+)\)", r"^\.leagues-wrap \{ background: rgba\(255,255,255,\.(\d+)\)"),
-    ("文字次色", r"\.contrast-boost \{ --ink-soft: (#[0-9a-f]{6})", r"--color-text-secondary:\s*(#[0-9a-f]{6})"),
-    ("文字弱色", r"--ink-faint: (#[0-9a-f]{6});", r"--color-text-muted:\s*(#[0-9a-f]{6})"),
-    ("+K 绿色", r"\.contrast-boost \.hint \.plus \{ color: (#[0-9a-f]{6})", r"\.hint-plus \{ color:\s*(#[0-9a-f]{6})"),
+    ("联赛托盘", r"\.leagues-wrap \{[^}]*?background: rgba\(255, 255, 255, ([\d.]+)\)", r"^\.leagues-wrap \{[^}]*?background: rgba\(255,255,255,\.(\d+)\)"),
+    # 文字色自 V1 起统一收敛到 semantic token（不再有 matches.wxss 的 page 覆盖块），
+    # 所以这里读的是「解析 token 之后」的文本。
+    ("文字次色", r"\.contrast-boost \{ --ink-soft: (#[0-9a-f]{6})", r"--text-secondary:\s*(#[0-9a-f]{6})"),
+    ("文字弱色", r"--ink-faint: (#[0-9a-f]{6});", r"--text-muted:\s*(#[0-9a-f]{6})"),
+    ("+K 绿色", r"\.contrast-boost \.hint \.plus \{ color: (#[0-9a-f]{6})", r"^\.hint-plus \{ color:\s*(#[0-9a-f]{6})"),
 ]
 
 print("=" * 78)
@@ -193,7 +240,7 @@ if missing:
 else:
     print("     ✅ 三个静态容器都已抬起")
 
-for f, s in (("matches.wxss", wxss_all), ("matches.wxml", wxml)):
+for f, s in (("matches.wxss", wxss_all), ("matches.wxml", wxml), ("design-tokens.wxss", token_raw)):
     ok = s.count("{") == s.count("}")
     print(f"  {f:<15} 括号平衡 {s.count('{')}/{s.count('}')} {'✅' if ok else '❌'}")
     if not ok:
@@ -271,8 +318,9 @@ print("=" * 78)
 print("3) 本次改版不变式：vs 框必须与雾白卡面区分开（2026-09-26 可读性修整）")
 print("=" * 78)
 
-bug_m = re.search(r"^\.bug \{ background: ([^}]*)\}", wxss_all, re.M)
-pred_m = re.search(r"^\.pred-area \{ background: ([^}]*)\}", wxss_all, re.M)
+# 同前：目标属性不再紧跟花括号（规则由 token 驱动），要允许前置声明
+bug_m = re.search(r"^\.bug \{[^}]*?background: ([^}]*?)\}", wxss_all, re.M)
+pred_m = re.search(r"^\.pred-area \{[^}]*?background: ([^}]*?)\}", wxss_all, re.M)
 for label, m, expect in ((".bug（vs 框）", bug_m, "linear-gradient"), (".pred-area", pred_m, "rgba")):
     if not m:
         fails.append(f"{label} 规则缺失")
@@ -292,8 +340,8 @@ for label, m, expect in ((".bug（vs 框）", bug_m, "linear-gradient"), (".pred
     if problems:
         fails.append(f"{label}: " + "；".join(problems))
 
-for name, pat in ((".match", r"^\.match \{ background: ([^}]*)\}"),
-                  (".leagues-wrap", r"^\.leagues-wrap \{ background: ([^}]*)\}")):
+for name, pat in ((".match", r"^\.match \{([^}]*)\}"),
+                  (".leagues-wrap", r"^\.leagues-wrap \{([^}]*)\}")):
     m = re.search(pat, wxss_all, re.M)
     if not m or "backdrop-filter" not in m.group(1):
         fails.append(f"{name} 缺少 backdrop-filter（轻模糊）")

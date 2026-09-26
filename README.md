@@ -8,8 +8,13 @@
 - **需求、冻结决策、开发计划、迁移与复盘文档**：统一位于 [`docs/`](docs/)，索引见 [`docs/INDEX.md`](docs/INDEX.md)
 - **API 合同**：[`src/api/v1/openapi.yaml`](src/api/v1/openapi.yaml)
 - **小程序代码**：[`miniprogram/`](miniprogram/)
-- **当前首页视觉稿**：[`docs/design/赛事预言家首页-高保真-v8.6-联赛无底.html`](docs/design/赛事预言家首页-高保真-v8.6-联赛无底.html)（结构/交互基线）；[`docs/design/赛事预言家首页-高保真-v8.6-球场背景玻璃版.html`](docs/design/赛事预言家首页-高保真-v8.6-球场背景玻璃版.html)（含球场背景 + 玻璃卡，**当前配色基线**）；小程序落地页为 `miniprogram/pages/matches/`
-- **Global UI Design System**：[`docs/UI_DESIGN_SYSTEM.md`](docs/UI_DESIGN_SYSTEM.md)；WXSS tokens 为 `miniprogram/styles/design-tokens.wxss`
+> ⚠️ **视觉事实来源（V1 起）**：**小程序实现本身** —— `miniprogram/pages/matches/`（母版页）
+> ＋ `miniprogram/styles/design-tokens.wxss`（tokens）。设计稿 HTML 自 V1 起**降级为参考稿**，
+> 老文档与老 token 只用于差异分析，优先级低于实现代码。
+
+- **首页视觉参考稿（非事实来源）**：[`docs/design/赛事预言家首页-高保真-v8.6-球场背景玻璃版.html`](docs/design/赛事预言家首页-高保真-v8.6-球场背景玻璃版.html)（球场背景 + 玻璃卡参考）；`…-v8.6-联赛无底.html` 是更早的历史稿
+- **Design System V1（正式）**：[`docs/UI_DESIGN_SYSTEM.md`](docs/UI_DESIGN_SYSTEM.md)；tokens 为 `miniprogram/styles/design-tokens.wxss`
+- **视觉回归工具**：`docs/design/scripts/`（`home-view-model.mjs` → `extract-home-visuals.py` → `diff-home-visuals.py`），基线留在 `docs/design/baselines/`
 
 文档目录已经统一收纳当前需求文档、业务规范、开发计划、API 冻结审查、迁移说明和反向 Review 文档。后续新增项目文档也应放入 `docs/`，README 只保留项目入口和开发约定。
 
@@ -123,9 +128,11 @@ Backend API Freeze Review 已通过，H4 已关闭；可以开始用户端前端
 - **结构**：`<image class="page-bg" mode="aspectFill">` 绝对定位铺满页面 + 内容层抬 `z-index`。**不要用 WXSS 的 `background-image` 引本地图**——真机不生效；base64 会把 WXSS 撑到几百 KB。
 - **参数**：白蒙层 65% + 素材降饱和 15%（**已烘进素材**，比运行时再叠一层省体积）；卡片玻璃 54%。
 - **玻璃档位**：`.match` 54% ／ `.match.is-open` 58% ／ `.pred-area` 50% ／ 联赛托盘 48%；日期选中态保持实心白。
-- **2026-09-26 可读性修整**：分工是**模糊柔化草地纹理（观感）+ 白底遮盖保证文字对比度（可读性）**。blur 档位：卡片 36rpx／托盘 14rpx（卡片白底 54% 比托盘 48% 厚，透过来的背景少，同样 blur 观感更弱，故取值更高）。`.bug`（vs 框）改回**实色渐变**、显式 `backdrop-filter: none`，与雾白卡面形成层级区分——**不要再把它玻璃化成半透明白**，否则又会和卡面糊在一起。校验：`python3 docs/design/scripts/verify-home-migration.py`（含该不变式检查）。
+  V1 起由 token 承载：`--match-card-background` / `--match-card-background-strong` / `--surface-pred` / `--surface-tray`（值只写在 `styles/design-tokens.wxss`）。
+- **2026-09-26 可读性修整**：分工是**模糊柔化草地纹理（观感）+ 白底遮盖保证文字对比度（可读性）**。blur 档位：卡片 36rpx（`--blur-card`）／托盘 14rpx（`--blur-tray`）（卡片白底 54% 比托盘 48% 厚，透过来的背景少，同样 blur 观感更弱，故取值更高）。`.bug`（vs 框）改回**实色渐变**、显式 `backdrop-filter: none`，与雾白卡面形成层级区分——**不要再把它玻璃化成半透明白**，否则又会和卡面糊在一起。校验：`python3 docs/design/scripts/verify-home-migration.py`（含该不变式检查）。
 - **素材**：`miniprogram/assets/images/home-pitch-bg.webp`（780×1386，86 KB）。重新生成：`python3 docs/design/scripts/build-bg-assets.py`（源图 `docs/design/assets/bg/pitch-source.webp`）。
-- **文字对比度规则**：落在背景图或玻璃卡上的文字必须实测 **≥4.5:1**。首页因此把 `--color-text-secondary`（#5b7166→#3b4f43）、`--color-text-muted`（#86a092→#42564a）、`+K` 绿色（→#1a5c26）压深一档，写在 `matches.wxss` 的 `page` 作用域内（只影响首页）。**要恢复 v8.6 原色，删掉 matches.wxss 末尾那三行覆盖即可**，但小字会比背景糊。
+- **文字对比度规则**：落在背景图或玻璃卡上的文字必须实测 **≥4.5:1**。首页因此把文字色压深一档：`--text-secondary` `#3b4f43`、`--text-muted` `#42564a`、`--text-positive` `#1a5c26`。
+  **V1 起这三项统一收敛到 tokens 的 semantic 层**（原先写在 `matches.wxss` 的 `page` 覆盖块，已随 token 化合并；旧的 `#5b7166` / `#86a092` 已废弃——在球场照片上只有 1.1–4.7:1）。
 - **注意**：新增落在背景上的内容容器必须显式 `position: relative; z-index: 1`，否则会被绝对定位的背景层盖住。
 - **降级**：`backdrop-filter` 在部分安卓机型失效时会退化成纯半透明面板（文字对比度仍达标，因为底图已淡到 65%）。
 
@@ -150,9 +157,9 @@ Backend API Freeze Review 已通过，H4 已关闭；可以开始用户端前端
 
 ### 9. 首页顶栏 logo 与联赛行间距（2026-09-26 决策）
 
-- **logo**：`.mark`（64rpx 绿底圆角方块，`linear-gradient(160deg,#9ee48a,#4caf50)`，圆角 20rpx）+ `.mark-ball`（36rpx 白色足球位图）。**不要删这两条规则**——`61c3f43` 重构顶栏时只删了样式、WXML 节点还留着，结果首页左上角一直空白且不报任何错。`verify-home-migration.py` 已加守卫：缺规则／缺位图／位图规格不对都会红。
+- **logo**：`.mark`（`--mark-size` 64rpx 绿底圆角方块，`--mark-gradient`，`--mark-radius`）+ `.mark-ball`（36rpx 白色足球位图）。**不要删这两条规则**——`61c3f43` 重构顶栏时只删了样式、WXML 节点还留着，结果首页左上角一直空白且不报任何错。`verify-home-migration.py` 已加守卫：缺规则／缺位图／位图规格不对都会红。
 - **球标位图**：`miniprogram/assets/icons/icon-ball.png`（108×108 RGBA，约 2.9 KB），矢量源 `docs/design/assets/icons/icon-ball.svg`，几何与设计稿 `.mark` 内联 SVG 同源。重新生成：`python3 docs/design/scripts/build-icon-assets.py`（依赖 `cairosvg` + Pillow，缺了会直接报错提示；脚本自带墨迹 bbox / 透明底自检）。小程序不能内联 SVG，且 WXSS 引本地图片不生效，所以走 `<image>` + 位图。
-- **间距**：品牌行（顶栏绝对定位，top 40px + 高 44px → 底边 84px）与联赛行之间留 **8px** 净空。实现是 `.leagues-wrap` 的 `margin-top: 20rpx`（原 4rpx，托盘顶 78px → 86px）。联赛行是顶栏之后**第一个流式元素**，所以改这一个值就等于「联赛行及其下方整体下移」。设计稿对应项是追加块里的 `.leagues-wrap { margin-top: 10px }`（原 2px）；校验脚本按 2rpx = 1px 比对这两个值，并校验净空 = 8px、托盘没有压回顶栏里。
+- **间距**：品牌行（顶栏绝对定位，top 40px + 高 44px → 底边 84px）与联赛行之间留 **8px** 净空。实现是 `.leagues-wrap` 的 `margin-top: var(--home-tray-offset)` = 20rpx（原 4rpx，托盘顶 78px → 86px）。联赛行是顶栏之后**第一个流式元素**，所以改这一个值就等于「联赛行及其下方整体下移」。设计稿对应项是追加块里的 `.leagues-wrap { margin-top: 10px }`（原 2px）；校验脚本按 2rpx = 1px 比对这两个值，并校验净空 = 8px、托盘没有压回顶栏里。
 - **两边竖向模型不同**（设计稿顶栏在流式布局里，小程序顶栏绝对定位 + `.topbar-spacer` 占位），不要追像素级一致，盯住「联赛行上外边距」这一个值即可。
 - **测试文件不进包**：`miniprogram/project.config.json` 的 `packOptions.ignore` 用 `suffix` 规则排除 `.test.mjs` / `.test.ts`（该字段的 `value` 不支持通配符与正则，所以用后缀；规则值大小写不敏感）。此前该数组为空，`matches.brand.test.mjs`、`predictions.uuid.test.mjs` 会被打进小程序包。校验脚本会检查覆盖情况。
 
@@ -197,6 +204,13 @@ npm run typecheck   # tsc --noEmit 全量类型检查
 npm test            # vitest run
 npm run build       # tsc -p tsconfig.build.json 产出 dist/
 npm test -- --run src/api/v1/openapi-auth-h4.test.ts  # H4/API 合同回归
+
+# 首页视觉（Design System 母版页）—— 改 token / WXSS 后必须跑
+python3 docs/design/scripts/verify-home-migration.py                     # 结构 + 不变式 + 取值（无需浏览器）
+node    docs/design/scripts/home-view-model.mjs --out /tmp/hv            # 用真实页面代码生成各状态 data
+python3 docs/design/scripts/extract-home-visuals.py --views /tmp/hv --out /tmp/hv/after.json
+python3 docs/design/scripts/diff-home-visuals.py /tmp/hv/before.json /tmp/hv/after.json
+                                                                        # 必须「逐项一致」；有差异须查明原因
 ```
 
 ## Git 约定

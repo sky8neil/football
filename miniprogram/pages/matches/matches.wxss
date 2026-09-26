@@ -1,92 +1,152 @@
 @import "../../styles/design-tokens.wxss";
 
-page { background: #d5ead4; color: #163024; font-family: var(--font-family-cn); }
-.page { min-height: 100vh; box-sizing: border-box; padding-bottom: calc(68rpx + env(safe-area-inset-bottom)); background: var(--background-page-default); position: relative; overflow: hidden; }
-.decor-arc { position: absolute; z-index: 0; left: -18%; top: 336rpx; width: 136%; height: 440rpx; border: 2rpx solid rgba(63,138,72,.12); border-radius: 50%; pointer-events: none; }
+/* =====================================================================
+   赛事预言家 · 首页（V1 Design System 母版页）
+   ---------------------------------------------------------------------
+   • 视觉取值一律来自 styles/design-tokens.wxss；不要在本文件写死颜色/尺寸/时长
+   • 要改视觉：先改 token 或本文件，然后跑 computed 快照回归（见 UI_DESIGN_SYSTEM.md）
+       node    docs/design/scripts/home-view-model.mjs --out /tmp/hv
+       python3 docs/design/scripts/extract-home-visuals.py --views /tmp/hv --out after.json
+       python3 docs/design/scripts/diff-home-visuals.py before.json after.json
+   • 2026-09-26 起：原先「末尾追加块覆盖前面的玻璃参数」的双真相写法已合并为单一真相，
+     避免出现「某个 token 表面被引用、实际被后面的规则整条覆盖」查不出来的情况。
+   • 刻意保留的字面量都带 ✂︎ 注释说明原因。
+   ===================================================================== */
+
+/* —— 页面骨架 —— */
+page { background: var(--surface-canvas); color: var(--text-primary); font-family: var(--font-family-cn); }
+.page { min-height: 100vh; box-sizing: border-box; padding-bottom: var(--page-padding-bottom); background: var(--surface-page); position: relative; overflow: hidden; }
+/* 背景图层：绝对定位铺满，压在所有内容之下。
+   注 1：WXSS 的 background-image 不支持本地图片路径，背景只能走 <image> 组件层。
+   注 2：.page 的 --surface-page 渐变是被球场照片盖住的**兜底底色**（图片加载失败时才可见）。 */
+.page-bg { position: absolute; left: 0; top: 0; width: 100%; height: 100%; z-index: 0; }
+.decor-arc { position: absolute; z-index: 0; left: -18%; top: 336rpx; width: 136%; height: 440rpx; border: var(--border-hairline) solid rgba(63,138,72,.12); border-radius: 50%; pointer-events: none; }  /* ✂︎ 装饰弧线：偏移/尺寸是单点装饰值，不成体系 */
 .results { position: relative; z-index: 1; }
-.results-exit { animation: content-exit .18s ease both; }
-.results-enter { animation: content-enter .24s ease both; }
-.topbar-spacer { height: calc(76px + env(safe-area-inset-top)); }
-.topbar { position: absolute; left: 0; right: 0; top: calc(env(safe-area-inset-top) + 40px); height: 44px; z-index: 2; box-sizing: border-box; display: flex; align-items: center; padding: 0 32rpx; }
-.brand { display: flex; align-items: center; gap: 20rpx; }
+.results-exit { animation: content-exit var(--duration-shift) var(--ease-standard) both; }
+.results-enter { animation: content-enter var(--duration-enter) var(--ease-standard) both; }
+/* 以下容器原本是静态定位，会被绝对定位的背景层盖住，必须显式抬起 */
+.leagues-wrap, .dates-wrap, .hint { position: relative; z-index: 1; }
+
+/* —— 顶栏 / 品牌行 —— */
+/* 顶栏是绝对定位；.topbar-spacer 负责在流式布局里给它让位。
+   spacer = 顶栏偏移 40px + 高度 44px = 84px，减去 8px 叠压 → 76px。 */
+.topbar-spacer { height: calc(var(--home-spacer-top) + env(safe-area-inset-top)); }
+.topbar { position: absolute; left: 0; right: 0; top: calc(env(safe-area-inset-top) + var(--topbar-offset)); height: var(--topbar-height); z-index: 2; box-sizing: border-box; display: flex; align-items: center; padding: 0 var(--page-padding-inline); }
+.brand { display: flex; align-items: center; gap: var(--space-5); }
 /* logo：绿底圆角方块 + 白色足球（设计稿 v8.6 .mark 的 1:1 落地）
    ⚠️ 这两条规则曾经被删掉过（61c3f43 重构顶栏时只删了样式、WXML 节点还留着），
    结果就是首页左上角一片空白、且不报错。改动顶栏时不要顺手删这两条。
    球是位图（assets/icons/icon-ball.png），源文件与生成脚本见 README §9。 */
-.mark { width: 64rpx; height: 64rpx; flex: 0 0 auto; border-radius: 20rpx; background: linear-gradient(160deg,#9ee48a 0%,#4caf50 100%); box-shadow: 0 16rpx 32rpx rgba(63,138,72,.28), inset 0 2rpx 0 rgba(255,255,255,.45); display: flex; align-items: center; justify-content: center; }
-.mark-ball { width: 36rpx; height: 36rpx; }
+.mark { width: var(--mark-size); height: var(--mark-size); flex: 0 0 auto; border-radius: var(--mark-radius); background: var(--mark-gradient); box-shadow: var(--shadow-mark); display: flex; align-items: center; justify-content: center; }
+.mark-ball { width: var(--mark-ball-size); height: var(--mark-ball-size); }
 .brand-copy { flex: 1; min-width: 0; }
 /* 第一行是一句话：昵称 + 中文逗号 + 问候。两个 <text> 都是行内元素、共用同一基线。
    ⚠️ 昵称/问候都不要再设 display:inline-block / max-width / vertical-align ——
    微信的 <text> 是组件而非标准行内元素，那样会把同一行拆成两个盒子、出现上下错行
-   （2026-09-26 实机踩到过）。超长昵称由外层整行省略兜底，不做逐段限宽。
-   外层必须是块级容器（view 本身即 block），且父级要 min-width:0，省略才会生效。 */
-.brand-name { display: block; font-size: 30rpx; font-weight: 700; letter-spacing: -1rpx; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.brand-sub { color: var(--color-text-muted); font-weight: 400; }
-/* 顶栏与联赛行的间距（2026-09-26 用户要求「分隔开一些」）：
-   顶栏是绝对定位（top = 40px + 高 44px → 底边 84px），联赛行靠这里的 margin-top 撑开空隙。
-   原为 4rpx(2px)：托盘几乎贴着品牌行下沿（logo 底 78px vs 托盘顶 78px，间距 0）。
-   改为 20rpx(10px)：托盘顶 86px，logo 底 78px → 净空 8px；
-   因为联赛行是顶栏之后第一个流式元素，改这一个值就等于「联赛行及其下方整体下移 8px」。
-   设计稿对应项：追加块 .leagues-wrap { margin-top: 10px }（原 2px），校验脚本会比对。 */
-.leagues-wrap { margin: 20rpx 32rpx 0; padding: 8rpx 16rpx; min-height: 112rpx; box-sizing: border-box; display: flex; align-items: center; background: rgba(255,255,255,.46); border: 2rpx solid rgba(255,255,255,.74); border-radius: 40rpx; box-shadow: inset 0 2rpx 0 rgba(255,255,255,.82),0 12rpx 32rpx rgba(47,106,62,.05); }.leagues { width: 100%; white-space: nowrap; }.league { display: inline-flex; vertical-align: top; width: 104rpx; min-height: 92rpx; margin-right: 12rpx; flex-direction: column; align-items: center; justify-content: center; gap: 8rpx; color: var(--color-text-secondary); font-size: 22rpx; font-weight: 600; }.league-logo { width: 56rpx; height: 56rpx; opacity: .72; }.league.active { color: var(--color-text-primary); }.league.active .league-logo { opacity: 1; }.league.active text { position: relative; }.league.active text::after { content: ""; display: block; width: 24rpx; height: 4rpx; margin: 6rpx auto 0; border-radius: 99rpx; background: var(--color-primary); }
-/* 日期条铺满整行（2026-09-26）：移除右侧日历按钮，日期条独占整行宽度；
-   日期项尺寸与间距刻意保持不变（112rpx + 12rpx），不压缩排列 ——
-   一屏约 5.5 个，边缘露出半格作为「可横向滑动」的提示。 */
-.dates-wrap { padding: 12rpx 32rpx 0; }.dates { width: 100%; white-space: nowrap; }.date { display: inline-flex; vertical-align: top; width: 112rpx; height: 96rpx; margin-right: 12rpx; border-radius: 28rpx; flex-direction: column; align-items: center; justify-content: center; gap: 4rpx; color: var(--color-text-secondary); }.date-label { font-size: 20rpx; line-height: 1; }.date-num { color: var(--color-text-primary); font-family: var(--font-family-number); font-size: 36rpx; font-weight: 750; line-height: 1; }.date.active { background: #fff; box-shadow: var(--shadow-sm); color: var(--color-primary); }.date.active .date-num { color: var(--color-primary); }
-.hint { display: flex; align-items: center; justify-content: space-between; padding: 20rpx 36rpx 4rpx; color: var(--color-text-muted); font-size: 22rpx; }.hint-num,.hint-plus { color: var(--color-text-primary); font-family: var(--font-family-number); font-weight: 650; }.hint-plus { color: var(--color-success); }
-.feed { height: calc(100vh - 420rpx); box-sizing: border-box; padding: 16rpx 32rpx 24rpx; }.match { margin-bottom: 20rpx; padding: 24rpx 24rpx 24rpx 28rpx; position: relative; overflow: visible; background: #fff; border: 2rpx solid rgba(255,255,255,.92); border-radius: 32rpx; box-shadow: var(--shadow-card); }.match.is-open { background: linear-gradient(180deg,#fff 0%,#f4fbf0 100%); }.match::before { content: ""; position: absolute; left: 0; top: 24rpx; bottom: 24rpx; width: 6rpx; border-radius: 0 6rpx 6rpx 0; background: var(--color-primary); }.match.is-submitted::before { background: var(--color-success); }.match.is-live::before { background: var(--color-live); }.match.is-done::before { background: var(--color-finished); }.match-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16rpx; padding-left: 12rpx; }.kick { display: flex; align-items: center; gap: 12rpx; flex: 1; min-width: 0; color: var(--color-text-secondary); font-size: 22rpx; }.kick-time { color: var(--color-text-primary); font-family: var(--font-family-number); font-size: 24rpx; font-weight: 650; }.state,.chip { min-height: 40rpx; padding: 0 16rpx; border-radius: 16rpx; display: flex; align-items: center; font-size: 20rpx; font-weight: 650; }.state { background: var(--color-primary-soft); color: var(--color-primary-pressed); }.state.live { background: #fff1e8; color: var(--color-live); }.state.done,.state.closed { background: var(--sp-slate-200); color: var(--color-text-secondary); }
-.faceoff { display: flex; align-items: center; justify-content: space-between; gap: 12rpx; padding-left: 12rpx; }.team { width: 34%; display: flex; align-items: center; gap: 12rpx; min-width: 0; }.team.away { flex-direction: row-reverse; text-align: right; }.crest { width: 72rpx; height: 72rpx; flex: 0 0 auto; }.team-copy { min-width: 0; display: flex; flex-direction: column; gap: 4rpx; }.team-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 24rpx; font-weight: 650; }.team-role { color: var(--color-text-muted); font-size: 18rpx; }.bug { width: 112rpx; height: 112rpx; flex: 0 0 auto; border-radius: 28rpx; background: linear-gradient(180deg,#f4fbf0,#e8f8df); border: 2rpx solid var(--color-border); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6rpx; }.bug.dark { background: linear-gradient(180deg,#1a2b44,#122033); border-color: #122033; color: #fff; }.bug-score { font-family: var(--font-family-number); font-size: 32rpx; font-weight: 750; line-height: 1.1; }.bug-sub { font-size: 18rpx; color: var(--color-text-muted); }.bug.dark .bug-sub { color: rgba(255,255,255,.6); }
-.foot { min-height: 64rpx; margin-top: 16rpx; padding-left: 12rpx; display: flex; align-items: center; justify-content: space-between; gap: 16rpx; }.pred { flex: 1; min-width: 0; color: var(--color-text-secondary); font-size: 22rpx; }.cta { min-height: 72rpx; padding: 0 28rpx; border-radius: 20rpx; background: linear-gradient(180deg,#9ee48a,#62c453); color: #163024; font-size: 24rpx; font-weight: 700; line-height: 72rpx; box-shadow: var(--shadow-floating); }.chip.hit3 { background: #e8fbf8; color: #0b7f70; }.chip.hit12 { background: var(--color-primary-soft); color: var(--color-primary-pressed); }.chip.miss { background: var(--sp-slate-200); color: var(--color-text-muted); }
-.pred-wrap { display: grid; grid-template-rows: 1fr; margin-top: 24rpx; opacity: 1; animation: pred-open .32s cubic-bezier(.4,0,.2,1) both; }.pred-area { overflow: hidden; max-height: 520rpx; padding: 24rpx; border: 2rpx solid var(--color-border); border-radius: 24rpx; background: rgba(255,255,255,.72); }.pred-body { position: relative; }.pred-editor { display: flex; align-items: center; justify-content: space-between; gap: 12rpx; }.stepper-group { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 12rpx; }.stepper-team { display: flex; align-items: center; gap: 8rpx; max-width: 100%; }.stepper-team image { width: 40rpx; height: 40rpx; }.stepper-team text { max-width: 150rpx; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 20rpx; }.stepper { display: flex; align-items: center; gap: 16rpx; }.stepper button { width: 56rpx; height: 56rpx; padding: 0; border-radius: 16rpx; background: var(--color-primary-soft); color: var(--color-primary-pressed); font-size: 36rpx; line-height: 54rpx; }.stepper text { width: 40rpx; text-align: center; font-family: var(--font-family-number); font-size: 36rpx; font-weight: 750; }.stepper-sep { font-family: var(--font-family-number); font-size: 32rpx; color: var(--color-text-muted); }.derived { margin-top: 20rpx; text-align: center; color: var(--color-text-secondary); font-size: 22rpx; }.derived text { color: var(--color-primary-pressed); font-weight: 700; }.pred-hint { margin-top: 12rpx; text-align: center; color: var(--color-text-muted); font-size: 18rpx; }.pred-actions { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8rpx; margin-top: 20rpx; }.submit-btn { min-height: 68rpx; padding: 0 32rpx; border-radius: 18rpx; background: var(--color-primary); color: #163024; font-size: 22rpx; font-weight: 700; line-height: 68rpx; }.submit-note { color: var(--color-text-muted); font-size: 18rpx; }.submit-err { margin-top: 12rpx; color: var(--color-danger); text-align: center; font-size: 20rpx; }.pred-success { min-height: 64rpx; display: flex; align-items: center; justify-content: center; color: var(--color-success); font-size: 26rpx; font-weight: 700; animation: pred-success-in .32s ease both; }
-.more,.retry { margin: 12rpx auto 24rpx; min-height: 64rpx; padding: 0 32rpx; border-radius: 18rpx; background: rgba(255,255,255,.72); color: var(--color-text-secondary); font-size: 22rpx; line-height: 64rpx; }.loading,.empty,.error { padding: 120rpx 40rpx; text-align: center; color: var(--color-text-muted); font-size: 24rpx; white-space: pre-line; }.retry { margin-top: 24rpx; }.more { display: block; }
+   （2026-09-26 实机踩到过）。超长昵称由 JS 截断（utils/nickname.js，12 字上限），
+   外层整行省略只作极窄屏兜底；外层必须是块级容器且父级 min-width:0 才会生效。 */
+.brand-name { display: block; font-size: var(--font-30); font-weight: var(--weight-bold); letter-spacing: -1rpx; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }  /* ✂︎ letter-spacing -1rpx 与 line-height 1.2 是品牌行专属排版微调 */
+.brand-sub { color: var(--text-muted); font-weight: var(--weight-regular); }
+
+/* —— 联赛托盘 —— */
+/* 与品牌行的间距：顶栏底边 84px，托盘顶靠这里的 margin-top 撑开；
+   20rpx(10px) 时托盘顶 86px、logo 底 78px → 净空 8px（2026-09-26 用户要求「分隔开一些」）。
+   联赛行是顶栏之后第一个流式元素，所以改这一个值就等于「联赛行及其下方整体下移」。 */
+.leagues-wrap { margin: var(--home-tray-offset) var(--page-padding-inline) 0; padding: var(--space-2) var(--space-4); min-height: var(--tray-min-height); box-sizing: border-box; display: flex; align-items: center; background: var(--surface-tray); border: var(--border-hairline) solid var(--border-glass); border-radius: var(--tray-radius); box-shadow: var(--shadow-tray); backdrop-filter: blur(var(--blur-tray)); -webkit-backdrop-filter: blur(var(--blur-tray)); }
+.leagues { width: 100%; white-space: nowrap; }
+.league { display: inline-flex; vertical-align: top; width: var(--tray-cell-width); min-height: var(--tray-cell-height); margin-right: var(--space-3); flex-direction: column; align-items: center; justify-content: center; gap: var(--space-2); color: var(--text-secondary); font-size: var(--font-22); font-weight: var(--weight-medium); }
+.league-logo { width: var(--tray-logo-size); height: var(--tray-logo-size); opacity: .72; }   /* ✂︎ 未选中态透明度是单点观感值 */
+.league.active { color: var(--text-primary); }
+.league.active .league-logo { opacity: 1; }
+.league.active text { position: relative; }
+.league.active text::after { content: ""; display: block; width: 24rpx; height: 4rpx; margin: 6rpx auto 0; border-radius: var(--radius-pill); background: var(--color-brand-primary); }   /* ✂︎ 选中下划线尺寸是纯装饰几何 */
+
+/* —— 日期条 —— */
+/* 日期条铺满整行（2026-09-26）：日历入口已移除，日期项尺寸与间距刻意不变
+   （112rpx + 12rpx，不压缩排列）—— 一屏约 5.5 个，右边缘露出半格作为「可横向滑动」的提示。 */
+.dates-wrap { padding: var(--space-3) var(--page-padding-inline) 0; }
+.dates { width: 100%; white-space: nowrap; }
+.date { display: inline-flex; vertical-align: top; width: var(--date-width); height: var(--date-height); margin-right: var(--space-3); border-radius: var(--date-radius); flex-direction: column; align-items: center; justify-content: center; gap: var(--space-1); color: var(--text-secondary); }
+.date-label { font-size: var(--font-20); line-height: 1; }
+.date-num { color: var(--text-primary); font-family: var(--font-family-number); font-size: var(--font-36); font-weight: var(--weight-heavy); line-height: 1; }
+.date.active { background: var(--surface-date-active); box-shadow: var(--shadow-sm); color: var(--color-brand-primary); }
+.date.active .date-num { color: var(--color-brand-primary); }
+
+/* —— 今日提示条 —— */
+.hint { display: flex; align-items: center; justify-content: space-between; padding: var(--space-5) var(--space-9) var(--space-1); color: var(--text-muted); font-size: var(--font-22); }
+.hint-num,.hint-plus { color: var(--text-primary); font-family: var(--font-family-number); font-weight: var(--weight-semibold); }
+/* 「最近成绩 +K」的绿色在球场照片上实测：旧绿 2.2:1 → --text-positive 5.0:1 */
+.hint-plus { color: var(--text-positive); }
+
+/* —— 比赛卡列表 —— */
+.feed { height: calc(100vh - 420rpx); box-sizing: border-box; padding: var(--space-4) var(--page-padding-inline) var(--space-6); }   /* ✂︎ 420rpx 是页头各项高度的聚合值：token 化会掩盖它与上面各段布局的耦合，改布局时必须一起算 */
+.match { margin-bottom: var(--match-card-gap); padding: var(--match-card-padding); position: relative; overflow: visible; background: var(--match-card-background); border: var(--match-card-border); border-radius: var(--match-card-radius); box-shadow: var(--match-card-shadow); backdrop-filter: blur(var(--match-card-blur)); -webkit-backdrop-filter: blur(var(--match-card-blur)); }
+.match.is-open { background: var(--match-card-background-strong); }
+.match::before { content: ""; position: absolute; left: 0; top: 24rpx; bottom: 24rpx; width: var(--match-card-bar-width); border-radius: 0 6rpx 6rpx 0; background: var(--color-brand-primary); }   /* ✂︎ 竖条上下内缩等于卡内边距 */
+.match.is-submitted::before { background: var(--color-state-success); }
+.match.is-live::before { background: var(--color-state-live); }
+.match.is-done::before { background: var(--color-state-done); }
+.match-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--space-4); padding-left: var(--space-3); }
+.kick { display: flex; align-items: center; gap: var(--space-3); flex: 1; min-width: 0; color: var(--text-secondary); font-size: var(--font-22); }
+.kick-time { color: var(--text-primary); font-family: var(--font-family-number); font-size: var(--font-24); font-weight: var(--weight-semibold); }
+.state,.chip { min-height: var(--status-chip-height); padding: 0 var(--space-4); border-radius: var(--radius-xs); display: flex; align-items: center; font-size: var(--font-20); font-weight: var(--weight-semibold); }
+.state { background: var(--color-brand-soft); color: var(--color-brand-primary-pressed); }
+.state.live { background: var(--color-state-live-soft); color: var(--color-state-live); }
+.state.done,.state.closed { background: var(--color-state-done-soft); color: var(--text-secondary); }
+.faceoff { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); padding-left: var(--space-3); }
+.team { width: 34%; display: flex; align-items: center; gap: var(--space-3); min-width: 0; }   /* ✂︎ 34% 是对阵两侧的配比，属布局约束 */
+.team.away { flex-direction: row-reverse; text-align: right; }
+.crest { width: var(--crest-size); height: var(--crest-size); flex: 0 0 auto; }
+.team-copy { min-width: 0; display: flex; flex-direction: column; gap: var(--space-1); }
+.team-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--font-24); font-weight: var(--weight-semibold); }
+.team-role { color: var(--text-muted); font-size: var(--font-18); }
+/* 比分方块（vs 框）：**实色**，明确区别于雾白卡面 —— 不参与玻璃化。
+   一旦给它加半透明白底就会和卡面糊在一起（2026-09-26 修过一次），
+   所以这里显式写 backdrop-filter: none。 */
+.bug { width: var(--bug-size); height: var(--bug-size); flex: 0 0 auto; border-radius: var(--bug-radius); background: var(--surface-solid); border: var(--border-hairline) solid var(--border-subtle); box-shadow: var(--shadow-bug); backdrop-filter: none; -webkit-backdrop-filter: none; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6rpx; }   /* ✂︎ gap 6rpx 不在间距梯级上 */
+.bug.dark { background: var(--surface-solid-dark); border-color: var(--border-dark); color: var(--white); }
+.bug-score { font-family: var(--font-family-number); font-size: var(--font-32); font-weight: var(--weight-heavy); line-height: 1.1; }
+.bug-sub { font-size: var(--font-18); color: var(--text-muted); }
+.bug.dark .bug-sub { color: var(--alpha-white-60); }
+.foot { min-height: 64rpx; margin-top: var(--space-4); padding-left: var(--space-3); display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); }   /* ✂︎ 底部行最小高度是布局约束 */
+.pred { flex: 1; min-width: 0; color: var(--text-secondary); font-size: var(--font-22); }
+.cta { min-height: var(--cta-height); padding: 0 var(--space-7); border-radius: var(--radius-md); background: var(--cta-background); color: var(--text-on-brand); font-size: var(--font-24); font-weight: var(--weight-bold); line-height: var(--cta-height); box-shadow: var(--shadow-floating); }
+.chip.hit3 { background: var(--color-state-hit-soft); color: var(--color-state-locked); }
+.chip.hit12 { background: var(--color-brand-soft); color: var(--color-brand-primary-pressed); }
+.chip.miss { background: var(--color-state-done-soft); color: var(--text-muted); }
+
+/* —— 卡内预测编辑区（原地展开）—— */
+.pred-wrap { display: grid; grid-template-rows: 1fr; margin-top: var(--space-6); opacity: 1; animation: pred-open var(--duration-predict) var(--ease-emphasized) both; }
+.pred-area { overflow: hidden; max-height: var(--pred-max-height); padding: var(--space-6); border: var(--pred-border); border-radius: var(--pred-radius); background: var(--pred-background); }
+.pred-body { position: relative; }
+.pred-editor { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
+.stepper-group { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: var(--space-3); }
+.stepper-team { display: flex; align-items: center; gap: var(--space-2); max-width: 100%; }
+.stepper-team image { width: var(--stepper-team-logo-size); height: var(--stepper-team-logo-size); }
+.stepper-team text { max-width: 150rpx; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--font-20); }
+.stepper { display: flex; align-items: center; gap: var(--space-4); }
+.stepper button { width: var(--stepper-button-size); height: var(--stepper-button-size); padding: 0; border-radius: var(--radius-xs); background: var(--color-brand-soft); color: var(--color-brand-primary-pressed); font-size: var(--font-36); line-height: 54rpx; }   /* ✂︎ line-height 54rpx 是微信 button 垂直居中的经验值（56−2） */
+.stepper text { width: var(--stepper-value-width); text-align: center; font-family: var(--font-family-number); font-size: var(--font-36); font-weight: var(--weight-heavy); }
+.stepper-sep { font-family: var(--font-family-number); font-size: var(--font-32); color: var(--text-muted); }
+.derived { margin-top: var(--space-5); text-align: center; color: var(--text-secondary); font-size: var(--font-22); }
+.derived text { color: var(--color-brand-primary-pressed); font-weight: var(--weight-bold); }
+.pred-hint { margin-top: var(--space-3); text-align: center; color: var(--text-muted); font-size: var(--font-18); }
+.pred-actions { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--space-2); margin-top: var(--space-5); }
+.submit-btn { min-height: var(--submit-button-height); padding: 0 var(--page-padding-inline); border-radius: var(--radius-sm); background: var(--color-brand-primary); color: var(--text-on-brand); font-size: var(--font-22); font-weight: var(--weight-bold); line-height: var(--submit-button-height); }
+.submit-note { color: var(--text-muted); font-size: var(--font-18); }
+.submit-err { margin-top: var(--space-3); color: var(--text-danger); text-align: center; font-size: var(--font-20); }
+.pred-success { min-height: var(--ghost-button-height); display: flex; align-items: center; justify-content: center; color: var(--color-state-success); font-size: var(--font-26); font-weight: var(--weight-bold); animation: pred-success-in var(--duration-predict) var(--ease-standard) both; }
+
+/* —— 更多 / 加载 / 空 / 错误 —— */
+.more,.retry { margin: var(--space-3) auto var(--space-6); min-height: var(--ghost-button-height); padding: 0 var(--page-padding-inline); border-radius: var(--radius-sm); background: var(--surface-ghost); color: var(--text-secondary); font-size: var(--font-22); line-height: var(--ghost-button-height); }
+.loading,.empty,.error { padding: 120rpx var(--space-10); text-align: center; color: var(--text-muted); font-size: var(--font-24); white-space: pre-line; }   /* ✂︎ 120rpx 上下留白是单点观感值 */
+.retry { margin-top: var(--space-6); }
+.more { display: block; }
+
+/* —— 动效关键帧 ——
+   位移量 8rpx 刻意保留字面量：@keyframes 的中间态无法被 computed 快照回归覆盖，
+   抽象成 token 只会换来「改错了也测不出来」。 */
 @keyframes pred-open { from { opacity: 0; transform: translateY(8rpx); } to { opacity: 1; transform: translateY(0); } }
 @keyframes pred-success-in { from { opacity: 0; transform: translateY(8rpx); } to { opacity: 1; transform: translateY(0); } }
 @keyframes content-exit { from { opacity: 1; transform: translateY(0); } to { opacity: 0; transform: translateY(8rpx); } }
 @keyframes content-enter { from { opacity: 0; transform: translateY(-8rpx); } to { opacity: 1; transform: translateY(0); } }
-
-/* =====================================================================
-   首页球场背景 + 玻璃卡（2026-09-16 改版）
-   视觉基线：docs/design/赛事预言家首页-高保真-v8.6-球场背景玻璃版.html
-   参数：白蒙层 65% + 素材降饱和 15%（已烘进图片）｜卡片玻璃 54%
-   2026-09-26 可读性修整：提高白底遮盖、调轻 blur、比分方块改回实色
-   素材：assets/images/home-pitch-bg.webp（780×1386，86KB）
-   重新生成素材：python3 docs/design/scripts/build-bg-assets.py
-   注：WXSS 的 background-image 不支持本地图片路径，所以背景用 <image> 组件层
-   ===================================================================== */
-page {
-  /* 文字增强档：背景图叠上来后，v8.6 原有的 #5b7166 / #86a092 在这张图上只有
-     1.1~4.7:1（小字会糊），压深一档后实测 5.0~7.9:1。
-     要恢复 v8.6 原色，删掉下面两行即可。 */
-  --color-text-secondary: #3b4f43;
-  --color-text-muted: #42564a;
-}
-
-/* 背景图层：铺满页面，压在所有内容之下 */
-.page-bg { position: absolute; left: 0; top: 0; width: 100%; height: 100%; z-index: 0; }
-
-/* 以下内容原本是静态定位，会被绝对定位的背景层盖住，必须显式抬起 */
-.leagues-wrap, .dates-wrap, .hint { position: relative; z-index: 1; }
-
-/* —— 玻璃卡：轻雾白 + 模糊（2026-09-26 可读性修整）——
-   分工：模糊负责柔化草地纹理（观感），白底负责保证文字对比度（可读性）。
-   2026-09-26 二次调整：22rpx 目视仍偏轻（卡片白底 54% 比托盘 48% 厚，
-   透过来的背景少，同样 blur 观感更弱）→ 卡片提到 36rpx，白底不动。
-   要削弱模糊效果请先降 blur；要提可读性请抬白底，不要用 blur 换。 */
-.match { background: rgba(255,255,255,.54); border: 2rpx solid rgba(255,255,255,.88); box-shadow: 0 24rpx 60rpx rgba(23,60,35,.10), inset 0 2rpx 0 rgba(255,255,255,.60); backdrop-filter: blur(36rpx); -webkit-backdrop-filter: blur(36rpx); }
-.match.is-open { background: rgba(255,255,255,.58); }
-
-/* 比分方块（vs 框）：保持实色，明确区别于雾白卡面 —— 不参与玻璃化 */
-.bug { background: linear-gradient(180deg,#f4fbf0,#e8f8df); border-color: var(--color-border); box-shadow: 0 4rpx 12rpx rgba(31,84,45,.08); backdrop-filter: none; -webkit-backdrop-filter: none; }
-
-/* 卡内预测编辑区仍走玻璃，但比卡面稍实以保证输入区清楚 */
-.pred-area { background: rgba(255,255,255,.50); border-color: rgba(255,255,255,.66); }
-
-/* 联赛托盘：轻雾白，比卡片略透，仍能隐约看到球场 */
-.leagues-wrap { background: rgba(255,255,255,.48); border-color: rgba(255,255,255,.82); backdrop-filter: blur(14rpx); -webkit-backdrop-filter: blur(14rpx); }
-
-/* 日期选中态保持实心白，保证可读 */
-.date.active { background: #fff; }
-
-/* “最近成绩 +K” 的绿色在照片背景上实测仅 2.2:1，换深绿后 5.0:1 */
-.hint-plus { color: #1a5c26; }

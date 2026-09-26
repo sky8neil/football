@@ -1,0 +1,2535 @@
+{
+ "anchor": "2026-09-26T12:00:00+08:00",
+ "scenarios": [
+  "list",
+  "editing",
+  "submitting",
+  "submit_error",
+  "submitted_locked",
+  "extra_states",
+  "loading",
+  "empty",
+  "error",
+  "long_nickname_more"
+ ],
+ "data": {
+  "list": {
+   "state": "list",
+   "items": [
+    {
+     "match_id": "mock-pl-001",
+     "league_id": "premier_league",
+     "league_name": "英超",
+     "round_id": "截止前 10 分钟",
+     "kickoff_at": "2026-08-18T20:30:00+08:00",
+     "match_status": "scheduled",
+     "can_predict": true,
+     "can_predict_reason": null,
+     "regular_home_score": null,
+     "regular_away_score": null,
+     "home_team": {
+      "team_id": "arsenal",
+      "name": "阿森纳"
+     },
+     "away_team": {
+      "team_id": "chelsea",
+      "name": "切尔西"
+     },
+     "cardClass": "is-open",
+     "stateClass": "",
+     "stateText": "未开赛",
+     "reasonChip": "",
+     "chipClass": "",
+     "key": "premier_league:2026-09-26:mock-pl-001",
+     "uiState": "collapsed",
+     "editorVisible": false,
+     "draft": {
+      "home": 0,
+      "away": 0
+     },
+     "showPredict": true,
+     "homeLogo": "../../assets/logos/teams/premier-league/arsenal.png",
+     "awayLogo": "../../assets/logos/teams/premier-league/chelsea.png",
+     "timeText": "20:30",
+     "metaText": "英超 · 截止前 10 分钟",
+     "scoreText": "VS",
+     "scoreSub": "20:30",
+     "bugClass": "",
+     "predText": "未开赛",
+     "derivedResult": "平局",
+     "submitError": ""
+    },
+    {
+     "match_id": "mock-pl-002",
+     "league_id": "premier_league",
+     "league_name": "英超",
+     "round_id": "预测已锁定",
+     "kickoff_at": "2026-08-18T21:00:00+08:00",
+     "match_status": "scheduled",
+     "can_predict": false,
+     "can_predict_reason": "ALREADY_SUBMITTED",
+     "regular_home_score": null,
+     "regular_away_score": null,
+     "my_prediction": {
+      "pred_home_score": 2,
+      "pred_away_score": 1
+     },
+     "home_team": {
+      "team_id": "manchester-city",
+      "name": "曼城"
+     },
+     "away_team": {
+      "team_id": "liverpool",
+      "name": "利物浦"
+     },
+     "cardClass": "is-submitted",
+     "stateClass": "lock",
+     "stateText": "已提交",
+     "reasonChip": "已锁定 · 不可修改",
+     "chipClass": "lock",
+     "key": "premier_league:2026-09-26:mock-pl-002",
+     "uiState": "collapsed",
+     "editorVisible": false,
+     "draft": {
+      "home": 0,
+      "away": 0
+     },
+     "showPredict": false,
+     "homeLogo": "../../assets/logos/teams/premier-league/manchester-city.png",
+     "awayLogo": "../../assets/logos/teams/premier-league/liverpool.png",
+     "timeText": "21:00",
+     "metaText": "英超 · 预测已锁定",
+     "scoreText": "VS",
+     "scoreSub": "已锁定",
+     "bugClass": "",
+     "predText": "我的预测 2 : 1",
+     "derivedResult": "平局",
+     "submitError": ""
+    },
+    {
+     "match_id": "mock-pl-003",
+     "league_id": "premier_league",
+     "league_name": "英超",
+     "round_id": "下半场",
+     "display_time": "63′",
+     "kickoff_at": "2026-08-18T21:30:00+08:00",
+     "match_status": "live",
+     "can_predict": false,
+     "can_predict_reason": "CLOSED",
+     "regular_home_score": 1,
+     "regular_away_score": 0,
+     "my_prediction": {
+      "pred_home_score": 2,
+      "pred_away_score": 1
+     },
+     "home_team": {
+      "team_id": "tottenham",
+      "name": "热刺"
+     },
+     "away_team": {
+      "team_id": "newcastle",
+      "name": "纽卡斯尔"
+     },
+     "cardClass": "is-live",
+     "stateClass": "live",
+     "stateText": "进行中",
+     "reasonChip": "预测已关闭",
+     "chipClass": "live",
+     "key": "premier_league:2026-09-26:mock-pl-003",
+     "uiState": "collapsed",
+     "editorVisible": false,
+     "draft": {
+      "home": 0,
+      "away": 0
+     },
+     "showPredict": false,
+     "homeLogo": "../../assets/logos/teams/premier-league/tottenham.png",
+     "awayLogo": "../../assets/logos/teams/premier-league/newcastle.png",
+     "timeText": "63′",
+     "metaText": "英超 · 下半场",
+     "scoreText": "1 : 0",
+     "scoreSub": "LIVE",
+     "bugClass": "dark",
+     "predText": "我的预测 2 : 1",
+     "derivedResult": "平局",
+     "submitError": ""
+    },
+    {
+     "match_id": "mock-pl-004",
+     "league_id": "premier_league",
+     "league_name": "英超",
+     "round_id": "第 1 轮",
+     "display_time": "已结束",
+     "kickoff_at": "2026-08-18T18:00:00+08:00",
+     "match_status": "finished",
+     "can_predict": false,
+     "can_predict_reason": null,
+     "regular_home_score": 2,
+     "regular_away_score": 2,
+     "result_type": "hit3",
+     "my_prediction": {
+      "pred_home_score": 2,
+      "pred_away_score": 1
+     },
+     "home_team": {
+      "team_id": "manchester-united",
+      "name": "曼联"
+     },
+     "away_team": {
+      "team_id": "aston-villa",
+      "name": "阿斯顿维拉"
+     },
+     "cardClass": "is-done",
+     "stateClass": "done",
+     "stateText": "完场",
+     "reasonChip": "+3 赛果命中",
+     "chipClass": "hit3",
+     "key": "premier_league:2026-09-26:mock-pl-004",
+     "uiState": "collapsed",
+     "editorVisible": false,
+     "draft": {
+      "home": 0,
+      "away": 0
+     },
+     "showPredict": false,
+     "homeLogo": "../../assets/logos/teams/premier-league/manchester-united.png",
+     "awayLogo": "../../assets/logos/teams/premier-league/aston-villa.png",
+     "timeText": "已结束",
+     "metaText": "英超 · 第 1 轮",
+     "scoreText": "2 : 2",
+     "scoreSub": "FT",
+     "bugClass": "dark",
+     "predText": "我的预测 2 : 1",
+     "derivedResult": "平局",
+     "submitError": ""
+    },
+    {
+     "match_id": "mock-pl-005",
+     "league_id": "premier_league",
+     "league_name": "英超",
+     "round_id": "还可以预测",
+     "kickoff_at": "2026-08-18T23:00:00+08:00",
+     "match_status": "scheduled",
+     "can_predict": true,
+     "can_predict_reason": null,
+     "regular_home_score": null,
+     "regular_away_score": null,
+     "home_team": {
+      "team_id": "brighton",
+      "name": "布莱顿"
+     },
+     "away_team": {
+      "team_id": "brentford",
+      "name": "布伦特福德"
+     },
+     "cardClass": "is-open",
+     "stateClass": "",
+     "stateText": "未开赛",
+     "reasonChip": "",
+     "chipClass": "",
+     "key": "premier_league:2026-09-26:mock-pl-005",
+     "uiState": "collapsed",
+     "editorVisible": false,
+     "draft": {
+      "home": 0,
+      "away": 0
+     },
+     "showPredict": true,
+     "homeLogo": "../../assets/logos/teams/premier-league/brighton.png",
+     "awayLogo": "../../assets/logos/teams/premier-league/brentford.png",
+     "timeText": "23:00",
+     "metaText": "英超 · 还可以预测",
+     "scoreText": "VS",
+     "scoreSub": "23:00",
+     "bugClass": "",
+     "predText": "未开赛",
+     "derivedResult": "平局",
+     "submitError": ""
+    }
+   ],
+   "errorMessage": "",
+   "hasMore": false,
+   "nextCursor": null,
+   "loadingMore": false,
+   "nickname": "Sky",
+   "leagues": [
+    {
+     "id": "premier_league",
+     "name": "英超",
+     "logo": "../../assets/logos/leagues/premier_league.png"
+    },
+    {
+     "id": "la_liga",
+     "name": "西甲",
+     "logo": "../../assets/logos/leagues/la_liga.png"
+    },
+    {
+     "id": "ligue_1",
+     "name": "法甲",
+     "logo": "../../assets/logos/leagues/ligue_1.png"
+    },
+    {
+     "id": "chinese_super_league",
+     "name": "中超",
+     "logo": "../../assets/logos/leagues/chinese_super_league.png"
+    }
+   ],
+   "selectedLeague": "premier_league",
+   "dates": [
+    {
+     "key": "2026-09-26",
+     "label": "今天",
+     "day": "26"
+    },
+    {
+     "key": "2026-09-27",
+     "label": "明天",
+     "day": "27"
+    },
+    {
+     "key": "2026-09-28",
+     "label": "周一",
+     "day": "28"
+    },
+    {
+     "key": "2026-09-29",
+     "label": "周二",
+     "day": "29"
+    },
+    {
+     "key": "2026-09-30",
+     "label": "周三",
+     "day": "30"
+    },
+    {
+     "key": "2026-10-01",
+     "label": "周四",
+     "day": "01"
+    },
+    {
+     "key": "2026-10-02",
+     "label": "周五",
+     "day": "02"
+    },
+    {
+     "key": "2026-10-03",
+     "label": "周六",
+     "day": "03"
+    },
+    {
+     "key": "2026-10-04",
+     "label": "周日",
+     "day": "04"
+    },
+    {
+     "key": "2026-10-05",
+     "label": "周一",
+     "day": "05"
+    },
+    {
+     "key": "2026-10-06",
+     "label": "周二",
+     "day": "06"
+    }
+   ],
+   "selectedDate": "2026-09-26",
+   "openCount": 2,
+   "doneCount": 1,
+   "recentScore": 12,
+   "scrollIntoView": "",
+   "resultsTransition": "results-enter"
+  },
+  "editing": {
+   "state": "list",
+   "items": [
+    {
+     "match_id": "mock-pl-001",
+     "league_id": "premier_league",
+     "league_name": "英超",
+     "round_id": "截止前 10 分钟",
+     "kickoff_at": "2026-08-18T20:30:00+08:00",
+     "match_status": "scheduled",
+     "can_predict": true,
+     "can_predict_reason": null,
+     "regular_home_score": null,
+     "regular_away_score": null,
+     "home_team": {
+      "team_id": "arsenal",
+      "name": "阿森纳"
+     },
+     "away_team": {
+      "team_id": "chelsea",
+      "name": "切尔西"
+     },
+     "cardClass": "is-open",
+     "stateClass": "",
+     "stateText": "未开赛",
+     "reasonChip": "",
+     "chipClass": "",
+     "key": "premier_league:2026-09-26:mock-pl-001",
+     "uiState": "editing",
+     "editorVisible": true,
+     "draft": {
+      "home": 2,
+      "away": 1
+     },
+     "showPredict": true,
+     "homeLogo": "../../assets/logos/teams/premier-league/arsenal.png",
+     "awayLogo": "../../assets/logos/teams/premier-league/chelsea.png",
+     "timeText": "20:30",
+     "metaText": "英超 · 截止前 10 分钟",
+     "scoreText": "VS",
+     "scoreSub": "20:30",
+     "bugClass": "",
+     "predText": "未开赛",
+     "derivedResult": "主胜",
+     "submitError": ""
+    },
+    {
+     "match_id": "mock-pl-002",
+     "league_id": "premier_league",
+     "league_name": "英超",
+     "round_id": "预测已锁定",
+     "kickoff_at": "2026-08-18T21:00:00+08:00",
+     "match_status": "scheduled",
+     "can_predict": false,
+     "can_predict_reason": "ALREADY_SUBMITTED",
+     "regular_home_score": null,
+     "regular_away_score": null,
+     "my_prediction": {
+      "pred_home_score": 2,
+      "pred_away_score": 1
+     },
+     "home_team": {
+      "team_id": "manchester-city",
+      "name": "曼城"
+     },
+     "away_team": {
+      "team_id": "liverpool",
+      "name": "利物浦"
+     },
+     "cardClass": "is-submitted",
+     "stateClass": "lock",
+     "stateText": "已提交",
+     "reasonChip": "已锁定 · 不可修改",
+     "chipClass": "lock",
+     "key": "premier_league:2026-09-26:mock-pl-002",
+     "uiState": "collapsed",
+     "editorVisible": false,
+     "draft": {
+      "home": 0,
+      "away": 0
+     },
+     "showPredict": false,
+     "homeLogo": "../../assets/logos/teams/premier-league/manchester-city.png",
+     "awayLogo": "../../assets/logos/teams/premier-league/liverpool.png",
+     "timeText": "21:00",
+     "metaText": "英超 · 预测已锁定",
+     "scoreText": "VS",
+     "scoreSub": "已锁定",
+     "bugClass": "",
+     "predText": "我的预测 2 : 1",
+     "derivedResult": "平局",
+     "submitError": ""
+    },
+    {
+     "match_id": "mock-pl-003",
+     "league_id": "premier_league",
+     "league_name": "英超",
+     "round_id": "下半场",
+     "display_time": "63′",
+     "kickoff_at": "2026-08-18T21:30:00+08:00",
+     "match_status": "live",
+     "can_predict": false,
+     "can_predict_reason": "CLOSED",
+     "regular_home_score": 1,
+     "regular_away_score": 0,
+     "my_prediction": {
+      "pred_home_score": 2,
+      "pred_away_score": 1
+     },
+     "home_team": {
+      "team_id": "tottenham",
+      "name": "热刺"
+     },
+     "away_team": {
+      "team_id": "newcastle",
+      "name": "纽卡斯尔"
+     },
+     "cardClass": "is-live",
+     "stateClass": "live",
+     "stateText": "进行中",
+     "reasonChip": "预测已关闭",
+     "chipClass": "live",
+     "key": "premier_league:2026-09-26:mock-pl-003",
+     "uiState": "collapsed",
+     "editorVisible": false,
+     "draft": {
+      "home": 0,
+      "away": 0
+     },
+     "showPredict": false,
+     "homeLogo": "../../assets/logos/teams/premier-league/tottenham.png",
+     "awayLogo": "../../assets/logos/teams/premier-league/newcastle.png",
+     "timeText": "63′",
+     "metaText": "英超 · 下半场",
+     "scoreText": "1 : 0",
+     "scoreSub": "LIVE",
+     "bugClass": "dark",
+     "predText": "我的预测 2 : 1",
+     "derivedResult": "平局",
+     "submitError": ""
+    },
+    {
+     "match_id": "mock-pl-004",
+     "league_id": "premier_league",
+     "league_name": "英超",
+     "round_id": "第 1 轮",
+     "display_time": "已结束",
+     "kickoff_at": "2026-08-18T18:00:00+08:00",
+     "match_status": "finished",
+     "can_predict": false,
+     "can_predict_reason": null,
+     "regular_home_score": 2,
+     "regular_away_score": 2,
+     "result_type": "hit3",
+     "my_prediction": {
+      "pred_home_score": 2,
+      "pred_away_score": 1
+     },
+     "home_team": {
+      "team_id": "manchester-united",
+      "name": "曼联"
+     },
+     "away_team": {
+      "team_id": "aston-villa",
+      "name": "阿斯顿维拉"
+     },
+     "cardClass": "is-done",
+     "stateClass": "done",
+     "stateText": "完场",
+     "reasonChip": "+3 赛果命中",
+     "chipClass": "hit3",
+     "key": "premier_league:2026-09-26:mock-pl-004",
+     "uiState": "collapsed",
+     "editorVisible": false,
+     "draft": {
+      "home": 0,
+      "away": 0
+     },
+     "showPredict": false,
+     "homeLogo": "../../assets/logos/teams/premier-league/manchester-united.png",
+     "awayLogo": "../../assets/logos/teams/premier-league/aston-villa.png",
+     "timeText": "已结束",
+     "metaText": "英超 · 第 1 轮",
+     "scoreText": "2 : 2",
+     "scoreSub": "FT",
+     "bugClass": "dark",
+     "predText": "我的预测 2 : 1",
+     "derivedResult": "平局",
+     "submitError": ""
+    },
+    {
+     "match_id": "mock-pl-005",
+     "league_id": "premier_league",
+     "league_name": "英超",
+     "round_id": "还可以预测",
+     "kickoff_at": "2026-08-18T23:00:00+08:00",
+     "match_status": "scheduled",
+     "can_predict": true,
+     "can_predict_reason": null,
+     "regular_home_score": null,
+     "regular_away_score": null,
+     "home_team": {
+      "team_id": "brighton",
+      "name": "布莱顿"
+     },
+     "away_team": {
+      "team_id": "brentford",
+      "name": "布伦特福德"
+     },
+     "cardClass": "is-open",
+     "stateClass": "",
+     "stateText": "未开赛",
+     "reasonChip": "",
+     "chipClass": "",
+     "key": "premier_league:2026-09-26:mock-pl-005",
+     "uiState": "collapsed",
+     "editorVisible": false,
+     "draft": {
+      "home": 0,
+      "away": 0
+     },
+     "showPredict": true,
+     "homeLogo": "../../assets/logos/teams/premier-league/brighton.png",
+     "awayLogo": "../../assets/logos/teams/premier-league/brentford.png",
+     "timeText": "23:00",
+     "metaText": "英超 · 还可以预测",
+     "scoreText": "VS",
+     "scoreSub": "23:00",
+     "bugClass": "",
+     "predText": "未开赛",
+     "derivedResult": "平局",
+     "submitError": ""
+    }
+   ],
+   "errorMessage": "",
+   "hasMore": false,
+   "nextCursor": null,
+   "loadingMore": false,
+   "nickname": "Sky",
+   "leagues": [
+    {
+     "id": "premier_league",
+     "name": "英超",
+     "logo": "../../assets/logos/leagues/premier_league.png"
+    },
+    {
+     "id": "la_liga",
+     "name": "西甲",
+     "logo": "../../assets/logos/leagues/la_liga.png"
+    },
+    {
+     "id": "ligue_1",
+     "name": "法甲",
+     "logo": "../../assets/logos/leagues/ligue_1.png"
+    },
+    {
+     "id": "chinese_super_league",
+     "name": "中超",
+     "logo": "../../assets/logos/leagues/chinese_super_league.png"
+    }
+   ],
+   "selectedLeague": "premier_league",
+   "dates": [
+    {
+     "key": "2026-09-26",
+     "label": "今天",
+     "day": "26"
+    },
+    {
+     "key": "2026-09-27",
+     "label": "明天",
+     "day": "27"
+    },
+    {
+     "key": "2026-09-28",
+     "label": "周一",
+     "day": "28"
+    },
+    {
+     "key": "2026-09-29",
+     "label": "周二",
+     "day": "29"
+    },
+    {
+     "key": "2026-09-30",
+     "label": "周三",
+     "day": "30"
+    },
+    {
+     "key": "2026-10-01",
+     "label": "周四",
+     "day": "01"
+    },
+    {
+     "key": "2026-10-02",
+     "label": "周五",
+     "day": "02"
+    },
+    {
+     "key": "2026-10-03",
+     "label": "周六",
+     "day": "03"
+    },
+    {
+     "key": "2026-10-04",
+     "label": "周日",
+     "day": "04"
+    },
+    {
+     "key": "2026-10-05",
+     "label": "周一",
+     "day": "05"
+    },
+    {
+     "key": "2026-10-06",
+     "label": "周二",
+     "day": "06"
+    }
+   ],
+   "selectedDate": "2026-09-26",
+   "openCount": 2,
+   "doneCount": 1,
+   "recentScore": 12,
+   "scrollIntoView": "",
+   "resultsTransition": "results-enter"
+  },
+  "submitting": {
+   "state": "list",
+   "items": [
+    {
+     "match_id": "mock-pl-001",
+     "league_id": "premier_league",
+     "league_name": "英超",
+     "round_id": "截止前 10 分钟",
+     "kickoff_at": "2026-08-18T20:30:00+08:00",
+     "match_status": "scheduled",
+     "can_predict": true,
+     "can_predict_reason": null,
+     "regular_home_score": null,
+     "regular_away_score": null,
+     "home_team": {
+      "team_id": "arsenal",
+      "name": "阿森纳"
+     },
+     "away_team": {
+      "team_id": "chelsea",
+      "name": "切尔西"
+     },
+     "cardClass": "is-open",
+     "stateClass": "",
+     "stateText": "未开赛",
+     "reasonChip": "",
+     "chipClass": "",
+     "key": "premier_league:2026-09-26:mock-pl-001",
+     "uiState": "submitting",
+     "editorVisible": true,
+     "draft": {
+      "home": 0,
+      "away": 0
+     },
+     "showPredict": true,
+     "homeLogo": "../../assets/logos/teams/premier-league/arsenal.png",
+     "awayLogo": "../../assets/logos/teams/premier-league/chelsea.png",
+     "timeText": "20:30",
+     "metaText": "英超 · 截止前 10 分钟",
+     "scoreText": "VS",
+     "scoreSub": "20:30",
+     "bugClass": "",
+     "predText": "未开赛",
+     "derivedResult": "平局",
+     "submitError": ""
+    },
+    {
+     "match_id": "mock-pl-002",
+     "league_id": "premier_league",
+     "league_name": "英超",
+     "round_id": "预测已锁定",
+     "kickoff_at": "2026-08-18T21:00:00+08:00",
+     "match_status": "scheduled",
+     "can_predict": false,
+     "can_predict_reason": "ALREADY_SUBMITTED",
+     "regular_home_score": null,
+     "regular_away_score": null,
+     "my_prediction": {
+      "pred_home_score": 2,
+      "pred_away_score": 1
+     },
+     "home_team": {
+      "team_id": "manchester-city",
+      "name": "曼城"
+     },
+     "away_team": {
+      "team_id": "liverpool",
+      "name": "利物浦"
+     },
+     "cardClass": "is-submitted",
+     "stateClass": "lock",
+     "stateText": "已提交",
+     "reasonChip": "已锁定 · 不可修改",
+     "chipClass": "lock",
+     "key": "premier_league:2026-09-26:mock-pl-002",
+     "uiState": "collapsed",
+     "editorVisible": false,
+     "draft": {
+      "home": 0,
+      "away": 0
+     },
+     "showPredict": false,
+     "homeLogo": "../../assets/logos/teams/premier-league/manchester-city.png",
+     "awayLogo": "../../assets/logos/teams/premier-league/liverpool.png",
+     "timeText": "21:00",
+     "metaText": "英超 · 预测已锁定",
+     "scoreText": "VS",
+     "scoreSub": "已锁定",
+     "bugClass": "",
+     "predText": "我的预测 2 : 1",
+     "derivedResult": "平局",
+     "submitError": ""
+    },
+    {
+     "match_id": "mock-pl-003",
+     "league_id": "premier_league",
+     "league_name": "英超",
+     "round_id": "下半场",
+     "display_time": "63′",
+     "kickoff_at": "2026-08-18T21:30:00+08:00",
+     "match_status": "live",
+     "can_predict": false,
+     "can_predict_reason": "CLOSED",
+     "regular_home_score": 1,
+     "regular_away_score": 0,
+     "my_prediction": {
+      "pred_home_score": 2,
+      "pred_away_score": 1
+     },
+     "home_team": {
+      "team_id": "tottenham",
+      "name": "热刺"
+     },
+     "away_team": {
+      "team_id": "newcastle",
+      "name": "纽卡斯尔"
+     },
+     "cardClass": "is-live",
+     "stateClass": "live",
+     "stateText": "进行中",
+     "reasonChip": "预测已关闭",
+     "chipClass": "live",
+     "key": "premier_league:2026-09-26:mock-pl-003",
+     "uiState": "collapsed",
+     "editorVisible": false,
+     "draft": {
+      "home": 0,
+      "away": 0
+     },
+     "showPredict": false,
+     "homeLogo": "../../assets/logos/teams/premier-league/tottenham.png",
+     "awayLogo": "../../assets/logos/teams/premier-league/newcastle.png",
+     "timeText": "63′",
+     "metaText": "英超 · 下半场",
+     "scoreText": "1 : 0",
+     "scoreSub": "LIVE",
+     "bugClass": "dark",
+     "predText": "我的预测 2 : 1",
+     "derivedResult": "平局",
+     "submitError": ""
+    },
+    {
+     "match_id": "mock-pl-004",
+     "league_id": "premier_league",
+     "league_name": "英超",
+     "round_id": "第 1 轮",
+     "display_time": "已结束",
+     "kickoff_at": "2026-08-18T18:00:00+08:00",
+     "match_status": "finished",
+     "can_predict": false,
+     "can_predict_reason": null,
+     "regular_home_score": 2,
+     "regular_away_score": 2,
+     "result_type": "hit3",
+     "my_prediction": {
+      "pred_home_score": 2,
+      "pred_away_score": 1
+     },
+     "home_team": {
+      "team_id": "manchester-united",
+      "name": "曼联"
+     },
+     "away_team": {
+      "team_id": "aston-villa",
+      "name": "阿斯顿维拉"
+     },
+     "cardClass": "is-done",
+     "stateClass": "done",
+     "stateText": "完场",
+     "reasonChip": "+3 赛果命中",
+     "chipClass": "hit3",
+     "key": "premier_league:2026-09-26:mock-pl-004",
+     "uiState": "collapsed",
+     "editorVisible": false,
+     "draft": {
+      "home": 0,
+      "away": 0
+     },
+     "showPredict": false,
+     "homeLogo": "../../assets/logos/teams/premier-league/manchester-united.png",
+     "awayLogo": "../../assets/logos/teams/premier-league/aston-villa.png",
+     "timeText": "已结束",
+     "metaText": "英超 · 第 1 轮",
+     "scoreText": "2 : 2",
+     "scoreSub": "FT",
+     "bugClass": "dark",
+     "predText": "我的预测 2 : 1",
+     "derivedResult": "平局",
+     "submitError": ""
+    },
+    {
+     "match_id": "mock-pl-005",
+     "league_id": "premier_league",
+     "league_name": "英超",
+     "round_id": "还可以预测",
+     "kickoff_at": "2026-08-18T23:00:00+08:00",
+     "match_status": "scheduled",
+     "can_predict": true,
+     "can_predict_reason": null,
+     "regular_home_score": null,
+     "regular_away_score": null,
+     "home_team": {
+      "team_id": "brighton",
+      "name": "布莱顿"
+     },
+     "away_team": {
+      "team_id": "brentford",
+      "name": "布伦特福德"
+     },
+     "cardClass": "is-open",
+     "stateClass": "",
+     "stateText": "未开赛",
+     "reasonChip": "",
+     "chipClass": "",
+     "key": "premier_league:2026-09-26:mock-pl-005",
+     "uiState": "collapsed",
+     "editorVisible": false,
+     "draft": {
+      "home": 0,
+      "away": 0
+     },
+     "showPredict": true,
+     "homeLogo": "../../assets/logos/teams/premier-league/brighton.png",
+     "awayLogo": "../../assets/logos/teams/premier-league/brentford.png",
+     "timeText": "23:00",
+     "metaText": "英超 · 还可以预测",
+     "scoreText": "VS",
+     "scoreSub": "23:00",
+     "bugClass": "",
+     "predText": "未开赛",
+     "derivedResult": "平局",
+     "submitError": ""
+    }
+   ],
+   "errorMessage": "",
+   "hasMore": false,
+   "nextCursor": null,
+   "loadingMore": false,
+   "nickname": "Sky",
+   "leagues": [
+    {
+     "id": "premier_league",
+     "name": "英超",
+     "logo": "../../assets/logos/leagues/premier_league.png"
+    },
+    {
+     "id": "la_liga",
+     "name": "西甲",
+     "logo": "../../assets/logos/leagues/la_liga.png"
+    },
+    {
+     "id": "ligue_1",
+     "name": "法甲",
+     "logo": "../../assets/logos/leagues/ligue_1.png"
+    },
+    {
+     "id": "chinese_super_league",
+     "name": "中超",
+     "logo": "../../assets/logos/leagues/chinese_super_league.png"
+    }
+   ],
+   "selectedLeague": "premier_league",
+   "dates": [
+    {
+     "key": "2026-09-26",
+     "label": "今天",
+     "day": "26"
+    },
+    {
+     "key": "2026-09-27",
+     "label": "明天",
+     "day": "27"
+    },
+    {
+     "key": "2026-09-28",
+     "label": "周一",
+     "day": "28"
+    },
+    {
+     "key": "2026-09-29",
+     "label": "周二",
+     "day": "29"
+    },
+    {
+     "key": "2026-09-30",
+     "label": "周三",
+     "day": "30"
+    },
+    {
+     "key": "2026-10-01",
+     "label": "周四",
+     "day": "01"
+    },
+    {
+     "key": "2026-10-02",
+     "label": "周五",
+     "day": "02"
+    },
+    {
+     "key": "2026-10-03",
+     "label": "周六",
+     "day": "03"
+    },
+    {
+     "key": "2026-10-04",
+     "label": "周日",
+     "day": "04"
+    },
+    {
+     "key": "2026-10-05",
+     "label": "周一",
+     "day": "05"
+    },
+    {
+     "key": "2026-10-06",
+     "label": "周二",
+     "day": "06"
+    }
+   ],
+   "selectedDate": "2026-09-26",
+   "openCount": 2,
+   "doneCount": 1,
+   "recentScore": 12,
+   "scrollIntoView": "",
+   "resultsTransition": "results-enter"
+  },
+  "submit_error": {
+   "state": "list",
+   "items": [
+    {
+     "match_id": "mock-pl-001",
+     "league_id": "premier_league",
+     "league_name": "英超",
+     "round_id": "截止前 10 分钟",
+     "kickoff_at": "2026-08-18T20:30:00+08:00",
+     "match_status": "scheduled",
+     "can_predict": true,
+     "can_predict_reason": null,
+     "regular_home_score": null,
+     "regular_away_score": null,
+     "home_team": {
+      "team_id": "arsenal",
+      "name": "阿森纳"
+     },
+     "away_team": {
+      "team_id": "chelsea",
+      "name": "切尔西"
+     },
+     "cardClass": "is-open",
+     "stateClass": "",
+     "stateText": "未开赛",
+     "reasonChip": "",
+     "chipClass": "",
+     "key": "premier_league:2026-09-26:mock-pl-001",
+     "uiState": "editing",
+     "editorVisible": true,
+     "draft": {
+      "home": 0,
+      "away": 0
+     },
+     "showPredict": true,
+     "homeLogo": "../../assets/logos/teams/premier-league/arsenal.png",
+     "awayLogo": "../../assets/logos/teams/premier-league/chelsea.png",
+     "timeText": "20:30",
+     "metaText": "英超 · 截止前 10 分钟",
+     "scoreText": "VS",
+     "scoreSub": "20:30",
+     "bugClass": "",
+     "predText": "未开赛",
+     "derivedResult": "平局",
+     "submitError": "提交失败：网络异常，请重试"
+    },
+    {
+     "match_id": "mock-pl-002",
+     "league_id": "premier_league",
+     "league_name": "英超",
+     "round_id": "预测已锁定",
+     "kickoff_at": "2026-08-18T21:00:00+08:00",
+     "match_status": "scheduled",
+     "can_predict": false,
+     "can_predict_reason": "ALREADY_SUBMITTED",
+     "regular_home_score": null,
+     "regular_away_score": null,
+     "my_prediction": {
+      "pred_home_score": 2,
+      "pred_away_score": 1
+     },
+     "home_team": {
+      "team_id": "manchester-city",
+      "name": "曼城"
+     },
+     "away_team": {
+      "team_id": "liverpool",
+      "name": "利物浦"
+     },
+     "cardClass": "is-submitted",
+     "stateClass": "lock",
+     "stateText": "已提交",
+     "reasonChip": "已锁定 · 不可修改",
+     "chipClass": "lock",
+     "key": "premier_league:2026-09-26:mock-pl-002",
+     "uiState": "collapsed",
+     "editorVisible": false,
+     "draft": {
+      "home": 0,
+      "away": 0
+     },
+     "showPredict": false,
+     "homeLogo": "../../assets/logos/teams/premier-league/manchester-city.png",
+     "awayLogo": "../../assets/logos/teams/premier-league/liverpool.png",
+     "timeText": "21:00",
+     "metaText": "英超 · 预测已锁定",
+     "scoreText": "VS",
+     "scoreSub": "已锁定",
+     "bugClass": "",
+     "predText": "我的预测 2 : 1",
+     "derivedResult": "平局"
+    },
+    {
+     "match_id": "mock-pl-003",
+     "league_id": "premier_league",
+     "league_name": "英超",
+     "round_id": "下半场",
+     "display_time": "63′",
+     "kickoff_at": "2026-08-18T21:30:00+08:00",
+     "match_status": "live",
+     "can_predict": false,
+     "can_predict_reason": "CLOSED",
+     "regular_home_score": 1,
+     "regular_away_score": 0,
+     "my_prediction": {
+      "pred_home_score": 2,
+      "pred_away_score": 1
+     },
+     "home_team": {
+      "team_id": "tottenham",
+      "name": "热刺"
+     },
+     "away_team": {
+      "team_id": "newcastle",
+      "name": "纽卡斯尔"
+     },
+     "cardClass": "is-live",
+     "stateClass": "live",
+     "stateText": "进行中",
+     "reasonChip": "预测已关闭",
+     "chipClass": "live",
+     "key": "premier_league:2026-09-26:mock-pl-003",
+     "uiState": "collapsed",
+     "editorVisible": false,
+     "draft": {
+      "home": 0,
+      "away": 0
+     },
+     "showPredict": false,
+     "homeLogo": "../../assets/logos/teams/premier-league/tottenham.png",
+     "awayLogo": "../../assets/logos/teams/premier-league/newcastle.png",
+     "timeText": "63′",
+     "metaText": "英超 · 下半场",
+     "scoreText": "1 : 0",
+     "scoreSub": "LIVE",
+     "bugClass": "dark",
+     "predText": "我的预测 2 : 1",
+     "derivedResult": "平局"
+    },
+    {
+     "match_id": "mock-pl-004",
+     "league_id": "premier_league",
+     "league_name": "英超",
+     "round_id": "第 1 轮",
+     "display_time": "已结束",
+     "kickoff_at": "2026-08-18T18:00:00+08:00",
+     "match_status": "finished",
+     "can_predict": false,
+     "can_predict_reason": null,
+     "regular_home_score": 2,
+     "regular_away_score": 2,
+     "result_type": "hit3",
+     "my_prediction": {
+      "pred_home_score": 2,
+      "pred_away_score": 1
+     },
+     "home_team": {
+      "team_id": "manchester-united",
+      "name": "曼联"
+     },
+     "away_team": {
+      "team_id": "aston-villa",
+      "name": "阿斯顿维拉"
+     },
+     "cardClass": "is-done",
+     "stateClass": "done",
+     "stateText": "完场",
+     "reasonChip": "+3 赛果命中",
+     "chipClass": "hit3",
+     "key": "premier_league:2026-09-26:mock-pl-004",
+     "uiState": "collapsed",
+     "editorVisible": false,
+     "draft": {
+      "home": 0,
+      "away": 0
+     },
+     "showPredict": false,
+     "homeLogo": "../../assets/logos/teams/premier-league/manchester-united.png",
+     "awayLogo": "../../assets/logos/teams/premier-league/aston-villa.png",
+     "timeText": "已结束",
+     "metaText": "英超 · 第 1 轮",
+     "scoreText": "2 : 2",
+     "scoreSub": "FT",
+     "bugClass": "dark",
+     "predText": "我的预测 2 : 1",
+     "derivedResult": "平局"
+    },
+    {
+     "match_id": "mock-pl-005",
+     "league_id": "premier_league",
+     "league_name": "英超",
+     "round_id": "还可以预测",
+     "kickoff_at": "2026-08-18T23:00:00+08:00",
+     "match_status": "scheduled",
+     "can_predict": true,
+     "can_predict_reason": null,
+     "regular_home_score": null,
+     "regular_away_score": null,
+     "home_team": {
+      "team_id": "brighton",
+      "name": "布莱顿"
+     },
+     "away_team": {
+      "team_id": "brentford",
+      "name": "布伦特福德"
+     },
+     "cardClass": "is-open",
+     "stateClass": "",
+     "stateText": "未开赛",
+     "reasonChip": "",
+     "chipClass": "",
+     "key": "premier_league:2026-09-26:mock-pl-005",
+     "uiState": "collapsed",
+     "editorVisible": false,
+     "draft": {
+      "home": 0,
+      "away": 0
+     },
+     "showPredict": true,
+     "homeLogo": "../../assets/logos/teams/premier-league/brighton.png",
+     "awayLogo": "../../assets/logos/teams/premier-league/brentford.png",
+     "timeText": "23:00",
+     "metaText": "英超 · 还可以预测",
+     "scoreText": "VS",
+     "scoreSub": "23:00",
+     "bugClass": "",
+     "predText": "未开赛",
+     "derivedResult": "平局"
+    }
+   ],
+   "errorMessage": "",
+   "hasMore": false,
+   "nextCursor": null,
+   "loadingMore": false,
+   "nickname": "Sky",
+   "leagues": [
+    {
+     "id": "premier_league",
+     "name": "英超",
+     "logo": "../../assets/logos/leagues/premier_league.png"
+    },
+    {
+     "id": "la_liga",
+     "name": "西甲",
+     "logo": "../../assets/logos/leagues/la_liga.png"
+    },
+    {
+     "id": "ligue_1",
+     "name": "法甲",
+     "logo": "../../assets/logos/leagues/ligue_1.png"
+    },
+    {
+     "id": "chinese_super_league",
+     "name": "中超",
+     "logo": "../../assets/logos/leagues/chinese_super_league.png"
+    }
+   ],
+   "selectedLeague": "premier_league",
+   "dates": [
+    {
+     "key": "2026-09-26",
+     "label": "今天",
+     "day": "26"
+    },
+    {
+     "key": "2026-09-27",
+     "label": "明天",
+     "day": "27"
+    },
+    {
+     "key": "2026-09-28",
+     "label": "周一",
+     "day": "28"
+    },
+    {
+     "key": "2026-09-29",
+     "label": "周二",
+     "day": "29"
+    },
+    {
+     "key": "2026-09-30",
+     "label": "周三",
+     "day": "30"
+    },
+    {
+     "key": "2026-10-01",
+     "label": "周四",
+     "day": "01"
+    },
+    {
+     "key": "2026-10-02",
+     "label": "周五",
+     "day": "02"
+    },
+    {
+     "key": "2026-10-03",
+     "label": "周六",
+     "day": "03"
+    },
+    {
+     "key": "2026-10-04",
+     "label": "周日",
+     "day": "04"
+    },
+    {
+     "key": "2026-10-05",
+     "label": "周一",
+     "day": "05"
+    },
+    {
+     "key": "2026-10-06",
+     "label": "周二",
+     "day": "06"
+    }
+   ],
+   "selectedDate": "2026-09-26",
+   "openCount": 2,
+   "doneCount": 1,
+   "recentScore": 12,
+   "scrollIntoView": "",
+   "resultsTransition": "results-enter",
+   "submitErrors": {
+    "premier_league:2026-09-26:mock-pl-001": "提交失败：网络异常，请重试"
+   }
+  },
+  "submitted_locked": {
+   "state": "list",
+   "items": [
+    {
+     "match_id": "mock-pl-001",
+     "league_id": "premier_league",
+     "league_name": "英超",
+     "round_id": "截止前 10 分钟",
+     "kickoff_at": "2026-08-18T20:30:00+08:00",
+     "match_status": "scheduled",
+     "can_predict": true,
+     "can_predict_reason": null,
+     "regular_home_score": null,
+     "regular_away_score": null,
+     "home_team": {
+      "team_id": "arsenal",
+      "name": "阿森纳"
+     },
+     "away_team": {
+      "team_id": "chelsea",
+      "name": "切尔西"
+     },
+     "cardClass": "is-open",
+     "stateClass": "",
+     "stateText": "未开赛",
+     "reasonChip": "已锁定 · 不可修改",
+     "chipClass": "lock",
+     "key": "premier_league:2026-09-26:mock-pl-001",
+     "uiState": "submitted_locked",
+     "editorVisible": true,
+     "draft": {
+      "home": 0,
+      "away": 0
+     },
+     "showPredict": false,
+     "homeLogo": "../../assets/logos/teams/premier-league/arsenal.png",
+     "awayLogo": "../../assets/logos/teams/premier-league/chelsea.png",
+     "timeText": "20:30",
+     "metaText": "英超 · 截止前 10 分钟",
+     "scoreText": "VS",
+     "scoreSub": "20:30",
+     "bugClass": "",
+     "predText": "我的预测 1 : 0",
+     "derivedResult": "平局",
+     "submitError": ""
+    },
+    {
+     "match_id": "mock-pl-002",
+     "league_id": "premier_league",
+     "league_name": "英超",
+     "round_id": "预测已锁定",
+     "kickoff_at": "2026-08-18T21:00:00+08:00",
+     "match_status": "scheduled",
+     "can_predict": false,
+     "can_predict_reason": "ALREADY_SUBMITTED",
+     "regular_home_score": null,
+     "regular_away_score": null,
+     "my_prediction": {
+      "pred_home_score": 2,
+      "pred_away_score": 1
+     },
+     "home_team": {
+      "team_id": "manchester-city",
+      "name": "曼城"
+     },
+     "away_team": {
+      "team_id": "liverpool",
+      "name": "利物浦"
+     },
+     "cardClass": "is-submitted",
+     "stateClass": "lock",
+     "stateText": "已提交",
+     "reasonChip": "已锁定 · 不可修改",
+     "chipClass": "lock",
+     "key": "premier_league:2026-09-26:mock-pl-002",
+     "uiState": "collapsed",
+     "editorVisible": false,
+     "draft": {
+      "home": 0,
+      "away": 0
+     },
+     "showPredict": false,
+     "homeLogo": "../../assets/logos/teams/premier-league/manchester-city.png",
+     "awayLogo": "../../assets/logos/teams/premier-league/liverpool.png",
+     "timeText": "21:00",
+     "metaText": "英超 · 预测已锁定",
+     "scoreText": "VS",
+     "scoreSub": "已锁定",
+     "bugClass": "",
+     "predText": "我的预测 2 : 1",
+     "derivedResult": "平局",
+     "submitError": ""
+    },
+    {
+     "match_id": "mock-pl-003",
+     "league_id": "premier_league",
+     "league_name": "英超",
+     "round_id": "下半场",
+     "display_time": "63′",
+     "kickoff_at": "2026-08-18T21:30:00+08:00",
+     "match_status": "live",
+     "can_predict": false,
+     "can_predict_reason": "CLOSED",
+     "regular_home_score": 1,
+     "regular_away_score": 0,
+     "my_prediction": {
+      "pred_home_score": 2,
+      "pred_away_score": 1
+     },
+     "home_team": {
+      "team_id": "tottenham",
+      "name": "热刺"
+     },
+     "away_team": {
+      "team_id": "newcastle",
+      "name": "纽卡斯尔"
+     },
+     "cardClass": "is-live",
+     "stateClass": "live",
+     "stateText": "进行中",
+     "reasonChip": "预测已关闭",
+     "chipClass": "live",
+     "key": "premier_league:2026-09-26:mock-pl-003",
+     "uiState": "collapsed",
+     "editorVisible": false,
+     "draft": {
+      "home": 0,
+      "away": 0
+     },
+     "showPredict": false,
+     "homeLogo": "../../assets/logos/teams/premier-league/tottenham.png",
+     "awayLogo": "../../assets/logos/teams/premier-league/newcastle.png",
+     "timeText": "63′",
+     "metaText": "英超 · 下半场",
+     "scoreText": "1 : 0",
+     "scoreSub": "LIVE",
+     "bugClass": "dark",
+     "predText": "我的预测 2 : 1",
+     "derivedResult": "平局",
+     "submitError": ""
+    },
+    {
+     "match_id": "mock-pl-004",
+     "league_id": "premier_league",
+     "league_name": "英超",
+     "round_id": "第 1 轮",
+     "display_time": "已结束",
+     "kickoff_at": "2026-08-18T18:00:00+08:00",
+     "match_status": "finished",
+     "can_predict": false,
+     "can_predict_reason": null,
+     "regular_home_score": 2,
+     "regular_away_score": 2,
+     "result_type": "hit3",
+     "my_prediction": {
+      "pred_home_score": 2,
+      "pred_away_score": 1
+     },
+     "home_team": {
+      "team_id": "manchester-united",
+      "name": "曼联"
+     },
+     "away_team": {
+      "team_id": "aston-villa",
+      "name": "阿斯顿维拉"
+     },
+     "cardClass": "is-done",
+     "stateClass": "done",
+     "stateText": "完场",
+     "reasonChip": "+3 赛果命中",
+     "chipClass": "hit3",
+     "key": "premier_league:2026-09-26:mock-pl-004",
+     "uiState": "collapsed",
+     "editorVisible": false,
+     "draft": {
+      "home": 0,
+      "away": 0
+     },
+     "showPredict": false,
+     "homeLogo": "../../assets/logos/teams/premier-league/manchester-united.png",
+     "awayLogo": "../../assets/logos/teams/premier-league/aston-villa.png",
+     "timeText": "已结束",
+     "metaText": "英超 · 第 1 轮",
+     "scoreText": "2 : 2",
+     "scoreSub": "FT",
+     "bugClass": "dark",
+     "predText": "我的预测 2 : 1",
+     "derivedResult": "平局",
+     "submitError": ""
+    },
+    {
+     "match_id": "mock-pl-005",
+     "league_id": "premier_league",
+     "league_name": "英超",
+     "round_id": "还可以预测",
+     "kickoff_at": "2026-08-18T23:00:00+08:00",
+     "match_status": "scheduled",
+     "can_predict": true,
+     "can_predict_reason": null,
+     "regular_home_score": null,
+     "regular_away_score": null,
+     "home_team": {
+      "team_id": "brighton",
+      "name": "布莱顿"
+     },
+     "away_team": {
+      "team_id": "brentford",
+      "name": "布伦特福德"
+     },
+     "cardClass": "is-open",
+     "stateClass": "",
+     "stateText": "未开赛",
+     "reasonChip": "",
+     "chipClass": "",
+     "key": "premier_league:2026-09-26:mock-pl-005",
+     "uiState": "collapsed",
+     "editorVisible": false,
+     "draft": {
+      "home": 0,
+      "away": 0
+     },
+     "showPredict": true,
+     "homeLogo": "../../assets/logos/teams/premier-league/brighton.png",
+     "awayLogo": "../../assets/logos/teams/premier-league/brentford.png",
+     "timeText": "23:00",
+     "metaText": "英超 · 还可以预测",
+     "scoreText": "VS",
+     "scoreSub": "23:00",
+     "bugClass": "",
+     "predText": "未开赛",
+     "derivedResult": "平局",
+     "submitError": ""
+    }
+   ],
+   "errorMessage": "",
+   "hasMore": false,
+   "nextCursor": null,
+   "loadingMore": false,
+   "nickname": "Sky",
+   "leagues": [
+    {
+     "id": "premier_league",
+     "name": "英超",
+     "logo": "../../assets/logos/leagues/premier_league.png"
+    },
+    {
+     "id": "la_liga",
+     "name": "西甲",
+     "logo": "../../assets/logos/leagues/la_liga.png"
+    },
+    {
+     "id": "ligue_1",
+     "name": "法甲",
+     "logo": "../../assets/logos/leagues/ligue_1.png"
+    },
+    {
+     "id": "chinese_super_league",
+     "name": "中超",
+     "logo": "../../assets/logos/leagues/chinese_super_league.png"
+    }
+   ],
+   "selectedLeague": "premier_league",
+   "dates": [
+    {
+     "key": "2026-09-26",
+     "label": "今天",
+     "day": "26"
+    },
+    {
+     "key": "2026-09-27",
+     "label": "明天",
+     "day": "27"
+    },
+    {
+     "key": "2026-09-28",
+     "label": "周一",
+     "day": "28"
+    },
+    {
+     "key": "2026-09-29",
+     "label": "周二",
+     "day": "29"
+    },
+    {
+     "key": "2026-09-30",
+     "label": "周三",
+     "day": "30"
+    },
+    {
+     "key": "2026-10-01",
+     "label": "周四",
+     "day": "01"
+    },
+    {
+     "key": "2026-10-02",
+     "label": "周五",
+     "day": "02"
+    },
+    {
+     "key": "2026-10-03",
+     "label": "周六",
+     "day": "03"
+    },
+    {
+     "key": "2026-10-04",
+     "label": "周日",
+     "day": "04"
+    },
+    {
+     "key": "2026-10-05",
+     "label": "周一",
+     "day": "05"
+    },
+    {
+     "key": "2026-10-06",
+     "label": "周二",
+     "day": "06"
+    }
+   ],
+   "selectedDate": "2026-09-26",
+   "openCount": 2,
+   "doneCount": 1,
+   "recentScore": 12,
+   "scrollIntoView": "",
+   "resultsTransition": "results-enter"
+  },
+  "extra_states": {
+   "state": "list",
+   "items": [
+    {
+     "match_id": "capture-extra",
+     "league_id": "premier_league",
+     "league_name": "英超",
+     "round_id": "capture",
+     "kickoff_at": "2026-09-26T20:30:00+08:00",
+     "match_status": "postponed",
+     "can_predict": false,
+     "can_predict_reason": null,
+     "regular_home_score": null,
+     "regular_away_score": null,
+     "home_team": {
+      "team_id": "arsenal",
+      "name": "阿森纳"
+     },
+     "away_team": {
+      "team_id": "chelsea",
+      "name": "切尔西"
+     },
+     "cardClass": "is-closed",
+     "stateClass": "closed",
+     "stateText": "延期",
+     "reasonChip": "",
+     "chipClass": "",
+     "key": "premier_league:2026-09-26:capture-extra",
+     "uiState": "collapsed",
+     "editorVisible": false,
+     "draft": {
+      "home": 0,
+      "away": 0
+     },
+     "showPredict": false,
+     "homeLogo": "../../assets/logos/teams/premier-league/arsenal.png",
+     "awayLogo": "../../assets/logos/teams/premier-league/chelsea.png",
+     "timeText": "20:30",
+     "metaText": "英超 · capture",
+     "scoreText": "VS",
+     "scoreSub": "20:30",
+     "bugClass": "",
+     "predText": "未开赛",
+     "derivedResult": "平局",
+     "submitError": ""
+    },
+    {
+     "match_id": "capture-extra",
+     "league_id": "premier_league",
+     "league_name": "英超",
+     "round_id": "capture",
+     "kickoff_at": "2026-09-26T20:30:00+08:00",
+     "match_status": "cancelled",
+     "can_predict": false,
+     "can_predict_reason": null,
+     "regular_home_score": null,
+     "regular_away_score": null,
+     "home_team": {
+      "team_id": "arsenal",
+      "name": "阿森纳"
+     },
+     "away_team": {
+      "team_id": "chelsea",
+      "name": "切尔西"
+     },
+     "cardClass": "is-closed",
+     "stateClass": "closed",
+     "stateText": "取消",
+     "reasonChip": "",
+     "chipClass": "",
+     "key": "premier_league:2026-09-26:capture-extra",
+     "uiState": "collapsed",
+     "editorVisible": false,
+     "draft": {
+      "home": 0,
+      "away": 0
+     },
+     "showPredict": false,
+     "homeLogo": "../../assets/logos/teams/premier-league/arsenal.png",
+     "awayLogo": "../../assets/logos/teams/premier-league/chelsea.png",
+     "timeText": "20:30",
+     "metaText": "英超 · capture",
+     "scoreText": "VS",
+     "scoreSub": "20:30",
+     "bugClass": "",
+     "predText": "未开赛",
+     "derivedResult": "平局",
+     "submitError": ""
+    },
+    {
+     "match_id": "capture-extra",
+     "league_id": "premier_league",
+     "league_name": "英超",
+     "round_id": "capture",
+     "kickoff_at": "2026-09-26T20:30:00+08:00",
+     "match_status": "finished",
+     "can_predict": false,
+     "can_predict_reason": null,
+     "regular_home_score": 2,
+     "regular_away_score": 1,
+     "home_team": {
+      "team_id": "arsenal",
+      "name": "阿森纳"
+     },
+     "away_team": {
+      "team_id": "chelsea",
+      "name": "切尔西"
+     },
+     "result_type": "hit12",
+     "my_prediction": {
+      "pred_home_score": 2,
+      "pred_away_score": 1
+     },
+     "cardClass": "is-done",
+     "stateClass": "done",
+     "stateText": "完场",
+     "reasonChip": "+12 精确命中",
+     "chipClass": "hit12",
+     "key": "premier_league:2026-09-26:capture-extra",
+     "uiState": "collapsed",
+     "editorVisible": false,
+     "draft": {
+      "home": 0,
+      "away": 0
+     },
+     "showPredict": false,
+     "homeLogo": "../../assets/logos/teams/premier-league/arsenal.png",
+     "awayLogo": "../../assets/logos/teams/premier-league/chelsea.png",
+     "timeText": "20:30",
+     "metaText": "英超 · capture",
+     "scoreText": "2 : 1",
+     "scoreSub": "FT",
+     "bugClass": "dark",
+     "predText": "我的预测 2 : 1",
+     "derivedResult": "平局",
+     "submitError": ""
+    },
+    {
+     "match_id": "capture-extra",
+     "league_id": "premier_league",
+     "league_name": "英超",
+     "round_id": "capture",
+     "kickoff_at": "2026-09-26T20:30:00+08:00",
+     "match_status": "finished",
+     "can_predict": false,
+     "can_predict_reason": null,
+     "regular_home_score": 0,
+     "regular_away_score": 3,
+     "home_team": {
+      "team_id": "arsenal",
+      "name": "阿森纳"
+     },
+     "away_team": {
+      "team_id": "chelsea",
+      "name": "切尔西"
+     },
+     "result_type": "miss",
+     "my_prediction": {
+      "pred_home_score": 2,
+      "pred_away_score": 1
+     },
+     "cardClass": "is-done",
+     "stateClass": "done",
+     "stateText": "完场",
+     "reasonChip": "+0 未命中",
+     "chipClass": "miss",
+     "key": "premier_league:2026-09-26:capture-extra",
+     "uiState": "collapsed",
+     "editorVisible": false,
+     "draft": {
+      "home": 0,
+      "away": 0
+     },
+     "showPredict": false,
+     "homeLogo": "../../assets/logos/teams/premier-league/arsenal.png",
+     "awayLogo": "../../assets/logos/teams/premier-league/chelsea.png",
+     "timeText": "20:30",
+     "metaText": "英超 · capture",
+     "scoreText": "0 : 3",
+     "scoreSub": "FT",
+     "bugClass": "dark",
+     "predText": "我的预测 2 : 1",
+     "derivedResult": "平局",
+     "submitError": ""
+    }
+   ],
+   "errorMessage": "",
+   "hasMore": false,
+   "nextCursor": null,
+   "loadingMore": false,
+   "nickname": "Sky",
+   "leagues": [
+    {
+     "id": "premier_league",
+     "name": "英超",
+     "logo": "../../assets/logos/leagues/premier_league.png"
+    },
+    {
+     "id": "la_liga",
+     "name": "西甲",
+     "logo": "../../assets/logos/leagues/la_liga.png"
+    },
+    {
+     "id": "ligue_1",
+     "name": "法甲",
+     "logo": "../../assets/logos/leagues/ligue_1.png"
+    },
+    {
+     "id": "chinese_super_league",
+     "name": "中超",
+     "logo": "../../assets/logos/leagues/chinese_super_league.png"
+    }
+   ],
+   "selectedLeague": "premier_league",
+   "dates": [
+    {
+     "key": "2026-09-26",
+     "label": "今天",
+     "day": "26"
+    },
+    {
+     "key": "2026-09-27",
+     "label": "明天",
+     "day": "27"
+    },
+    {
+     "key": "2026-09-28",
+     "label": "周一",
+     "day": "28"
+    },
+    {
+     "key": "2026-09-29",
+     "label": "周二",
+     "day": "29"
+    },
+    {
+     "key": "2026-09-30",
+     "label": "周三",
+     "day": "30"
+    },
+    {
+     "key": "2026-10-01",
+     "label": "周四",
+     "day": "01"
+    },
+    {
+     "key": "2026-10-02",
+     "label": "周五",
+     "day": "02"
+    },
+    {
+     "key": "2026-10-03",
+     "label": "周六",
+     "day": "03"
+    },
+    {
+     "key": "2026-10-04",
+     "label": "周日",
+     "day": "04"
+    },
+    {
+     "key": "2026-10-05",
+     "label": "周一",
+     "day": "05"
+    },
+    {
+     "key": "2026-10-06",
+     "label": "周二",
+     "day": "06"
+    }
+   ],
+   "selectedDate": "2026-09-26",
+   "openCount": 0,
+   "doneCount": 0,
+   "recentScore": 12,
+   "scrollIntoView": "",
+   "resultsTransition": "results-enter"
+  },
+  "loading": {
+   "state": "loading",
+   "items": [],
+   "errorMessage": "",
+   "hasMore": false,
+   "nextCursor": null,
+   "loadingMore": false,
+   "nickname": "Sky",
+   "leagues": [
+    {
+     "id": "premier_league",
+     "name": "英超",
+     "logo": "../../assets/logos/leagues/premier_league.png"
+    },
+    {
+     "id": "la_liga",
+     "name": "西甲",
+     "logo": "../../assets/logos/leagues/la_liga.png"
+    },
+    {
+     "id": "ligue_1",
+     "name": "法甲",
+     "logo": "../../assets/logos/leagues/ligue_1.png"
+    },
+    {
+     "id": "chinese_super_league",
+     "name": "中超",
+     "logo": "../../assets/logos/leagues/chinese_super_league.png"
+    }
+   ],
+   "selectedLeague": "premier_league",
+   "dates": [
+    {
+     "key": "2026-09-26",
+     "label": "今天",
+     "day": "26"
+    },
+    {
+     "key": "2026-09-27",
+     "label": "明天",
+     "day": "27"
+    },
+    {
+     "key": "2026-09-28",
+     "label": "周一",
+     "day": "28"
+    },
+    {
+     "key": "2026-09-29",
+     "label": "周二",
+     "day": "29"
+    },
+    {
+     "key": "2026-09-30",
+     "label": "周三",
+     "day": "30"
+    },
+    {
+     "key": "2026-10-01",
+     "label": "周四",
+     "day": "01"
+    },
+    {
+     "key": "2026-10-02",
+     "label": "周五",
+     "day": "02"
+    },
+    {
+     "key": "2026-10-03",
+     "label": "周六",
+     "day": "03"
+    },
+    {
+     "key": "2026-10-04",
+     "label": "周日",
+     "day": "04"
+    },
+    {
+     "key": "2026-10-05",
+     "label": "周一",
+     "day": "05"
+    },
+    {
+     "key": "2026-10-06",
+     "label": "周二",
+     "day": "06"
+    }
+   ],
+   "selectedDate": "2026-09-26",
+   "openCount": 2,
+   "doneCount": 1,
+   "recentScore": 12,
+   "scrollIntoView": "",
+   "resultsTransition": "results-enter"
+  },
+  "empty": {
+   "state": "empty",
+   "items": [],
+   "errorMessage": "",
+   "hasMore": false,
+   "nextCursor": null,
+   "loadingMore": false,
+   "nickname": "Sky",
+   "leagues": [
+    {
+     "id": "premier_league",
+     "name": "英超",
+     "logo": "../../assets/logos/leagues/premier_league.png"
+    },
+    {
+     "id": "la_liga",
+     "name": "西甲",
+     "logo": "../../assets/logos/leagues/la_liga.png"
+    },
+    {
+     "id": "ligue_1",
+     "name": "法甲",
+     "logo": "../../assets/logos/leagues/ligue_1.png"
+    },
+    {
+     "id": "chinese_super_league",
+     "name": "中超",
+     "logo": "../../assets/logos/leagues/chinese_super_league.png"
+    }
+   ],
+   "selectedLeague": "premier_league",
+   "dates": [
+    {
+     "key": "2026-09-26",
+     "label": "今天",
+     "day": "26"
+    },
+    {
+     "key": "2026-09-27",
+     "label": "明天",
+     "day": "27"
+    },
+    {
+     "key": "2026-09-28",
+     "label": "周一",
+     "day": "28"
+    },
+    {
+     "key": "2026-09-29",
+     "label": "周二",
+     "day": "29"
+    },
+    {
+     "key": "2026-09-30",
+     "label": "周三",
+     "day": "30"
+    },
+    {
+     "key": "2026-10-01",
+     "label": "周四",
+     "day": "01"
+    },
+    {
+     "key": "2026-10-02",
+     "label": "周五",
+     "day": "02"
+    },
+    {
+     "key": "2026-10-03",
+     "label": "周六",
+     "day": "03"
+    },
+    {
+     "key": "2026-10-04",
+     "label": "周日",
+     "day": "04"
+    },
+    {
+     "key": "2026-10-05",
+     "label": "周一",
+     "day": "05"
+    },
+    {
+     "key": "2026-10-06",
+     "label": "周二",
+     "day": "06"
+    }
+   ],
+   "selectedDate": "2026-09-26",
+   "openCount": 2,
+   "doneCount": 1,
+   "recentScore": 12,
+   "scrollIntoView": "",
+   "resultsTransition": "results-enter"
+  },
+  "error": {
+   "state": "error",
+   "items": [],
+   "errorMessage": "网络开小差，请稍后重试",
+   "hasMore": false,
+   "nextCursor": null,
+   "loadingMore": false,
+   "nickname": "Sky",
+   "leagues": [
+    {
+     "id": "premier_league",
+     "name": "英超",
+     "logo": "../../assets/logos/leagues/premier_league.png"
+    },
+    {
+     "id": "la_liga",
+     "name": "西甲",
+     "logo": "../../assets/logos/leagues/la_liga.png"
+    },
+    {
+     "id": "ligue_1",
+     "name": "法甲",
+     "logo": "../../assets/logos/leagues/ligue_1.png"
+    },
+    {
+     "id": "chinese_super_league",
+     "name": "中超",
+     "logo": "../../assets/logos/leagues/chinese_super_league.png"
+    }
+   ],
+   "selectedLeague": "premier_league",
+   "dates": [
+    {
+     "key": "2026-09-26",
+     "label": "今天",
+     "day": "26"
+    },
+    {
+     "key": "2026-09-27",
+     "label": "明天",
+     "day": "27"
+    },
+    {
+     "key": "2026-09-28",
+     "label": "周一",
+     "day": "28"
+    },
+    {
+     "key": "2026-09-29",
+     "label": "周二",
+     "day": "29"
+    },
+    {
+     "key": "2026-09-30",
+     "label": "周三",
+     "day": "30"
+    },
+    {
+     "key": "2026-10-01",
+     "label": "周四",
+     "day": "01"
+    },
+    {
+     "key": "2026-10-02",
+     "label": "周五",
+     "day": "02"
+    },
+    {
+     "key": "2026-10-03",
+     "label": "周六",
+     "day": "03"
+    },
+    {
+     "key": "2026-10-04",
+     "label": "周日",
+     "day": "04"
+    },
+    {
+     "key": "2026-10-05",
+     "label": "周一",
+     "day": "05"
+    },
+    {
+     "key": "2026-10-06",
+     "label": "周二",
+     "day": "06"
+    }
+   ],
+   "selectedDate": "2026-09-26",
+   "openCount": 2,
+   "doneCount": 1,
+   "recentScore": 12,
+   "scrollIntoView": "",
+   "resultsTransition": "results-enter"
+  },
+  "long_nickname_more": {
+   "state": "list",
+   "items": [
+    {
+     "match_id": "mock-pl-001",
+     "league_id": "premier_league",
+     "league_name": "英超",
+     "round_id": "截止前 10 分钟",
+     "kickoff_at": "2026-08-18T20:30:00+08:00",
+     "match_status": "scheduled",
+     "can_predict": true,
+     "can_predict_reason": null,
+     "regular_home_score": null,
+     "regular_away_score": null,
+     "home_team": {
+      "team_id": "arsenal",
+      "name": "阿森纳"
+     },
+     "away_team": {
+      "team_id": "chelsea",
+      "name": "切尔西"
+     },
+     "cardClass": "is-open",
+     "stateClass": "",
+     "stateText": "未开赛",
+     "reasonChip": "",
+     "chipClass": "",
+     "key": "premier_league:2026-09-26:mock-pl-001",
+     "uiState": "collapsed",
+     "editorVisible": false,
+     "draft": {
+      "home": 0,
+      "away": 0
+     },
+     "showPredict": true,
+     "homeLogo": "../../assets/logos/teams/premier-league/arsenal.png",
+     "awayLogo": "../../assets/logos/teams/premier-league/chelsea.png",
+     "timeText": "20:30",
+     "metaText": "英超 · 截止前 10 分钟",
+     "scoreText": "VS",
+     "scoreSub": "20:30",
+     "bugClass": "",
+     "predText": "未开赛",
+     "derivedResult": "平局",
+     "submitError": ""
+    },
+    {
+     "match_id": "mock-pl-002",
+     "league_id": "premier_league",
+     "league_name": "英超",
+     "round_id": "预测已锁定",
+     "kickoff_at": "2026-08-18T21:00:00+08:00",
+     "match_status": "scheduled",
+     "can_predict": false,
+     "can_predict_reason": "ALREADY_SUBMITTED",
+     "regular_home_score": null,
+     "regular_away_score": null,
+     "my_prediction": {
+      "pred_home_score": 2,
+      "pred_away_score": 1
+     },
+     "home_team": {
+      "team_id": "manchester-city",
+      "name": "曼城"
+     },
+     "away_team": {
+      "team_id": "liverpool",
+      "name": "利物浦"
+     },
+     "cardClass": "is-submitted",
+     "stateClass": "lock",
+     "stateText": "已提交",
+     "reasonChip": "已锁定 · 不可修改",
+     "chipClass": "lock",
+     "key": "premier_league:2026-09-26:mock-pl-002",
+     "uiState": "collapsed",
+     "editorVisible": false,
+     "draft": {
+      "home": 0,
+      "away": 0
+     },
+     "showPredict": false,
+     "homeLogo": "../../assets/logos/teams/premier-league/manchester-city.png",
+     "awayLogo": "../../assets/logos/teams/premier-league/liverpool.png",
+     "timeText": "21:00",
+     "metaText": "英超 · 预测已锁定",
+     "scoreText": "VS",
+     "scoreSub": "已锁定",
+     "bugClass": "",
+     "predText": "我的预测 2 : 1",
+     "derivedResult": "平局",
+     "submitError": ""
+    },
+    {
+     "match_id": "mock-pl-003",
+     "league_id": "premier_league",
+     "league_name": "英超",
+     "round_id": "下半场",
+     "display_time": "63′",
+     "kickoff_at": "2026-08-18T21:30:00+08:00",
+     "match_status": "live",
+     "can_predict": false,
+     "can_predict_reason": "CLOSED",
+     "regular_home_score": 1,
+     "regular_away_score": 0,
+     "my_prediction": {
+      "pred_home_score": 2,
+      "pred_away_score": 1
+     },
+     "home_team": {
+      "team_id": "tottenham",
+      "name": "热刺"
+     },
+     "away_team": {
+      "team_id": "newcastle",
+      "name": "纽卡斯尔"
+     },
+     "cardClass": "is-live",
+     "stateClass": "live",
+     "stateText": "进行中",
+     "reasonChip": "预测已关闭",
+     "chipClass": "live",
+     "key": "premier_league:2026-09-26:mock-pl-003",
+     "uiState": "collapsed",
+     "editorVisible": false,
+     "draft": {
+      "home": 0,
+      "away": 0
+     },
+     "showPredict": false,
+     "homeLogo": "../../assets/logos/teams/premier-league/tottenham.png",
+     "awayLogo": "../../assets/logos/teams/premier-league/newcastle.png",
+     "timeText": "63′",
+     "metaText": "英超 · 下半场",
+     "scoreText": "1 : 0",
+     "scoreSub": "LIVE",
+     "bugClass": "dark",
+     "predText": "我的预测 2 : 1",
+     "derivedResult": "平局",
+     "submitError": ""
+    },
+    {
+     "match_id": "mock-pl-004",
+     "league_id": "premier_league",
+     "league_name": "英超",
+     "round_id": "第 1 轮",
+     "display_time": "已结束",
+     "kickoff_at": "2026-08-18T18:00:00+08:00",
+     "match_status": "finished",
+     "can_predict": false,
+     "can_predict_reason": null,
+     "regular_home_score": 2,
+     "regular_away_score": 2,
+     "result_type": "hit3",
+     "my_prediction": {
+      "pred_home_score": 2,
+      "pred_away_score": 1
+     },
+     "home_team": {
+      "team_id": "manchester-united",
+      "name": "曼联"
+     },
+     "away_team": {
+      "team_id": "aston-villa",
+      "name": "阿斯顿维拉"
+     },
+     "cardClass": "is-done",
+     "stateClass": "done",
+     "stateText": "完场",
+     "reasonChip": "+3 赛果命中",
+     "chipClass": "hit3",
+     "key": "premier_league:2026-09-26:mock-pl-004",
+     "uiState": "collapsed",
+     "editorVisible": false,
+     "draft": {
+      "home": 0,
+      "away": 0
+     },
+     "showPredict": false,
+     "homeLogo": "../../assets/logos/teams/premier-league/manchester-united.png",
+     "awayLogo": "../../assets/logos/teams/premier-league/aston-villa.png",
+     "timeText": "已结束",
+     "metaText": "英超 · 第 1 轮",
+     "scoreText": "2 : 2",
+     "scoreSub": "FT",
+     "bugClass": "dark",
+     "predText": "我的预测 2 : 1",
+     "derivedResult": "平局",
+     "submitError": ""
+    },
+    {
+     "match_id": "mock-pl-005",
+     "league_id": "premier_league",
+     "league_name": "英超",
+     "round_id": "还可以预测",
+     "kickoff_at": "2026-08-18T23:00:00+08:00",
+     "match_status": "scheduled",
+     "can_predict": true,
+     "can_predict_reason": null,
+     "regular_home_score": null,
+     "regular_away_score": null,
+     "home_team": {
+      "team_id": "brighton",
+      "name": "布莱顿"
+     },
+     "away_team": {
+      "team_id": "brentford",
+      "name": "布伦特福德"
+     },
+     "cardClass": "is-open",
+     "stateClass": "",
+     "stateText": "未开赛",
+     "reasonChip": "",
+     "chipClass": "",
+     "key": "premier_league:2026-09-26:mock-pl-005",
+     "uiState": "collapsed",
+     "editorVisible": false,
+     "draft": {
+      "home": 0,
+      "away": 0
+     },
+     "showPredict": true,
+     "homeLogo": "../../assets/logos/teams/premier-league/brighton.png",
+     "awayLogo": "../../assets/logos/teams/premier-league/brentford.png",
+     "timeText": "23:00",
+     "metaText": "英超 · 还可以预测",
+     "scoreText": "VS",
+     "scoreSub": "23:00",
+     "bugClass": "",
+     "predText": "未开赛",
+     "derivedResult": "平局",
+     "submitError": ""
+    }
+   ],
+   "errorMessage": "",
+   "hasMore": true,
+   "nextCursor": null,
+   "loadingMore": false,
+   "nickname": "阿森纳铁杆球迷张三丰永…",
+   "leagues": [
+    {
+     "id": "premier_league",
+     "name": "英超",
+     "logo": "../../assets/logos/leagues/premier_league.png"
+    },
+    {
+     "id": "la_liga",
+     "name": "西甲",
+     "logo": "../../assets/logos/leagues/la_liga.png"
+    },
+    {
+     "id": "ligue_1",
+     "name": "法甲",
+     "logo": "../../assets/logos/leagues/ligue_1.png"
+    },
+    {
+     "id": "chinese_super_league",
+     "name": "中超",
+     "logo": "../../assets/logos/leagues/chinese_super_league.png"
+    }
+   ],
+   "selectedLeague": "premier_league",
+   "dates": [
+    {
+     "key": "2026-09-26",
+     "label": "今天",
+     "day": "26"
+    },
+    {
+     "key": "2026-09-27",
+     "label": "明天",
+     "day": "27"
+    },
+    {
+     "key": "2026-09-28",
+     "label": "周一",
+     "day": "28"
+    },
+    {
+     "key": "2026-09-29",
+     "label": "周二",
+     "day": "29"
+    },
+    {
+     "key": "2026-09-30",
+     "label": "周三",
+     "day": "30"
+    },
+    {
+     "key": "2026-10-01",
+     "label": "周四",
+     "day": "01"
+    },
+    {
+     "key": "2026-10-02",
+     "label": "周五",
+     "day": "02"
+    },
+    {
+     "key": "2026-10-03",
+     "label": "周六",
+     "day": "03"
+    },
+    {
+     "key": "2026-10-04",
+     "label": "周日",
+     "day": "04"
+    },
+    {
+     "key": "2026-10-05",
+     "label": "周一",
+     "day": "05"
+    },
+    {
+     "key": "2026-10-06",
+     "label": "周二",
+     "day": "06"
+    }
+   ],
+   "selectedDate": "2026-09-26",
+   "openCount": 2,
+   "doneCount": 1,
+   "recentScore": 12,
+   "scrollIntoView": "",
+   "resultsTransition": "results-exit"
+  }
+ }
+}
