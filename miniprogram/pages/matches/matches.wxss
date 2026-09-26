@@ -51,7 +51,7 @@ page {
 /* —— 玻璃卡：轻雾白 + 轻模糊（2026-09-26 可读性修整）——
    做法：模糊负责柔化草地纹理，白底负责保证文字对比度。
    不要靠继续加大 blur 提清晰度，那样只会让背景更糊、文字对比度不变。 */
-.match { background: rgba(255,255,255,.54); border: 2rpx solid rgba(255,255,255,.88); box-shadow: 0 24rpx 60rpx rgba(23,60,35,.10), inset 0 2rpx 0 rgba(255,255,255,.60); backdrop-filter: blur(18rpx); -webkit-backdrop-filter: blur(18rpx); }
+.match { background: rgba(255,255,255,.54); border: 2rpx solid rgba(255,255,255,.88); box-shadow: 0 24rpx 60rpx rgba(23,60,35,.10), inset 0 2rpx 0 rgba(255,255,255,.60); backdrop-filter: blur(22rpx); -webkit-backdrop-filter: blur(22rpx); }
 .match.is-open { background: rgba(255,255,255,.58); }
 
 /* 比分方块（vs 框）：保持实色，明确区别于雾白卡面 —— 不参与玻璃化 */
