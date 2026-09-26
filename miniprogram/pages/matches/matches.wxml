@@ -27,7 +27,7 @@
         <text class="date-label">{{item.label}}</text><text class="date-num">{{item.day}}</text>
       </view>
     </scroll-view>
-    <view class="cal" bindtap="onCalendarTap"><text class="cal-icon">日</text></view>
+    <view class="cal" hover-class="cal-pressed" hover-stay-time="120" bindtap="onCalendarTap"><image class="cal-icon" src="/assets/icons/icon-calendar.png" mode="aspectFit"></image></view>
   </view>
 
   <view class="hint"><text>今日可预测 <text class="hint-num">{{openCount}}</text> · 已预测 <text class="hint-num">{{doneCount}}</text></text><text>最近成绩 <text class="hint-plus">+{{recentScore}}</text></text></view>

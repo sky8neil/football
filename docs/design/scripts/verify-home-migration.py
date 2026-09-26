@@ -1,6 +1,6 @@
 """校验小程序落地与设计稿的一致性（移植保真度检查）——只比对两边的"追加块"
 1) HTML 稿追加 CSS  vs  matches.wxss 追加块：逐项比对取值
-2) 资源路径 / 图层数量 / z-index 抬升 / 语法 / 背景素材 65% 蒙层烘焙
+2) 资源路径 / 图层数量 / z-index 抬升 / 语法 / 背景素材 65% 蒙层烘焙 / 日历图标
 3) 本次改版不变式：vs 框保持实色；卡片为模糊（36rpx）、托盘为轻模糊（14rpx）（2026-09-26）
 """
 import os
@@ -103,6 +103,38 @@ n = wxml.count('class="page-bg"')
 print(f"  背景图层数量       {n} {'✅' if n == 1 else '❌'}")
 if n != 1:
     fails.append("page-bg 图层数量异常")
+
+# 日历入口：设计稿是线性日历 SVG（.cal 内联），小程序端烘成位图引用。
+# 这是 2026-09-26 修掉的移植偏差：之前小程序端写成了「日」字，会被误读成「周日」。
+cal_ref = re.search(r'<image class="cal-icon" src="([^"]+)"', wxml)
+if cal_ref:
+    icon_disk = os.path.join(ROOT, "miniprogram", cal_ref.group(1).lstrip("/"))
+    icon_ok = os.path.exists(icon_disk)
+    print(f"  日历图标资源       {cal_ref.group(1)} 存在={icon_ok} "
+          f"{os.path.getsize(icon_disk) if icon_ok else 0} B {'✅' if icon_ok else '❌'}")
+    if not icon_ok:
+        fails.append("日历图标文件不存在")
+elif '<text class="cal-icon">' in wxml:
+    fails.append('日历入口仍是「日」文字，未按设计稿换成线性图标')
+    print("  日历图标资源       ❌ 仍是「日」文字")
+else:
+    fails.append("WXML 缺少 .cal-icon 图标引用")
+    print("  日历图标资源       ❌ 未找到")
+
+cal_rule = re.search(r"\.cal \{([^}]*)\}", wxss_all)
+cal_icon_rule = re.search(r"\.cal-icon \{([^}]*)\}", wxss_all)
+cal_problems = []
+if not cal_rule:
+    cal_problems.append(".cal 规则缺失")
+elif "background" in cal_rule.group(1) or "border:" in cal_rule.group(1):
+    cal_problems.append(".cal 仍有底色/边框（会与选中的日期抢焦点）")
+if not cal_icon_rule or "32rpx" not in cal_icon_rule.group(1):
+    cal_problems.append(".cal-icon 不是 32rpx 图标")
+if ".cal-pressed" not in wxss_all:
+    cal_problems.append("缺少 .cal-pressed 按下态")
+print(f"  日历入口降权       {'✅ 无底无边框 + 按下态' if not cal_problems else '❌ ' + '；'.join(cal_problems)}")
+if cal_problems:
+    fails.append("日历入口: " + "；".join(cal_problems))
 
 # z-index 抬升：扫全部匹配行
 raised = []

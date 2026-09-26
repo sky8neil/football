@@ -143,6 +143,9 @@ Backend API Freeze Review 已通过，H4 已关闭；可以开始用户端前端
 | 通用错误/断网插图 | 2 个 | 200×160 px | PNG 400×320 px（2x）或 SVG | 网络错误、服务暂不可用 |
 | 注销/不可用状态插图 | 1 个 | 200×160 px | PNG 400×320 px（2x）或 SVG | `USER_DELETED` / 无可信身份 |
 | 品牌 Logo | 1 个 | 160×48 px | PNG 320×96 px（2x，透明背景）或 SVG | 启动/会话初始化页 |
+| 日历入口图标 | 1 个 | 16×16 px | PNG 96×96 px（6x，透明背景）或 SVG | 日期行行尾「打开日历」|
+
+**线性图标（2026-09-26 起）**：几何唯一真相是设计稿 `design/赛事预言家首页-高保真-v8.6-球场背景玻璃版.html` 中 `.cal` 的内联 SVG（viewBox 16×16、stroke 1.4、圆头）。小程序 WXSS 不能引用本地图片路径，故由 `python3 docs/design/scripts/build-icon-assets.py` 按该几何烘成 `miniprogram/assets/icons/icon-calendar.png`（96×96 = @6x，透明底，色值 = 首页 `--color-text-secondary`），矢量源同步产出到 `design/assets/icons/`。要改色或改几何，改脚本里的常量后重跑，**不要手改位图**。
 
 ### 可选资源
 

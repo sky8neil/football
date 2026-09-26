@@ -281,13 +281,16 @@
       width: 48px;
       height: 48px;
       border-radius: 14px;
-      background: rgba(255,255,255,0.8);
-      border: 1px solid var(--line);
       display: grid;
       place-items: center;
       flex: 0 0 auto;
       color: var(--ink-soft);
     }
+
+    /* 2026-09-26：降权为无底纯图标 —— 去掉常驻白底与 1px 边框，行内焦点只留给
+       选中的日期；按下时才浮出底色作按压反馈（原来常驻白底会和选中日期抢焦点）。
+       图标几何即上方 .cal 内联 SVG，小程序端由 build-icon-assets.py 烘成位图。 */
+    .cal:active { background: rgba(255, 255, 255, 0.8); box-shadow: 0 8px 20px rgba(63, 138, 72, 0.05); }
 
     .hint {
       display: flex;
