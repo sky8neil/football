@@ -9,7 +9,7 @@
 - `C0_H5_MINIMUM_USER_SCOPE_DECISION__v1.0.md`：首版用户范围与 H5 决策。
 - `C1_PLATFORM_NEUTRAL_WIREFRAME_ACCEPTANCE__v1.0.md`：平台无关线框与 UI 验收边界。
 - `design/赛事预言家首页-高保真-v8.6-联赛无底.html`：首页结构/交互基线（动画、状态机、预测交互）。
-- `design/赛事预言家首页-高保真-v8.6-球场背景玻璃版.html`：当前配色基线（球场背景 65% 蒙层 + 玻璃卡 30%），配套素材在 `design/assets/bg/`。
+- `design/赛事预言家首页-高保真-v8.6-球场背景玻璃版.html`：当前配色基线（球场背景 65% 蒙层 + 玻璃卡 54%，2026-09-26 可读性修整），配套素材在 `design/assets/bg/`。
 - `design/scripts/build-bg-assets.py`：重新生成首页背景素材（淡化妆 + 压缩 + 同步到小程序资源目录）。
 - `UI_DESIGN_SYSTEM.md`：全局视觉基准、组件状态与扩展规则。
 

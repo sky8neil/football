@@ -1,7 +1,7 @@
 """校验小程序落地与设计稿的一致性（移植保真度检查）——只比对两边的"追加块"
 1) HTML 稿追加 CSS  vs  matches.wxss 追加块：逐项比对取值
-2) 资源路径 / 图层数量 / z-index 抬升 / 语法
-3) 背景素材是否真按 65% 蒙层烘焙
+2) 资源路径 / 图层数量 / z-index 抬升 / 语法 / 背景素材 65% 蒙层烘焙
+3) 本次改版不变式：vs 框保持实色、卡面与联赛托盘为轻模糊（2026-09-26）
 """
 import os
 import re
@@ -24,9 +24,12 @@ wxss = wxss_all.split("首页球场背景 + 玻璃卡（2026-09-16 改版）")[1
 
 
 def norm_alpha(s: str) -> str:
+    """归一化后比对：0.54 / 54 视作同值；gradient 只比较去掉空白后的字面量。"""
     s = s.strip().lstrip("#")
-    if s == "glass":          # HTML 稿里用 var(--glass)，等价 0.30
+    if s == "glass":          # 兼容历史写法的 var(--glass) 占位（旧稿等价 0.30）
         return "0.30"
+    if s.startswith("linear-gradient") or s.startswith("rgba"):
+        return re.sub(r"\s+", "", s)
     if re.fullmatch(r"[0-9a-f]{6}", s):
         return s
     f = float(s if "." in s else (f"0.{s}" if len(s) <= 3 else s))
@@ -38,9 +41,9 @@ GLASS_FROM_VAR = "0.30"
 PAIRS = [
     ("玻璃卡主档", r"--glass:\s*([\d.]+)", r"^\.match \{ background: rgba\(255,255,255,\.(\d+)\)"),
     ("玻璃卡高亮", r"--glass-open:\s*([\d.]+)", r"\.match\.is-open \{ background: rgba\(255,255,255,\.(\d+)\)"),
-    ("比分方块", r"\.bug \{ background: rgba\(255, 255, 255, ([\d.]+)\)", r"^\.bug \{ background: rgba\(255,255,255,\.(\d+)\)"),
+    ("比分方块实色", r"\.bug \{ background: (linear-gradient\([^)]*\))", r"^\.bug \{ background: (linear-gradient\([^)]*\))"),
     ("预测编辑区", r"\.pred-area \{ background: rgba\(255, 255, 255, ([\d.]+)\)", r"^\.pred-area \{ background: rgba\(255,255,255,\.(\d+)\)"),
-    ("联赛托盘", r"\.leagues-wrap \{ background: rgba\(255, 255, 255, var\(--(glass)\)\)", r"^\.leagues-wrap \{ background: rgba\(255,255,255,\.(\d+)\)"),
+    ("联赛托盘", r"\.leagues-wrap \{ background: rgba\(255, 255, 255, ([\d.]+)\)", r"^\.leagues-wrap \{ background: rgba\(255,255,255,\.(\d+)\)"),
     ("文字次色", r"\.contrast-boost \{ --ink-soft: (#[0-9a-f]{6})", r"--color-text-secondary:\s*(#[0-9a-f]{6})"),
     ("文字弱色", r"--ink-faint: (#[0-9a-f]{6});", r"--color-text-muted:\s*(#[0-9a-f]{6})"),
     ("+K 绿色", r"\.contrast-boost \.hint \.plus \{ color: (#[0-9a-f]{6})", r"\.hint-plus \{ color:\s*(#[0-9a-f]{6})"),
@@ -125,6 +128,47 @@ bad += re.findall(r"^\.match\.is-open[^{]*\{[^}]*linear-gradient", wxss_all, re.
 print(f"  残留实心白卡规则   {len(bad)} 处 {'✅' if not bad else '❌'}")
 if bad:
     fails.append("仍有实心白卡规则")
+
+print()
+print("=" * 78)
+print("3) 本次改版不变式：vs 框必须与雾白卡面区分开（2026-09-26 可读性修整）")
+print("=" * 78)
+
+bug_m = re.search(r"^\.bug \{ background: ([^}]*)\}", wxss_all, re.M)
+pred_m = re.search(r"^\.pred-area \{ background: ([^}]*)\}", wxss_all, re.M)
+for label, m, expect in ((".bug（vs 框）", bug_m, "linear-gradient"), (".pred-area", pred_m, "rgba")):
+    if not m:
+        fails.append(f"{label} 规则缺失")
+        print(f"  {label:<16} ❌ 规则缺失")
+        continue
+    body = m.group(1)
+    problems = []
+    if expect not in body:
+        problems.append(f"背景不是 {expect}")
+    if label.startswith(".bug"):
+        if "rgba(255,255,255" in body.replace(" ", ""):
+            problems.append("出现半透明白底（会与卡面糊在一起）")
+        if "backdrop-filter: none" not in body:
+            problems.append("未显式关闭 backdrop-filter")
+    ok_msg = "✅ 实色，与卡面分层" if label.startswith(".bug") else "✅ 玻璃档位已设"
+    print(f"  {label:<16} {ok_msg if not problems else '❌ ' + '；'.join(problems)}")
+    if problems:
+        fails.append(f"{label}: " + "；".join(problems))
+
+for name, pat in ((".match", r"^\.match \{ background: ([^}]*)\}"),
+                  (".leagues-wrap", r"^\.leagues-wrap \{ background: ([^}]*)\}")):
+    m = re.search(pat, wxss_all, re.M)
+    if not m or "backdrop-filter" not in m.group(1):
+        fails.append(f"{name} 缺少 backdrop-filter（轻模糊）")
+        print(f"  {name:<16} ❌ 缺少 backdrop-filter")
+        continue
+    bm = re.search(r"blur\((\d+)rpx\)", m.group(1))
+    blur_rpx = bm.group(1) if bm else None
+    heavy = bool(blur_rpx is not None and int(blur_rpx) > 22)
+    print(f"  {name:<16} blur {blur_rpx or '?'}rpx "
+          f"{'⚠️ 偏重：清晰度应靠白底遮盖，不是加大 blur' if heavy else '✅ 轻模糊'}")
+    if heavy:
+        warns.append(f"{name} blur 偏重（{blur_rpx}rpx）")
 
 print()
 print("=" * 78)

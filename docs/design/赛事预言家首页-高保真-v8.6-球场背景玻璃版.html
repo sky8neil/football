@@ -977,16 +977,18 @@
   
     /* =====================================================================
        本次改版追加：球场背景图 + 玻璃卡
-       参数：白蒙层 65%（--bg-veil）+ 素材降饱和 15% + 卡片玻璃 30%
+       参数：白蒙层 65%（--bg-veil）+ 素材降饱和 15% + 卡片玻璃 54%
+       2026-09-26 可读性修整：加大白底遮盖 + 调轻 blur 提清晰度；
+                             比分方块（vs 框）改回实色，与雾白卡面拉开层级。
        素材：docs/design/assets/bg/（pitch-source=原图，pitch-washed-65-*=已烘焙版）
        说明：只用 flex/grid/变量/transition/gradient/backdrop-filter，
              均可平移到微信小程序 WXSS（backdrop-filter 在部分安卓机型可降级）
        ===================================================================== */
     :root {
       --bg-veil: 0.65;        /* 背景白蒙层：调大=更浅 */
-      --glass: 0.30;          /* 玻璃卡白底不透明度 */
-      --glass-open: 0.38;     /* 可预测卡（展开高亮）稍实一点 */
-      --glass-line: 0.78;
+      --glass: 0.54;          /* 玻璃卡白底不透明度 */
+      --glass-open: 0.58;     /* 可预测卡（展开高亮）稍实一点 */
+      --glass-line: 0.88;
     }
 
     /* 背景图层：铺满 #app，压在内容之下 */
@@ -1012,22 +1014,24 @@
     /* 内容层全部压在背景之上 */
     .topbar, .leagues, .dates, .hint, .feed, .empty, .tabbar { position: relative; z-index: 1; }
 
-    /* —— 玻璃卡 —— */
+    /* —— 玻璃卡：轻雾白 + 轻模糊 —— */
     .match {
       background: rgba(255, 255, 255, var(--glass));
       border: 1px solid rgba(255, 255, 255, var(--glass-line));
       box-shadow: 0 12px 30px rgba(23, 60, 35, 0.10), inset 0 1px 0 rgba(255, 255, 255, 0.60);
-      backdrop-filter: blur(14px) saturate(1.06);
-      -webkit-backdrop-filter: blur(14px) saturate(1.06);
+      backdrop-filter: blur(9px);
+      -webkit-backdrop-filter: blur(9px);
     }
     .match.is-open { background: rgba(255, 255, 255, var(--glass-open)); }
 
-    /* 卡内元素玻璃化：比分方块 / 预测编辑区 */
-    .bug { background: rgba(255, 255, 255, 0.55); border-color: rgba(255, 255, 255, 0.72); }
-    .pred-area { background: rgba(255, 255, 255, 0.42); border-color: rgba(255, 255, 255, 0.66); }
+    /* 比分方块（vs 框）：保持实色，明确区别于雾白卡面 —— 不参与玻璃化 */
+    .bug { background: linear-gradient(180deg, #f4fbf0, #e8f8df); border-color: var(--line); box-shadow: 0 2px 6px rgba(31, 84, 45, 0.08); backdrop-filter: none; -webkit-backdrop-filter: none; }
 
-    /* 联赛托盘：与卡片同一档玻璃 */
-    .leagues-wrap { background: rgba(255, 255, 255, var(--glass)); border-color: rgba(255, 255, 255, var(--glass-line)); }
+    /* 卡内预测编辑区仍走玻璃，但比卡面稍实，保证输入区清楚 */
+    .pred-area { background: rgba(255, 255, 255, 0.50); border-color: rgba(255, 255, 255, 0.66); }
+
+    /* 联赛托盘：轻雾白，比卡片略透，仍能隐约看到球场 */
+    .leagues-wrap { background: rgba(255, 255, 255, 0.48); border-color: rgba(255, 255, 255, 0.82); backdrop-filter: blur(7px); -webkit-backdrop-filter: blur(7px); }
 
     /* 日期选中态：保持实心白，保证可读 */
     .date.active { background: #fff; }
