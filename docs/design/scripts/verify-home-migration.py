@@ -1,7 +1,7 @@
 """校验小程序落地与设计稿的一致性（移植保真度检查）——只比对两边的"追加块"
 1) HTML 稿追加 CSS  vs  matches.wxss 追加块：逐项比对取值
 2) 资源路径 / 图层数量 / z-index 抬升 / 语法 / 背景素材 65% 蒙层烘焙
-3) 本次改版不变式：vs 框保持实色、卡面与联赛托盘为轻模糊（2026-09-26）
+3) 本次改版不变式：vs 框保持实色；卡片为模糊（36rpx）、托盘为轻模糊（14rpx）（2026-09-26）
 """
 import os
 import re
@@ -164,9 +164,9 @@ for name, pat in ((".match", r"^\.match \{ background: ([^}]*)\}"),
         continue
     bm = re.search(r"blur\((\d+)rpx\)", m.group(1))
     blur_rpx = bm.group(1) if bm else None
-    heavy = bool(blur_rpx is not None and int(blur_rpx) > 22)
+    heavy = bool(blur_rpx is not None and int(blur_rpx) > 44)
     print(f"  {name:<16} blur {blur_rpx or '?'}rpx "
-          f"{'⚠️ 偏重：清晰度应靠白底遮盖，不是加大 blur' if heavy else '✅ 轻模糊'}")
+          f"{'⚠️ 过重：草场会糊成一片色块，可读性应靠白底遮盖' if heavy else '✅ 模糊档位在合理区间'}")
     if heavy:
         warns.append(f"{name} blur 偏重（{blur_rpx}rpx）")
 

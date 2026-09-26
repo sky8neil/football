@@ -123,7 +123,7 @@ Backend API Freeze Review 已通过，H4 已关闭；可以开始用户端前端
 - **结构**：`<image class="page-bg" mode="aspectFill">` 绝对定位铺满页面 + 内容层抬 `z-index`。**不要用 WXSS 的 `background-image` 引本地图**——真机不生效；base64 会把 WXSS 撑到几百 KB。
 - **参数**：白蒙层 65% + 素材降饱和 15%（**已烘进素材**，比运行时再叠一层省体积）；卡片玻璃 54%。
 - **玻璃档位**：`.match` 54% ／ `.match.is-open` 58% ／ `.pred-area` 50% ／ 联赛托盘 48%；日期选中态保持实心白。
-- **2026-09-26 可读性修整**：靠**白底遮盖 + 轻 blur**（卡片 22rpx／托盘 14rpx）提清晰度，不要靠继续加大 blur。`.bug`（vs 框）改回**实色渐变**、显式 `backdrop-filter: none`，与雾白卡面形成层级区分——**不要再把它玻璃化成半透明白**，否则又会和卡面糊在一起。校验：`python3 docs/design/scripts/verify-home-migration.py`（含该不变式检查）。
+- **2026-09-26 可读性修整**：分工是**模糊柔化草地纹理（观感）+ 白底遮盖保证文字对比度（可读性）**。blur 档位：卡片 36rpx／托盘 14rpx（卡片白底 54% 比托盘 48% 厚，透过来的背景少，同样 blur 观感更弱，故取值更高）。`.bug`（vs 框）改回**实色渐变**、显式 `backdrop-filter: none`，与雾白卡面形成层级区分——**不要再把它玻璃化成半透明白**，否则又会和卡面糊在一起。校验：`python3 docs/design/scripts/verify-home-migration.py`（含该不变式检查）。
 - **素材**：`miniprogram/assets/images/home-pitch-bg.webp`（780×1386，86 KB）。重新生成：`python3 docs/design/scripts/build-bg-assets.py`（源图 `docs/design/assets/bg/pitch-source.webp`）。
 - **文字对比度规则**：落在背景图或玻璃卡上的文字必须实测 **≥4.5:1**。首页因此把 `--color-text-secondary`（#5b7166→#3b4f43）、`--color-text-muted`（#86a092→#42564a）、`+K` 绿色（→#1a5c26）压深一档，写在 `matches.wxss` 的 `page` 作用域内（只影响首页）。**要恢复 v8.6 原色，删掉 matches.wxss 末尾那三行覆盖即可**，但小字会比背景糊。
 - **注意**：新增落在背景上的内容容器必须显式 `position: relative; z-index: 1`，否则会被绝对定位的背景层盖住。
