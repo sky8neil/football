@@ -4,7 +4,7 @@
   <view class="decor decor-arc"></view>
   <view class="topbar">
     <view class="brand">
-      <view class="mark"><view class="mark-ring"></view></view>
+      <view class="mark"><image class="mark-ball" src="/assets/icons/icon-ball.png" mode="aspectFit"></image></view>
       <view class="brand-copy">
         <view class="brand-name"><text>{{nickname}}</text><text class="brand-sub">，今天看哪场？</text></view>
       </view>

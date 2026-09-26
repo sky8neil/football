@@ -148,6 +148,14 @@ Backend API Freeze Review 已通过，H4 已关闭；可以开始用户端前端
 - **第一行必须是一个行内文本流（别再踩这个坑）**：结构是 `view.brand-name` 容器 + 两个 `<text>`（昵称段 / 「，今天看哪场？」）。**两段都不要设 `display`／宽度／`vertical-align`**——微信的 `<text>` 是**组件**而非标准行内元素，把它变成 `inline-block` 盒子后，同一行会被拆成两个盒子、出现**上下错行**（2026-09-26 实机踩到，才把「逐段限宽」撤掉）。校验脚本已加守卫：`.brand-nick`／`.brand-sub` 一旦出现 `display`/`width`/`vertical-align` 即报错。
 - **跳首页必须用 `wx.switchTab`**：`/pages/matches/matches` 属于 tabBar 页面，`wx.redirectTo` / `wx.navigateTo` 不被受理且**静默失败**（不报错、不跳转），用错会让用户卡在会话页出不去。会话页源码里已加测试守卫。
 
+### 9. 首页顶栏 logo 与联赛行间距（2026-09-26 决策）
+
+- **logo**：`.mark`（64rpx 绿底圆角方块，`linear-gradient(160deg,#9ee48a,#4caf50)`，圆角 20rpx）+ `.mark-ball`（36rpx 白色足球位图）。**不要删这两条规则**——`61c3f43` 重构顶栏时只删了样式、WXML 节点还留着，结果首页左上角一直空白且不报任何错。`verify-home-migration.py` 已加守卫：缺规则／缺位图／位图规格不对都会红。
+- **球标位图**：`miniprogram/assets/icons/icon-ball.png`（108×108 RGBA，约 2.9 KB），矢量源 `docs/design/assets/icons/icon-ball.svg`，几何与设计稿 `.mark` 内联 SVG 同源。重新生成：`python3 docs/design/scripts/build-icon-assets.py`（依赖 `cairosvg` + Pillow，缺了会直接报错提示；脚本自带墨迹 bbox / 透明底自检）。小程序不能内联 SVG，且 WXSS 引本地图片不生效，所以走 `<image>` + 位图。
+- **间距**：品牌行（顶栏绝对定位，top 40px + 高 44px → 底边 84px）与联赛行之间留 **8px** 净空。实现是 `.leagues-wrap` 的 `margin-top: 20rpx`（原 4rpx，托盘顶 78px → 86px）。联赛行是顶栏之后**第一个流式元素**，所以改这一个值就等于「联赛行及其下方整体下移」。设计稿对应项是追加块里的 `.leagues-wrap { margin-top: 10px }`（原 2px）；校验脚本按 2rpx = 1px 比对这两个值，并校验净空 = 8px、托盘没有压回顶栏里。
+- **两边竖向模型不同**（设计稿顶栏在流式布局里，小程序顶栏绝对定位 + `.topbar-spacer` 占位），不要追像素级一致，盯住「联赛行上外边距」这一个值即可。
+- **测试文件不进包**：`miniprogram/project.config.json` 的 `packOptions.ignore` 用 `suffix` 规则排除 `.test.mjs` / `.test.ts`（该字段的 `value` 不支持通配符与正则，所以用后缀；规则值大小写不敏感）。此前该数组为空，`matches.brand.test.mjs`、`predictions.uuid.test.mjs` 会被打进小程序包。校验脚本会检查覆盖情况。
+
 ## 前端图像与资源规格
 
 图像资源应优先使用 SVG 或 PNG；图标保持统一线宽、圆角和品牌色，不使用带文字的图标，避免不同字号下出现重复文案。资源应放在 `miniprogram/assets/`，按 `icons/`、`tabbar/`、`illustrations/`、`brand/` 分类；不得把二进制资源提交到源码根目录或文档目录。

@@ -9,6 +9,12 @@ page { background: #d5ead4; color: #163024; font-family: var(--font-family-cn); 
 .topbar-spacer { height: calc(76px + env(safe-area-inset-top)); }
 .topbar { position: absolute; left: 0; right: 0; top: calc(env(safe-area-inset-top) + 40px); height: 44px; z-index: 2; box-sizing: border-box; display: flex; align-items: center; padding: 0 32rpx; }
 .brand { display: flex; align-items: center; gap: 20rpx; }
+/* logo：绿底圆角方块 + 白色足球（设计稿 v8.6 .mark 的 1:1 落地）
+   ⚠️ 这两条规则曾经被删掉过（61c3f43 重构顶栏时只删了样式、WXML 节点还留着），
+   结果就是首页左上角一片空白、且不报错。改动顶栏时不要顺手删这两条。
+   球是位图（assets/icons/icon-ball.png），源文件与生成脚本见 README §9。 */
+.mark { width: 64rpx; height: 64rpx; flex: 0 0 auto; border-radius: 20rpx; background: linear-gradient(160deg,#9ee48a 0%,#4caf50 100%); box-shadow: 0 16rpx 32rpx rgba(63,138,72,.28), inset 0 2rpx 0 rgba(255,255,255,.45); display: flex; align-items: center; justify-content: center; }
+.mark-ball { width: 36rpx; height: 36rpx; }
 .brand-copy { flex: 1; min-width: 0; }
 /* 第一行是一句话：昵称 + 中文逗号 + 问候。两个 <text> 都是行内元素、共用同一基线。
    ⚠️ 昵称/问候都不要再设 display:inline-block / max-width / vertical-align ——
@@ -17,7 +23,13 @@ page { background: #d5ead4; color: #163024; font-family: var(--font-family-cn); 
    外层必须是块级容器（view 本身即 block），且父级要 min-width:0，省略才会生效。 */
 .brand-name { display: block; font-size: 30rpx; font-weight: 700; letter-spacing: -1rpx; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .brand-sub { color: var(--color-text-muted); font-weight: 400; }
-.leagues-wrap { margin: 4rpx 32rpx 0; padding: 8rpx 16rpx; min-height: 112rpx; box-sizing: border-box; display: flex; align-items: center; background: rgba(255,255,255,.46); border: 2rpx solid rgba(255,255,255,.74); border-radius: 40rpx; box-shadow: inset 0 2rpx 0 rgba(255,255,255,.82),0 12rpx 32rpx rgba(47,106,62,.05); }.leagues { width: 100%; white-space: nowrap; }.league { display: inline-flex; vertical-align: top; width: 104rpx; min-height: 92rpx; margin-right: 12rpx; flex-direction: column; align-items: center; justify-content: center; gap: 8rpx; color: var(--color-text-secondary); font-size: 22rpx; font-weight: 600; }.league-logo { width: 56rpx; height: 56rpx; opacity: .72; }.league.active { color: var(--color-text-primary); }.league.active .league-logo { opacity: 1; }.league.active text { position: relative; }.league.active text::after { content: ""; display: block; width: 24rpx; height: 4rpx; margin: 6rpx auto 0; border-radius: 99rpx; background: var(--color-primary); }
+/* 顶栏与联赛行的间距（2026-09-26 用户要求「分隔开一些」）：
+   顶栏是绝对定位（top = 40px + 高 44px → 底边 84px），联赛行靠这里的 margin-top 撑开空隙。
+   原为 4rpx(2px)：托盘几乎贴着品牌行下沿（logo 底 78px vs 托盘顶 78px，间距 0）。
+   改为 20rpx(10px)：托盘顶 86px，logo 底 78px → 净空 8px；
+   因为联赛行是顶栏之后第一个流式元素，改这一个值就等于「联赛行及其下方整体下移 8px」。
+   设计稿对应项：追加块 .leagues-wrap { margin-top: 10px }（原 2px），校验脚本会比对。 */
+.leagues-wrap { margin: 20rpx 32rpx 0; padding: 8rpx 16rpx; min-height: 112rpx; box-sizing: border-box; display: flex; align-items: center; background: rgba(255,255,255,.46); border: 2rpx solid rgba(255,255,255,.74); border-radius: 40rpx; box-shadow: inset 0 2rpx 0 rgba(255,255,255,.82),0 12rpx 32rpx rgba(47,106,62,.05); }.leagues { width: 100%; white-space: nowrap; }.league { display: inline-flex; vertical-align: top; width: 104rpx; min-height: 92rpx; margin-right: 12rpx; flex-direction: column; align-items: center; justify-content: center; gap: 8rpx; color: var(--color-text-secondary); font-size: 22rpx; font-weight: 600; }.league-logo { width: 56rpx; height: 56rpx; opacity: .72; }.league.active { color: var(--color-text-primary); }.league.active .league-logo { opacity: 1; }.league.active text { position: relative; }.league.active text::after { content: ""; display: block; width: 24rpx; height: 4rpx; margin: 6rpx auto 0; border-radius: 99rpx; background: var(--color-primary); }
 /* 日期条铺满整行（2026-09-26）：移除右侧日历按钮，日期条独占整行宽度；
    日期项尺寸与间距刻意保持不变（112rpx + 12rpx），不压缩排列 ——
    一屏约 5.5 个，边缘露出半格作为「可横向滑动」的提示。 */

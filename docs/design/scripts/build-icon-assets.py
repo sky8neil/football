@@ -1,129 +1,186 @@
 #!/usr/bin/env python3
-"""生成小程序线性图标资源（位图）。
-
-几何来源（唯一真相）：
-  docs/design/赛事预言家首页-高保真-v8.6-球场背景玻璃版.html 的 .cal 内联 SVG
-  viewBox 0 0 16 16，stroke-width 1.4，stroke-linecap round：
-    <rect x="2" y="3.2" width="12" height="10.6" rx="2"/>
-    <path d="M2 6.4h12M5.2 2v2.4M10.8 2v2.4"/>
+"""生成小程序图标位图资源（矢量源 → PNG）。
 
 为什么要烘成位图：小程序 WXSS 不能引用本地图片路径（只能 base64，会撑体积），
-所以按设计稿几何生成 @6x PNG，用 <image mode="aspectFit"> 引用。
-本机没有 rsvg-convert，无法用 ImageMagick 光栅化 SVG，故用 PIL 复刻描边几何。
+所以按设计稿几何生成 PNG，用 <image mode="aspectFit"> 引用。
 
-用法：python3 docs/design/scripts/build-icon-assets.py
-输出：miniprogram/assets/icons/icon-calendar.png  96×96，透明底
-      docs/design/assets/icons/icon-calendar.svg  矢量源（便于后续改色/复用）
+矢量源是唯一真相（本脚本会把它写到 docs/design/assets/icons/ 下）：
+  icon-ball.svg      首页顶栏 .mark 内的白色足球（2026-09-26 新增，对应设计稿 18×18 内联 SVG）
+  icon-calendar.svg  首页日期行的日历入口（该入口已随日期条改造移除 → 暂不生成位图，
+                     矢量源保留，将来要恢复重跑一次即可）
+
+光栅化用 cairosvg（依赖系统 libcairo2），也就是真正的 SVG 渲染器。
+  ⚠️ 历史做法是用 PIL 手搓描边几何 + 超采样，再缩小时只能退到 BOX 面积平均——
+     因为 LANCZOS 有负瓣，会在细描边外缘染出一圈很淡的振铃噪边。既然现在有
+     cairosvg，就别再手搓几何了。
+
+用法：
+  python3 docs/design/scripts/build-icon-assets.py            # 只生成「启用中」的图标
+  python3 docs/design/scripts/build-icon-assets.py --all      # 连暂未使用的也一起生成
+  python3 docs/design/scripts/build-icon-assets.py icon-ball  # 只生成指定图标
 """
 import math
+import io
 import os
 import sys
-from typing import Optional, Tuple
+from dataclasses import dataclass, field
+from typing import Dict, List, Tuple
 
-from PIL import Image, ImageDraw
+from PIL import Image
+
+try:
+    import cairosvg
+except ImportError as _exc:  # noqa: N816  只有真正调用时才报错，免得连 --help 都跑不起来
+    cairosvg = None
+    _CAIROSVG_ERR = _exc
+else:
+    _CAIROSVG_ERR = None
 
 ROOT = "/home/football"
-OUT_PNG = os.path.join(ROOT, "miniprogram/assets/icons/icon-calendar.png")
-OUT_SVG = os.path.join(ROOT, "docs/design/assets/icons/icon-calendar.svg")
+OUT_PNG_DIR = os.path.join(ROOT, "miniprogram/assets/icons")
+OUT_SVG_DIR = os.path.join(ROOT, "docs/design/assets/icons")
 
-VIEW = 16.0        # 设计稿 viewBox 边长
-ASSET_PX = 96      # 32rpx 图标在 3x 屏 = 48 物理 px，96 即 @6x，细描边也够锐
-SS = 6             # 超采样倍数：先画大再做整数倍面积平均（BOX）缩小 = 盒式滤波抗锯齿。
-                   # 不要用 LANCZOS：它有负瓣，会在细描边外缘染出一圈很淡的振铃噪边。
+ICON_BALL_SVG = """<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 18 18" fill="none">
+  <!-- 与 docs/design/赛事预言家首页-高保真-v8.6-球场背景玻璃版.html 的 .mark 内联 SVG 同源 -->
+  <circle cx="9" cy="9" r="6.2" stroke="#ffffff" stroke-width="1.5"/>
+  <path d="M9 2.8c1.7 1.8 2.6 3.9 2.6 6.2S10.7 13.4 9 15.2C7.3 13.4 6.4 11.3 6.4 9S7.3 4.6 9 2.8z" stroke="#ffffff" stroke-width="1.3"/>
+  <path d="M3.2 9h11.6" stroke="#ffffff" stroke-width="1.3"/>
+  <circle cx="9" cy="9" r="1.3" fill="#c6f36b"/>
+</svg>
+"""
 
-# 首页 --color-text-secondary（对比度增强后为 #3b4f43）；设计稿里是 currentColor
-INK = (0x3B, 0x4F, 0x43, 255)
-
-# —— 设计稿几何（viewBox 单位；SVG 描边以路径中心线为轴，两侧各半个描边宽度）——
-STROKE = 1.4
-RECT_X, RECT_Y, RECT_W, RECT_H, RECT_R = 2.0, 3.2, 12.0, 10.6, 2.0
-DIVIDER_Y = 6.4
-DIVIDER_X = (2.0, 14.0)
-RING_XS = (5.2, 10.8)
-RING_Y = (2.0, 4.4)
-
-SVG_SOURCE = """<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" style="color:#3b4f43">
-  <!-- 与 docs/design/赛事预言家首页-高保真-v8.6-球场背景玻璃版.html 的 .cal 内联 SVG 同源 -->
-  <rect x="2" y="3.2" width="12" height="10.6" rx="2" stroke="currentColor" stroke-width="1.4"/>
-  <path d="M2 6.4h12M5.2 2v2.4M10.8 2v2.4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+ICON_CALENDAR_SVG = """<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none">
+  <!-- 与设计稿 .cal 内联 SVG 同源（#3b4f43 = 落地时的 --color-text-secondary） -->
+  <rect x="2" y="3.2" width="12" height="10.6" rx="2" stroke="#3b4f43" stroke-width="1.4"/>
+  <path d="M2 6.4h12M5.2 2v2.4M10.8 2v2.4" stroke="#3b4f43" stroke-width="1.4" stroke-linecap="round"/>
 </svg>
 """
 
 
-def build_png() -> Image.Image:
-    side = ASSET_PX * SS
-    s = side / VIEW                      # viewBox 单位 → 画布像素
-    ink_w = max(1, round(STROKE * s))
-    half = STROKE / 2.0
+@dataclass(frozen=True)
+class Icon:
+    """一个图标资产的规格。
 
-    img = Image.new("RGBA", (side, side), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
+    view   设计稿 viewBox 边长（图标按此尺寸在界面里显示，如 18 表示显示为 18px）
+    px     生成的位图边长：6x —— 3x 屏下 18px 显示 = 54 物理 px，108 即 @6x，细描边也够锐
+    ink    期望墨迹范围（viewBox 单位，左/上/右/下），用于自检渲染有没有跑偏
+    active 是否默认生成位图（False = 只留矢量源）
+    """
 
-    # 1) 圆角矩形：先填外轮廓（半径 = rx + 半个描边），
-    # 2) 再以内轮廓（半径 = rx - 半个描边）挖空，等价于 SVG 的居中描边
-    outer = (s * (RECT_X - half), s * (RECT_Y - half),
-             s * (RECT_X + RECT_W + half), s * (RECT_Y + RECT_H + half))
-    d.rounded_rectangle(outer, radius=s * (RECT_R + half), fill=INK)
-    inner = (s * (RECT_X + half), s * (RECT_Y + half),
-             s * (RECT_X + RECT_W - half), s * (RECT_Y + RECT_H - half))
-    d.rounded_rectangle(inner, radius=s * (RECT_R - half), fill=(0, 0, 0, 0))
-
-    # 3) 分隔线与挂环画在挖空之后（否则会被挖掉）。
-    #    设计稿的 path 整体带 stroke-linecap="round"，故三条子路径都是圆头。
-    def line(x1: float, y1: float, x2: float, y2: float, round_caps: bool = True) -> None:
-        d.line([(s * x1, s * y1), (s * x2, s * y2)], fill=INK, width=ink_w)
-        if round_caps:
-            for px, py in ((x1, y1), (x2, y2)):
-                d.ellipse((s * (px - half), s * (py - half),
-                           s * (px + half), s * (py + half)), fill=INK)
-
-    line(DIVIDER_X[0], DIVIDER_Y, DIVIDER_X[1], DIVIDER_Y)
-    for x in RING_XS:
-        line(x, RING_Y[0], x, RING_Y[1])
-
-    return img.resize((ASSET_PX, ASSET_PX), Image.Resampling.BOX)
+    name: str
+    svg: str
+    view: float
+    px: int
+    ink: Tuple[float, float, float, float]
+    active: bool
+    note: str = field(default="")
 
 
-def ink_bbox(img: Image.Image) -> Optional[Tuple[int, int, int, int]]:
-    return img.getchannel("A").getbbox()
+ICONS: Dict[str, Icon] = {
+    "icon-ball": Icon(
+        name="icon-ball",
+        svg=ICON_BALL_SVG,
+        view=18.0,
+        px=108,
+        # 最外沿是圆形描边：r 6.2 + 1.5/2 = 6.95 → 9±6.95 = 2.05…15.95
+        ink=(2.05, 2.05, 15.95, 15.95),
+        active=True,
+        note="首页顶栏 logo（.mark 的绿底方块内的白球）",
+    ),
+    "icon-calendar": Icon(
+        name="icon-calendar",
+        svg=ICON_CALENDAR_SVG,
+        view=16.0,
+        px=96,
+        # 圆角矩形外沿 x 1.3→14.7；挂环圆头顶端 y 1.3 → 矩形下外沿 14.5
+        ink=(1.3, 1.3, 14.7, 14.5),
+        active=False,
+        note="首页日期行日历入口（入口已移除，位图暂不生成）",
+    ),
+}
 
 
-def main() -> int:
-    png = build_png()
-    for path in (OUT_PNG, OUT_SVG):
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-    png.save(OUT_PNG, "PNG", optimize=True)
-    with open(OUT_SVG, "w", encoding="utf-8") as fh:
-        fh.write(SVG_SOURCE)
+def expected_bbox(icon: Icon) -> Tuple[int, int, int, int]:
+    """viewBox 墨迹范围 → 像素 bbox（left/top 取 floor、right/bottom 取 ceil）。"""
+    scale = icon.px / icon.view
+    l, t, r, b = icon.ink
+    return (math.floor(l * scale), math.floor(t * scale), math.ceil(r * scale), math.ceil(b * scale))
 
-    box = ink_bbox(png)
-    print("=" * 74)
-    print("生成线性图标 icon-calendar")
-    print("=" * 74)
-    print(f"  位图   {os.path.relpath(OUT_PNG, ROOT)}  {png.size[0]}×{png.size[1]}  "
-          f"{os.path.getsize(OUT_PNG)} B")
-    print(f"  矢量   {os.path.relpath(OUT_SVG, ROOT)}  {os.path.getsize(OUT_SVG)} B")
 
-    fails = []
-    # 期望墨迹范围（viewBox 单位）：x 1.3→14.7（圆角矩形外沿），y 1.3→14.5（挂环圆头顶端 → 矩形下外沿）
-    # 换算到像素后 left/top 取 floor、right/bottom 取 ceil（getbbox 的 right/bottom 是开区间），
-    # 边缘像素受抗锯齿影响会各占 1px，故容差 ±1。
-    scale = ASSET_PX / VIEW
-    want = (math.floor(1.3 * scale), math.floor(1.3 * scale),
-            math.ceil(14.7 * scale), math.ceil(14.5 * scale))
-    if box is None:
-        fails.append("位图为空：没有任何墨迹")
-    else:
-        got = tuple(box)
-        ok = all(abs(a - b) <= 1 for a, b in zip(want, got))
-        print(f"  墨迹 bbox {got}  期望 {want}  {'✅' if ok else '❌'}")
+def render(icon: Icon) -> Image.Image:
+    if cairosvg is None:
+        raise SystemExit(f"缺少依赖 cairosvg：{_CAIROSVG_ERR}\n  pip install cairosvg（需要系统 libcairo2）")
+    raw = cairosvg.svg2png(bytestring=icon.svg.encode("utf-8"),
+                           output_width=icon.px, output_height=icon.px)
+    return Image.open(io.BytesIO(raw)).convert("RGBA")
+
+
+def export(icons: List[Icon]) -> List[str]:
+    os.makedirs(OUT_PNG_DIR, exist_ok=True)
+    os.makedirs(OUT_SVG_DIR, exist_ok=True)
+    fails: List[str] = []
+
+    for icon in icons:
+        png_path = os.path.join(OUT_PNG_DIR, f"{icon.name}.png")
+        svg_path = os.path.join(OUT_SVG_DIR, f"{icon.name}.svg")
+        img = render(icon)
+        img.save(png_path, "PNG", optimize=True)
+        with open(svg_path, "w", encoding="utf-8") as fh:
+            fh.write(icon.svg)
+
+        want = expected_bbox(icon)
+        chan = img.getchannel("A")
+        box = chan.getbbox()
+        alpha = chan.getextrema()
+        solid = sum(1 for v in chan.getdata() if v > 200)
+
+        print("-" * 74)
+        print(f"{icon.name}  {icon.note}")
+        print(f"  位图   {os.path.relpath(png_path, ROOT)}  {img.size[0]}×{img.size[1]}  "
+              f"{os.path.getsize(png_path)} B")
+        print(f"  矢量   {os.path.relpath(svg_path, ROOT)}  {os.path.getsize(svg_path)} B")
+
+        if box is None:
+            fails.append(f"{icon.name}: 位图为空，没有任何墨迹")
+            print("  墨迹   ❌ 空图")
+            continue
+        ok = all(abs(a - b) <= 2 for a, b in zip(want, box))
+        print(f"  墨迹 bbox {tuple(box)}  期望 {want}  {'✅' if ok else '❌'}")
         if not ok:
-            fails.append(f"墨迹 bbox {got} 与设计稿几何期望 {want} 不符")
-        px = png.getchannel("A").getextrema()
-        print(f"  alpha 范围 {px}  {'✅ 半透明边缘正常' if px[0] == 0 and px[1] == 255 else '❌'}")
-        if px[0] != 0:
-            fails.append("缺少全透明像素（可能底未清空）")
+            fails.append(f"{icon.name}: 墨迹 bbox {tuple(box)} 与期望 {want} 不符")
 
+        a_ok = alpha[0] == 0 and alpha[1] == 255
+        print(f"  alpha 范围 {alpha}  {'✅ 透明底 + 实心墨迹（半透明抗锯齿边缘正常）' if a_ok else '❌'}")
+        if not a_ok:
+            fails.append(f"{icon.name}: alpha 范围异常 {alpha}")
+
+        # 实心部分（alpha>200）不能被抗锯齿糊掉，否则真机上图标会发虚
+        fill_ratio = solid / float(icon.px * icon.px)
+        print(f"  实心墨迹像素 {solid}  占画布 {fill_ratio:.1%}  "
+              f"{'✅' if 0.005 < fill_ratio < 0.8 else '❌ 比例异常'}")
+        if not 0.005 < fill_ratio < 0.8:
+            fails.append(f"{icon.name}: 实心墨迹占比异常 {fill_ratio:.1%}")
+
+    return fails
+
+
+def main(argv: List[str]) -> int:
+    wanted = [a for a in argv[1:] if not a.startswith("-")]
+    if "--all" in argv[1:]:
+        picked = list(ICONS.values())
+    elif wanted:
+        unknown = [w for w in wanted if w not in ICONS]
+        if unknown:
+            print(f"未知图标：{unknown}（可选：{sorted(ICONS)}）")
+            return 2
+        picked = [ICONS[w] for w in wanted]
+    else:
+        picked = [i for i in ICONS.values() if i.active]
+
+    print("=" * 74)
+    print("生成小程序图标位图" + (f"：{'、'.join(i.name for i in picked)}" if picked else "（无）"))
+    print("=" * 74)
+    fails = export(picked)
     print("=" * 74)
     print("结论：" + ("生成成功 ✅" if not fails else f"{len(fails)} 项异常 ❌"))
     for f in fails:
@@ -133,4 +190,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv))

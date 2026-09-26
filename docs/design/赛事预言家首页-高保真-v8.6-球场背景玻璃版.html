@@ -107,6 +107,9 @@
       min-width: 0;
     }
 
+    /* logo 绿底方块 + 白球（小程序是 1:1 落地：matches.wxss 的 .mark / .mark-ball，
+       球为位图 miniprogram/assets/icons/icon-ball.png —— 小程序不能内联 SVG，
+       位图由 docs/design/scripts/build-icon-assets.py 从下方这段 SVG 几何生成） */
     .mark {
       width: 32px;
       height: 32px;
@@ -1027,8 +1030,13 @@
     /* 卡内预测编辑区仍走玻璃，但比卡面稍实，保证输入区清楚 */
     .pred-area { background: rgba(255, 255, 255, 0.50); border-color: rgba(255, 255, 255, 0.66); }
 
-    /* 联赛托盘：轻雾白，比卡片略透，仍能隐约看到球场 */
-    .leagues-wrap { background: rgba(255, 255, 255, 0.48); border-color: rgba(255, 255, 255, 0.82); backdrop-filter: blur(7px); -webkit-backdrop-filter: blur(7px); }
+    /* 联赛托盘：轻雾白，比卡片略透，仍能隐约看到球场
+       2026-09-26：margin-top 2px → 10px —— 用户反馈「品牌行与下面的联赛行行间距太少了」，
+       联赛行起整体下移 8px。小程序对应项是 matches.wxss 里 .leagues-wrap 的
+       margin-top: 20rpx（= 10px），verify-home-migration.py 会比对这两个值。
+       注意两边的竖向模型不同（设计稿顶栏在流式里、小程序顶栏绝对定位 + spacer），
+       别去追像素级一致，盯住这个 margin 值即可。 */
+    .leagues-wrap { margin-top: 10px; background: rgba(255, 255, 255, 0.48); border-color: rgba(255, 255, 255, 0.82); backdrop-filter: blur(7px); -webkit-backdrop-filter: blur(7px); }
 
     /* 日期选中态：保持实心白，保证可读 */
     .date.active { background: #fff; }

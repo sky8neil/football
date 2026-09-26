@@ -1,8 +1,11 @@
 """校验小程序落地与设计稿的一致性（移植保真度检查）——只比对两边的"追加块"
 1) HTML 稿追加 CSS  vs  matches.wxss 追加块：逐项比对取值
 2) 资源路径 / 图层数量 / z-index 抬升 / 语法 / 背景素材 65% 蒙层烘焙 / 日期条开放范围
+   / 顶栏 logo 与球标位图 / 测试文件不进包（packOptions.ignore）
 3) 本次改版不变式：vs 框保持实色；卡片为模糊（36rpx）、托盘为轻模糊（14rpx）（2026-09-26）
+4) 顶栏与联赛行的间距（2026-09-26 用户要求「分隔开一些」）：设计稿 10px ↔ 小程序 20rpx
 """
+import json
 import os
 import re
 import sys
@@ -13,6 +16,7 @@ WXSS = os.path.join(ROOT, "miniprogram/pages/matches/matches.wxss")
 WXML = os.path.join(ROOT, "miniprogram/pages/matches/matches.wxml")
 JS = os.path.join(ROOT, "miniprogram/pages/matches/matches.js")
 BG = os.path.join(ROOT, "miniprogram/assets/images/home-pitch-bg.webp")
+PROJ = os.path.join(ROOT, "miniprogram/project.config.json")
 
 fails, warns = [], []
 html_all = open(HTML, encoding="utf-8").read()
@@ -45,7 +49,9 @@ PAIRS = [
     ("玻璃卡高亮", r"--glass-open:\s*([\d.]+)", r"\.match\.is-open \{ background: rgba\(255,255,255,\.(\d+)\)"),
     ("比分方块实色", r"\.bug \{ background: (linear-gradient\([^)]*\))", r"^\.bug \{ background: (linear-gradient\([^)]*\))"),
     ("预测编辑区", r"\.pred-area \{ background: rgba\(255, 255, 255, ([\d.]+)\)", r"^\.pred-area \{ background: rgba\(255,255,255,\.(\d+)\)"),
-    ("联赛托盘", r"\.leagues-wrap \{ background: rgba\(255, 255, 255, ([\d.]+)\)", r"^\.leagues-wrap \{ background: rgba\(255,255,255,\.(\d+)\)"),
+    # 设计稿这条规则现在以 margin-top 开头（2026-09-26 拉开联赛行间距），故用 [^}]*? 跳过前置声明；
+    # html 变量本身只含追加块，仍只会匹配到那一条。
+    ("联赛托盘", r"\.leagues-wrap \{[^}]*?background: rgba\(255, 255, 255, ([\d.]+)\)", r"^\.leagues-wrap \{ background: rgba\(255,255,255,\.(\d+)\)"),
     ("文字次色", r"\.contrast-boost \{ --ink-soft: (#[0-9a-f]{6})", r"--color-text-secondary:\s*(#[0-9a-f]{6})"),
     ("文字弱色", r"--ink-faint: (#[0-9a-f]{6});", r"--color-text-muted:\s*(#[0-9a-f]{6})"),
     ("+K 绿色", r"\.contrast-boost \.hint \.plus \{ color: (#[0-9a-f]{6})", r"\.hint-plus \{ color:\s*(#[0-9a-f]{6})"),
@@ -199,6 +205,67 @@ print(f"  残留实心白卡规则   {len(bad)} 处 {'✅' if not bad else '❌'
 if bad:
     fails.append("仍有实心白卡规则")
 
+# 顶栏 logo（2026-09-26 修复）：61c3f43 重构顶栏时只删了 .mark / .mark-ring 的样式、
+# WXML 节点却留着 → 首页左上角 logo 一直不渲染，而且不报任何错。
+# 防回退：.mark 必须有样式，且 .mark 内的球标位图必须真实存在。
+mark_rule = re.search(r"\.mark \{([^}]*)\}", wxss_all)
+ball_img = re.search(r'<image class="mark-ball" src="([^"]+)"', wxml)
+logo_problems = []
+if not mark_rule:
+    logo_problems.append("WXSS 缺 .mark 规则（logo 会整块不渲染）")
+else:
+    for prop in ("linear-gradient", "border-radius", "width: 64rpx", "height: 64rpx"):
+        if prop not in mark_rule.group(1):
+            logo_problems.append(f".mark 缺 {prop}")
+if not ball_img:
+    logo_problems.append('WXML 的 .mark 内缺 <image class="mark-ball">（球标不渲染）')
+else:
+    ball_path = os.path.join(ROOT, "miniprogram", ball_img.group(1).lstrip("/"))
+    if not os.path.exists(ball_path):
+        logo_problems.append(f"球标位图不存在：{ball_img.group(1)}（重跑 build-icon-assets.py）")
+    else:
+        try:
+            from PIL import Image
+            with Image.open(ball_path) as im:
+                if im.size != (108, 108) or im.mode != "RGBA":
+                    logo_problems.append(f"球标位图规格异常 {im.size} {im.mode}（应 108×108 RGBA）")
+        except Exception as e:  # noqa: BLE001
+            warns.append(f"球标位图规格未校验: {e}")
+    print(f"  顶栏球标位图       {ball_img.group(1)}  "
+          f"{os.path.getsize(ball_path) if os.path.exists(ball_path) else 0} B "
+          f"{'✅' if os.path.exists(ball_path) else '❌'}")
+if "mark-ring" in wxml:
+    warns.append("WXML 又出现了 .mark-ring（旧实现已被 .mark-ball 位图取代）")
+print(f"  顶栏 logo 样式     {'✅ .mark 有样式 + 球标位图存在' if not logo_problems else '❌ ' + '；'.join(logo_problems)}")
+if logo_problems:
+    fails.append("顶栏 logo: " + "；".join(logo_problems))
+
+# 测试文件不进包（2026-09-26 修复）：packOptions.ignore 之前是空数组，
+# miniprogram 下的 *.test.mjs 会被打进小程序包（预览/上传里都能看到源码）。
+try:
+    proj = json.load(open(PROJ, encoding="utf-8"))
+    rules = [(r.get("type"), str(r.get("value", ""))) for r in proj.get("packOptions", {}).get("ignore", [])
+             if isinstance(r, dict)]
+    tests_on_disk = []
+    for dirpath, _dirs, files in os.walk(os.path.join(ROOT, "miniprogram")):
+        tests_on_disk += [os.path.relpath(os.path.join(dirpath, f), os.path.join(ROOT, "miniprogram"))
+                          for f in files if ".test." in f]
+    uncovered = []
+    for suffix in (".test.mjs", ".test.ts"):
+        hit = any((t == "suffix" and v.lower() == suffix)
+                  or (t in ("file", "glob", "prefix") and v.lower().endswith(suffix))
+                  or (t == "regexp" and suffix.strip(".") in v)
+                  for t, v in rules)
+        if not hit:
+            uncovered.append(suffix)
+    print(f"  测试文件不进包     {len(tests_on_disk)} 个测试文件  ignore 规则 {len(rules)} 条 "
+          f"{'✅' if not uncovered else '❌ 未覆盖 ' + '、'.join(uncovered)}")
+    if uncovered:
+        fails.append(f"packOptions.ignore 未覆盖 {uncovered}，测试文件会被打进包")
+except Exception as e:  # noqa: BLE001
+    fails.append(f"project.config.json 检查失败: {e}")
+    print(f"  测试文件不进包     ❌ {e}")
+
 print()
 print("=" * 78)
 print("3) 本次改版不变式：vs 框必须与雾白卡面区分开（2026-09-26 可读性修整）")
@@ -239,6 +306,59 @@ for name, pat in ((".match", r"^\.match \{ background: ([^}]*)\}"),
           f"{'⚠️ 过重：草场会糊成一片色块，可读性应靠白底遮盖' if heavy else '✅ 模糊档位在合理区间'}")
     if heavy:
         warns.append(f"{name} blur 偏重（{blur_rpx}rpx）")
+
+print()
+print("=" * 78)
+print("4) 顶栏与联赛行的间距（2026-09-26 决策：联赛行起整体下移 8px）")
+print("=" * 78)
+
+# 顶栏是绝对定位、联赛行是它之后第一个流式元素 —— 托盘顶 = spacer + margin-top，
+# 所以改 .leagues-wrap 的 margin 就等于「联赛行及其下方整体下移」。
+spacer_m = re.search(r"\.topbar-spacer \{ height: calc\((\d+)px", wxss_all)
+topbar_m = re.search(r"\.topbar \{[^}]*?top: calc\(env\(safe-area-inset-top\) \+ (\d+)px\)[^}]*?height: (\d+)px",
+                     wxss_all)
+tray_m = re.search(r"\.leagues-wrap \{ margin: (\d+)rpx", wxss_all)
+design_tray_m = re.search(r"\.leagues-wrap \{ margin-top: (\d+)px", html)
+mark_m = re.search(r"\.mark \{ width: (\d+)rpx", wxss_all)
+
+spacing_problems = []
+for label, m in (("topbar-spacer", spacer_m), (".topbar 位置/高度", topbar_m),
+                 (".leagues-wrap margin", tray_m), ("设计稿 .leagues-wrap margin-top", design_tray_m),
+                 (".mark 尺寸", mark_m)):
+    if not m:
+        spacing_problems.append(f"未匹配到 {label}")
+
+if spacing_problems:
+    print("  ❌ " + "；".join(spacing_problems))
+    fails.append("顶栏间距: " + "；".join(spacing_problems))
+else:
+    assert spacer_m and topbar_m and tray_m and design_tray_m and mark_m   # 类型收窄（上面已判空）
+    spacer_px = int(spacer_m.group(1))              # 顶栏占位
+    top_off, bar_h = int(topbar_m.group(1)), int(topbar_m.group(2))
+    margin_rpx = int(tray_m.group(1))
+    design_px = int(design_tray_m.group(1))
+    mark_px = int(mark_m.group(1)) / 2.0            # 750rpx = 375px → 2rpx = 1px
+    margin_px = margin_rpx / 2.0
+    bar_bottom = top_off + bar_h
+    mark_bottom = top_off + (bar_h + mark_px) / 2.0  # logo 在顶栏里垂直居中
+    tray_top = spacer_px + margin_px
+    gap = tray_top - mark_bottom
+
+    print(f"  顶栏底边           {bar_bottom}px（top {top_off} + 高 {bar_h}）")
+    print(f"  logo 底边          {mark_bottom:.0f}px（{mark_px:.0f}px 居中于顶栏）")
+    print(f"  联赛托盘顶         {tray_top:.0f}px（spacer {spacer_px}px + margin {margin_px:.0f}px）")
+    gap_ok = abs(gap - 8) < 0.5
+    print(f"  品牌行↔联赛行净空  {gap:.0f}px  期望 8px  {'✅' if gap_ok else '❌'}")
+    if not gap_ok:
+        fails.append(f"品牌行与联赛行净空 {gap:.0f}px，期望 8px（用户 2026-09-26 要求拉开）")
+    if tray_top <= bar_bottom - 4:
+        fails.append(f"联赛托盘顶 {tray_top:.0f}px 压到顶栏（底边 {bar_bottom}px）里了")
+        print(f"     ❌ 托盘压进顶栏")
+    m_ok = abs(design_px - margin_px) < 0.5
+    print(f"  设计稿 ↔ 小程序    设计稿 margin-top {design_px}px ／ 小程序 {margin_px:.0f}px  "
+          f"{'✅' if m_ok else '❌ 不一致'}")
+    if not m_ok:
+        fails.append(f"联赛行上间距：设计稿 {design_px}px vs 小程序 {margin_px:.0f}px（2rpx = 1px）")
 
 print()
 print("=" * 78)

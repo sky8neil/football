@@ -1,7 +1,10 @@
 {
   "description": "",
   "packOptions": {
-    "ignore": [],
+    "ignore": [
+      { "type": "suffix", "value": ".test.mjs" },
+      { "type": "suffix", "value": ".test.ts" }
+    ],
     "include": []
   },
   "setting": {

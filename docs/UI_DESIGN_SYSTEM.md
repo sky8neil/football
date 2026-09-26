@@ -388,7 +388,13 @@ icon-plus
 icon-minus
 ```
 
-当前页面仓库实现里 `league-logo` / `crest` 使用文字 fallback，日历按钮使用「日」占位文字；这属于现阶段可运行 fallback，不应被当作最终 icon 规范。正式资源应放在 `miniprogram/assets/icons/`，并在补齐后替换 fallback，不改变布局尺寸。
+当前页面仓库实现里 `league-logo` / `crest` 已用真实位图（缺图回退 `placeholders/team-placeholder.png`）；日期行的日历入口已于 2026-09-26 整体移除（`icon-calendar` 只保留矢量源，要恢复重跑一次生成脚本即可）；这属于现阶段可运行 fallback，不应被当作最终 icon 规范。正式资源应放在 `miniprogram/assets/icons/`，并在补齐后替换 fallback，不改变布局尺寸。
+
+已落地（逐步补齐，位图由 `docs/design/scripts/build-icon-assets.py` 从 `docs/design/assets/icons/*.svg` 生成）：
+
+```text
+icon-ball          顶栏品牌 logo 的白色足球（2026-09-26，见 README §9）
+```
 
 ### 11.3 联赛与球队 Logo
 
