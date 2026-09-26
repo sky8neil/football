@@ -152,14 +152,25 @@ else:
         brand_problems.append("品牌行混入了半角逗号或问号")
     if "今天看哪场" not in brand_line:
         brand_problems.append("品牌行缺少「今天看哪场」")
+    # 结构守卫：品牌行必须是一个行内文本流（view 容器 + 两个不带样式的行内 text 段），
+    # 外层用 view 才能稳定承载整行省略。
+    if '<view class="brand-name">' not in brand_line:
+        brand_problems.append("品牌行外层不是 view（text 做省略容器不稳）")
+    if "<text>{{nickname}}</text>" not in brand_line:
+        brand_problems.append("品牌行昵称段应为不带样式的行内 <text>{{nickname}}</text>")
+    if '<text class="brand-sub">' not in brand_line:
+        brand_problems.append('品牌行问候段应为 <text class="brand-sub">')
 
-nick_rule = re.search(r"\.brand-nick \{([^}]*)\}", wxss_all)
-if not nick_rule:
-    brand_problems.append("WXSS 缺少 .brand-nick 规则")
-elif "max-width" not in nick_rule.group(1):
-    brand_problems.append(".brand-nick 缺少 max-width（32 字昵称会挤掉问候）")
+# 错行根因守卫：品牌行两段必须是纯行内元素。微信的 <text> 是组件而非标准行内元素，
+# 一旦设 display:inline-block / 宽度 / vertical-align，同一行会被拆成两个盒子而上下错行
+# （2026-09-26 实机踩到过）。
+DANGEROUS_PROPS = ("display:", "max-width", "width:", "vertical-align")
+for cls in (".brand-nick", ".brand-sub"):
+    rule = re.search(re.escape(cls) + r" \{([^}]*)\}", wxss_all)
+    if rule and any(prop in rule.group(1) for prop in DANGEROUS_PROPS):
+        brand_problems.append(f"{cls} 含 inline-block/宽度/vertical-align，会上下错行")
 
-print(f"  品牌行昵称文案     {'✅ 数据驱动 + 中文全角标点 + 长昵称限宽' if not brand_problems else '❌ ' + '；'.join(brand_problems)}")
+print(f"  品牌行昵称文案     {'✅ 数据驱动 + 中文全角标点 + 纯行内不错行' if not brand_problems else '❌ ' + '；'.join(brand_problems)}")
 if brand_problems:
     fails.append("品牌行: " + "；".join(brand_problems))
 

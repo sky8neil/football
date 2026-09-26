@@ -1,5 +1,5 @@
 const { getTeamLogo, getLeagueLogo } = require("../../utils/logo-registry.js");
-const { resolveNickname } = require("../../utils/nickname.js");
+const { resolveNickname, truncateNickname } = require("../../utils/nickname.js");
 
 const MOCK_MATCHES = [
   // 英超：与 HTML 设计稿一致，覆盖未开赛、已提交、进行中、完场命中、未开赛五种卡片。
@@ -94,7 +94,7 @@ Page({
 
   onLoad() {
     const dates = buildDates(new Date());
-    this.setData({ dates, selectedDate: dates[0].key, leagues: LEAGUES.map((item) => ({ ...item, logo: getLeagueLogo(item.id) })), nickname: resolveNickname() });
+    this.setData({ dates, selectedDate: dates[0].key, leagues: LEAGUES.map((item) => ({ ...item, logo: getLeagueLogo(item.id) })), nickname: truncateNickname(resolveNickname()) });
     this.loadFirstPage();
   },
 

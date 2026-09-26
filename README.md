@@ -144,7 +144,8 @@ Backend API Freeze Review 已通过，H4 已关闭；可以开始用户端前端
 - **链路**：用户确认昵称 → `POST /v1/session/init`（服务端校验并 trim，MVP §24.1 响应 data 含 `nickname`）→ 写入本地缓存 → 首页 `onLoad` 读取展示。
 - **唯一真相**：缓存 key（`nickname`）、兜底文案（`球友`）、读写归一化都在 `miniprogram/utils/nickname.js`；首页读、会话页写都走它，**不要在页面里各写一份字面量**。测试：`miniprogram/pages/matches/matches.brand.test.mjs`。
 - **兜底**：缓存缺失／空白／脏数据一律显示「球友」（首次进入、未登录、账号已注销都会走到这里）。
-- **长昵称**：服务端允许 1～32 grapheme。`.brand-nick` 限宽 + 省略，保证不挤掉「，今天看哪场？」；`.brand-name` 外层再兜一层整行省略。
+- **长昵称**：服务端允许 1～32 grapheme；**超过 12 字在 JS 里截断成「前 11 字…」**（`truncateNickname()`，`NICKNAME_DISPLAY_MAX = 12`），因此「，今天看哪场？」**一定显示得下**（截断后最长 12 + 7 = 19 字；按 750rpx 页宽等比例实测整行约 552rpx ＜ 顶栏内容区约 686rpx，余量约 134rpx）。截断放在 JS 而不是 CSS，是因为 CSS 逐段限宽需要 `display:inline-block`，而微信的 `<text>` 是组件、会导致上下错行（见下一条）。CSS 的整行省略仅作极窄屏兜底。
+- **第一行必须是一个行内文本流（别再踩这个坑）**：结构是 `view.brand-name` 容器 + 两个 `<text>`（昵称段 / 「，今天看哪场？」）。**两段都不要设 `display`／宽度／`vertical-align`**——微信的 `<text>` 是**组件**而非标准行内元素，把它变成 `inline-block` 盒子后，同一行会被拆成两个盒子、出现**上下错行**（2026-09-26 实机踩到，才把「逐段限宽」撤掉）。校验脚本已加守卫：`.brand-nick`／`.brand-sub` 一旦出现 `display`/`width`/`vertical-align` 即报错。
 - **跳首页必须用 `wx.switchTab`**：`/pages/matches/matches` 属于 tabBar 页面，`wx.redirectTo` / `wx.navigateTo` 不被受理且**静默失败**（不报错、不跳转），用错会让用户卡在会话页出不去。会话页源码里已加测试守卫。
 
 ## 前端图像与资源规格

@@ -118,34 +118,25 @@
       flex: 0 0 auto;
     }
 
-    /* 2026-09-26：第一行改为一行连写「昵称，今天看哪场？」（原为竖排两行：
-       17px 主 + 10px 次）。对应小程序的 .brand-name / .brand-nick / .brand-sub。 */
+    /* 2026-09-26：第一行改为一行连写「昵称，今天看哪场？」（原为竖排两行：17px 主 + 10px 次）。
+       对应小程序：外层 .brand-name 容器 + 两个行内 text 段。
+       ⚠️ 两段都不要再设 inline-block / max-width / vertical-align —— 小程序的 <text> 是组件
+       而非标准行内元素，那样会把同一行拆成两个盒子、出现上下错行（已实机踩到）。
+       超长昵称由整行省略兜底，不做逐段限宽。 */
     .brand-copy {
-      display: flex;
-      align-items: center;
       flex: 1;
       min-width: 0;
     }
 
-    /* 外层兜底整行省略；昵称段单独限宽，长昵称只截昵称、不吞掉后面的问候 */
     .brand-name {
       display: block;
       font-size: 15px;
       font-weight: 720;
       letter-spacing: -0.4px;
-      line-height: 1.15;
+      line-height: 1.2;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
-    }
-
-    .brand-nick {
-      display: inline-block;
-      max-width: 150px;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      vertical-align: bottom;
     }
 
     .brand-sub {
@@ -1064,8 +1055,10 @@
         </div>
         <div class="brand-copy">
           <!-- 2026-09-26：改为一行连写；昵称由登录用户的微信昵称渲染（此处示例值 Sky）。
-               标点一律中文全角：逗号 U+FF0C、问号 U+FF1F。 -->
-          <span class="brand-name"><span class="brand-nick">Sky</span><span class="brand-sub">，今天看哪场？</span></span>
+               标点一律中文全角：逗号 U+FF0C、问号 U+FF1F。
+               超长昵称在 JS 里截断（>12 字 → 前 11 字 + …，见 miniprogram/utils/nickname.js），
+               不要用 CSS 给昵称段单独限宽 —— 那需要 inline-block，微信会上下错行。 -->
+          <span class="brand-name">Sky<span class="brand-sub">，今天看哪场？</span></span>
         </div>
       </div>
     </header>

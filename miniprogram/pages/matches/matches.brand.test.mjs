@@ -298,3 +298,46 @@ describe("会话页：昵称落库 + 跳首页改用 switchTab", () => {
     expect(page.data.errorMessage).toBe("请稍后重试");
   });
 });
+
+describe("昵称超长截断（保证「，今天看哪场？」不被挤掉）", () => {
+  /** 生成指定字数的昵称，避免在测试里数汉字个数出错。 */
+  const nChars = (n) => "阿".repeat(n);
+
+  it("T1: 12 字以内原样返回（含 12 字边界）", () => {
+    const { truncateNickname } = loadNicknameUtil();
+    expect(truncateNickname("球友")).toBe("球友");
+    expect(truncateNickname(nChars(12))).toBe(nChars(12));
+  });
+
+  it("T2: 超过 12 字只留前 11 字 + 省略号", () => {
+    const { truncateNickname } = loadNicknameUtil();
+    expect(truncateNickname(nChars(13))).toBe(`${nChars(11)}…`);
+    expect(truncateNickname(nChars(32))).toBe(`${nChars(11)}…`);
+  });
+
+  it("T3: 截断后可见字数 ≤ 12（12 字 + 「，今天看哪场？」共 19 字，放得下）", () => {
+    const { truncateNickname, NICKNAME_DISPLAY_MAX } = loadNicknameUtil();
+    expect(NICKNAME_DISPLAY_MAX).toBe(12);
+    for (const n of [13, 20, 32]) {
+      expect(Array.from(truncateNickname(nChars(n)))).toHaveLength(12);
+    }
+  });
+
+  it("T4: 非 BMP emoji 不会被截成半个字符（不出现替代符 U+FFFD）", () => {
+    const { truncateNickname } = loadNicknameUtil();
+    const out = truncateNickname("🔥".repeat(13));
+    expect(out).toBe(`${"🔥".repeat(11)}…`);
+    expect(out).not.toContain("\uFFFD");
+    expect(Array.from(out)).toHaveLength(12);
+  });
+
+  it("T5: 首页集成——超长昵称截断后再交给 WXML 渲染", () => {
+    const { page } = loadHomePage({ stored: nChars(20) });
+    expect(page.data.nickname).toBe(`${nChars(11)}…`);
+  });
+
+  it("T6: 兜底文案「球友」不受截断影响", () => {
+    const { page } = loadHomePage({ stored: "" });
+    expect(page.data.nickname).toBe(FALLBACK_NICKNAME);
+  });
+});
