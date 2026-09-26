@@ -39,11 +39,16 @@ function beijingParts(iso) {
   return { year, month, day, hour, minute, key: ymd };
 }
 
+// 日期条开放范围：今天起共 11 个日期（今天 … 今天+10）。
+// 2026-09-26 决策：移除日历入口、日期条铺满整行，开放 n+10 天以内的选择（n = 今天，含今天）。
+// 要改开放范围只需改这一个常量；verify-home-migration.py 会校验它等于 11。
+const DATE_SPAN_DAYS = 11;
+
 function buildDates(anchor) {
   const dates = [];
   const start = new Date(anchor.getTime());
   start.setHours(12, 0, 0, 0);
-  for (let i = 0; i < 5; i += 1) {
+  for (let i = 0; i < DATE_SPAN_DAYS; i += 1) {
     const date = new Date(start.getTime());
     date.setDate(start.getDate() + i);
     dates.push({ key: `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`, label: i === 0 ? "今天" : i === 1 ? "明天" : WEEKDAYS[date.getDay()], day: pad(date.getDate()) });
@@ -108,7 +113,6 @@ Page({
     setTimeout(() => this.loadFirstPage(), 180);
   },
 
-  onCalendarTap() { wx.showToast({ title: "日历选择即将开放", icon: "none" }); },
   onRetry() { this.loadFirstPage(); },
 
   loadFirstPage() {

@@ -226,14 +226,14 @@
     }
 
     .dates-wrap {
-      display: flex;
-      align-items: center;
-      gap: 8px;
       padding: 6px 16px 0;
     }
 
+    /* 2026-09-26：日历入口移除，日期条铺满整行。日期项尺寸与间距刻意不变
+       （56px 宽 + 6px 间距 = 112rpx + 12rpx），不压缩排列 —— 边缘露出半格
+       作为「可横向滑动」的提示。 */
     .dates {
-      flex: 1;
+      width: 100%;
       display: flex;
       gap: 6px;
       overflow-x: auto;
@@ -277,20 +277,8 @@
 
     .date.active strong { color: var(--cobalt); }
 
-    .cal {
-      width: 48px;
-      height: 48px;
-      border-radius: 14px;
-      display: grid;
-      place-items: center;
-      flex: 0 0 auto;
-      color: var(--ink-soft);
-    }
-
-    /* 2026-09-26：降权为无底纯图标 —— 去掉常驻白底与 1px 边框，行内焦点只留给
-       选中的日期；按下时才浮出底色作按压反馈（原来常驻白底会和选中日期抢焦点）。
-       图标几何即上方 .cal 内联 SVG，小程序端由 build-icon-assets.py 烘成位图。 */
-    .cal:active { background: rgba(255, 255, 255, 0.8); box-shadow: 0 8px 20px rgba(63, 138, 72, 0.05); }
+    /* 2026-09-26：日历入口已移除（原为占位按钮，点击只弹提示），日期条改为铺满整行。
+       若将来要恢复入口，图标几何见 design/assets/icons/icon-calendar.svg。 */
 
     .hint {
       display: flex;
@@ -1076,19 +1064,21 @@
     </div>
 
     <div class="dates-wrap">
+      <!-- 2026-09-26：日历入口移除，日期条铺满整行；开放范围 今天 … 今天+10（共 11 个）。
+           小程序端由 miniprogram/pages/matches/matches.js 的 DATE_SPAN_DAYS 生成。 -->
       <div class="dates" aria-label="日期">
         <button class="date active" data-day="17"><em>今天</em><strong>17</strong></button>
         <button class="date" data-day="18"><em>明天</em><strong>18</strong></button>
         <button class="date" data-day="19"><em>周三</em><strong>19</strong></button>
         <button class="date" data-day="20"><em>周四</em><strong>20</strong></button>
         <button class="date" data-day="21"><em>周五</em><strong>21</strong></button>
+        <button class="date" data-day="22"><em>周六</em><strong>22</strong></button>
+        <button class="date" data-day="23"><em>周日</em><strong>23</strong></button>
+        <button class="date" data-day="24"><em>周一</em><strong>24</strong></button>
+        <button class="date" data-day="25"><em>周二</em><strong>25</strong></button>
+        <button class="date" data-day="26"><em>周三</em><strong>26</strong></button>
+        <button class="date" data-day="27"><em>周四</em><strong>27</strong></button>
       </div>
-      <button class="cal" aria-label="打开日历">
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-          <rect x="2" y="3.2" width="12" height="10.6" rx="2" stroke="currentColor" stroke-width="1.4"/>
-          <path d="M2 6.4h12M5.2 2v2.4M10.8 2v2.4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
-        </svg>
-      </button>
     </div>
 
     <div class="hint">

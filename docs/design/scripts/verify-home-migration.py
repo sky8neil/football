@@ -1,6 +1,6 @@
 """校验小程序落地与设计稿的一致性（移植保真度检查）——只比对两边的"追加块"
 1) HTML 稿追加 CSS  vs  matches.wxss 追加块：逐项比对取值
-2) 资源路径 / 图层数量 / z-index 抬升 / 语法 / 背景素材 65% 蒙层烘焙 / 日历图标
+2) 资源路径 / 图层数量 / z-index 抬升 / 语法 / 背景素材 65% 蒙层烘焙 / 日期条开放范围
 3) 本次改版不变式：vs 框保持实色；卡片为模糊（36rpx）、托盘为轻模糊（14rpx）（2026-09-26）
 """
 import os
@@ -11,12 +11,14 @@ ROOT = "/home/football"
 HTML = os.path.join(ROOT, "docs/design/赛事预言家首页-高保真-v8.6-球场背景玻璃版.html")
 WXSS = os.path.join(ROOT, "miniprogram/pages/matches/matches.wxss")
 WXML = os.path.join(ROOT, "miniprogram/pages/matches/matches.wxml")
+JS = os.path.join(ROOT, "miniprogram/pages/matches/matches.js")
 BG = os.path.join(ROOT, "miniprogram/assets/images/home-pitch-bg.webp")
 
 fails, warns = [], []
 html_all = open(HTML, encoding="utf-8").read()
 wxss_all = open(WXSS, encoding="utf-8").read()
 wxml = open(WXML, encoding="utf-8").read()
+js = open(JS, encoding="utf-8").read()
 
 # 只取追加块（两边各自的改版段落）
 html = html_all.split("本次改版追加")[1].split("</style>")[0]
@@ -104,37 +106,32 @@ print(f"  背景图层数量       {n} {'✅' if n == 1 else '❌'}")
 if n != 1:
     fails.append("page-bg 图层数量异常")
 
-# 日历入口：设计稿是线性日历 SVG（.cal 内联），小程序端烘成位图引用。
-# 这是 2026-09-26 修掉的移植偏差：之前小程序端写成了「日」字，会被误读成「周日」。
-cal_ref = re.search(r'<image class="cal-icon" src="([^"]+)"', wxml)
-if cal_ref:
-    icon_disk = os.path.join(ROOT, "miniprogram", cal_ref.group(1).lstrip("/"))
-    icon_ok = os.path.exists(icon_disk)
-    print(f"  日历图标资源       {cal_ref.group(1)} 存在={icon_ok} "
-          f"{os.path.getsize(icon_disk) if icon_ok else 0} B {'✅' if icon_ok else '❌'}")
-    if not icon_ok:
-        fails.append("日历图标文件不存在")
-elif '<text class="cal-icon">' in wxml:
-    fails.append('日历入口仍是「日」文字，未按设计稿换成线性图标')
-    print("  日历图标资源       ❌ 仍是「日」文字")
-else:
-    fails.append("WXML 缺少 .cal-icon 图标引用")
-    print("  日历图标资源       ❌ 未找到")
-
-cal_rule = re.search(r"\.cal \{([^}]*)\}", wxss_all)
-cal_icon_rule = re.search(r"\.cal-icon \{([^}]*)\}", wxss_all)
-cal_problems = []
-if not cal_rule:
-    cal_problems.append(".cal 规则缺失")
-elif "background" in cal_rule.group(1) or "border:" in cal_rule.group(1):
-    cal_problems.append(".cal 仍有底色/边框（会与选中的日期抢焦点）")
-if not cal_icon_rule or "32rpx" not in cal_icon_rule.group(1):
-    cal_problems.append(".cal-icon 不是 32rpx 图标")
-if ".cal-pressed" not in wxss_all:
-    cal_problems.append("缺少 .cal-pressed 按下态")
-print(f"  日历入口降权       {'✅ 无底无边框 + 按下态' if not cal_problems else '❌ ' + '；'.join(cal_problems)}")
-if cal_problems:
-    fails.append("日历入口: " + "；".join(cal_problems))
+# 日期条（2026-09-26 决策）：移除日历入口、日期条铺满整行、开放 今天 … 今天+10（共 11 个）。
+# 本节防回退：日历入口不许加回来，日期项尺寸不许被压缩，开放天数不许被改回 5。
+dates_wrap_rule = re.search(r"\.dates-wrap \{([^}]*)\}", wxss_all)
+dates_rule = re.search(r"\.dates \{([^}]*)\}", wxss_all)
+date_rule = re.search(r"\.date \{([^}]*)\}", wxss_all)
+strip_problems = []
+if re.search(r'class="cal\b', wxml) or "cal-icon" in wxml:
+    strip_problems.append("WXML 仍有日历入口节点")
+if re.search(r"\.cal(\b|[-.])", wxss_all):
+    strip_problems.append("WXSS 仍有 .cal 规则残留")
+if "onCalendarTap" in js:
+    strip_problems.append("matches.js 仍有 onCalendarTap 死代码")
+span = re.search(r"DATE_SPAN_DAYS\s*=\s*(\d+)", js)
+if not span:
+    strip_problems.append("matches.js 缺少 DATE_SPAN_DAYS 常量")
+elif span.group(1) != "11":
+    strip_problems.append(f"DATE_SPAN_DAYS={span.group(1)}，应为 11（今天 + 10 天）")
+if not dates_rule or "width: 100%" not in dates_rule.group(1):
+    strip_problems.append(".dates 未铺满整行（应为 width: 100%）")
+if not date_rule or "width: 112rpx" not in date_rule.group(1):
+    strip_problems.append(".date 尺寸被改动（应保持 112rpx）")
+if dates_wrap_rule and "flex" in dates_wrap_rule.group(1):
+    strip_problems.append(".dates-wrap 仍是 flex（日历按钮已移除，不再需要）")
+print(f"  日期条铺满整行     {'✅ 无日历入口 + 开放 11 天 + 尺寸未压缩' if not strip_problems else '❌ ' + '；'.join(strip_problems)}")
+if strip_problems:
+    fails.append("日期条: " + "；".join(strip_problems))
 
 # z-index 抬升：扫全部匹配行
 raised = []
