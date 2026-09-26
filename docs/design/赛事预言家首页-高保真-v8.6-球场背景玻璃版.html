@@ -118,24 +118,39 @@
       flex: 0 0 auto;
     }
 
+    /* 2026-09-26：第一行改为一行连写「昵称，今天看哪场？」（原为竖排两行：
+       17px 主 + 10px 次）。对应小程序的 .brand-name / .brand-nick / .brand-sub。 */
     .brand-copy {
       display: flex;
-      flex-direction: column;
-      gap: 1px;
+      align-items: center;
+      flex: 1;
       min-width: 0;
     }
 
-    .brand-copy strong {
-      font-size: 17px;
+    /* 外层兜底整行省略；昵称段单独限宽，长昵称只截昵称、不吞掉后面的问候 */
+    .brand-name {
+      display: block;
+      font-size: 15px;
       font-weight: 720;
       letter-spacing: -0.4px;
       line-height: 1.15;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
 
-    .brand-copy span {
-      font-size: 10px;
+    .brand-nick {
+      display: inline-block;
+      max-width: 150px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      vertical-align: bottom;
+    }
+
+    .brand-sub {
       color: var(--ink-faint);
-      letter-spacing: 0.6px;
+      font-weight: 400;
     }
 
     .streak {
@@ -1048,8 +1063,9 @@
           </svg>
         </div>
         <div class="brand-copy">
-          <strong>用户ID</strong>
-          <span>今天看哪场？</span>
+          <!-- 2026-09-26：改为一行连写；昵称由登录用户的微信昵称渲染（此处示例值 Sky）。
+               标点一律中文全角：逗号 U+FF0C、问号 U+FF1F。 -->
+          <span class="brand-name"><span class="brand-nick">Sky</span><span class="brand-sub">，今天看哪场？</span></span>
         </div>
       </div>
     </header>

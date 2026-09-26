@@ -6,8 +6,7 @@
     <view class="brand">
       <view class="mark"><view class="mark-ring"></view></view>
       <view class="brand-copy">
-        <text class="brand-name">用户ID</text>
-        <text class="brand-name brand-sub">今天看哪场？</text>
+        <text class="brand-name"><text class="brand-nick">{{nickname}}</text><text class="brand-sub">，今天看哪场？</text></text>
       </view>
     </view>
   </view>

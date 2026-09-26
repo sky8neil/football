@@ -133,6 +133,36 @@ print(f"  日期条铺满整行     {'✅ 无日历入口 + 开放 11 天 + 尺�
 if strip_problems:
     fails.append("日期条: " + "；".join(strip_problems))
 
+# 品牌行（第一行）：2026-09-26 需求 —— 写死的「用户ID」改为登录用户的微信昵称，
+# 文案一行连写「昵称，今天看哪场？」，两个标点必须都是中文全角。
+FULLWIDTH_COMMA = "\uff0c"     # ，
+FULLWIDTH_QUESTION = "\uff1f"  # ？
+brand_line = next((line for line in wxml.splitlines() if 'class="brand-name"' in line), None)
+brand_problems = []
+if not brand_line:
+    brand_problems.append("WXML 找不到 .brand-name（品牌行）")
+else:
+    if "{{nickname}}" not in brand_line:
+        brand_problems.append("品牌行昵称不是数据驱动（缺 {{nickname}}）")
+    if "用户ID" in brand_line:
+        brand_problems.append("品牌行仍写死「用户ID」")
+    if FULLWIDTH_COMMA not in brand_line or FULLWIDTH_QUESTION not in brand_line:
+        brand_problems.append("品牌行标点不是中文全角（应为 U+FF0C 与 U+FF1F）")
+    if re.search(r"[,?]", brand_line):
+        brand_problems.append("品牌行混入了半角逗号或问号")
+    if "今天看哪场" not in brand_line:
+        brand_problems.append("品牌行缺少「今天看哪场」")
+
+nick_rule = re.search(r"\.brand-nick \{([^}]*)\}", wxss_all)
+if not nick_rule:
+    brand_problems.append("WXSS 缺少 .brand-nick 规则")
+elif "max-width" not in nick_rule.group(1):
+    brand_problems.append(".brand-nick 缺少 max-width（32 字昵称会挤掉问候）")
+
+print(f"  品牌行昵称文案     {'✅ 数据驱动 + 中文全角标点 + 长昵称限宽' if not brand_problems else '❌ ' + '；'.join(brand_problems)}")
+if brand_problems:
+    fails.append("品牌行: " + "；".join(brand_problems))
+
 # z-index 抬升：扫全部匹配行
 raised = []
 for mm in re.finditer(r"^\s*([^\n{}]+)\{[^}]*position:\s*relative;\s*z-index:\s*1", wxss_all, re.M):

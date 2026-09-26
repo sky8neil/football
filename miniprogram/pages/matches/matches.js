@@ -1,4 +1,5 @@
 const { getTeamLogo, getLeagueLogo } = require("../../utils/logo-registry.js");
+const { resolveNickname } = require("../../utils/nickname.js");
 
 const MOCK_MATCHES = [
   // 英超：与 HTML 设计稿一致，覆盖未开赛、已提交、进行中、完场命中、未开赛五种卡片。
@@ -85,7 +86,7 @@ function formatPrediction(prediction) {
 
 Page({
   data: {
-    state: "loading", items: [], errorMessage: "", hasMore: false, nextCursor: null, loadingMore: false,
+    state: "loading", items: [], errorMessage: "", hasMore: false, nextCursor: null, loadingMore: false, nickname: "",
     leagues: [], selectedLeague: "premier_league", dates: [], selectedDate: "", openCount: 0, doneCount: 0,
     recentScore: 12, scrollIntoView: "", resultsTransition: "results-enter",
   },
@@ -93,7 +94,7 @@ Page({
 
   onLoad() {
     const dates = buildDates(new Date());
-    this.setData({ dates, selectedDate: dates[0].key, leagues: LEAGUES.map((item) => ({ ...item, logo: getLeagueLogo(item.id) })) });
+    this.setData({ dates, selectedDate: dates[0].key, leagues: LEAGUES.map((item) => ({ ...item, logo: getLeagueLogo(item.id) })), nickname: resolveNickname() });
     this.loadFirstPage();
   },
 

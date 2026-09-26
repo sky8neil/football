@@ -9,9 +9,10 @@ page { background: #d5ead4; color: #163024; font-family: var(--font-family-cn); 
 .topbar-spacer { height: calc(76px + env(safe-area-inset-top)); }
 .topbar { position: absolute; left: 0; right: 0; top: calc(env(safe-area-inset-top) + 40px); height: 44px; z-index: 2; box-sizing: border-box; display: flex; align-items: center; padding: 0 32rpx; }
 .brand { display: flex; align-items: center; gap: 20rpx; }
-.brand-copy { display: flex; align-items: center; gap: 18rpx; }
-.brand-name { font-size: 30rpx; font-weight: 700; letter-spacing: -1rpx; white-space: nowrap; }
-.brand-sub { color: var(--color-text-primary); }
+.brand-copy { display: flex; align-items: center; flex: 1; min-width: 0; }
+.brand-name { display: block; font-size: 30rpx; font-weight: 700; letter-spacing: -1rpx; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.brand-nick { display: inline-block; max-width: 300rpx; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.brand-sub { color: var(--color-text-muted); font-weight: 400; }
 .leagues-wrap { margin: 4rpx 32rpx 0; padding: 8rpx 16rpx; min-height: 112rpx; box-sizing: border-box; display: flex; align-items: center; background: rgba(255,255,255,.46); border: 2rpx solid rgba(255,255,255,.74); border-radius: 40rpx; box-shadow: inset 0 2rpx 0 rgba(255,255,255,.82),0 12rpx 32rpx rgba(47,106,62,.05); }.leagues { width: 100%; white-space: nowrap; }.league { display: inline-flex; vertical-align: top; width: 104rpx; min-height: 92rpx; margin-right: 12rpx; flex-direction: column; align-items: center; justify-content: center; gap: 8rpx; color: var(--color-text-secondary); font-size: 22rpx; font-weight: 600; }.league-logo { width: 56rpx; height: 56rpx; opacity: .72; }.league.active { color: var(--color-text-primary); }.league.active .league-logo { opacity: 1; }.league.active text { position: relative; }.league.active text::after { content: ""; display: block; width: 24rpx; height: 4rpx; margin: 6rpx auto 0; border-radius: 99rpx; background: var(--color-primary); }
 /* 日期条铺满整行（2026-09-26）：移除右侧日历按钮，日期条独占整行宽度；
    日期项尺寸与间距刻意保持不变（112rpx + 12rpx），不压缩排列 ——

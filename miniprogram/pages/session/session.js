@@ -1,4 +1,10 @@
 const { initSession } = require("../../services/session.js");
+const { storeNickname } = require("../../utils/nickname.js");
+
+// 注意：/pages/matches/matches 在 app.json 的 tabBar 里，属于 tabBar 页面。
+// tabBar 页面只能用 wx.switchTab 跳转；wx.redirectTo / wx.navigateTo 不被受理，
+// 且是静默失败（不报错、不跳转），用错会让用户卡在会话页出不去。
+const HOME_URL = "/pages/matches/matches";
 
 Page({
   data: {
@@ -21,7 +27,11 @@ Page({
     initSession(this.data.nickname).then((result) => {
       const ok = result.statusCode === 200 || result.statusCode === 201;
       if (ok) {
-        wx.redirectTo({ url: "/pages/matches/matches" });
+        // 昵称取服务端校验并 trim 后的值（MVP §24.1 Response data 含 nickname），
+        // 写入本地缓存，供首页第一行展示。
+        const payload = result.data && typeof result.data === "object" ? result.data : {};
+        storeNickname(payload.nickname);
+        wx.switchTab({ url: HOME_URL });
         return;
       }
       if (result.statusCode === 409 && result.code === "USER_DELETED") {
@@ -53,6 +63,6 @@ Page({
   },
 
   onSkip() {
-    wx.redirectTo({ url: "/pages/matches/matches" });
+    wx.switchTab({ url: HOME_URL });
   },
 });

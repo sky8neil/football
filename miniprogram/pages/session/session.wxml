@@ -1,8 +1,10 @@
 <view class="page">
   <input
     class="nickname"
+    type="nickname"
     value="{{nickname}}"
     bindinput="onNicknameInput"
+    placeholder="点这里填入微信昵称"
     disabled="{{loading}}"
   />
   <button bindtap="onSubmit" disabled="{{loading}}" loading="{{loading}}">init</button>
