@@ -1,7 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { newUuid } from "../domain/ids.js";
 import type {
+  Anomaly,
+  BoardSnapshot,
   DeletedOpenidMapping,
+  Group,
+  GroupMember,
+  LevelHistoryEntry,
   Match,
   MatchResult,
   Prediction,
@@ -13,6 +18,7 @@ import type {
   User,
   UserSeasonStats,
 } from "../domain/types.js";
+import { defaultLevelState } from "../domain/types.js";
 import {
   DocumentNotFoundError,
   InMemoryRepository,
@@ -38,8 +44,10 @@ function makeUser(overrides: Partial<User> = {}): User {
     career_valid_predictions: 0,
     career_wdl_hits: 0,
     career_exact_hits: 0,
+    career_last_scoring_match_at: null,
     career_level: 1,
     career_best_level: 1,
+    career_level_state: defaultLevelState(),
     deleted_at: null,
     created_at: new Date("2026-08-01T00:00:00Z"),
     updated_at: new Date("2026-08-01T00:00:00Z"),
@@ -107,15 +115,59 @@ function makeSeasonStats(overrides: Partial<UserSeasonStats> = {}): UserSeasonSt
   return {
     schema_version: 1,
     user_id: "u1",
-    season_id: "2026_2027",
+    level_season_id: "2026_2027",
     points: 0,
     valid_predictions: 0,
     wdl_hits: 0,
     exact_hits: 0,
     level: 1,
     best_level: 1,
+    level_state: defaultLevelState(),
+    is_level_frozen: false,
     created_at: LOCK_NOW,
     updated_at: LOCK_NOW,
+    ...overrides,
+  };
+}
+
+function makeLevelHistory(overrides: Partial<LevelHistoryEntry> = {}): LevelHistoryEntry {
+  return {
+    schema_version: 1,
+    level_history_id: newUuid(),
+    user_id: newUuid(),
+    scope: "career",
+    level_season_id: null,
+    from_level: 1,
+    to_level: 2,
+    reason: "weekly_eval",
+    eval_as_of: new Date("2026-08-10T02:00:00Z"),
+    window_n: 20,
+    window_score_sum: 200,
+    b_points: 300,
+    level_rule_version: "level_v3.0",
+    settlement_id: null,
+    changed_at: new Date("2026-08-10T02:10:00Z"),
+    ...overrides,
+  };
+}
+
+function makeAnomaly(overrides: Partial<Anomaly> = {}): Anomaly {
+  const matchId = overrides.match_id ?? newUuid();
+  const type = overrides.type ?? "LIVE_SYNC_STALE";
+  return {
+    schema_version: 1,
+    anomaly_id: newUuid(),
+    anomaly_key: `${matchId}:${type}`,
+    match_id: matchId,
+    type,
+    blocking: false,
+    status: "open",
+    first_seen_at: LOCK_NOW,
+    last_seen_at: LOCK_NOW,
+    occurrence_count: 1,
+    details: {},
+    resolved_at: null,
+    resolution: null,
     ...overrides,
   };
 }
@@ -248,6 +300,17 @@ describe("InMemoryRepository - users", () => {
     ).rejects.toMatchObject({ code: "INTERNAL_ERROR" });
     await expect(repo.users.findById(valid.user_id)).resolves.toEqual(valid);
   });
+
+  it("update 不允许降低 career_best_level", async () => {
+    const repo = new InMemoryRepository();
+    const user = makeUser({ career_level: 3, career_best_level: 4, career_valid_predictions: 20 });
+    await repo.users.insert(user);
+
+    await expect(
+      repo.users.update({ ...user, career_best_level: 3 }),
+    ).rejects.toMatchObject({ code: "INTERNAL_ERROR" });
+    await expect(repo.users.findById(user.user_id)).resolves.toEqual(user);
+  });
 });
 
 describe("InMemoryRepository - matches", () => {
@@ -379,11 +442,12 @@ describe("InMemoryRepository - predictions", () => {
 describe("InMemoryRepository - user_season_stats", () => {
   it("可按用户读取全部赛季统计，供 user rebuild 覆盖旧缓存", async () => {
     const repo = new InMemoryRepository();
-    const first = makeSeasonStats({ season_id: "2026_2027" });
-    const second = makeSeasonStats({ season_id: "2025_2026" });
+    const first = makeSeasonStats({ level_season_id: "2026_2027" });
+    const second = makeSeasonStats({ level_season_id: "2025_2026" });
     await repo.userSeasonStats.insert(first);
     await repo.userSeasonStats.insert(second);
 
+    expect(first).not.toHaveProperty("season_id");
     expect(await repo.userSeasonStats.findByUser("u1")).toEqual([first, second]);
     expect(await repo.userSeasonStats.findByUser("other")).toEqual([]);
   });
@@ -400,8 +464,32 @@ describe("InMemoryRepository - user_season_stats", () => {
       repo.userSeasonStats.update({ ...valid, wdl_hits: -1 }),
     ).rejects.toMatchObject({ code: "INTERNAL_ERROR" });
     await expect(
-      repo.userSeasonStats.findByUserAndSeason(valid.user_id, valid.season_id),
+      repo.userSeasonStats.findByUserAndSeason(valid.user_id, valid.level_season_id),
     ).resolves.toEqual(valid);
+  });
+
+  it("best_level 只增不减，且冻结后 level/best_level 不变", async () => {
+    const repo = new InMemoryRepository();
+    const stats = makeSeasonStats({
+      level: 3,
+      best_level: 4,
+      valid_predictions: 20,
+      is_level_frozen: true,
+    });
+    await repo.userSeasonStats.insert(stats);
+
+    await expect(
+      repo.userSeasonStats.update({ ...stats, level: 2 }),
+    ).rejects.toMatchObject({ code: "INTERNAL_ERROR" });
+    await expect(
+      repo.userSeasonStats.update({ ...stats, best_level: 5 }),
+    ).rejects.toMatchObject({ code: "INTERNAL_ERROR" });
+    await expect(
+      repo.userSeasonStats.update({ ...stats, best_level: 3 }),
+    ).rejects.toMatchObject({ code: "INTERNAL_ERROR" });
+    await expect(
+      repo.userSeasonStats.update({ ...stats, points: 10 }),
+    ).resolves.toBeUndefined();
   });
 });
 
@@ -792,6 +880,58 @@ describe("InMemoryRepository - match_results (immutable ledger)", () => {
       ),
     ).rejects.toThrow(UniqueConstraintError);
   });
+
+  it("并发同键 insert 恰好一个成功、另一个抛唯一冲突，先写数据未被覆盖", async () => {
+    const repo = new InMemoryRepository();
+    const first = makeMatchResult({
+      match_id: "m_concurrent",
+      result_version: 1,
+      regular_home_score: 1,
+      regular_away_score: 0,
+    });
+    const second = makeMatchResult({
+      match_id: "m_concurrent",
+      result_version: 1,
+      regular_home_score: 3,
+      regular_away_score: 2,
+    });
+
+    const settled = await Promise.allSettled([
+      repo.matchResults.insert(first),
+      repo.matchResults.insert(second),
+    ]);
+    const fulfilled = settled.filter((result) => result.status === "fulfilled");
+    const rejected = settled.filter(
+      (result): result is PromiseRejectedResult => result.status === "rejected",
+    );
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]?.reason).toBeInstanceOf(UniqueConstraintError);
+
+    const stored = await repo.matchResults.findByMatchAndVersion("m_concurrent", 1);
+    expect(stored).toBe(first);
+    expect(stored).not.toBe(second);
+    await expect(repo.matchResults.findLatestByMatch("m_concurrent")).resolves.toBe(first);
+  });
+
+  it("并发补写旧版本：已有更高版本时全部拒绝，账本保持 append-only", async () => {
+    const repo = new InMemoryRepository();
+    const latest = makeMatchResult({ match_id: "m_stale", result_version: 2 });
+    await repo.matchResults.insert(latest);
+
+    const settled = await Promise.allSettled([
+      repo.matchResults.insert(makeMatchResult({ match_id: "m_stale", result_version: 1 })),
+      repo.matchResults.insert(makeMatchResult({ match_id: "m_stale", result_version: 1 })),
+    ]);
+    expect(settled.every((result) => result.status === "rejected")).toBe(true);
+    for (const result of settled) {
+      if (result.status === "rejected") {
+        expect(result.reason).toBeInstanceOf(StaleResultVersionError);
+      }
+    }
+    await expect(repo.matchResults.findLatestByMatch("m_stale")).resolves.toBe(latest);
+    await expect(repo.matchResults.findByMatchAndVersion("m_stale", 1)).resolves.toBeNull();
+  });
 });
 
 describe("InMemoryRepository - settlements", () => {
@@ -920,6 +1060,33 @@ describe("InMemoryRepository - settlements", () => {
     expect(await repo.settlements.findById(s.settlement_id)).toBe(settled);
   });
 
+  it("update 拒绝 settlement 身份键和创建事实变化", async () => {
+    const repo = new InMemoryRepository();
+    const settlement = makeSettlement();
+    await repo.settlements.insert(settlement);
+
+    const changedFields: Partial<SettlementDoc>[] = [
+      { settlement_id: newUuid() },
+      { match_id: newUuid() },
+      { result_version: settlement.result_version + 1 },
+      { rule_version: "scoring_v2" },
+      { is_correction: true },
+      { created_at: new Date(settlement.created_at.getTime() + 1) },
+    ];
+    for (const changed of changedFields) {
+      await expect(repo.settlements.update({ ...settlement, ...changed })).rejects.toThrow();
+    }
+
+    await expect(repo.settlements.findById(settlement.settlement_id)).resolves.toBe(settlement);
+    await expect(
+      repo.settlements.findByMatchAndVersionAndRule(
+        settlement.match_id,
+        settlement.result_version,
+        settlement.rule_version,
+      ),
+    ).resolves.toBe(settlement);
+  });
+
   it("update 不存在的 settlement 抛 DocumentNotFoundError", async () => {
     const repo = new InMemoryRepository();
     await expect(repo.settlements.update(makeSettlement({}))).rejects.toThrow(
@@ -939,6 +1106,59 @@ describe("InMemoryRepository - settlements", () => {
       "s_failed",
     ]);
     expect(await repo.settlements.findByStatus("settled")).toEqual([]);
+  });
+});
+
+describe("InMemoryRepository - level_history", () => {
+  it("仅写入等级变化且按 scope/reason 要求关联字段", async () => {
+    const repo = new InMemoryRepository();
+    const invalidEntries = [
+      makeLevelHistory({ from_level: 2, to_level: 2 }),
+      makeLevelHistory({ scope: "season", level_season_id: null }),
+      makeLevelHistory({ scope: "career", level_season_id: "2026_2027" }),
+      makeLevelHistory({ reason: "correction_reeval", settlement_id: null }),
+    ];
+    for (const entry of invalidEntries) {
+      await expect(repo.levelHistory.insert(entry)).rejects.toMatchObject({
+        code: "INTERNAL_ERROR",
+      });
+    }
+
+    const valid = makeLevelHistory({ scope: "season", level_season_id: "2026_2027" });
+    await repo.levelHistory.insert(valid);
+    await expect(repo.levelHistory.findByUser(valid.user_id)).resolves.toEqual([valid]);
+  });
+});
+
+describe("InMemoryRepository - anomalies", () => {
+  it("update 锁定身份与非更新字段，仅变更状态、重复信息和详情", async () => {
+    const repo = new InMemoryRepository();
+    const anomaly = makeAnomaly();
+    await repo.anomalies.insert(anomaly);
+
+    const invalidChanges: Partial<Anomaly>[] = [
+      { anomaly_id: newUuid() },
+      { anomaly_key: `${newUuid()}:LIVE_SYNC_STALE` },
+      { match_id: newUuid() },
+      { type: "LIVE_TOO_LONG" },
+      { blocking: true },
+      { first_seen_at: new Date(anomaly.first_seen_at.getTime() + 1) },
+    ];
+    for (const changed of invalidChanges) {
+      await expect(repo.anomalies.update({ ...anomaly, ...changed })).rejects.toThrow();
+    }
+
+    const updated = {
+      ...anomaly,
+      status: "resolved" as const,
+      last_seen_at: new Date(LOCK_NOW.getTime() + 1),
+      occurrence_count: 2,
+      details: { source: "provider" },
+      resolved_at: new Date(LOCK_NOW.getTime() + 1),
+      resolution: "sync recovered",
+    };
+    await repo.anomalies.update(updated);
+    await expect(repo.anomalies.findByKey(anomaly.anomaly_key)).resolves.toBe(updated);
   });
 });
 
@@ -1080,6 +1300,41 @@ describe("InMemoryRepository - settlement_items", () => {
     );
     const failed = await repo.settlementItems.findByStatus("failed");
     expect(failed.map((i) => i.prediction_id).sort()).toEqual(["p1", "p2"]);
+  });
+
+  it("等级账本查询限定 user、applied 状态和严格 as_of 截面", async () => {
+    const repo = new InMemoryRepository();
+    const asOf = new Date("2026-08-10T02:00:00Z");
+    const before = makeSettlementItem({
+      user_id: "u1",
+      prediction_id: "before",
+      status: "applied",
+      applied_at: new Date(asOf.getTime() - 1),
+    });
+    const sameTime = makeSettlementItem({
+      user_id: "u1",
+      prediction_id: "same-time",
+      status: "applied",
+      applied_at: asOf,
+    });
+    const anotherUser = makeSettlementItem({
+      user_id: "u2",
+      prediction_id: "other-user",
+      status: "applied",
+      applied_at: new Date(asOf.getTime() - 1),
+    });
+    const pending = makeSettlementItem({
+      user_id: "u1",
+      prediction_id: "pending",
+      status: "pending",
+      applied_at: new Date(asOf.getTime() - 1),
+    });
+    await repo.settlementItems.insert(before);
+    await repo.settlementItems.insert(sameTime);
+    await repo.settlementItems.insert(anotherUser);
+    await repo.settlementItems.insert(pending);
+
+    expect(await repo.settlementItems.findAppliedByUserBefore("u1", asOf)).toEqual([before]);
   });
 });
 
@@ -1305,5 +1560,109 @@ describe("InMemoryRepository - deleted_openid_mappings", () => {
       code: "INTERNAL_ERROR",
     });
     expect(await repo.deletedOpenidMappings.findByOriginalOpenid(mapping.original_openid)).toBeNull();
+  });
+});
+
+describe("InMemoryRepository - S0 新集合端口", () => {
+  it("users 可写入 career_last_scoring_match_at 与 career_level_state", async () => {
+    const repo = new InMemoryRepository();
+    const scoredAt = new Date("2026-08-08T12:00:00Z");
+    const user = makeUser({
+      career_last_scoring_match_at: scoredAt,
+      career_level_state: { ...defaultLevelState(), last_eval_n: 20, last_eval_score_sum: 60 },
+    });
+    await repo.users.insert(user);
+    const stored = await repo.users.findById(user.user_id);
+    expect(stored?.career_last_scoring_match_at).toEqual(scoredAt);
+    expect(stored?.career_level_state?.last_eval_n).toBe(20);
+  });
+
+  it("board_snapshots UNIQUE(board, snapshot_at, user_id)", async () => {
+    const repo = new InMemoryRepository();
+    const at = new Date("2026-08-09T02:00:00Z");
+    const snapshot = (userId: string): BoardSnapshot => ({
+      schema_version: 1,
+      snapshot_id: newUuid(),
+      board: "career",
+      snapshot_at: at,
+      user_id: userId,
+      rank: 1,
+      career_points: 12,
+      career_exact_hits: 1,
+      career_valid_predictions: 2,
+      career_last_scoring_match_at: at,
+      window_score_sum: null,
+      window_n: null,
+      created_at: LOCK_NOW,
+    });
+    await repo.boardSnapshots.insert(snapshot("u1"));
+    await expect(repo.boardSnapshots.insert(snapshot("u1"))).rejects.toMatchObject({
+      collection: "board_snapshots",
+      indexName: "uk_board_snapshot_user",
+    });
+    expect(await repo.boardSnapshots.findByBoardAndSnapshotAt("career", at)).toHaveLength(1);
+  });
+
+  it("board_snapshots 返回 board 当前最新快照版本", async () => {
+    const repo = new InMemoryRepository();
+    const olderAt = new Date("2026-08-09T02:00:00Z");
+    const newerAt = new Date("2026-08-10T02:00:00Z");
+    const snapshot = (userId: string, at: Date): BoardSnapshot => ({
+      schema_version: 1,
+      snapshot_id: newUuid(),
+      board: "career",
+      snapshot_at: at,
+      user_id: userId,
+      rank: 1,
+      career_points: 12,
+      career_exact_hits: 1,
+      career_valid_predictions: 2,
+      career_last_scoring_match_at: at,
+      window_score_sum: null,
+      window_n: null,
+      created_at: LOCK_NOW,
+    });
+    await repo.boardSnapshots.insert(snapshot("old-user", olderAt));
+    await repo.boardSnapshots.insert(snapshot("new-user", newerAt));
+
+    await expect(repo.boardSnapshots.findLatestByBoard("career")).resolves.toEqual([
+      expect.objectContaining({ user_id: "new-user", snapshot_at: newerAt }),
+    ]);
+  });
+
+  it("groups invite_code 唯一；group_members UNIQUE(group_id, user_id)", async () => {
+    const repo = new InMemoryRepository();
+    const group = (invite: string, id = newUuid()): Group => ({
+      schema_version: 1,
+      group_id: id,
+      owner_user_id: "owner",
+      invite_code: invite,
+      status: "active",
+      member_count: 1,
+      created_at: LOCK_NOW,
+      updated_at: LOCK_NOW,
+    });
+    await repo.groups.insert(group("ABCD2345"));
+    await expect(repo.groups.insert(group("ABCD2345"))).rejects.toMatchObject({
+      collection: "groups",
+      indexName: "uk_invite_code",
+    });
+
+    const member = (userId: string): GroupMember => ({
+      schema_version: 1,
+      group_id: "g1",
+      user_id: userId,
+      status: "active",
+      joined_at: LOCK_NOW,
+      left_at: null,
+      created_at: LOCK_NOW,
+      updated_at: LOCK_NOW,
+    });
+    await repo.groups.insert(group("WXYZ6789", "g1"));
+    await repo.groupMembers.insert(member("u1"));
+    await expect(repo.groupMembers.insert(member("u1"))).rejects.toMatchObject({
+      collection: "group_members",
+      indexName: "uk_group_user",
+    });
   });
 });

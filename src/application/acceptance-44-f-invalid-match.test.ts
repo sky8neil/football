@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   MatchStatus,
   Provider,
+  SettlementItemStatus,
   SettlementStatus,
 } from "../domain/enums.js";
 import { newUuid } from "../domain/ids.js";
@@ -15,6 +16,7 @@ import { mapProviderStatus } from "../provider/status.js";
 import { decideFirstSettlement } from "./first-settlement.js";
 import { ProviderResultSyncService } from "./provider-result-sync.js";
 import { ProviderStatusSyncService } from "./provider-status-sync.js";
+import { defaultLevelState } from "../domain/types.js";
 
 const MATCH_ID = "00000000-0000-4000-8000-0000000000f1";
 const PROVIDER_MATCH_ID = "44000038";
@@ -81,6 +83,8 @@ function makeUser(): User {
     career_exact_hits: 0,
     career_level: 1,
     career_best_level: 1,
+    career_last_scoring_match_at: null,
+    career_level_state: defaultLevelState(),
     deleted_at: null,
     created_at: NOW,
     updated_at: NOW,
@@ -138,7 +142,7 @@ async function setup(match = makeMatch()) {
 }
 
 describe("F. 无效比赛（规范 44-F）", () => {
-  it("F38 cancelled 不计分、不计有效场次，prediction 结算字段保持 null", async () => {
+  it("F38/L113 cancelled 不计分、不计有效场次，也不进入等级窗口或 B", async () => {
     const { repo, status } = await setup();
     const user = makeUser();
     await repo.users.insert(user);
@@ -176,6 +180,7 @@ describe("F. 无效比赛（规范 44-F）", () => {
       }),
     ).toMatchObject({ kind: "not_ready", code: "SETTLEMENT_NOT_READY" });
     expect(user.career_valid_predictions).toBe(0);
+    await expect(repo.settlementItems.findByStatus(SettlementItemStatus.Applied)).resolves.toEqual([]);
   });
 
   it("F39 cancelled settlement_status=voided", async () => {
@@ -187,8 +192,12 @@ describe("F. 无效比赛（规范 44-F）", () => {
     });
   });
 
-  it("F40 abandoned 不结算，settlement_status 保持 pending，不写正式赛果", async () => {
+  it("F40/L113 abandoned 不结算，不进入等级窗口或 B", async () => {
     const { repo, status } = await setup();
+    const user = makeUser();
+    await repo.users.insert(user);
+    const prediction = makePrediction(user.user_id);
+    await repo.predictions.insert(prediction);
     await status.applyAbandonedFixture(
       makeFixture({ status: { kind: "abandoned" }, rawStatus: "ABD" }),
       { case: "F40" },
@@ -202,6 +211,11 @@ describe("F. 无效比赛（规范 44-F）", () => {
       regular_away_score: null,
     });
     await expect(repo.matchResults.findLatestByMatch(MATCH_ID)).resolves.toBeNull();
+    await expect(repo.predictions.findById(prediction.prediction_id)).resolves.toMatchObject({
+      match_score: null,
+      applied_result_version: 0,
+    });
+    await expect(repo.settlementItems.findByStatus(SettlementItemStatus.Applied)).resolves.toEqual([]);
     expect(
       decideFirstSettlement({
         match_status: MatchStatus.Abandoned,

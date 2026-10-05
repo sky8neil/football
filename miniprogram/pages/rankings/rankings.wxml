@@ -1,15 +1,20 @@
 <view class="page">
   <view>
     <button
-      data-period-type="week"
-      bindtap="onPeriodTap"
-      disabled="{{periodType === 'week'}}"
-    >week</button>
+      data-board="week"
+      bindtap="onBoardTap"
+      disabled="{{board === 'week'}}"
+    >周榜</button>
     <button
-      data-period-type="month"
-      bindtap="onPeriodTap"
-      disabled="{{periodType === 'month'}}"
-    >month</button>
+      data-board="career"
+      bindtap="onBoardTap"
+      disabled="{{board === 'career'}}"
+    >生涯榜</button>
+    <button
+      data-board="strength"
+      bindtap="onBoardTap"
+      disabled="{{board === 'strength'}}"
+    >实力榜</button>
   </view>
   <view wx:if="{{state === 'loading'}}" class="loading"></view>
   <view wx:elif="{{state === 'empty'}}" class="empty">暂无排行数据</view>
@@ -23,19 +28,25 @@
     <button bindtap="onRetry">retry</button>
   </view>
   <view wx:elif="{{state === 'list'}}">
+    <view wx:if="{{me}}" class="card">
+      <view>我的排行</view>
+      <view>状态 {{me.status}}</view>
+      <view wx:if="{{me.status === 'ranked' && me.rank !== null}}">名次 {{me.rank}}</view>
+      <view wx:if="{{me.status === 'ranked' && me.top_percent !== null}}">前 {{me.top_percent}}%</view>
+      <view wx:if="{{me.status === 'below_threshold'}}">还需有效预测 {{me.remaining_valid_predictions}} 场</view>
+    </view>
     <view
       wx:for="{{items}}"
       wx:key="user_id"
       class="card"
     >
-      <view>{{item.global_rank}}</view>
+      <view>{{item.rank}}</view>
       <view>{{item.display_name}}</view>
       <view>{{item.favoriteTeamText}}</view>
-      <view>{{item.period_score}}</view>
-      <view>{{item.valid_predictions}}</view>
-      <view>{{item.wdl_hits}}</view>
-      <view>{{item.exact_hits}}</view>
-      <view>{{item.wdl_accuracy_percent}}</view>
+      <view>{{item.career_level}}</view>
+      <view>{{item.mainLabel}} {{item.mainValue}}</view>
+      <view>{{item.countLabel}} {{item.countValue}}</view>
+      <view wx:if="{{item.exact_hits !== null}}">{{item.exact_hits}}</view>
       <view wx:if="{{item.last_scoring_match_at !== null}}">{{item.last_scoring_match_at}}</view>
     </view>
     <view wx:if="{{errorMessage}}" class="error">{{errorMessage}}</view>

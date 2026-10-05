@@ -8,6 +8,7 @@ import {
 } from "../domain/enums.js";
 import type {
   Match,
+  BoardSnapshot,
   MatchResult,
   Prediction,
   RankingEntry,
@@ -19,6 +20,7 @@ import type {
 import { InMemoryRepository } from "../infrastructure/repositories.js";
 import { checkDailyConsistency } from "./daily-consistency.js";
 import { RepositoryDailyConsistencySnapshotSource } from "./daily-consistency-snapshot.js";
+import { defaultLevelState } from "../domain/types.js";
 
 const NOW = new Date("2026-08-09T00:00:00.000Z");
 const USER_ID = "user-1";
@@ -41,6 +43,8 @@ function makeUser(overrides: Partial<User> = {}): User {
     career_exact_hits: 0,
     career_level: 1,
     career_best_level: 1,
+    career_last_scoring_match_at: null,
+    career_level_state: defaultLevelState(),
     deleted_at: null,
     created_at: NOW,
     updated_at: NOW,
@@ -139,7 +143,7 @@ function makeSettlement(overrides: Partial<SettlementDoc> = {}): SettlementDoc {
   };
 }
 
-function makeItem(): SettlementItem {
+function makeItem(overrides: Partial<SettlementItem> = {}): SettlementItem {
   return {
     schema_version: 1,
     settlement_id: SETTLEMENT_ID,
@@ -161,6 +165,7 @@ function makeItem(): SettlementItem {
     last_error_message: null,
     created_at: NOW,
     updated_at: NOW,
+    ...overrides,
   };
 }
 
@@ -168,13 +173,15 @@ function makeSeasonStats(): UserSeasonStats {
   return {
     schema_version: 1,
     user_id: USER_ID,
-    season_id: "2026_2027",
+    level_season_id: "2026_2027",
     points: 3,
     valid_predictions: 1,
     wdl_hits: 1,
     exact_hits: 0,
     level: 1,
     best_level: 1,
+    level_state: defaultLevelState(),
+    is_level_frozen: false,
     created_at: NOW,
     updated_at: NOW,
   };
@@ -228,11 +235,12 @@ describe("RepositoryDailyConsistencySnapshotSource", () => {
         career_exact_hits: 1,
         career_level: 1,
         career_best_level: 1,
+        career_last_scoring_match_at: new Date("2026-08-08T06:00:00.000Z"),
       }),
     });
     expect(snapshot.season_stats).toContainEqual(expect.objectContaining({
       user_id: USER_ID,
-      season_id: "2026_2027",
+      level_season_id: "2026_2027",
       actual: expect.objectContaining({ points: 3 }),
       expected: expect.objectContaining({ points: 12, exact_hits: 1 }),
     }));
@@ -246,7 +254,7 @@ describe("RepositoryDailyConsistencySnapshotSource", () => {
         valid_predictions: 1,
         exact_hits: 1,
         last_scoring_match_at: new Date("2026-08-08T06:00:00.000Z"),
-        global_rank: null,
+        global_rank: 1,
       }),
     }));
   });
@@ -264,12 +272,27 @@ describe("RepositoryDailyConsistencySnapshotSource", () => {
         match_id: MATCH_ID,
         user_ids: [USER_ID],
         season_id: "2026_2027",
-        periods: [
-          { period_type: PeriodType.Week, period_key: "2026-W32" },
-          { period_type: PeriodType.Month, period_key: "2026-08" },
-        ],
+        periods: [{ period_type: PeriodType.Week, period_key: "2026-W32" }],
       },
     ]);
+  });
+
+  it("active match 缺少 period_anchor_at 时按 kickoff 定位受影响周", async () => {
+    const repo = new InMemoryRepository();
+    await repo.users.insert(makeUser());
+    await repo.matches.insert(makeMatch({
+      period_anchor_at: null,
+      settlement_status: SettlementStatus.Settling,
+    }));
+    await repo.predictions.insert(makePrediction());
+
+    const snapshot = await new RepositoryDailyConsistencySnapshotSource(repo).load(NOW);
+
+    expect(snapshot.active_settlements[0]).toMatchObject({
+      match_id: MATCH_ID,
+      user_ids: [USER_ID],
+      periods: [{ period_type: PeriodType.Week, period_key: "2026-W32" }],
+    });
   });
 
   it("事实缺少 period_anchor_at 时 fail closed，不生成排行榜 expected", async () => {
@@ -279,29 +302,229 @@ describe("RepositoryDailyConsistencySnapshotSource", () => {
     await expect(source.load(NOW)).rejects.toMatchObject({ code: "INVALID_LEDGER" });
   });
 
-  it("expected best_level 保留现有 career/season 的历史最高等级", async () => {
+  it("以 last_inputs 截面重算 career/season，不按当前总量即时定级", async () => {
+    const repo = await setup();
+    const evalAt = new Date("2026-08-10T02:00:00.000Z");
+    const cachedState = {
+      ...defaultLevelState(),
+      week_base_level: 1,
+      week_base_below_count: 0,
+      week_base_as_of: evalAt,
+      last_eval_as_of: evalAt,
+      last_eval_n: 0,
+      last_eval_score_sum: 0,
+      last_eval_b_points: 0,
+      last_eval_rule_version: "level_v3.0",
+    };
+    const user = await repo.users.findById(USER_ID);
+    if (user === null) {
+      throw new Error("expected seeded user");
+    }
+    await repo.users.update({ ...user, career_level_state: cachedState });
+    const seasonStats = await repo.userSeasonStats?.findByUserAndSeason(USER_ID, "2026_2027");
+    if (seasonStats === undefined || seasonStats === null) {
+      throw new Error("expected seeded season stats");
+    }
+    await repo.userSeasonStats?.update({ ...seasonStats, level_state: cachedState });
+
+    const snapshot = await new RepositoryDailyConsistencySnapshotSource(repo).load(evalAt);
+
+    expect(snapshot.career[0]?.expected).toMatchObject({
+      career_level: 1,
+      career_last_eval_n: 1,
+      career_last_eval_score_sum: 12,
+      career_last_eval_b_points: 12,
+    });
+    expect(snapshot.season_stats[0]?.expected).toMatchObject({
+      level: 1,
+      last_eval_n: 1,
+      last_eval_score_sum: 12,
+      last_eval_b_points: 12,
+    });
+  });
+
+  it("last_eval 之后窗口内修正不产生等级差异（截面按 applied_at 过滤）", async () => {
+    const repo = new InMemoryRepository();
+    const evalAt = new Date("2026-08-10T02:00:00.000Z");
+    const firstAppliedAt = new Date("2026-08-08T07:30:00.000Z");
+    const correctionAt = new Date("2026-08-12T02:00:00.000Z");
+    await repo.users.insert(makeUser());
+    await repo.matches.insert(makeMatch({ result_version: 2, settled_result_version: 2 }));
+    await repo.predictions.insert(makePrediction());
+    await repo.matchResults.insert(makeResult());
+    await repo.matchResults.insert({
+      ...makeResult(),
+      result_version: 2,
+      regular_home_score: 0,
+      regular_away_score: 0,
+    });
+    await repo.settlements.insert(makeSettlement());
+    await repo.settlements.insert(makeSettlement({
+      settlement_id: "settlement-2",
+      result_version: 2,
+      is_correction: true,
+      settled_at: correctionAt,
+    }));
+    await repo.settlementItems.insert({ ...makeItem(), applied_at: firstAppliedAt });
+    await repo.settlementItems.insert(makeItem({
+      settlement_id: "settlement-2",
+      source_result_version: 2,
+      applied_at: correctionAt,
+      old_score: 12,
+      new_score: 0,
+      score_delta: -12,
+      old_wdl_hit: true,
+      new_wdl_hit: false,
+      old_exact_hit: true,
+      new_exact_hit: false,
+      valid_prediction_delta: 0,
+    }));
+    await repo.userSeasonStats?.insert(makeSeasonStats());
+    await repo.rankings?.insert(makeRanking());
+
+    const cachedState = {
+      ...defaultLevelState(),
+      week_base_level: 1,
+      week_base_below_count: 0,
+      week_base_as_of: evalAt,
+      last_eval_as_of: evalAt,
+      last_eval_n: 1,
+      last_eval_score_sum: 12,
+      last_eval_b_points: 12,
+      last_eval_rule_version: "level_v3.0",
+    };
+    const user = await repo.users.findById(USER_ID);
+    if (user === null) {
+      throw new Error("expected seeded user");
+    }
+    await repo.users.update({
+      ...user,
+      career_level: 1,
+      career_best_level: 1,
+      career_level_state: cachedState,
+    });
+
+    const result = checkDailyConsistency(
+      await new RepositoryDailyConsistencySnapshotSource(repo).load(NOW),
+    );
+    const careerDifference = result.differences.find(
+      (difference) => difference.scope === "career" && difference.key === USER_ID,
+    );
+
+    expect(careerDifference?.fields ?? []).not.toContain("career_level");
+    expect(careerDifference?.fields ?? []).not.toContain("career_below_count");
+    expect(careerDifference?.fields ?? []).not.toContain("career_last_eval_n");
+    expect(careerDifference?.fields ?? []).not.toContain("career_last_eval_score_sum");
+  });
+
+  it("没有评估起点时保留等级缓存，不按当前账本制造等级差异", async () => {
     const repo = await setup();
     const user = await repo.users.findById(USER_ID);
     if (user === null) {
       throw new Error("expected seeded user");
     }
-    await repo.users.update({ ...user, career_best_level: 6 });
+    await repo.users.update({
+      ...user,
+      career_valid_predictions: 20,
+      career_level: 3,
+      career_best_level: 4,
+    });
 
     const seasonStats = await repo.userSeasonStats?.findByUserAndSeason(USER_ID, "2026_2027");
     if (seasonStats === undefined || seasonStats === null) {
       throw new Error("expected seeded season stats");
     }
-    await repo.userSeasonStats?.update({ ...seasonStats, best_level: 5 });
+    await repo.userSeasonStats?.update({
+      ...seasonStats,
+      valid_predictions: 20,
+      level: 4,
+      best_level: 4,
+    });
 
     const snapshot = await new RepositoryDailyConsistencySnapshotSource(repo).load(NOW);
 
+    expect(snapshot.career[0]?.expected).toMatchObject({
+      career_level: 3,
+      career_best_level: 3,
+    });
+    expect(snapshot.season_stats[0]?.expected).toMatchObject({
+      level: 4,
+      best_level: 4,
+    });
+  });
+
+  it("expected best_level 采用事实下界（level 与 history 最大值），可检出低于下界", async () => {
+    const repo = await setup();
+    await repo.levelHistory.insert({
+      schema_version: 1,
+      level_history_id: "career-history-max",
+      user_id: USER_ID,
+      scope: "career",
+      level_season_id: null,
+      from_level: 3,
+      to_level: 4,
+      reason: "weekly_eval",
+      eval_as_of: NOW,
+      window_n: 0,
+      window_score_sum: 0,
+      b_points: 0,
+      level_rule_version: "level_v3.0",
+      settlement_id: null,
+      changed_at: NOW,
+    });
+    const user = await repo.users.findById(USER_ID);
+    if (user === null) {
+      throw new Error("expected seeded user");
+    }
+    await repo.users.update({ ...user, career_best_level: 2 });
+
+    const snapshot = await new RepositoryDailyConsistencySnapshotSource(repo).load(NOW);
+    const result = checkDailyConsistency(snapshot);
+
     expect(snapshot.career.find((entry) => entry.user_id === USER_ID)?.expected.career_best_level)
-      .toBe(6);
+      .toBe(4);
+    expect(result.differences).toContainEqual(
+      expect.objectContaining({
+        scope: "career",
+        key: USER_ID,
+        fields: expect.arrayContaining(["career_best_level"]),
+      }),
+    );
+  });
+
+  it("expected best_level 等于事实下界时正常场景不误报 best_level", async () => {
+    const repo = await setup();
+    await repo.levelHistory.insert({
+      schema_version: 1,
+      level_history_id: "career-history-max",
+      user_id: USER_ID,
+      scope: "career",
+      level_season_id: null,
+      from_level: 3,
+      to_level: 4,
+      reason: "weekly_eval",
+      eval_as_of: NOW,
+      window_n: 0,
+      window_score_sum: 0,
+      b_points: 0,
+      level_rule_version: "level_v3.0",
+      settlement_id: null,
+      changed_at: NOW,
+    });
+    const user = await repo.users.findById(USER_ID);
+    if (user === null) {
+      throw new Error("expected seeded user");
+    }
+    await repo.users.update({ ...user, career_best_level: 4 });
+
+    const snapshot = await new RepositoryDailyConsistencySnapshotSource(repo).load(NOW);
+    const result = checkDailyConsistency(snapshot);
+
+    expect(snapshot.career.find((entry) => entry.user_id === USER_ID)?.expected.career_best_level)
+      .toBe(4);
     expect(
-      snapshot.season_stats.find(
-        (entry) => entry.user_id === USER_ID && entry.season_id === "2026_2027",
-      )?.expected.best_level,
-    ).toBe(5);
+      result.differences.flatMap((difference) => difference.fields),
+    ).not.toContain("career_best_level");
   });
 
   it("prediction 缓存命中字段与 applied item 冲突时以 item 为准，只报警不改账本", async () => {
@@ -340,5 +563,94 @@ describe("RepositoryDailyConsistencySnapshotSource", () => {
       exact_hit: false,
       applied_result_version: 1,
     });
+  });
+
+  it("daily consistency 抽样比较 career/strength 最新快照", async () => {
+    const repo = await setup();
+    const user = await repo.users.findById(USER_ID);
+    if (user === null) {
+      throw new Error("expected seeded user");
+    }
+    await repo.users.update({
+      ...user,
+      career_level_state: {
+        ...defaultLevelState(),
+        last_eval_n: 50,
+        last_eval_score_sum: 300,
+      },
+    });
+    await repo.users.insert(makeUser({
+      user_id: "user-2",
+      openid: "openid-2",
+      nickname: "Changed",
+      career_points: 0,
+      career_valid_predictions: 1,
+      career_wdl_hits: 0,
+      career_exact_hits: 0,
+      career_level_state: {
+        ...defaultLevelState(),
+        last_eval_n: 50,
+        last_eval_score_sum: 600,
+      },
+      updated_at: new Date(NOW.getTime() + 60_000),
+    }));
+    const careerSnapshot: BoardSnapshot = {
+      schema_version: 1,
+      snapshot_id: "career-snapshot-1",
+      board: "career",
+      snapshot_at: NOW,
+      user_id: USER_ID,
+      rank: 2,
+      career_points: 9,
+      career_exact_hits: 0,
+      career_valid_predictions: 1,
+      career_last_scoring_match_at: null,
+      window_score_sum: null,
+      window_n: null,
+      created_at: NOW,
+    };
+    const strengthSnapshot: BoardSnapshot = {
+      schema_version: 1,
+      snapshot_id: "strength-snapshot-1",
+      board: "strength",
+      snapshot_at: NOW,
+      user_id: USER_ID,
+      rank: 1,
+      career_points: null,
+      career_exact_hits: null,
+      career_valid_predictions: null,
+      career_last_scoring_match_at: null,
+      window_score_sum: 240,
+      window_n: 50,
+      created_at: NOW,
+    };
+    await repo.boardSnapshots.insert(careerSnapshot);
+    await repo.boardSnapshots.insert(strengthSnapshot);
+
+    const snapshot = await new RepositoryDailyConsistencySnapshotSource(repo).load(NOW);
+    const result = checkDailyConsistency(snapshot);
+
+    expect(snapshot.board_snapshots).toContainEqual(expect.objectContaining({
+      board: "career",
+      user_id: USER_ID,
+      rank_check_skipped: true,
+      actual: expect.objectContaining({ rank: 2, career_points: 9 }),
+      expected: expect.objectContaining({ rank: 1, career_points: 3 }),
+    }));
+    expect(snapshot.board_snapshots).toContainEqual(expect.objectContaining({
+      board: "strength",
+      user_id: USER_ID,
+      rank_check_skipped: true,
+      actual: expect.objectContaining({ rank: 1, window_score_sum: 240, window_n: 50 }),
+      expected: expect.objectContaining({ rank: 2, window_score_sum: 300, window_n: 50 }),
+    }));
+    const snapshotDifferences = result.differences.filter(
+      (difference) => difference.scope === "board_snapshot",
+    );
+    expect(snapshotDifferences).toHaveLength(2);
+    expect(snapshotDifferences.flatMap((difference) => difference.fields)).not.toContain("rank");
+    await expect(repo.boardSnapshots.findLatestByBoard("career")).resolves.toEqual([
+      careerSnapshot,
+    ]);
   });
 });

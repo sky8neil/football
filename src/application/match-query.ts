@@ -1,5 +1,10 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { FIXED_CONFIG_V1, MVP_SEASON } from "../domain/config.js";
+import {
+  FIXED_CONFIG_V1,
+  SUPPORTED_LEAGUES,
+  findSupportedLeagueById,
+  isSupportedLeagueId,
+} from "../domain/config.js";
 import { MatchStatus, UserStatus, type MatchStatus as MatchStatusValue } from "../domain/enums.js";
 import {
   canSubmitPrediction,
@@ -19,6 +24,7 @@ export interface MatchListQuery {
   from: Date | null;
   to: Date | null;
   status: MatchStatusValue | null;
+  league_id?: string | null;
   limit: number;
   cursor: string | null;
   server_now: Date;
@@ -76,6 +82,7 @@ interface MatchCursorPayload {
   from: string;
   to: string;
   status: MatchStatusValue | null;
+  league_id: string | null;
   kickoff_at: string;
   match_id: string;
 }
@@ -108,7 +115,8 @@ function assertQuery(input: MatchListQuery): void {
     !Number.isSafeInteger(input.limit) ||
     input.limit < 1 ||
     input.limit > FIXED_CONFIG_V1.API_MAX_LIMIT ||
-    (input.status !== null && !Object.values(MatchStatus).includes(input.status))
+    (input.status !== null && !Object.values(MatchStatus).includes(input.status)) ||
+    (input.league_id != null && !isSupportedLeagueId(input.league_id))
   ) {
     throw validationError("比赛查询参数无效");
   }
@@ -135,9 +143,11 @@ function parseCursorPayload(value: unknown): MatchCursorPayload {
   }
   const payload = value as Record<string, unknown>;
   const status = payload.status;
+  const leagueId = payload.league_id;
   if (
     payload.version !== CURSOR_VERSION ||
     (status !== null && !Object.values(MatchStatus).includes(status as MatchStatusValue)) ||
+    (leagueId !== null && (typeof leagueId !== "string" || !isSupportedLeagueId(leagueId))) ||
     typeof payload.match_id !== "string" ||
     !isValidUuid(payload.match_id) ||
     typeof payload.kickoff_at !== "string"
@@ -155,6 +165,7 @@ function parseCursorPayload(value: unknown): MatchCursorPayload {
     from: from.toISOString(),
     to: to.toISOString(),
     status: status as MatchStatusValue | null,
+    league_id: leagueId as string | null,
     kickoff_at: kickoffAt.toISOString(),
     match_id: payload.match_id,
   };
@@ -201,12 +212,13 @@ export class MatchCursorCodec {
 function resolveWindow(
   input: MatchListQuery,
   cursor: MatchCursorPayload | null,
-): { from: Date; to: Date; status: MatchStatusValue | null } {
+): { from: Date; to: Date; status: MatchStatusValue | null; league_id: string | null } {
   const cursorFrom = cursor === null ? null : new Date(cursor.from);
   const cursorTo = cursor === null ? null : new Date(cursor.to);
   const from = input.from ?? cursorFrom ?? addMinutes(input.server_now, -24 * 60);
   const to = input.to ?? cursorTo ?? addMinutes(input.server_now, 30 * 24 * 60);
   const status = input.status ?? cursor?.status ?? null;
+  const leagueId = input.league_id ?? cursor?.league_id ?? null;
 
   if (cursor !== null) {
     if (input.from !== null && input.from.toISOString() !== cursor.from) {
@@ -218,6 +230,9 @@ function resolveWindow(
     if (input.status !== null && input.status !== cursor.status) {
       throw validationError("cursor 与当前 status 冲突", { field: "cursor" });
     }
+    if (input.league_id != null && input.league_id !== cursor.league_id) {
+      throw validationError("cursor 与当前 league_id 冲突", { field: "cursor" });
+    }
   }
   if (from.getTime() >= to.getTime()) {
     throw validationError("from 必须早于 to", { field: "from" });
@@ -225,7 +240,7 @@ function resolveWindow(
   if (to.getTime() - from.getTime() > MAX_QUERY_RANGE_MS) {
     throw validationError("查询区间不得超过 90 天", { field: "to" });
   }
-  return { from, to, status };
+  return { from, to, status, league_id: leagueId };
 }
 
 function validScore(value: number | null): boolean {
@@ -342,12 +357,17 @@ export class MatchQueryService {
       user = await this.repo.users.findById(userId);
     }
 
-    const loadedMatches = await requireMatches(this.repo).findBySeason(MVP_SEASON.season_id);
+    const seasonIds = [...new Set(SUPPORTED_LEAGUES.map((row) => row.season_id))];
+    const loadedMatches: Match[] = [];
+    for (const seasonId of seasonIds) {
+      loadedMatches.push(...await requireMatches(this.repo).findBySeason(seasonId));
+    }
     for (const match of loadedMatches) {
       assertMatch(match);
     }
     const matches = loadedMatches
-      .filter((match) => match.league_id === MVP_SEASON.league_id)
+      .filter((match) => findSupportedLeagueById(match.league_id) !== undefined)
+      .filter((match) => window.league_id === null || match.league_id === window.league_id)
       .filter((match) => window.status === null || match.match_status === window.status)
       .filter((match) => match.kickoff_at.getTime() >= window.from.getTime())
       .filter((match) => match.kickoff_at.getTime() < window.to.getTime())
@@ -387,6 +407,7 @@ export class MatchQueryService {
             from: window.from.toISOString(),
             to: window.to.toISOString(),
             status: window.status,
+            league_id: window.league_id,
             kickoff_at: last.kickoff_at.toISOString(),
             match_id: last.match_id,
           })
@@ -405,11 +426,7 @@ export class MatchQueryService {
     assertDate(serverNow, "server_now");
 
     const match = await this.repo.matches.findById(matchId);
-    if (
-      match === null ||
-      match.league_id !== MVP_SEASON.league_id ||
-      match.season_id !== MVP_SEASON.season_id
-    ) {
+    if (match === null || findSupportedLeagueById(match.league_id) === undefined) {
       throw notFoundError("MATCH");
     }
     assertMatch(match);

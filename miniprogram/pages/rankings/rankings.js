@@ -7,28 +7,45 @@ function displayTeamId(value) {
   return String(value);
 }
 
-function presentItem(item) {
-  return {
+function presentItem(item, board) {
+  const displayed = {
     user_id: item.user_id,
-    global_rank: item.global_rank,
+    rank: item.rank,
     display_name: item.display_name,
     favoriteTeamText: displayTeamId(item.favorite_team_id),
-    period_score: item.period_score,
-    valid_predictions: item.valid_predictions,
-    wdl_hits: item.wdl_hits,
-    exact_hits: item.exact_hits,
-    wdl_accuracy_percent: item.wdl_accuracy_percent,
+    career_level: item.career_level,
+    exact_hits: null,
     last_scoring_match_at: item.last_scoring_match_at === undefined
       ? null
       : item.last_scoring_match_at,
   };
+  if (board === "career") {
+    displayed.mainLabel = "生涯积分";
+    displayed.mainValue = item.career_points;
+    displayed.countLabel = "有效预测";
+    displayed.countValue = item.career_valid_predictions;
+    displayed.exact_hits = item.exact_hits;
+  } else if (board === "strength") {
+    displayed.mainLabel = "实力指数";
+    displayed.mainValue = item.strength_index;
+    displayed.countLabel = "统计场次";
+    displayed.countValue = item.window_n;
+  } else {
+    displayed.mainLabel = "周积分";
+    displayed.mainValue = item.period_score;
+    displayed.countLabel = "有效预测";
+    displayed.countValue = item.valid_predictions;
+    displayed.exact_hits = item.exact_hits;
+  }
+  return displayed;
 }
 
 Page({
   data: {
     state: "loading",
-    periodType: "week",
+    board: "week",
     items: [],
+    me: null,
     errorMessage: "",
     hasMore: false,
     nextCursor: null,
@@ -43,14 +60,26 @@ Page({
     this.setData({
       state: "loading",
       items: [],
+      me: null,
       errorMessage: "",
       hasMore: false,
       nextCursor: null,
       loadingMore: false,
     });
-    listRankings({ periodType: this.data.periodType }).then((result) => {
+    listRankings({ board: this.data.board }).then((result) => {
       this.applyListResult(result, true);
     });
+  },
+
+  onBoardTap(event) {
+    const board = event.currentTarget.dataset.board;
+    if (board !== "week" && board !== "career" && board !== "strength") {
+      return;
+    }
+    if (board === this.data.board) {
+      return;
+    }
+    this.setData({ board }, () => this.loadFirstPage());
   },
 
   applyListResult(result, replace) {
@@ -79,29 +108,30 @@ Page({
       return;
     }
     const payload = result.data || {};
-    const items = Array.isArray(payload.items) ? payload.items.map(presentItem) : [];
+    const items = Array.isArray(payload.items)
+      ? payload.items.map((item) => presentItem(item, this.data.board))
+      : [];
     const page = payload.page || {};
     const merged = replace ? items : this.data.items.concat(items);
+    let me = null;
+    if (payload.me && typeof payload.me === "object") {
+      me = { status: payload.me.status };
+      if (payload.me.status === "ranked") {
+        me.rank = payload.me.rank;
+        me.top_percent = payload.me.top_percent;
+      } else if (payload.me.status === "below_threshold") {
+        me.remaining_valid_predictions = payload.me.remaining_valid_predictions;
+      }
+    }
     this.setData({
-      state: merged.length === 0 ? "empty" : "list",
+      state: merged.length === 0 && me === null ? "empty" : "list",
       items: merged,
+      me,
       hasMore: page.has_more === true,
       nextCursor: page.next_cursor === undefined ? null : page.next_cursor,
       errorMessage: "",
       loadingMore: false,
     });
-  },
-
-  onPeriodTap(event) {
-    const periodType = event.currentTarget.dataset.periodType;
-    if (periodType !== "week" && periodType !== "month") {
-      return;
-    }
-    if (periodType === this.data.periodType) {
-      return;
-    }
-    this.setData({ periodType: periodType });
-    this.loadFirstPage();
   },
 
   onMore() {
@@ -110,7 +140,7 @@ Page({
     }
     this.setData({ loadingMore: true, errorMessage: "" });
     listRankings({
-      periodType: this.data.periodType,
+      board: this.data.board,
       cursor: this.data.nextCursor,
     }).then((result) => {
       this.applyListResult(result, false);

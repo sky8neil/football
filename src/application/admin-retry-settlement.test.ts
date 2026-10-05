@@ -17,8 +17,13 @@ import type {
   SettlementItem,
   User,
 } from "../domain/types.js";
-import { InMemoryRepository } from "../infrastructure/repositories.js";
+import {
+  InMemoryRepository,
+  type AppRepository,
+  type UnitOfWork,
+} from "../infrastructure/repositories.js";
 import { FirstSettlementCode } from "./first-settlement.js";
+import { defaultLevelState } from "../domain/types.js";
 import {
   ADMIN_RETRY_SETTLEMENT_AUDIT_REASON,
   AdminRetrySettlementService,
@@ -130,6 +135,8 @@ function makeUser(overrides: Partial<User> = {}): User {
     career_exact_hits: 0,
     career_level: 1,
     career_best_level: 1,
+    career_last_scoring_match_at: null,
+    career_level_state: defaultLevelState(),
     deleted_at: null,
     created_at: NOW,
     updated_at: NOW,
@@ -839,5 +846,155 @@ describe("AdminRetrySettlementService", () => {
       result_version: 2,
     });
     expect(await repo.adminAuditLogs.findByEntity("settlement", correctionSettlement.settlement_id)).toEqual([]);
+  });
+
+  it("目标成功后后续版本失败：响应仍只反映 target 的成功 outcome 与计数（§30.4）", async () => {
+    const { repo, match, settlement } = await setup({
+      result_version: 3,
+      settled_result_version: 1,
+    });
+    await repo.settlements.update({
+      ...settlement,
+      status: SettlementDocStatus.Settled,
+      phase: SettlementPhase.Done,
+      settled_at: NOW,
+      last_error_code: null,
+      last_error_message: null,
+    });
+    await repo.matchResults.insert({
+      ...makeResult(match.match_id),
+      result_version: 2,
+      regular_home_score: 3,
+      regular_away_score: 1,
+    });
+    await repo.matchResults.insert({
+      ...makeResult(match.match_id),
+      result_version: 3,
+      regular_home_score: 1,
+      regular_away_score: 1,
+    });
+    const user = makeUser();
+    const prediction = makePrediction(user.user_id, match.match_id);
+    await repo.users.insert(user);
+    await repo.predictions.insert({
+      ...prediction,
+      match_score: 12,
+      wdl_hit: true,
+      exact_hit: true,
+      applied_result_version: 1,
+    });
+    const correctionSettlement = makeFailedSettlement(match.match_id, {
+      settlement_id: newUuid(),
+      result_version: 2,
+      is_correction: true,
+    });
+    await repo.settlements.insert(correctionSettlement);
+
+    const worker = async (
+      item: SettlementItem,
+      result: MatchResult,
+      context?: { tx: UnitOfWork; server_now: Date },
+    ) => {
+      if (result.result_version === 3) {
+        throw new Error("v3 boom");
+      }
+      const tx = context!.tx;
+      const current = await tx.predictions.findById(item.prediction_id);
+      await tx.predictions.update({
+        ...current!,
+        applied_result_version: result.result_version,
+        updated_at: NOW,
+      });
+    };
+    const outcome = await new AdminRetrySettlementService(repo, worker).retry(
+      TRUSTED_OPENID,
+      match.match_id,
+      NOW,
+    );
+
+    // 本次响应只反映 target(v2) 的 reuse 结果，后续 v3 失败不回写。
+    expect(outcome).toMatchObject({
+      kind: "settled",
+      settlement_id: correctionSettlement.settlement_id,
+      result_version: 2,
+      processed_count: 1,
+      skipped_applied_count: 0,
+    });
+    expect((await repo.matches.findById(match.match_id))?.settlement_status).toBe(
+      SettlementStatus.Failed,
+    );
+    await expect(
+      repo.settlements.findByMatchAndVersionAndRule(match.match_id, 3, RULE),
+    ).resolves.toMatchObject({
+      status: SettlementDocStatus.Failed,
+      is_correction: true,
+    });
+  });
+
+  it("目标完成后 match 仍为 correcting：outcome 收敛为 settled（§30.4/§15.9）", async () => {
+    const { repo, match, settlement } = await setup({
+      result_version: 3,
+      settled_result_version: 1,
+    });
+    await repo.settlements.update({
+      ...settlement,
+      status: SettlementDocStatus.Settled,
+      phase: SettlementPhase.Done,
+      settled_at: NOW,
+      last_error_code: null,
+      last_error_message: null,
+    });
+    await repo.matchResults.insert({
+      ...makeResult(match.match_id),
+      result_version: 2,
+      regular_home_score: 3,
+      regular_away_score: 1,
+    });
+    await repo.matchResults.insert({
+      ...makeResult(match.match_id),
+      result_version: 3,
+      regular_home_score: 1,
+      regular_away_score: 1,
+    });
+    const correctionSettlement = makeFailedSettlement(match.match_id, {
+      settlement_id: newUuid(),
+      result_version: 2,
+      is_correction: true,
+    });
+    await repo.settlements.insert(correctionSettlement);
+
+    // 目标 v2 完成后，后续 v3 因锁竞争返回 already_running，match 保持 correcting。
+    let matchLockAcquires = 0;
+    const guardedRepo = Object.create(repo) as AppRepository;
+    Object.defineProperty(guardedRepo, "jobLocks", {
+      value: {
+        ...repo.jobLocks,
+        acquire: async (lockKey: string, ownerId: string, leaseUntil: Date) => {
+          if (lockKey.startsWith("settlement:match:")) {
+            matchLockAcquires += 1;
+            if (matchLockAcquires > 1) {
+              return false;
+            }
+          }
+          return repo.jobLocks.acquire(lockKey, ownerId, leaseUntil);
+        },
+      },
+    });
+    Object.defineProperty(guardedRepo, "withTransaction", {
+      value: (fn: (tx: UnitOfWork) => Promise<unknown>) => repo.withTransaction(fn),
+    });
+
+    const outcome = await new AdminRetrySettlementService(guardedRepo).retry(
+      TRUSTED_OPENID,
+      match.match_id,
+      NOW,
+    );
+
+    expect(outcome.kind).toBe("settled");
+    expect(outcome.settlement_id).toBe(correctionSettlement.settlement_id);
+    expect(outcome.result_version).toBe(2);
+    expect((await repo.matches.findById(match.match_id))?.settlement_status).toBe(
+      SettlementStatus.Correcting,
+    );
   });
 });

@@ -14,7 +14,7 @@ import { planResultCorrection } from "./result-correction-plan.js";
 import { assertValidServerNow } from "./period-finalize.js";
 import type { AdminAuditLog, Match, MatchResult } from "../domain/types.js";
 import type { AppRepository } from "../infrastructure/repositories.js";
-import { AdminAuthorizationService } from "./admin.js";
+import { AdminAuthorizationService, type AdminWriteAuthorizer } from "./admin.js";
 import { transitionMatchSettlementStatus } from "./first-settlement-service.js";
 
 export interface AdminResultCorrectionInput {
@@ -119,10 +119,14 @@ function auditValue(next: {
   };
 }
 
-export class AdminResultCorrectionService {
+export class AdminResultCorrectionService implements AdminWriteAuthorizer {
   private readonly authorization = new AdminAuthorizationService();
 
   constructor(private readonly repo: AppRepository) {}
+
+  authorizeAdmin(trustedOpenid: string): Promise<void> {
+    return this.authorization.authorizeAdmin(this.repo, trustedOpenid);
+  }
 
   async correct(
     trustedOpenid: string | null | undefined,

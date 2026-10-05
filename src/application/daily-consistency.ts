@@ -7,6 +7,13 @@ export interface CareerCacheValues {
   career_exact_hits: number;
   career_level: number;
   career_best_level: number;
+  career_last_scoring_match_at?: Date | null;
+  career_below_count?: number;
+  career_last_eval_as_of?: Date | null;
+  career_last_eval_n?: number;
+  career_last_eval_score_sum?: number;
+  career_last_eval_b_points?: number;
+  career_last_eval_rule_version?: string | null;
 }
 
 export interface SeasonStatsCacheValues {
@@ -16,6 +23,12 @@ export interface SeasonStatsCacheValues {
   exact_hits: number;
   level: number;
   best_level: number;
+  below_count?: number;
+  last_eval_as_of?: Date | null;
+  last_eval_n?: number;
+  last_eval_score_sum?: number;
+  last_eval_b_points?: number;
+  last_eval_rule_version?: string | null;
 }
 
 export interface RankingCacheValues {
@@ -27,6 +40,16 @@ export interface RankingCacheValues {
   global_rank: number | null;
 }
 
+export interface BoardSnapshotCacheValues {
+  rank: number | null;
+  career_points: number | null;
+  career_exact_hits: number | null;
+  career_valid_predictions: number | null;
+  career_last_scoring_match_at: Date | null;
+  window_score_sum: number | null;
+  window_n: number | null;
+}
+
 export interface CareerConsistencyEntry {
   user_id: string;
   actual: CareerCacheValues;
@@ -35,7 +58,7 @@ export interface CareerConsistencyEntry {
 
 export interface SeasonStatsConsistencyEntry {
   user_id: string;
-  season_id: string;
+  level_season_id: string;
   actual: SeasonStatsCacheValues;
   expected: SeasonStatsCacheValues;
 }
@@ -46,6 +69,15 @@ export interface RankingConsistencyEntry {
   user_id: string;
   actual: RankingCacheValues;
   expected: RankingCacheValues;
+}
+
+export interface BoardSnapshotConsistencyEntry {
+  board: "career" | "strength";
+  snapshot_at: Date;
+  user_id: string;
+  rank_check_skipped?: boolean;
+  actual: BoardSnapshotCacheValues;
+  expected: BoardSnapshotCacheValues;
 }
 
 export interface ActiveSettlementConsistencyScope {
@@ -62,10 +94,15 @@ export interface DailyConsistencyInput {
   career: CareerConsistencyEntry[];
   season_stats: SeasonStatsConsistencyEntry[];
   rankings: RankingConsistencyEntry[];
+  board_snapshots: BoardSnapshotConsistencyEntry[];
   active_settlements: ActiveSettlementConsistencyScope[];
 }
 
-export type ConsistencyDifferenceScope = "career" | "season_stats" | "ranking";
+export type ConsistencyDifferenceScope =
+  | "career"
+  | "season_stats"
+  | "ranking"
+  | "board_snapshot";
 
 export interface ConsistencyDifference {
   scope: ConsistencyDifferenceScope;
@@ -98,6 +135,13 @@ const CAREER_FIELDS: readonly (keyof CareerCacheValues)[] = [
   "career_exact_hits",
   "career_level",
   "career_best_level",
+  "career_last_scoring_match_at",
+  "career_below_count",
+  "career_last_eval_as_of",
+  "career_last_eval_n",
+  "career_last_eval_score_sum",
+  "career_last_eval_b_points",
+  "career_last_eval_rule_version",
 ];
 
 const SEASON_FIELDS: readonly (keyof SeasonStatsCacheValues)[] = [
@@ -107,6 +151,12 @@ const SEASON_FIELDS: readonly (keyof SeasonStatsCacheValues)[] = [
   "exact_hits",
   "level",
   "best_level",
+  "below_count",
+  "last_eval_as_of",
+  "last_eval_n",
+  "last_eval_score_sum",
+  "last_eval_b_points",
+  "last_eval_rule_version",
 ];
 
 const RANKING_FIELDS: readonly (keyof RankingCacheValues)[] = [
@@ -116,6 +166,16 @@ const RANKING_FIELDS: readonly (keyof RankingCacheValues)[] = [
   "exact_hits",
   "last_scoring_match_at",
   "global_rank",
+];
+
+const BOARD_SNAPSHOT_FIELDS: readonly (keyof BoardSnapshotCacheValues)[] = [
+  "rank",
+  "career_points",
+  "career_exact_hits",
+  "career_valid_predictions",
+  "career_last_scoring_match_at",
+  "window_score_sum",
+  "window_n",
 ];
 
 function sameValue(actual: unknown, expected: unknown): boolean {
@@ -191,6 +251,7 @@ export function checkDailyConsistency(
   const activeUsers = new Set<string>();
   const activeUserSeasons = new Set<string>();
   const activeUserPeriods = new Set<string>();
+  const activeRankingPeriods = new Set<string>();
   for (const scope of input.active_settlements) {
     for (const userId of scope.user_ids) {
       activeUsers.add(userId);
@@ -200,6 +261,9 @@ export function checkDailyConsistency(
           `${periodKey(period.period_type, period.period_key)}:${userId}`,
         );
       }
+    }
+    for (const period of scope.periods) {
+      activeRankingPeriods.add(periodKey(period.period_type, period.period_key));
     }
   }
 
@@ -221,12 +285,12 @@ export function checkDailyConsistency(
   }
 
   for (const entry of input.season_stats) {
-    if (activeUserSeasons.has(`${entry.user_id}:${entry.season_id}`)) {
+    if (activeUserSeasons.has(`${entry.user_id}:${entry.level_season_id}`)) {
       continue;
     }
     const difference = compareValues(
       "season_stats",
-      `${entry.user_id}:${entry.season_id}`,
+      `${entry.user_id}:${entry.level_season_id}`,
       entry.actual,
       entry.expected,
       SEASON_FIELDS,
@@ -249,7 +313,27 @@ export function checkDailyConsistency(
       `${entry.period_type}:${entry.period_key}:${entry.user_id}`,
       entry.actual,
       entry.expected,
-      RANKING_FIELDS,
+      activeRankingPeriods.has(periodKey(entry.period_type, entry.period_key))
+        ? RANKING_FIELDS.filter((field) => field !== "global_rank")
+        : RANKING_FIELDS,
+    );
+    if (difference !== null) {
+      differences.push(difference);
+    }
+  }
+
+  for (const entry of input.board_snapshots) {
+    if (activeUsers.has(entry.user_id)) {
+      continue;
+    }
+    const difference = compareValues(
+      "board_snapshot",
+      `${entry.board}:${entry.snapshot_at.toISOString()}:${entry.user_id}`,
+      entry.actual,
+      entry.expected,
+      entry.rank_check_skipped
+        ? BOARD_SNAPSHOT_FIELDS.filter((field) => field !== "rank")
+        : BOARD_SNAPSHOT_FIELDS,
     );
     if (difference !== null) {
       differences.push(difference);

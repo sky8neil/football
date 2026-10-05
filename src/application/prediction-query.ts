@@ -1,5 +1,9 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { FIXED_CONFIG_V1, MVP_SEASON } from "../domain/config.js";
+import {
+  FIXED_CONFIG_V1,
+  findSupportedLeagueById,
+  isSupportedLeagueId,
+} from "../domain/config.js";
 import { UserStatus } from "../domain/enums.js";
 import { conflictError, internalError, notFoundError, validationError } from "../domain/errors.js";
 import { isValidUuid } from "../domain/ids.js";
@@ -23,7 +27,8 @@ export interface PredictionDetailData {
 }
 
 export interface PredictionHistoryQuery {
-  season_id: string;
+  league_id: string | null;
+  season_id: string | null;
   limit: number;
   cursor: string | null;
 }
@@ -45,7 +50,8 @@ export interface PredictionHistoryResult {
 
 interface PredictionHistoryCursorPayload {
   version: 1;
-  season_id: string;
+  league_id: string | null;
+  season_id: string | null;
   submitted_at: string;
   prediction_id: string;
 }
@@ -71,9 +77,12 @@ function parsePredictionHistoryCursor(value: unknown): PredictionHistoryCursorPa
     throw validationError("cursor 内容无效", { field: "cursor" });
   }
   const payload = value as Record<string, unknown>;
+  const leagueId = payload.league_id;
+  const seasonId = payload.season_id;
   if (
     payload.version !== PREDICTION_HISTORY_CURSOR_VERSION ||
-    typeof payload.season_id !== "string" ||
+    (leagueId !== null && (typeof leagueId !== "string" || !isSupportedLeagueId(leagueId))) ||
+    (seasonId !== null && typeof seasonId !== "string") ||
     typeof payload.submitted_at !== "string" ||
     !Number.isFinite(Date.parse(payload.submitted_at)) ||
     typeof payload.prediction_id !== "string" ||
@@ -83,7 +92,8 @@ function parsePredictionHistoryCursor(value: unknown): PredictionHistoryCursorPa
   }
   return {
     version: PREDICTION_HISTORY_CURSOR_VERSION,
-    season_id: payload.season_id,
+    league_id: leagueId as string | null,
+    season_id: seasonId as string | null,
     submitted_at: new Date(payload.submitted_at).toISOString(),
     prediction_id: payload.prediction_id,
   };
@@ -128,6 +138,7 @@ export class PredictionHistoryCursorCodec {
     }
     const payload = parsePredictionHistoryCursor(parsed);
     return {
+      league_id: payload.league_id,
       season_id: payload.season_id,
       submitted_at: payload.submitted_at,
       prediction_id: payload.prediction_id,
@@ -165,6 +176,9 @@ export class PredictionQueryService {
     if (match === null) {
       throw internalError("prediction 缺少对应 match");
     }
+    const hasFormalScore =
+      match.regular_home_score !== null && match.regular_away_score !== null;
+    const hasSettlement = hasFormalScore && match.match_status !== "cancelled";
 
     return {
       prediction_id: prediction.prediction_id,
@@ -177,16 +191,25 @@ export class PredictionQueryService {
       match_status: match.match_status,
       regular_home_score: match.regular_home_score,
       regular_away_score: match.regular_away_score,
-      match_score: prediction.match_score,
-      wdl_hit: prediction.wdl_hit,
-      exact_hit: prediction.exact_hit,
+      match_score: hasSettlement ? prediction.match_score : null,
+      wdl_hit: hasSettlement ? prediction.wdl_hit : null,
+      exact_hit: hasSettlement ? prediction.exact_hit : null,
     };
   }
 }
 
-function assertPredictionHistoryQuery(input: PredictionHistoryQuery): void {
+function assertPredictionHistoryQuery(
+  input: PredictionHistoryQuery,
+  cursor: Omit<PredictionHistoryCursorPayload, "version"> | null,
+): void {
+  const leagueId = input.league_id ?? cursor?.league_id ?? null;
+  const seasonId = input.season_id ?? cursor?.season_id ?? null;
   if (
-    input.season_id !== MVP_SEASON.season_id ||
+    (leagueId !== null && !isSupportedLeagueId(leagueId)) ||
+    (seasonId !== null && leagueId === null) ||
+    (seasonId !== null &&
+      leagueId !== null &&
+      findSupportedLeagueById(leagueId)?.season_id !== seasonId) ||
     !Number.isSafeInteger(input.limit) ||
     input.limit < 1 ||
     input.limit > FIXED_CONFIG_V1.API_MAX_LIMIT ||
@@ -220,7 +243,8 @@ export class PredictionHistoryQueryService {
     if (!isValidUuid(userId)) {
       throw validationError("user_id 必须为 UUID v4", { field: "user_id" });
     }
-    assertPredictionHistoryQuery(input);
+    const cursor = input.cursor === null ? null : this.cursorCodec.decode(input.cursor);
+    assertPredictionHistoryQuery(input, cursor);
 
     const user = await this.repo.users.findById(userId);
     if (user === null) {
@@ -230,10 +254,16 @@ export class PredictionHistoryQueryService {
       throw conflictError("USER_DELETED", "该账号已被注销");
     }
 
-    const cursor = input.cursor === null ? null : this.cursorCodec.decode(input.cursor);
-    if (cursor !== null && cursor.season_id !== input.season_id) {
-      throw validationError("cursor 与当前 season_id 冲突", { field: "cursor" });
+    if (cursor !== null) {
+      if (input.league_id != null && cursor.league_id !== input.league_id) {
+        throw validationError("cursor 与当前 league_id 冲突", { field: "cursor" });
+      }
+      if (input.season_id != null && cursor.season_id !== input.season_id) {
+        throw validationError("cursor 与当前 season_id 冲突", { field: "cursor" });
+      }
     }
+    const resolvedLeagueId = input.league_id ?? cursor?.league_id ?? null;
+    const resolvedSeasonId = input.season_id ?? cursor?.season_id ?? null;
 
     const facts: Array<{ prediction: Prediction; match: Match }> = [];
     for (const prediction of await this.repo.predictions.findByUser(userId)) {
@@ -245,7 +275,13 @@ export class PredictionHistoryQueryService {
       if (match === null) {
         throw internalError(`prediction 缺少对应 match（prediction_id=${prediction.prediction_id}）`);
       }
-      if (match.league_id !== MVP_SEASON.league_id || match.season_id !== input.season_id) {
+      if (findSupportedLeagueById(match.league_id) === undefined) {
+        continue;
+      }
+      if (resolvedLeagueId !== null && match.league_id !== resolvedLeagueId) {
+        continue;
+      }
+      if (resolvedSeasonId !== null && match.season_id !== resolvedSeasonId) {
         continue;
       }
       assertValidDate(match.kickoff_at, "kickoff_at");
@@ -275,6 +311,7 @@ export class PredictionHistoryQueryService {
     const items: PredictionHistoryItem[] = page.map(({ prediction, match }) => {
       const hasFormalScore =
         match.regular_home_score !== null && match.regular_away_score !== null;
+      const hasSettlement = hasFormalScore && match.match_status !== "cancelled";
       return {
         prediction_id: prediction.prediction_id,
         match_id: prediction.match_id,
@@ -292,9 +329,9 @@ export class PredictionHistoryQueryService {
         match_status: match.match_status,
         regular_home_score: match.regular_home_score,
         regular_away_score: match.regular_away_score,
-        match_score: hasFormalScore ? prediction.match_score : null,
-        wdl_hit: hasFormalScore ? prediction.wdl_hit : null,
-        exact_hit: hasFormalScore ? prediction.exact_hit : null,
+        match_score: hasSettlement ? prediction.match_score : null,
+        wdl_hit: hasSettlement ? prediction.wdl_hit : null,
+        exact_hit: hasSettlement ? prediction.exact_hit : null,
       };
     });
 
@@ -305,7 +342,8 @@ export class PredictionHistoryQueryService {
       has_more: hasMore,
       next_cursor: hasMore && last !== undefined
         ? this.cursorCodec.encode({
-            season_id: input.season_id,
+            league_id: resolvedLeagueId,
+            season_id: resolvedSeasonId,
             submitted_at: last.prediction.submitted_at.toISOString(),
             prediction_id: last.prediction.prediction_id,
           })

@@ -21,6 +21,7 @@ import {
   SettlementStatus,
 } from "../domain/enums.js";
 import { newUuid } from "../domain/ids.js";
+import { defaultLevelState } from "../domain/types.js";
 import type { Match, MatchProviderMapping, MatchResult } from "../domain/types.js";
 import { InMemoryRepository } from "../infrastructure/repositories.js";
 import type { NormalizedFixture } from "../provider/fixture-mapper.js";
@@ -274,8 +275,10 @@ describe("H. result_version（规范 44-H / 12）", () => {
       career_valid_predictions: 0,
       career_wdl_hits: 0,
       career_exact_hits: 0,
+      career_last_scoring_match_at: null,
       career_level: 1,
       career_best_level: 1,
+      career_level_state: defaultLevelState(),
       deleted_at: null,
       created_at: NOW,
       updated_at: NOW,

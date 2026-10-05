@@ -13,7 +13,7 @@ import {
   type RebuildUserStatsOutcome,
   userStatsRebuildLockKey,
 } from "./stats-rebuild-service.js";
-import { AdminAuthorizationService } from "./admin.js";
+import { AdminAuthorizationService, type AdminWriteAuthorizer } from "./admin.js";
 import { assertValidServerNow } from "./period-finalize.js";
 
 const REBUILD_LEASE_MILLISECONDS = FIXED_CONFIG_V1.JOB_LEASE_MINUTES * 60 * 1000;
@@ -26,6 +26,7 @@ export const ADMIN_REBUILD_USER_STATS_AUDIT_REASON = "管理员用户统计重�
 function userStatsAuditValue(
   user: User,
   seasonStatsChangedCount: number,
+  levelStateChanged?: boolean,
 ): Record<string, unknown> {
   return {
     career_points: user.career_points,
@@ -35,6 +36,7 @@ function userStatsAuditValue(
     career_level: user.career_level,
     career_best_level: user.career_best_level,
     season_stats_changed_count: seasonStatsChangedCount,
+    ...(levelStateChanged === undefined ? {} : { level_state_changed: levelStateChanged }),
   };
 }
 
@@ -56,10 +58,10 @@ function changedSeasonStatsCount(
   before: readonly UserSeasonStats[],
   after: readonly UserSeasonStats[],
 ): number {
-  const beforeBySeason = new Map(before.map((stats) => [stats.season_id, stats]));
+  const beforeBySeason = new Map(before.map((stats) => [stats.level_season_id, stats]));
   let changed = 0;
   for (const current of after) {
-    const previous = beforeBySeason.get(current.season_id);
+    const previous = beforeBySeason.get(current.level_season_id);
     if (previous === undefined || !seasonStatsBusinessValuesEqual(previous, current)) {
       changed += 1;
     }
@@ -72,7 +74,7 @@ export interface AdminRebuildUserStatsOutcome extends RebuildUserStatsOutcome {
   audit_log: AdminAuditLog;
 }
 
-export interface AdminRebuildUserStatsCommand {
+export interface AdminRebuildUserStatsCommand extends AdminWriteAuthorizer {
   rebuild(
     trustedOpenid: string | null | undefined,
     userId: string,
@@ -86,6 +88,10 @@ export class AdminRebuildUserStatsService implements AdminRebuildUserStatsComman
 
   constructor(private readonly repo: AppRepository) {
     this.rebuildService = new RebuildUserStatsService(repo);
+  }
+
+  authorizeAdmin(trustedOpenid: string): Promise<void> {
+    return this.authorization.authorizeAdmin(this.repo, trustedOpenid);
   }
 
   async rebuild(
@@ -108,7 +114,7 @@ export class AdminRebuildUserStatsService implements AdminRebuildUserStatsComman
       new Date(serverNow.getTime() + REBUILD_LEASE_MILLISECONDS),
     );
     if (!acquired) {
-      throw conflictError("SETTLEMENT_ALREADY_RUNNING", "目标用户存在并发 rebuild");
+      throw conflictError("USER_STATS_REBUILD_ALREADY_RUNNING", "目标用户存在并发用户统计重建");
     }
 
     try {
@@ -144,7 +150,11 @@ export class AdminRebuildUserStatsService implements AdminRebuildUserStatsComman
           entity_type: ADMIN_AUDIT_ENTITY_TYPE_BY_ACTION[ADMIN_REBUILD_USER_STATS_AUDIT_ACTION],
           entity_id: userId,
           old_value: userStatsAuditValue(oldUser, 0),
-          new_value: userStatsAuditValue(rebuilt.user, seasonStatsChangedCount),
+          new_value: userStatsAuditValue(
+            rebuilt.user,
+            seasonStatsChangedCount,
+            rebuilt.level_state_changed,
+          ),
           reason: ADMIN_REBUILD_USER_STATS_AUDIT_REASON,
           created_at: serverNow,
         };

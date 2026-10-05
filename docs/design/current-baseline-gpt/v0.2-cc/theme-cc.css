@@ -1,0 +1,46 @@
+/* v0.2-cc 深松绿：把"强调深色块"从深蓝换成同色相的深松绿，与品牌绿同族，亮度拉开层次。
+   「正绿」(#9ee48a→#62c453) 仍只留给「去预测」主操作。 */
+:root {
+  --navy-700: #1f4d36;
+  --navy-900: #0e2d20;
+  --deep-a: #1f4d36;
+  --deep-b: #0e2d20;
+  --deep-glow: rgba(185,240,143,.20);
+  --deep-accent: #b9f08f;
+}
+body.variant-1 .hero, body .next-level-panel {
+  background:
+    radial-gradient(120% 90% at 100% 0%, var(--deep-glow), transparent 55%),
+    linear-gradient(160deg, var(--deep-a), var(--deep-b));
+  border-color: rgba(185,240,143,.22);
+  box-shadow: 0 10px 28px rgba(14,45,32,.28), inset 0 1px 0 rgba(255,255,255,.10);
+}
+body .match.is-live .bug, body .match.is-done .bug {
+  background: linear-gradient(180deg, var(--deep-a), var(--deep-b));
+  border-color: var(--deep-b);
+  box-shadow: 0 8px 16px rgba(14,45,32,.22), inset 0 1px 0 rgba(255,255,255,.12);
+}
+body.variant-1 .hero .hero-metrics b { color: var(--deep-accent); }
+body .next-level-panel .level-path .current { color: var(--deep-accent); }
+
+/* 排行榜范围：头部小胶囊 + 底部弹层 */
+.heading-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.scope-chip {
+  display: inline-flex; align-items: center; gap: 4px; max-width: 150px; height: 32px; padding: 0 10px 0 12px;
+  border-radius: 99px; border: 1px solid rgba(255,255,255,.9); background: rgba(255,255,255,.72);
+  color: var(--ui-positive); font-size: 12px; font-weight: 700; box-shadow: var(--ui-shadow);
+  backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+}
+.scope-chip span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scope-chip svg { width: 14px; height: 14px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+body .scope-switch, body .group-picker { display: none; }
+.scope-sheet { display: grid; gap: 8px; margin-top: 4px; }
+.scope-sheet .opt {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; min-height: 52px; padding: 8px 14px;
+  border-radius: 12px; border: 1px solid var(--ui-line); background: rgba(255,255,255,.8); text-align: left; font-size: 13px; font-weight: 600; color: var(--ui-ink);
+}
+.scope-sheet .opt small { display: block; margin-top: 1px; font-size: 11px; font-weight: 400; color: var(--ui-secondary); }
+.scope-sheet .opt[aria-checked=true] { border-color: var(--ui-selected); background: #eef8ea; color: var(--ui-positive); }
+.scope-sheet .opt .tick { width: 18px; height: 18px; flex: none; fill: none; stroke: var(--ui-selected); stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; opacity: 0; }
+.scope-sheet .opt[aria-checked=true] .tick { opacity: 1; }
+.scope-sheet .sheet-label { margin: 8px 2px 0; font-size: 11px; color: var(--ui-muted); }

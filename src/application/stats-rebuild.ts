@@ -3,14 +3,14 @@
  *
  * 从 applied settlement_items 账本重建用户 career/season 统计，作为旧聚合缓存的
  * 替代来源（禁止使用任何旧聚合缓存）。输入为调用方提供的 item 列表与
- * prediction_id -> season_id 映射；本模块不访问 repository / 数据库。
+ * prediction_id -> level_season_id 映射；本模块不访问 repository / 数据库。
  *
  * 聚合规则（规范 9.x）：
  * - career_points            = sum(score_delta)
  * - career_valid_predictions = sum(valid_prediction_delta)
  * - career_wdl_hits          = sum(new_wdl_hit - old_wdl_hit)
  * - career_exact_hits        = sum(new_exact_hit - old_exact_hit)
- * - season stats 按 item.prediction_id 对应的 season_id 分组，字段同名聚合。
+ * - season stats 按 item.prediction_id 对应的 level_season_id 分组，字段同名聚合。
  *
  * 账本完整性校验（非法 ledger 抛 INVALID_LEDGER）：
  * - 所有 item 必须属于同一 user 且 status=applied
@@ -38,7 +38,7 @@ export interface RebuiltCareerStats {
 /** 单赛季统计结果，字段对齐 UserSeasonStats 文档。 */
 export interface RebuiltSeasonStats {
   user_id: string;
-  season_id: string;
+  level_season_id: string;
   points: number;
   valid_predictions: number;
   wdl_hits: number;
@@ -91,11 +91,11 @@ function assertInvariants(scope: string, acc: Accumulator, userId: string): void
 
 /**
  * 从 applied settlement_items 账本重建统计。items 必须属于同一 user；
- * seasonByPrediction 提供每个 prediction_id 所属 season_id。
+ * levelSeasonByPrediction 提供 period_anchor_at 对应的 level_season_id。
  */
 export function rebuildStatsFromLedger(
   items: readonly SettlementItem[],
-  seasonByPrediction: ReadonlyMap<string, string>,
+  levelSeasonByPrediction: ReadonlyMap<string, string>,
 ): RebuiltStats {
   if (items.length === 0) {
     return {
@@ -145,7 +145,7 @@ export function rebuildStatsFromLedger(
         `new exact_hit 未同时命中 wdl（prediction_id=${item.prediction_id}）`,
       );
     }
-    const seasonId = seasonByPrediction.get(item.prediction_id);
+    const seasonId = levelSeasonByPrediction.get(item.prediction_id);
     if (seasonId === undefined) {
       throw invalidLedgerError(
         `缺少 prediction->season 映射（prediction_id=${item.prediction_id}）`,
@@ -180,7 +180,7 @@ export function rebuildStatsFromLedger(
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([seasonId, season]) => ({
       user_id: userId,
-      season_id: seasonId,
+      level_season_id: seasonId,
       points: season.points,
       valid_predictions: season.validPredictions,
       wdl_hits: season.wdlHits,

@@ -3,6 +3,7 @@ import { newUuid } from "../domain/ids.js";
 import type { Unlock, User } from "../domain/types.js";
 import { InMemoryRepository } from "../infrastructure/repositories.js";
 import { UnlocksQueryService } from "./unlocks.js";
+import { defaultLevelState } from "../domain/types.js";
 
 const NOW = new Date("2026-08-10T00:00:00.000Z");
 const USER_ID = "00000000-0000-4000-8000-000000000001";
@@ -22,6 +23,8 @@ function makeUser(overrides: Partial<User> = {}): User {
     career_exact_hits: 0,
     career_level: 1,
     career_best_level: 1,
+    career_last_scoring_match_at: null,
+    career_level_state: defaultLevelState(),
     deleted_at: null,
     created_at: NOW,
     updated_at: NOW,

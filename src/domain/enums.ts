@@ -52,6 +52,42 @@ export const PeriodType = {
 } as const;
 export type PeriodType = (typeof PeriodType)[keyof typeof PeriodType];
 
+export const RankingBoard = {
+  Week: "week",
+  Career: "career",
+  Strength: "strength",
+} as const;
+export type RankingBoard = (typeof RankingBoard)[keyof typeof RankingBoard];
+
+export const RankingScope = {
+  Global: "global",
+  Group: "group",
+} as const;
+export type RankingScope = (typeof RankingScope)[keyof typeof RankingScope];
+
+export const GroupStatus = {
+  Active: "active",
+  Dissolved: "dissolved",
+} as const;
+export type GroupStatus = (typeof GroupStatus)[keyof typeof GroupStatus];
+
+export const GroupMemberStatus = {
+  Active: "active",
+  Left: "left",
+} as const;
+export type GroupMemberStatus =
+  (typeof GroupMemberStatus)[keyof typeof GroupMemberStatus];
+
+export const LeagueId = {
+  PremierLeague: "premier_league",
+  LaLiga: "la_liga",
+  SerieA: "serie_a",
+  Bundesliga: "bundesliga",
+  Ligue1: "ligue_1",
+  ChineseSuperLeague: "chinese_super_league",
+} as const;
+export type LeagueId = (typeof LeagueId)[keyof typeof LeagueId];
+
 export const LevelScope = {
   Season: "season",
   Career: "career",
@@ -104,10 +140,9 @@ export type SettlementItemStatus =
   (typeof SettlementItemStatus)[keyof typeof SettlementItemStatus];
 
 export const LevelHistoryReason = {
-  Settlement: "settlement",
-  Correction: "correction",
+  WeeklyEval: "weekly_eval",
+  CorrectionReeval: "correction_reeval",
   Rebuild: "rebuild",
-  SeasonStart: "season_start",
 } as const;
 export type LevelHistoryReason =
   (typeof LevelHistoryReason)[keyof typeof LevelHistoryReason];
@@ -120,6 +155,10 @@ export const SyncJobType = {
   PostFinishVerify: "post_finish_verify",
   PeriodFinalize: "period_finalize",
   DailyConsistency: "daily_consistency",
+  WeeklyLevelEval: "weekly_level_eval",
+  LevelCorrectionReeval: "level_correction_reeval",
+  BoardSnapshotCareer: "board_snapshot_career",
+  BoardSnapshotStrength: "board_snapshot_strength",
 } as const;
 export type SyncJobType = (typeof SyncJobType)[keyof typeof SyncJobType];
 

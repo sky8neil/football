@@ -8,13 +8,6 @@ function displayTeamId(value) {
   return String(value);
 }
 
-function displayAccuracy(value) {
-  if (value === null || value === undefined) {
-    return "暂无";
-  }
-  return String(value);
-}
-
 function applyErrorState(page, result) {
   if (result.statusCode === 401 && result.code === "UNAUTHORIZED") {
     page.setData({
@@ -62,20 +55,14 @@ Page({
     favoriteTeamText: "",
     careerPoints: "",
     careerValidPredictions: "",
-    careerWdlHits: "",
     careerExactHits: "",
-    careerWdlAccuracyText: "",
     careerLevel: "",
     careerBestLevel: "",
     seasonId: "",
     seasonValidPredictions: "",
-    seasonWdlHits: "",
-    seasonWdlAccuracyText: "",
     seasonLevel: "",
     seasonBestLevel: "",
     levelsCareerValidPredictions: "",
-    levelsCareerWdlHits: "",
-    levelsCareerWdlAccuracyText: "",
     levelsCareerLevel: "",
     levelsCareerBestLevel: "",
   },
@@ -109,20 +96,14 @@ Page({
         favoriteTeamText: displayTeamId(profile.favorite_team_id),
         careerPoints: String(profile.career_points),
         careerValidPredictions: String(profile.career_valid_predictions),
-        careerWdlHits: String(profile.career_wdl_hits),
         careerExactHits: String(profile.career_exact_hits),
-        careerWdlAccuracyText: displayAccuracy(profile.career_wdl_accuracy_percent),
         careerLevel: String(profile.career_level),
         careerBestLevel: String(profile.career_best_level),
-        seasonId: season.season_id,
+        seasonId: season.level_season_id,
         seasonValidPredictions: String(season.valid_predictions),
-        seasonWdlHits: String(season.wdl_hits),
-        seasonWdlAccuracyText: displayAccuracy(season.wdl_accuracy_percent),
-        seasonLevel: String(season.level),
+        seasonLevel: String(profile.season_level),
         seasonBestLevel: String(season.best_level),
         levelsCareerValidPredictions: String(career.valid_predictions),
-        levelsCareerWdlHits: String(career.wdl_hits),
-        levelsCareerWdlAccuracyText: displayAccuracy(career.wdl_accuracy_percent),
         levelsCareerLevel: String(career.level),
         levelsCareerBestLevel: String(career.best_level),
       });

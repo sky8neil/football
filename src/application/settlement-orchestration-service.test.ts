@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   MatchScoreValue,
   MatchStatus,
@@ -21,6 +21,7 @@ import type {
 } from "../domain/types.js";
 import { InMemoryRepository, type AppRepository, type UnitOfWork } from "../infrastructure/repositories.js";
 import { SettlementOrchestrationService } from "./settlement-orchestration-service.js";
+import { defaultLevelState } from "../domain/types.js";
 
 const NOW = new Date("2026-08-09T00:00:00.000Z");
 const ANCHOR = new Date("2026-08-08T14:00:00.000Z");
@@ -41,6 +42,8 @@ function makeUser(overrides: Partial<User> = {}): User {
     career_exact_hits: 1,
     career_level: 1,
     career_best_level: 1,
+    career_last_scoring_match_at: null,
+    career_level_state: defaultLevelState(),
     deleted_at: null,
     created_at: NOW,
     updated_at: NOW,
@@ -171,33 +174,33 @@ async function seedAppliedV1Caches(repo: InMemoryRepository, userId: string, sea
   await repo.userSeasonStats.insert({
     schema_version: 1,
     user_id: userId,
-    season_id: seasonId,
+    level_season_id: seasonId,
     points: 12,
     valid_predictions: 1,
     wdl_hits: 1,
     exact_hits: 1,
     level: 1,
     best_level: 1,
+    level_state: defaultLevelState(),
+    is_level_frozen: false,
     created_at: NOW,
     updated_at: NOW,
   });
-  for (const periodType of [PeriodType.Week, PeriodType.Month]) {
-    await repo.rankings.insert({
-      schema_version: 1,
-      period_type: periodType,
-      period_key: periodType === PeriodType.Week ? "2026-W32" : "2026-08",
-      user_id: userId,
-      period_score: 12,
-      valid_predictions: 1,
-      wdl_hits: 1,
-      exact_hits: 1,
-      last_scoring_match_at: ANCHOR,
-      global_rank: null,
-      is_final: false,
-      created_at: NOW,
-      updated_at: NOW,
-    } satisfies RankingEntry);
-  }
+  await repo.rankings.insert({
+    schema_version: 1,
+    period_type: PeriodType.Week,
+    period_key: "2026-W32",
+    user_id: userId,
+    period_score: 12,
+    valid_predictions: 1,
+    wdl_hits: 1,
+    exact_hits: 1,
+    last_scoring_match_at: ANCHOR,
+    global_rank: null,
+    is_final: false,
+    created_at: NOW,
+    updated_at: NOW,
+  } satisfies RankingEntry);
 }
 
 async function seedQueuedCorrections() {
@@ -228,6 +231,26 @@ async function seedQueuedCorrections() {
       regular_home_score: 1,
       regular_away_score: 1,
     }),
+  );
+  await repo.settlements.insert(makeSettlement());
+  await repo.settlementItems.insert(makeItem());
+  await seedAppliedV1Caches(repo, user.user_id, match.season_id);
+  return { repo, user, match, prediction };
+}
+
+async function seedSingleCorrection() {
+  const repo = new InMemoryRepository();
+  const user = makeUser();
+  const match = makeMatch({ result_version: 2, settled_result_version: 1 });
+  const prediction = makePrediction();
+  await repo.users.insert(user);
+  await repo.matches.insert(match);
+  await repo.predictions.insert(prediction);
+  await repo.matchResults.insert(
+    makeResult({ result_version: 1, regular_home_score: 2, regular_away_score: 1 }),
+  );
+  await repo.matchResults.insert(
+    makeResult({ result_version: 2, regular_home_score: 3, regular_away_score: 1 }),
   );
   await repo.settlements.insert(makeSettlement());
   await repo.settlementItems.insert(makeItem());
@@ -290,6 +313,7 @@ describe("SettlementOrchestrationService 第 15.9 节 correction 队列推进", 
             settlements: tx.settlements,
             settlementItems: tx.settlementItems,
             unlocks: tx.unlocks,
+            savepoint: (callback) => tx.savepoint(callback),
           });
         }),
     });
@@ -308,9 +332,19 @@ describe("SettlementOrchestrationService 第 15.9 节 correction 队列推进", 
     ).toMatchObject({ status: SettlementDocStatus.Settled, is_correction: true });
   });
 
-  it("correct 后若仍有更高 result_version，自动顺序处理到 settled，禁止停留在中间版本", async () => {
+  it("deferred correction re-eval does not block later queued versions", async () => {
     const { repo, match, user } = await seedQueuedCorrections();
-    const service = new SettlementOrchestrationService(repo);
+    const reevaluate = vi.fn(async (settlementId: string, serverNow: Date) => ({
+      kind: reevaluate.mock.calls.length === 0 ? "deferred" as const : "completed" as const,
+      settlement_id: settlementId,
+      as_of: serverNow,
+      evaluated_count: 0,
+      changed_count: 0,
+      skipped_count: 0,
+    }));
+    const service = new SettlementOrchestrationService(repo, {
+      runForSettlement: reevaluate,
+    });
 
     const outcome = await service.correct(match.match_id, NOW);
 
@@ -347,6 +381,11 @@ describe("SettlementOrchestrationService 第 15.9 节 correction 队列推进", 
       wdl_hit: false,
       exact_hit: false,
     });
+    expect(reevaluate).toHaveBeenCalledTimes(2);
+    expect(reevaluate.mock.calls.map(([settlementId]) => settlementId)).toEqual([
+      (await repo.settlements.findByMatchAndVersionAndRule(match.match_id, 2, RULE))?.settlement_id,
+      (await repo.settlements.findByMatchAndVersionAndRule(match.match_id, 3, RULE))?.settlement_id,
+    ]);
   });
 
   it("retry 成功后若 match 进入 correcting，继续按最小未处理版本推进 correction", async () => {
@@ -444,6 +483,62 @@ describe("SettlementOrchestrationService 第 15.9 节 correction 队列推进", 
     expect(await repo.predictions.findById("p1")).toMatchObject({
       applied_result_version: 2,
       match_score: MatchScoreValue.WdlHit,
+    });
+  });
+
+  it("correct() 完成 v2 且 match 保持 correcting（v3 pending）：同一调用内启动并追平 v3", async () => {
+    const { repo, match } = await seedQueuedCorrections();
+    const service = new SettlementOrchestrationService(repo, {
+      runForSettlement: async (settlementId, serverNow) => ({
+        kind: "completed" as const,
+        settlement_id: settlementId,
+        as_of: serverNow,
+        evaluated_count: 0,
+        changed_count: 0,
+        skipped_count: 0,
+      }),
+    });
+
+    const outcome = await service.correct(match.match_id, NOW, 2);
+
+    expect(outcome.kind).toBe("settled");
+    expect(await repo.matches.findById(match.match_id)).toMatchObject({
+      settled_result_version: 3,
+      settlement_status: SettlementStatus.Settled,
+    });
+    await expect(
+      repo.settlements.findByMatchAndVersionAndRule(match.match_id, 3, RULE),
+    ).resolves.toMatchObject({
+      status: SettlementDocStatus.Settled,
+      is_correction: true,
+    });
+  });
+
+  it("correct() 完成末位版本后 match 已 settled：新增的队列续跑为空操作，返回目标 outcome", async () => {
+    const { repo, match } = await seedSingleCorrection();
+    const service = new SettlementOrchestrationService(repo, {
+      runForSettlement: async (settlementId, serverNow) => ({
+        kind: "completed" as const,
+        settlement_id: settlementId,
+        as_of: serverNow,
+        evaluated_count: 0,
+        changed_count: 0,
+        skipped_count: 0,
+      }),
+    });
+
+    const outcome = await service.correct(match.match_id, NOW);
+
+    expect(outcome).toMatchObject({ kind: "settled", target_result_version: 2 });
+    expect(await repo.matches.findById(match.match_id)).toMatchObject({
+      settled_result_version: 2,
+      settlement_status: SettlementStatus.Settled,
+    });
+    await expect(
+      repo.settlements.findByMatchAndVersionAndRule(match.match_id, 2, RULE),
+    ).resolves.toMatchObject({
+      status: SettlementDocStatus.Settled,
+      is_correction: true,
     });
   });
 });

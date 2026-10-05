@@ -9,6 +9,7 @@ import {
   type UnitOfWork,
 } from "../infrastructure/repositories.js";
 import { SessionService } from "./session.js";
+import { defaultLevelState } from "../domain/types.js";
 
 function makeUser(overrides: Partial<User> = {}): User {
   return {
@@ -25,6 +26,8 @@ function makeUser(overrides: Partial<User> = {}): User {
     career_exact_hits: 0,
     career_level: 1,
     career_best_level: 1,
+    career_last_scoring_match_at: null,
+    career_level_state: defaultLevelState(),
     deleted_at: null,
     created_at: new Date("2026-08-01T00:00:00Z"),
     updated_at: new Date("2026-08-01T00:00:00Z"),
@@ -84,6 +87,10 @@ class RaceInsertRepository implements AppRepository {
 
   withTransaction<T>(fn: (tx: UnitOfWork) => Promise<T>): Promise<T> {
     return this.base.withTransaction(fn);
+  }
+
+  savepoint<T>(fn: (tx: UnitOfWork) => Promise<T>): Promise<T> {
+    return this.base.savepoint(fn);
   }
 }
 
@@ -187,7 +194,7 @@ describe("SessionService.init", () => {
     expect(mapping?.deleted_user_id).toBe(oldUser.user_id);
   });
 
-  it("D11：无 mapping 的历史墓碑用户可重注册（创建新 active 用户）", async () => {
+  it("M119 无 mapping 的历史墓碑用户可重注册（创建新 active 用户）", async () => {
     const repo = new InMemoryRepository();
     const oldUserId = "00000000-0000-4000-8000-000000000102";
     await repo.users.insert(

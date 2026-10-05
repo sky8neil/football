@@ -15,12 +15,14 @@ describe("GET /v1/matches", () => {
       from: FROM,
       to: TO,
       status: "scheduled",
+      league_id: "la_liga",
       limit: "2",
       cursor: "opaque",
     })).toEqual({
       from: new Date(FROM),
       to: new Date(TO),
       status: "scheduled",
+      league_id: "la_liga",
       limit: 2,
       cursor: "opaque",
     });
@@ -28,6 +30,7 @@ describe("GET /v1/matches", () => {
       from: null,
       to: null,
       status: null,
+      league_id: null,
       limit: 20,
       cursor: null,
     });
@@ -42,6 +45,7 @@ describe("GET /v1/matches", () => {
       { limit: "0" },
       { limit: "101" },
       { extra: "x" },
+      { league_id: "eredivisie" },
     ]) {
       expect(() => validateMatchesQuery(query)).toThrowError(
         expect.objectContaining({ code: "VALIDATION_ERROR" }),

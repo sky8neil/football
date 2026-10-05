@@ -10,6 +10,7 @@ import {
   SettlementStatus,
 } from "../domain/enums.js";
 import { newUuid } from "../domain/ids.js";
+import { levelSeasonOf } from "../domain/time.js";
 import type {
   Match,
   MatchResult,
@@ -26,6 +27,7 @@ import {
   SettlementItemApplicationService,
 } from "./settlement-item-application-service.js";
 import { SettlementOrchestrationService } from "./settlement-orchestration-service.js";
+import { defaultLevelState } from "../domain/types.js";
 
 const NOW = new Date("2026-08-09T00:00:00.000Z");
 const ANCHOR = new Date("2026-08-08T14:00:00.000Z");
@@ -45,6 +47,8 @@ function makeUser(overrides: Partial<User> = {}): User {
     career_exact_hits: 0,
     career_level: 1,
     career_best_level: 1,
+    career_last_scoring_match_at: null,
+    career_level_state: defaultLevelState(),
     deleted_at: null,
     created_at: NOW,
     updated_at: NOW,
@@ -255,15 +259,19 @@ describe("SettlementItemApplicationService", () => {
     ).toMatchObject({ status: SettlementItemStatus.Pending, attempt_count: 0 });
   });
 
-  it("在一个事务中应用 item 到 prediction、career/season、week/month、level_history、unlock", async () => {
+  it("结算只更新统计与周榜，不即时写等级或月榜", async () => {
     const { repo, user, match, settlement } = await setup({
       user: {
         career_points: 18,
-        career_valid_predictions: 6,
+        career_valid_predictions: 20,
         career_wdl_hits: 3,
+        career_level: 3,
+        career_best_level: 4,
       },
+      match: { season_id: "league-season" },
     });
     const service = new SettlementItemApplicationService(repo);
+    const levelBefore = await repo.users.findById(user.user_id);
 
     const outcome = await service.apply(settlement.settlement_id, "p1", NOW);
 
@@ -276,13 +284,20 @@ describe("SettlementItemApplicationService", () => {
     });
     expect(await repo.users.findById(user.user_id)).toMatchObject({
       career_points: 30,
-      career_valid_predictions: 7,
+      career_valid_predictions: 21,
       career_wdl_hits: 4,
       career_exact_hits: 1,
+      career_level: levelBefore?.career_level,
+      career_best_level: levelBefore?.career_best_level,
+      career_level_state: levelBefore?.career_level_state,
+      career_last_scoring_match_at: ANCHOR,
     });
 
-    const season = await repo.userSeasonStats.findByUserAndSeason(user.user_id, match.season_id);
+    const levelSeasonId = levelSeasonOf(match.period_anchor_at as Date);
+    const season = await repo.userSeasonStats.findByUserAndSeason(user.user_id, levelSeasonId);
+    expect(season).not.toHaveProperty("season_id");
     expect(season).toMatchObject({
+      level_season_id: levelSeasonId,
       points: 12,
       valid_predictions: 1,
       wdl_hits: 1,
@@ -291,21 +306,21 @@ describe("SettlementItemApplicationService", () => {
       best_level: 1,
     } satisfies Partial<UserSeasonStats>);
 
-    for (const periodType of [PeriodType.Week, PeriodType.Month]) {
-      const ranking = await repo.rankings.findByPeriodAndUser(
-        periodType,
-        periodType === PeriodType.Week ? "2026-W32" : "2026-08",
-        user.user_id,
-      );
-      expect(ranking).toMatchObject({
-        period_score: 12,
-        valid_predictions: 1,
-        wdl_hits: 1,
-        exact_hits: 1,
-        last_scoring_match_at: ANCHOR,
-        global_rank: null,
-      });
-    }
+    const week = await repo.rankings.findByPeriodAndUser(
+      PeriodType.Week,
+      "2026-W32",
+      user.user_id,
+    );
+    expect(week).toMatchObject({
+      period_score: 12,
+      valid_predictions: 1,
+      wdl_hits: 1,
+      exact_hits: 1,
+      last_scoring_match_at: ANCHOR,
+      global_rank: null,
+    });
+    expect((await repo.rankings.findAll()).some((entry) => entry.period_type === PeriodType.Month)).toBe(false);
+    expect(await repo.levelHistory.findByUser(user.user_id)).toEqual([]);
 
     expect((await repo.unlocks.findByUser(user.user_id)).map((unlock) => unlock.unlock_code)).toEqual([
       "profile_card_style_1",
@@ -314,12 +329,12 @@ describe("SettlementItemApplicationService", () => {
       .toMatchObject({ status: SettlementItemStatus.Applied, attempt_count: 1 });
   });
 
-  it("应用修正使用当前 prediction 作为 old 值，更新 delta 且不重复有效场次", async () => {
+  it("[J70] [J71] [J72] [J76] correction 更新聚合且保留历史解锁", async () => {
     const { repo, user, match } = await setup({
       user: {
-        career_points: 12,
-        career_valid_predictions: 1,
-        career_wdl_hits: 1,
+        career_points: 30,
+        career_valid_predictions: 7,
+        career_wdl_hits: 7,
         career_exact_hits: 1,
       },
       match: {
@@ -349,46 +364,71 @@ describe("SettlementItemApplicationService", () => {
         source_result_version: 2,
       },
     });
+    const priorUnlock = {
+      schema_version: 1,
+      unlock_id: newUuid(),
+      user_id: user.user_id,
+      unlock_code: "profile_card_style_1",
+      threshold_points: 30,
+      source_version: "unlock_v1",
+      unlocked_at: NOW,
+    } as const;
+    await repo.unlocks.insert(priorUnlock);
     await repo.userSeasonStats.insert({
       schema_version: 1,
       user_id: user.user_id,
-      season_id: match.season_id,
+      level_season_id: levelSeasonOf(match.period_anchor_at as Date),
       points: 12,
       valid_predictions: 1,
       wdl_hits: 1,
       exact_hits: 1,
       level: 1,
       best_level: 1,
+      level_state: defaultLevelState(),
+      is_level_frozen: false,
       created_at: NOW,
       updated_at: NOW,
     });
-    for (const periodType of [PeriodType.Week, PeriodType.Month]) {
-      await repo.rankings.insert({
-        schema_version: 1,
-        period_type: periodType,
-        period_key: periodType === PeriodType.Week ? "2026-W32" : "2026-08",
-        user_id: user.user_id,
-        period_score: 12,
-        valid_predictions: 1,
-        wdl_hits: 1,
-        exact_hits: 1,
-        last_scoring_match_at: ANCHOR,
-        global_rank: null,
-        is_final: false,
-        created_at: NOW,
-        updated_at: NOW,
-      } satisfies RankingEntry);
-    }
+    await repo.rankings.insert({
+      schema_version: 1,
+      period_type: PeriodType.Week,
+      period_key: "2026-W32",
+      user_id: user.user_id,
+      period_score: 12,
+      valid_predictions: 1,
+      wdl_hits: 1,
+      exact_hits: 1,
+      last_scoring_match_at: ANCHOR,
+      global_rank: null,
+      is_final: false,
+      created_at: NOW,
+      updated_at: NOW,
+    } satisfies RankingEntry);
 
     const outcome = await new SettlementItemApplicationService(repo).apply("s2", "p1", NOW);
 
     expect(outcome.kind).toBe("applied");
     expect(await repo.users.findById(user.user_id)).toMatchObject({
-      career_points: 3,
-      career_valid_predictions: 1,
-      career_wdl_hits: 1,
+      career_points: 21,
+      career_valid_predictions: 7,
+      career_wdl_hits: 7,
       career_exact_hits: 0,
     });
+    await expect(repo.unlocks.findByUser(user.user_id)).resolves.toEqual([priorUnlock]);
+    await expect(repo.userSeasonStats.findByUserAndSeason(user.user_id, "2026_2027"))
+      .resolves.toMatchObject({
+        points: 3,
+        valid_predictions: 1,
+        wdl_hits: 1,
+        exact_hits: 0,
+      });
+    await expect(repo.rankings.findByPeriodAndUser(PeriodType.Week, "2026-W32", user.user_id))
+      .resolves.toMatchObject({
+        period_score: 3,
+        valid_predictions: 1,
+        wdl_hits: 1,
+        exact_hits: 0,
+      });
     expect(await repo.predictions.findById("p1")).toMatchObject({
       match_score: MatchScoreValue.WdlHit,
       applied_result_version: 2,
@@ -554,7 +594,7 @@ describe("SettlementItemApplicationService", () => {
   });
 });
 
-  it("第 15.8 节 ranking 周期锁被占用时 Fail Closed，不写入账本", async () => {
+  it("item 应用不受全局 ranking 周期锁影响", async () => {
     const { repo, settlement } = await setup();
     // jobLocks 用真实时钟判断 lease；必须使用相对当前时间的未来 lease。
     const leaseUntil = new Date(Date.now() + 60_000);
@@ -564,23 +604,24 @@ describe("SettlementItemApplicationService", () => {
 
     await expect(
       new SettlementItemApplicationService(repo).apply(settlement.settlement_id, "p1", NOW),
-    ).rejects.toMatchObject({ code: "SETTLEMENT_ALREADY_RUNNING" });
+    ).resolves.toMatchObject({ kind: "applied" });
 
     expect(await repo.predictions.findById("p1")).toMatchObject({
-      applied_result_version: 0,
-      match_score: null,
+      applied_result_version: 1,
+      match_score: MatchScoreValue.ExactHit,
     });
     expect(await repo.users.findById("u1")).toMatchObject({
-      career_points: 0,
-      career_valid_predictions: 0,
+      career_points: 12,
+      career_valid_predictions: 1,
     });
     expect(
       await repo.settlementItems.findBySettlementAndPrediction(settlement.settlement_id, "p1"),
-    ).toMatchObject({ status: SettlementItemStatus.Pending, attempt_count: 0 });
-    expect(await repo.rankings.findByPeriodAndUser(PeriodType.Week, "2026-W32", "u1")).toBeNull();
+    ).toMatchObject({ status: SettlementItemStatus.Applied, attempt_count: 1 });
+    expect(await repo.rankings.findByPeriodAndUser(PeriodType.Week, "2026-W32", "u1"))
+      .toMatchObject({ global_rank: null });
   });
 
-  it("成功应用后释放 week/month ranking 周期锁，并写入 global_rank", async () => {
+  it("item 应用只更新用户周榜聚合，不重排 global_rank", async () => {
     const { repo, settlement, user } = await setup({
       user: {
         career_points: 0,
@@ -589,64 +630,56 @@ describe("SettlementItemApplicationService", () => {
       },
     });
     // 本用户已有 2 场周期统计，item 再 +1 后达到入榜门槛 3。
-    for (const periodType of [PeriodType.Week, PeriodType.Month]) {
-      await repo.rankings.insert({
-        schema_version: 1,
-        period_type: periodType,
-        period_key: periodType === PeriodType.Week ? "2026-W32" : "2026-08",
-        user_id: user.user_id,
-        period_score: 0,
-        valid_predictions: 2,
-        wdl_hits: 0,
-        exact_hits: 0,
-        last_scoring_match_at: null,
-        global_rank: null,
-        is_final: false,
-        created_at: NOW,
-        updated_at: NOW,
-      } satisfies RankingEntry);
-    }
-    // 另两名用户已有 3 场，确保排序后本用户 global_rank=3。
+    await repo.rankings.insert({
+      schema_version: 1,
+      period_type: PeriodType.Week,
+      period_key: "2026-W32",
+      user_id: user.user_id,
+      period_score: 0,
+      valid_predictions: 2,
+      wdl_hits: 0,
+      exact_hits: 0,
+      last_scoring_match_at: null,
+      global_rank: null,
+      is_final: false,
+      created_at: NOW,
+      updated_at: NOW,
+    } satisfies RankingEntry);
+    // 另两名用户已有 3 场，验证 item 应用不改写其他用户名次。
     for (const [userId, score, rank] of [
       ["u2", 30, 1],
       ["u3", 20, 2],
     ] as const) {
       await repo.users.insert(makeUser({ user_id: userId, openid: `openid_${userId}` }));
-      for (const periodType of [PeriodType.Week, PeriodType.Month]) {
-        await repo.rankings.insert({
-          schema_version: 1,
-          period_type: periodType,
-          period_key: periodType === PeriodType.Week ? "2026-W32" : "2026-08",
-          user_id: userId,
-          period_score: score,
-          valid_predictions: 3,
-          wdl_hits: 2,
-          exact_hits: 1,
-          last_scoring_match_at: ANCHOR,
-          global_rank: rank,
-          is_final: false,
-          created_at: NOW,
-          updated_at: NOW,
-        } satisfies RankingEntry);
-      }
+      await repo.rankings.insert({
+        schema_version: 1,
+        period_type: PeriodType.Week,
+        period_key: "2026-W32",
+        user_id: userId,
+        period_score: score,
+        valid_predictions: 3,
+        wdl_hits: 2,
+        exact_hits: 1,
+        last_scoring_match_at: ANCHOR,
+        global_rank: rank,
+        is_final: false,
+        created_at: NOW,
+        updated_at: NOW,
+      } satisfies RankingEntry);
     }
 
     await new SettlementItemApplicationService(repo).apply(settlement.settlement_id, "p1", NOW);
 
     const week = await repo.rankings.findByPeriodAndUser(PeriodType.Week, "2026-W32", user.user_id);
-    const month = await repo.rankings.findByPeriodAndUser(PeriodType.Month, "2026-08", user.user_id);
     expect(week).toMatchObject({
       period_score: 12,
       valid_predictions: 3,
-      global_rank: 3,
+      global_rank: null,
     });
-    expect(month).toMatchObject({
-      period_score: 12,
-      valid_predictions: 3,
-      global_rank: 3,
-    });
-
-    // 锁应已释放，其他 owner 可再次获取。
+    expect(await repo.rankings.findByPeriodAndUser(PeriodType.Week, "2026-W32", "u2"))
+      .toMatchObject({ global_rank: 1 });
+    expect(await repo.rankings.findByPeriodAndUser(PeriodType.Week, "2026-W32", "u3"))
+      .toMatchObject({ global_rank: 2 });
     expect(
       await repo.jobLocks.acquire(
         "ranking:week:2026-W32",
@@ -665,5 +698,4 @@ describe("SettlementItemApplicationService", () => {
 
   it("rankingPeriodLockKey 使用规范 15.8 冻结格式", () => {
     expect(rankingPeriodLockKey(PeriodType.Week, "2026-W32")).toBe("ranking:week:2026-W32");
-    expect(rankingPeriodLockKey(PeriodType.Month, "2026-08")).toBe("ranking:month:2026-08");
   });

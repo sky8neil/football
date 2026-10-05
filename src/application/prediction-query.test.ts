@@ -4,7 +4,11 @@ import type { Match, Prediction, User } from "../domain/types.js";
 import { DomainError } from "../domain/errors.js";
 import { InMemoryRepository } from "../infrastructure/repositories.js";
 import { newUuid } from "../domain/ids.js";
-import { PredictionQueryService } from "./prediction-query.js";
+import {
+  PredictionHistoryQueryService,
+  PredictionQueryService,
+} from "./prediction-query.js";
+import { defaultLevelState } from "../domain/types.js";
 
 const USER_ID = "00000000-0000-4000-8000-000000000001";
 const OTHER_USER_ID = "00000000-0000-4000-8000-000000000002";
@@ -27,6 +31,8 @@ function makeUser(userId: string): User {
     career_exact_hits: 0,
     career_level: 1,
     career_best_level: 1,
+    career_last_scoring_match_at: null,
+    career_level_state: defaultLevelState(),
     deleted_at: null,
     created_at: NOW,
     updated_at: NOW,
@@ -118,6 +124,24 @@ describe("PredictionQueryService.getMyPrediction", () => {
       });
   });
 
+  it("returns null settlement fields without formal scores or for cancelled matches", async () => {
+    const user = makeUser(USER_ID);
+    const prediction = makePrediction(USER_ID);
+    for (const match of [
+      { ...makeMatch(), regular_home_score: null, regular_away_score: null },
+      { ...makeMatch(), match_status: MatchStatus.Cancelled },
+    ]) {
+      const repository = {
+        users: { findById: async () => user },
+        predictions: { findById: async () => prediction },
+        matches: { findById: async () => match },
+      } as unknown as InMemoryRepository;
+
+      await expect(new PredictionQueryService(repository).getMyPrediction(USER_ID, PREDICTION_ID))
+        .resolves.toMatchObject({ match_score: null, wdl_hit: null, exact_hit: null });
+    }
+  });
+
   it("does not reveal another user's prediction", async () => {
     const repo = await setup(OTHER_USER_ID);
 
@@ -143,5 +167,86 @@ describe("PredictionQueryService.getMyPrediction", () => {
     await expect(
       new PredictionQueryService(repo).getMyPrediction(USER_ID, "not-a-prediction"),
     ).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+  });
+});
+
+describe("PredictionHistoryQueryService 六联赛过滤", () => {
+  it("缺省返回全部联赛；league_id 过滤；season_id 仅与 league_id 同时提供", async () => {
+    const repo = await setup();
+    const laLigaMatchId = "00000000-0000-4000-8000-000000000013";
+    const laLigaPredictionId = "00000000-0000-4000-8000-000000000023";
+    await repo.matches.insert({
+      ...makeMatch(),
+      match_id: laLigaMatchId,
+      league_id: "la_liga",
+    });
+    await repo.predictions.insert({
+      ...makePrediction(USER_ID),
+      prediction_id: laLigaPredictionId,
+      match_id: laLigaMatchId,
+      submitted_at: new Date("2026-08-08T11:00:00.000Z"),
+    });
+    const service = new PredictionHistoryQueryService(repo, "prediction-query-secret");
+
+    const all = await service.listMyPredictions(USER_ID, {
+      league_id: null,
+      season_id: null,
+      limit: 20,
+      cursor: null,
+    });
+    expect(all.items.map((item) => item.league_id).sort()).toEqual(["la_liga", "premier_league"]);
+
+    const filtered = await service.listMyPredictions(USER_ID, {
+      league_id: "la_liga",
+      season_id: "2026_2027",
+      limit: 20,
+      cursor: null,
+    });
+    expect(filtered.items.map((item) => item.prediction_id)).toEqual([laLigaPredictionId]);
+
+    await expect(service.listMyPredictions(USER_ID, {
+      league_id: null,
+      season_id: "2026_2027",
+      limit: 20,
+      cursor: null,
+    })).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+    await expect(service.listMyPredictions(USER_ID, {
+      league_id: "chinese_super_league",
+      season_id: "2026_2027",
+      limit: 20,
+      cursor: null,
+    })).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+  });
+
+  it("cursor 续页沿用绑定筛选，取消比赛的结算字段固定为 null", async () => {
+    const repo = await setup();
+    const laLigaMatchId = "00000000-0000-4000-8000-000000000013";
+    const laLigaSecondMatchId = "00000000-0000-4000-8000-000000000014";
+    const laLigaPredictionId = "00000000-0000-4000-8000-000000000023";
+    const laLigaSecondPredictionId = "00000000-0000-4000-8000-000000000024";
+    await repo.matches.insert({ ...makeMatch(), match_id: laLigaMatchId, league_id: "la_liga" });
+    await repo.matches.insert({
+      ...makeMatch(), match_id: laLigaSecondMatchId, league_id: "la_liga",
+      match_status: MatchStatus.Cancelled,
+    });
+    await repo.predictions.insert({
+      ...makePrediction(USER_ID), prediction_id: laLigaPredictionId, match_id: laLigaMatchId,
+      submitted_at: new Date("2026-08-08T11:00:00.000Z"),
+    });
+    await repo.predictions.insert({
+      ...makePrediction(USER_ID), prediction_id: laLigaSecondPredictionId,
+      match_id: laLigaSecondMatchId, submitted_at: new Date("2026-08-08T10:00:00.000Z"),
+    });
+    const service = new PredictionHistoryQueryService(repo, "prediction-query-secret");
+    const firstPage = await service.listMyPredictions(USER_ID, {
+      league_id: "la_liga", season_id: "2026_2027", limit: 1, cursor: null,
+    });
+    expect(firstPage.has_more).toBe(true);
+
+    const nextPage = await service.listMyPredictions(USER_ID, {
+      league_id: null, season_id: null, limit: 1, cursor: firstPage.next_cursor,
+    });
+    expect(nextPage.items.map((item) => item.prediction_id)).toEqual([laLigaSecondPredictionId]);
+    expect(nextPage.items[0]).toMatchObject({ match_score: null, wdl_hit: null, exact_hit: null });
   });
 });

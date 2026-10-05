@@ -97,18 +97,51 @@ describe("ApiFootballClient（注入式 HTTP client，不访问真实 API）", (
     });
   });
 
-  it("getFixtures 关键 fixture 结构缺失时按 ProviderDataError fail closed", async () => {
-    const { http } = makeHttp(() => envelope([{} as ApiFootballFixture]));
+  it("getFixtures 支持按 fixture id 查询", async () => {
+    const { http, calls } = makeHttp(() => envelope([]));
     const client = new ApiFootballClient(http);
 
-    await expect(
-      client.getFixtures({
-        dateFrom: "2026-08-08",
-        dateTo: "2026-09-08",
-        leagueId: "39",
-        season: "2026",
-      }),
-    ).rejects.toBeInstanceOf(ProviderDataError);
+    await client.getFixtures({ leagueId: "39", season: "2026", fixtureId: "1100001" });
+
+    expect(calls[0]?.query).toEqual({
+      league: "39",
+      season: "2026",
+      timezone: "UTC",
+      id: "1100001",
+    });
+  });
+
+  it("getFixtures 关键 fixture 结构缺失时逐条容错，不弃整包", async () => {
+    const valid: ApiFootballFixture = {
+      fixture: { id: 1100001, date: "2026-08-08T14:00:00Z", timestamp: 1783586400, status: { short: "NS" } },
+      league: { id: 39, season: "2026", round: "Round 1" },
+      teams: { home: { id: 40 }, away: { id: 41 } },
+    };
+    const { http } = makeHttp(() => envelope([valid, {} as ApiFootballFixture]));
+    const client = new ApiFootballClient(http);
+
+    const result = await client.getFixtures({
+      dateFrom: "2026-08-08",
+      dateTo: "2026-09-08",
+      leagueId: "39",
+      season: "2026",
+    });
+    expect(result).toHaveLength(2);
+    expect(result[0]).toBe(valid);
+  });
+
+  it("getSeasonFixtures 单条非法不使整批失败，合法项保留", async () => {
+    const valid: ApiFootballFixture = {
+      fixture: { id: 1100002, date: "2026-08-08T14:00:00Z", timestamp: 1783586400, status: { short: "NS" } },
+      league: { id: 39, season: "2026", round: "Round 1" },
+      teams: { home: { id: 40 }, away: { id: 41 } },
+    };
+    const { http } = makeHttp(() => envelope([valid, { fixture: { id: 1 } }]));
+    const client = new ApiFootballClient(http);
+
+    const result = await client.getSeasonFixtures({ leagueId: "39", season: "2026" });
+    expect(result).toHaveLength(2);
+    expect(result[0]).toBe(valid);
   });
 
   it("getSeasonFixtures 查询完整赛季时不带日期窗口", async () => {

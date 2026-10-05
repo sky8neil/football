@@ -10,47 +10,53 @@ import { InMemoryRateLimiter } from "./rate-limit.js";
 const NOW = new Date("2026-08-09T00:00:00.000Z");
 const REQUEST_ID = "request-rebuild-rankings-1";
 const AUDIT_ID = newUuid();
+const authorizeAdmin = async (_openid: string): Promise<void> => undefined;
 
 function outcome(): AdminRebuildRankingsOutcome {
   return {
-    rankings: [],
-    created_count: 0,
-    updated_count: 0,
+    board: "week",
+    period_key: "2026-W32",
+    rebuilt_entry_count: 0,
     admin_id: newUuid(),
     audit_log: { audit_id: AUDIT_ID } as AdminRebuildRankingsOutcome["audit_log"],
   };
 }
 
 describe("validateAdminRebuildRankingsPayload", () => {
-  it("接受规范定义的 week 和 month 请求", () => {
+  it("接受 week period 与无 period_key 的快照 board 请求", () => {
     expect(
       validateAdminRebuildRankingsPayload({
-        period_type: "week",
+        board: "week",
         period_key: "2026-W32",
         reason: "一致性修复",
       }),
     ).toEqual({
-      period_type: "week",
+      board: "week",
       period_key: "2026-W32",
       reason: "一致性修复",
     });
     expect(
       validateAdminRebuildRankingsPayload({
-        period_type: "month",
-        period_key: "2026-08",
+        board: "career",
         reason: "一致性修复",
       }),
     ).toEqual({
-      period_type: "month",
-      period_key: "2026-08",
+      board: "career",
+      period_key: null,
       reason: "一致性修复",
     });
+    expect(
+      validateAdminRebuildRankingsPayload({
+        board: "strength",
+        reason: "一致性修复",
+      }),
+    ).toEqual({ board: "strength", period_key: null, reason: "一致性修复" });
   });
 
   it("严格拒绝未知字段、周期类型和不匹配的 period_key", () => {
     expect(() =>
       validateAdminRebuildRankingsPayload({
-        period_type: "week",
+        board: "week",
         period_key: "2026-W32",
         reason: "一致性修复",
         admin_id: "client-admin",
@@ -58,36 +64,35 @@ describe("validateAdminRebuildRankingsPayload", () => {
     ).toThrowError(expect.objectContaining({ code: "VALIDATION_ERROR" }));
     expect(() =>
       validateAdminRebuildRankingsPayload({
-        period_type: "quarter",
-        period_key: "2026-Q3",
+        board: "quarter",
         reason: "一致性修复",
       }),
     ).toThrowError(expect.objectContaining({ code: "VALIDATION_ERROR" }));
     expect(() =>
       validateAdminRebuildRankingsPayload({
-        period_type: "week",
+        board: "week",
         period_key: "2026-08",
         reason: "一致性修复",
       }),
     ).toThrowError(expect.objectContaining({ code: "VALIDATION_ERROR" }));
     expect(() =>
       validateAdminRebuildRankingsPayload({
-        period_type: "month",
+        board: "career",
         period_key: "2026-W32",
         reason: "一致性修复",
       }),
     ).toThrowError(expect.objectContaining({ code: "VALIDATION_ERROR" }));
     expect(() =>
       validateAdminRebuildRankingsPayload({
-        period_type: "week",
-        period_key: "2026-W00",
+        board: "strength",
+        period_key: null,
         reason: "一致性修复",
       }),
     ).toThrowError(expect.objectContaining({ code: "VALIDATION_ERROR" }));
     expect(() =>
       validateAdminRebuildRankingsPayload({
-        period_type: "month",
-        period_key: "2026-13",
+        board: "week",
+        period_key: "2026-W00",
         reason: "一致性修复",
       }),
     ).toThrowError(expect.objectContaining({ code: "VALIDATION_ERROR" }));
@@ -96,21 +101,21 @@ describe("validateAdminRebuildRankingsPayload", () => {
   it("严格校验 reason", () => {
     expect(() =>
       validateAdminRebuildRankingsPayload({
-        period_type: "week",
+        board: "week",
         period_key: "2026-W32",
         reason: "",
       }),
     ).toThrowError(expect.objectContaining({ code: "VALIDATION_ERROR" }));
     expect(() =>
       validateAdminRebuildRankingsPayload({
-        period_type: "week",
+        board: "week",
         period_key: "2026-W32",
         reason: "x".repeat(501),
       }),
     ).toThrowError(expect.objectContaining({ code: "VALIDATION_ERROR" }));
     expect(() =>
       validateAdminRebuildRankingsPayload({
-        period_type: "week",
+        board: "week",
         period_key: "2026-W32",
         reason: 1,
       }),
@@ -119,13 +124,13 @@ describe("validateAdminRebuildRankingsPayload", () => {
 });
 
 describe("POST /v1/admin/rebuild/rankings", () => {
-  it("返回第 48.2 定义的成功 envelope 和有限 data", async () => {
+  it("返回 §30.6 定义的成功 envelope", async () => {
     const rebuild = vi.fn(async (): Promise<AdminRebuildRankingsOutcome> => outcome());
 
-    const result = await postAdminRebuildRankings({ rebuild }, {
+    const result = await postAdminRebuildRankings({ authorizeAdmin, rebuild }, {
       trusted_openid: "trusted-admin-openid",
       body: {
-        period_type: "week",
+        board: "week",
         period_key: "2026-W32",
         reason: "一致性修复",
       },
@@ -137,7 +142,7 @@ describe("POST /v1/admin/rebuild/rankings", () => {
       status: 200,
       body: {
         data: {
-          period_type: "week",
+          board: "week",
           period_key: "2026-W32",
           rebuilt_entry_count: 0,
           audit_id: AUDIT_ID,
@@ -154,15 +159,45 @@ describe("POST /v1/admin/rebuild/rankings", () => {
     );
   });
 
+  it("career snapshot rebuild 返回 period_key=null", async () => {
+    const careerOutcome: AdminRebuildRankingsOutcome = {
+      ...outcome(),
+      board: "career",
+      period_key: null,
+      rebuilt_entry_count: 7,
+    };
+    const rebuild = vi.fn(async () => careerOutcome);
+    const result = await postAdminRebuildRankings({ authorizeAdmin, rebuild }, {
+      trusted_openid: "trusted-admin-openid",
+      body: { board: "career", reason: "快照校正" },
+      server_now: NOW,
+      request_id: "request-career-snapshot-rebuild",
+    });
+
+    expect(result.body.data).toEqual({
+      board: "career",
+      period_key: null,
+      rebuilt_entry_count: 7,
+      audit_id: AUDIT_ID,
+    });
+    expect(rebuild).toHaveBeenCalledWith(
+      "trusted-admin-openid",
+      "career",
+      null,
+      "快照校正",
+      NOW,
+    );
+  });
+
   it("body 校验失败时不调用 application command", async () => {
     const rebuild = vi.fn();
 
     await expect(
       Promise.resolve().then(() =>
-        postAdminRebuildRankings({ rebuild }, {
+        postAdminRebuildRankings({ authorizeAdmin, rebuild }, {
           trusted_openid: "trusted-admin-openid",
       body: {
-        period_type: "week",
+        board: "week",
         period_key: "2026-W32",
         reason: "一致性修复",
         extra: true,
@@ -182,10 +217,10 @@ describe("POST /v1/admin/rebuild/rankings", () => {
     }));
 
     await expect(
-      postAdminRebuildRankings({ rebuild }, {
+      postAdminRebuildRankings({ authorizeAdmin, rebuild }, {
         trusted_openid: "trusted-admin-openid",
         body: {
-          period_type: "week",
+          board: "week",
           period_key: "2026-W32",
           reason: "一致性修复",
         },
@@ -195,17 +230,17 @@ describe("POST /v1/admin/rebuild/rankings", () => {
     ).rejects.toMatchObject({ code: "INTERNAL_ERROR" });
   });
 
-  it("application 返回非数组 rankings 时拒绝生成成功响应", async () => {
+  it("application 返回非法 rebuilt_entry_count 时拒绝生成成功响应", async () => {
     const rebuild = vi.fn(async (): Promise<AdminRebuildRankingsOutcome> => ({
       ...outcome(),
-      rankings: { length: 1 } as unknown as AdminRebuildRankingsOutcome["rankings"],
+      rebuilt_entry_count: -1,
     }));
 
     await expect(
-      postAdminRebuildRankings({ rebuild }, {
+      postAdminRebuildRankings({ authorizeAdmin, rebuild }, {
         trusted_openid: "trusted-admin-openid",
         body: {
-          period_type: "week",
+          board: "week",
           period_key: "2026-W32",
           reason: "一致性修复",
         },
@@ -221,7 +256,7 @@ describe("POST /v1/admin/rebuild/rankings", () => {
     const input = {
       trusted_openid: "trusted-admin-openid",
       body: {
-        period_type: "week",
+        board: "week",
         period_key: "2026-W32",
         reason: "一致性修复",
       },
@@ -231,10 +266,10 @@ describe("POST /v1/admin/rebuild/rankings", () => {
     };
 
     for (let attempt = 0; attempt < 60; attempt += 1) {
-      await expect(postAdminRebuildRankings({ rebuild }, input)).resolves.toBeDefined();
+      await expect(postAdminRebuildRankings({ authorizeAdmin, rebuild }, input)).resolves.toBeDefined();
     }
 
-    await expect(postAdminRebuildRankings({ rebuild }, input)).rejects.toMatchObject({
+    await expect(postAdminRebuildRankings({ authorizeAdmin, rebuild }, input)).rejects.toMatchObject({
       code: "RATE_LIMITED",
     });
     expect(rebuild).toHaveBeenCalledTimes(60);

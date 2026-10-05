@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { MVP_SEASON } from "../domain/config.js";
+import { levelSeasonOf } from "../domain/time.js";
 import { InMemoryRepository } from "../infrastructure/repositories.js";
 import type { AppRepository } from "../infrastructure/repositories.js";
 import { newUuid } from "../domain/ids.js";
 import type { Match, Prediction, User } from "../domain/types.js";
 import { ShareCardQueryService } from "./share-card.js";
+import { defaultLevelState } from "../domain/types.js";
 
 const NOW = new Date("2026-08-09T00:00:00.000Z");
 
@@ -21,8 +23,10 @@ function makeUser(overrides: Partial<User> = {}): User {
     career_valid_predictions: 99,
     career_wdl_hits: 99,
     career_exact_hits: 99,
-    career_level: 8,
-    career_best_level: 8,
+    career_level: 6,
+    career_best_level: 6,
+    career_last_scoring_match_at: null,
+    career_level_state: defaultLevelState(),
     deleted_at: null,
     created_at: NOW,
     updated_at: NOW,
@@ -99,22 +103,38 @@ describe("ShareCardQueryService", () => {
     });
     const repository = {
       users: { findById: async () => user },
-      predictions: { findByUser: async () => [invalidPrediction] },
-      matches: { findById: async () => match },
+      predictions: { findByUserAndMatch: async () => invalidPrediction },
+      matches: { findByLeagueSeasonRound: async () => [match] },
     } as unknown as AppRepository;
 
     await expect(
       new ShareCardQueryService(repository).getShareCard(user.user_id, {
+        league_id: "premier_league",
         season_id: MVP_SEASON.season_id,
         round_id: "01",
       }),
     ).rejects.toMatchObject({ code: "INTERNAL_ERROR" });
   });
 
-  it("从当前已结算 prediction + match 事实计算分享卡，不使用陈旧聚合缓存", async () => {
+  it("按指定 round 计算四项统计并从用户缓存读取 career_points", async () => {
     const repo = new InMemoryRepository();
     const user = makeUser();
     await repo.users.insert(user);
+    await repo.userSeasonStats?.insert({
+      schema_version: 1,
+      user_id: user.user_id,
+      level_season_id: levelSeasonOf(new Date()),
+      points: 0,
+      valid_predictions: 20,
+      wdl_hits: 0,
+      exact_hits: 0,
+      level: 5,
+      best_level: 5,
+      level_state: defaultLevelState(),
+      is_level_frozen: false,
+      created_at: NOW,
+      updated_at: NOW,
+    });
 
     const settledRoundOne = makeMatch({
       kickoff_at: new Date("2026-08-15T10:00:00Z"),
@@ -174,6 +194,7 @@ describe("ShareCardQueryService", () => {
     );
 
     const result = await new ShareCardQueryService(repo).getShareCard(user.user_id, {
+      league_id: "premier_league",
       season_id: MVP_SEASON.season_id,
       round_id: "01",
     });
@@ -182,13 +203,14 @@ describe("ShareCardQueryService", () => {
       user_id: user.user_id,
       display_name: "Sky",
       favorite_team_id: user.favorite_team_id,
-      season_level: 1,
+      season_level: 5,
+      league_id: "premier_league",
       round_id: "01",
       round_predictions: 2,
       round_wdl_hits: 2,
       round_exact_hits: 1,
       round_score: 15,
-      career_points: 39,
+      career_points: user.career_points,
     });
   });
 
@@ -199,9 +221,30 @@ describe("ShareCardQueryService", () => {
 
     await expect(
       new ShareCardQueryService(repo).getShareCard(user.user_id, {
+        league_id: "premier_league",
         season_id: MVP_SEASON.season_id,
         round_id: "01",
       }),
-    ).rejects.toMatchObject({ code: "USER_NOT_ACTIVE" });
+    ).rejects.toMatchObject({ code: "USER_DELETED" });
+  });
+
+  it("按联赛校验 round 上限与登记 season", async () => {
+    const repo = new InMemoryRepository();
+    const service = new ShareCardQueryService(repo);
+
+    await expect(
+      service.getShareCard(newUuid(), {
+        league_id: "bundesliga",
+        season_id: "2026_2027",
+        round_id: "35",
+      }),
+    ).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+    await expect(
+      service.getShareCard(newUuid(), {
+        league_id: "chinese_super_league",
+        season_id: "2026_2027",
+        round_id: "01",
+      }),
+    ).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
   });
 });

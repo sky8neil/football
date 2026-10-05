@@ -1,127 +1,80 @@
-import { readFile } from "node:fs/promises";
 import { describe, expect, it, vi } from "vitest";
-import type {
-  RankingQuery,
-  RankingQueryResult,
-} from "../../application/ranking-query.js";
+import type { RankingQuery, RankingQueryResult } from "../../application/ranking-query.js";
 import { getRankings, validateRankingsQuery } from "./rankings.js";
 import { InMemoryRateLimiter } from "./rate-limit.js";
 
-const data: RankingQueryResult = {
-  items: [],
+const NOW = new Date("2026-08-09T12:00:00.000Z");
+const PAGE_RESULT: RankingQueryResult = {
+  board: "week" as const,
+  scope: "global" as const,
+  period_key: "2026-W32",
+  updated_at: NOW.toISOString(),
+  items: [{ rank: 1, user_id: "u1", display_name: "Sky", favorite_team_id: null, career_level: 1, period_score: 20, valid_predictions: 5, exact_hits: 1, last_scoring_match_at: NOW.toISOString() }],
   has_more: false,
   next_cursor: null,
+  me: { status: "ranked" as const, rank: 1, top_percent: null },
 };
 
-describe("GET /v1/rankings", () => {
-  it("校验 required period_type、可选周期和公共分页参数", () => {
-    expect(validateRankingsQuery({ period_type: "week" })).toEqual({
-      period_type: "week",
-      period_key: null,
-      limit: 20,
-      cursor: null,
+describe("GET /v1/rankings v2", () => {
+  it("要求合法 board，校验 period_key、scope 和 group_id 组合", () => {
+    expect(validateRankingsQuery({ board: "week" })).toEqual({
+      board: "week", period_key: null, scope: "global", group_id: null, limit: 20, cursor: null,
     });
-    expect(validateRankingsQuery({
-      period_type: "month",
-      period_key: "2026-08",
-      limit: "2",
-      cursor: "opaque",
-    })).toEqual({
-      period_type: "month",
-      period_key: "2026-08",
-      limit: 2,
-      cursor: "opaque",
-    });
-
     for (const query of [
       {},
-      { period_type: "year" },
-      { period_type: "week", period_key: "2026-08" },
-      { period_type: "week", limit: "0" },
-      { period_type: "week", limit: "101" },
-      { period_type: "week", extra: "x" },
+      { board: "month" },
+      { board: "other" },
+      { board: "career", period_key: "2026-W32" },
+      { board: "career", period_key: null },
+      { board: "week", period_key: null },
+      { board: "week", period_key: "2026-08" },
+      { board: "week", scope: "group" },
+      { board: "week", group_id: "00000000-0000-4000-8000-000000000001" },
+      { board: "week", scope: "group", group_id: "bad" },
+      { board: "week", limit: "0" },
+      { board: "week", extra: "x" },
     ]) {
-      expect(() => validateRankingsQuery(query)).toThrowError(
-        expect.objectContaining({ code: "VALIDATION_ERROR" }),
-      );
+      expect(() => validateRankingsQuery(query)).toThrowError(expect.objectContaining({ code: "VALIDATION_ERROR" }));
     }
   });
 
-  it("返回规范分页成功 envelope", async () => {
-    const list = async (query: RankingQuery): Promise<RankingQueryResult> => {
-      expect(query).toEqual({
-        period_type: "week",
-        period_key: null,
-        limit: 20,
-        cursor: null,
-        server_now: new Date("2026-08-09T12:00:00.000Z"),
-      });
-      return data;
-    };
-
-    await expect(getRankings({ list }, {
-      authenticated_user_id: null,
-      public_source: "gateway-source-1",
-      query: { period_type: "week" },
-      server_now: new Date("2026-08-09T12:00:00.000Z"),
-      request_id: "request-rankings-1",
-    })).resolves.toEqual({
-      status: 200,
-      body: {
-        data: {
-          items: data.items,
-          page: {
-            next_cursor: data.next_cursor,
-            has_more: data.has_more,
-          },
-        },
-        request_id: "request-rankings-1",
-      },
+  it("映射 v2 envelope，并按登录态选择读取限流 scope", async () => {
+    const list = vi.fn(async (query: RankingQuery): Promise<RankingQueryResult> => ({ ...PAGE_RESULT, board: query.board, scope: query.scope }));
+    const limiter = { check: vi.fn() };
+    const response = await getRankings({ list }, {
+      authenticated_user_id: "user-id", public_source: "source", query: { board: "week" },
+      server_now: NOW, request_id: "request-1", rate_limiter: limiter,
     });
+    expect(response).toEqual({ status: 200, body: { data: {
+      board: "week", scope: "global", period_key: "2026-W32", updated_at: NOW.toISOString(),
+      items: PAGE_RESULT.items, page: { next_cursor: null, has_more: false }, me: PAGE_RESULT.me,
+    }, request_id: "request-1" } });
+    expect(list).toHaveBeenCalledWith({
+      board: "week", period_key: null, scope: "global", group_id: null, limit: 20, cursor: null,
+      server_now: NOW, authenticated_user_id: "user-id",
+    });
+    expect(limiter.check).toHaveBeenCalledWith("authenticated_reads", "user-id", NOW);
   });
 
-  it("按可信公开来源限制排行榜读取为每分钟 120 次", async () => {
-    const list = async (): Promise<RankingQueryResult> => data;
+  it("未登录走 public_reads，登录请求不要求 public_source", async () => {
+    const list = vi.fn(async () => PAGE_RESULT);
+    const limiter = { check: vi.fn() };
+    await getRankings({ list }, {
+      public_source: "source", query: { board: "week" }, server_now: NOW,
+      request_id: "request-2", rate_limiter: limiter,
+    });
+    expect(limiter.check).toHaveBeenCalledWith("public_reads", "source", NOW);
+    await expect(getRankings({ list }, {
+      authenticated_user_id: "user-id", query: { board: "week" }, server_now: NOW,
+      request_id: "request-3", rate_limiter: limiter,
+    })).resolves.toBeDefined();
+  });
+
+  it("超出公开读取限流后返回 RATE_LIMITED", async () => {
+    const list = async () => PAGE_RESULT;
     const rateLimiter = new InMemoryRateLimiter();
-    const input = {
-      public_source: "gateway-source-1",
-      rate_limiter: rateLimiter,
-      query: { period_type: "week" },
-      server_now: new Date("2026-08-09T12:00:00.000Z"),
-      request_id: "request-rankings-rate-limit",
-    };
-
-    for (let attempt = 0; attempt < 120; attempt += 1) {
-      await expect(getRankings({ list }, input)).resolves.toBeDefined();
-    }
-
-    await expect(getRankings({ list }, input)).rejects.toMatchObject({
-      code: "RATE_LIMITED",
-    });
-  });
-
-  it("缺少可信公开来源标识时 Fail Closed 且不查询排行榜", async () => {
-    const list = vi.fn(async (): Promise<RankingQueryResult> => data);
-
-    await expect(getRankings({ list }, {
-      query: { period_type: "week" },
-      server_now: new Date("2026-08-09T12:00:00.000Z"),
-      request_id: "request-rankings-missing-source",
-    } as never)).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
-    expect(list).not.toHaveBeenCalled();
-  });
-
-  it("声明排行榜路径与响应 contract", async () => {
-    const specification = await readFile(new URL("./openapi.yaml", import.meta.url), "utf8");
-
-    expect(specification).toMatch(
-      /  \/rankings:\n    get:[\s\S]*?RankingEnvelope/,
-    );
-    expect(specification).toMatch(
-      /    RankingItem:[\s\S]*?required: \[global_rank, user_id,[\s\S]*?last_scoring_match_at\]/,
-    );
-    expect(specification).toMatch(
-      /  \/rankings:\n    get:[\s\S]*?'429':[\s\S]*?RateLimited/,
-    );
+    const input = { public_source: "source", query: { board: "week" }, server_now: NOW, request_id: "rate" , rate_limiter: rateLimiter };
+    for (let index = 0; index < 120; index += 1) await getRankings({ list }, input);
+    await expect(getRankings({ list }, input)).rejects.toMatchObject({ code: "RATE_LIMITED" });
   });
 });

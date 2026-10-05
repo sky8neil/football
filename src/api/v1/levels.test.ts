@@ -3,6 +3,7 @@ import { InMemoryRepository } from "../../infrastructure/repositories.js";
 import { LevelsQueryService } from "../../application/levels.js";
 import { getMyLevels } from "./levels.js";
 import { InMemoryRateLimiter } from "./rate-limit.js";
+import { FIXED_CONFIG_V1 } from "../../domain/config.js";
 
 describe("GET /v1/levels/me", () => {
   it("requires an authenticated user", async () => {
@@ -20,20 +21,25 @@ describe("GET /v1/levels/me", () => {
   it("returns the defined success envelope", async () => {
     const data = {
       season: {
-        season_id: "2026_2027",
-        valid_predictions: 20,
-        wdl_hits: 12,
-        wdl_accuracy_percent: "60.0",
+        level_season_id: "2026_2027",
         level: 4,
         best_level: 5,
+        is_rated: true,
+        valid_predictions: 20,
+        remaining_to_rated: 0,
+        is_frozen: false,
       },
       career: {
-        valid_predictions: 76,
-        wdl_hits: 46,
-        wdl_accuracy_percent: "60.5",
         level: 6,
-        best_level: 7,
+        best_level: 6,
+        is_rated: true,
+        valid_predictions: 76,
+        remaining_to_rated: 0,
+        last_evaluated_at: "2026-08-03T02:00:00.000Z",
+        next_evaluation_at: "2026-08-10T02:00:00.000Z",
+        is_former_top: false,
       },
+      rule_version: FIXED_CONFIG_V1.LEVEL_RULE_VERSION,
     };
     const query = {
       getLevels: async (userId: string) => {
@@ -57,20 +63,25 @@ describe("GET /v1/levels/me", () => {
   it("limits authenticated reads to 120 requests per minute", async () => {
     const getLevels = async () => ({
       season: {
-        season_id: "2026_2027",
-        valid_predictions: 0,
-        wdl_hits: 0,
-        wdl_accuracy_percent: "0.0",
+        level_season_id: "2026_2027",
         level: 1,
         best_level: 1,
+        is_rated: false,
+        valid_predictions: 0,
+        remaining_to_rated: 20,
+        is_frozen: false,
       },
       career: {
-        valid_predictions: 0,
-        wdl_hits: 0,
-        wdl_accuracy_percent: "0.0",
         level: 1,
         best_level: 1,
+        is_rated: false,
+        valid_predictions: 0,
+        remaining_to_rated: 20,
+        last_evaluated_at: null,
+        next_evaluation_at: "2026-08-10T02:00:00.000Z",
+        is_former_top: false,
       },
+      rule_version: FIXED_CONFIG_V1.LEVEL_RULE_VERSION,
     });
     const input = {
       authenticated_user_id: "00000000-0000-4000-8000-000000000001",

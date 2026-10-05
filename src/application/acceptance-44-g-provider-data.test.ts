@@ -23,6 +23,7 @@ import type { ApiFootballFixture } from "../provider/types.js";
 import { InMemoryRepository } from "../infrastructure/repositories.js";
 import { decideFirstSettlement } from "./first-settlement.js";
 import { ProviderFixtureSyncService } from "./provider-fixture-sync.js";
+import { defaultLevelState } from "../domain/types.js";
 
 const MATCH_ID = "00000000-0000-4000-8000-000000000043";
 const PROVIDER_MATCH_ID = "44000043";
@@ -72,6 +73,7 @@ function makeTeam(teamId: string, name: string): Team {
   return {
     schema_version: 1,
     team_id: teamId,
+    league_id: "premier_league",
     name,
     short_name: null,
     primary_color: null,
@@ -108,6 +110,8 @@ function makeUser(): User {
     career_exact_hits: 0,
     career_level: 1,
     career_best_level: 1,
+    career_last_scoring_match_at: null,
+    career_level_state: defaultLevelState(),
     deleted_at: null,
     created_at: NOW,
     updated_at: NOW,

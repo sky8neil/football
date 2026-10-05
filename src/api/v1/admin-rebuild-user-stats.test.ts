@@ -8,19 +8,21 @@ const USER_ID = "00000000-0000-4000-8000-000000000010";
 const NOW = new Date("2026-08-09T00:00:00.000Z");
 const REQUEST_ID = "request-rebuild-user-1";
 const AUDIT_ID = newUuid();
+const authorizeAdmin = async (_openid: string): Promise<void> => undefined;
 
 describe("POST /v1/admin/rebuild/users/:user_id", () => {
   it("返回第 48.2 定义的成功 envelope 和有限 data", async () => {
     const rebuild = vi.fn(async (): Promise<AdminRebuildUserStatsOutcome> => ({
       user: { user_id: USER_ID },
-      season_stats: [{ season_id: "2026_2027" }, { season_id: "2025_2026" }],
+      season_stats: [{ level_season_id: "2026_2027" }, { level_season_id: "2025_2026" }],
+      level_state_changed: false,
       created_level_history: [],
       created_unlocks: [],
       admin_id: newUuid(),
       audit_log: { audit_id: AUDIT_ID },
     } as unknown as AdminRebuildUserStatsOutcome));
 
-    const result = await postAdminRebuildUserStats({ rebuild }, {
+    const result = await postAdminRebuildUserStats({ authorizeAdmin, rebuild }, {
       trusted_openid: "trusted-admin-openid",
       user_id: USER_ID,
       server_now: NOW,
@@ -33,6 +35,7 @@ describe("POST /v1/admin/rebuild/users/:user_id", () => {
         data: {
           user_id: USER_ID,
           rebuilt_season_count: 2,
+          level_state_changed: false,
           audit_id: AUDIT_ID,
         },
         request_id: REQUEST_ID,
@@ -46,7 +49,7 @@ describe("POST /v1/admin/rebuild/users/:user_id", () => {
 
     await expect(
       Promise.resolve().then(() =>
-        postAdminRebuildUserStats({ rebuild }, {
+        postAdminRebuildUserStats({ authorizeAdmin, rebuild }, {
           trusted_openid: "trusted-admin-openid",
           user_id: "not-a-uuid",
           server_now: NOW,
@@ -68,7 +71,7 @@ describe("POST /v1/admin/rebuild/users/:user_id", () => {
     } as unknown as AdminRebuildUserStatsOutcome));
 
     await expect(
-      postAdminRebuildUserStats({ rebuild }, {
+      postAdminRebuildUserStats({ authorizeAdmin, rebuild }, {
         trusted_openid: "trusted-admin-openid",
         user_id: USER_ID,
         server_now: NOW,
@@ -88,7 +91,7 @@ describe("POST /v1/admin/rebuild/users/:user_id", () => {
     } as unknown as AdminRebuildUserStatsOutcome));
 
     await expect(
-      postAdminRebuildUserStats({ rebuild }, {
+      postAdminRebuildUserStats({ authorizeAdmin, rebuild }, {
         trusted_openid: "trusted-admin-openid",
         user_id: USER_ID,
         server_now: NOW,
@@ -108,7 +111,7 @@ describe("POST /v1/admin/rebuild/users/:user_id", () => {
     } as unknown as AdminRebuildUserStatsOutcome));
 
     await expect(
-      postAdminRebuildUserStats({ rebuild }, {
+      postAdminRebuildUserStats({ authorizeAdmin, rebuild }, {
         trusted_openid: "trusted-admin-openid",
         user_id: USER_ID,
         server_now: NOW,
@@ -136,12 +139,27 @@ describe("POST /v1/admin/rebuild/users/:user_id", () => {
     };
 
     for (let attempt = 0; attempt < 60; attempt += 1) {
-      await expect(postAdminRebuildUserStats({ rebuild }, input)).resolves.toBeDefined();
+      await expect(postAdminRebuildUserStats({ authorizeAdmin, rebuild }, input)).resolves.toBeDefined();
     }
 
-    await expect(postAdminRebuildUserStats({ rebuild }, input)).rejects.toMatchObject({
+    await expect(postAdminRebuildUserStats({ authorizeAdmin, rebuild }, input)).rejects.toMatchObject({
       code: "RATE_LIMITED",
     });
     expect(rebuild).toHaveBeenCalledTimes(60);
+  });
+
+  it("拒绝用户重建写接口的未定义 body 字段", async () => {
+    const rebuild = vi.fn();
+    const rateLimiter = { check: vi.fn(async () => undefined) };
+    await expect(postAdminRebuildUserStats({ authorizeAdmin, rebuild }, {
+      trusted_openid: "trusted-admin-openid",
+      user_id: USER_ID,
+      body: { admin_id: "client-admin" },
+      server_now: NOW,
+      request_id: "request-rebuild-user-body",
+      rate_limiter: rateLimiter,
+    })).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+    expect(rateLimiter.check).not.toHaveBeenCalled();
+    expect(rebuild).not.toHaveBeenCalled();
   });
 });

@@ -5,6 +5,7 @@ import type { User } from "../../domain/types.js";
 import { postSessionInit, validateSessionInitBody } from "./session.js";
 import { InMemoryRateLimiter, RATE_LIMIT_DEFAULTS } from "./rate-limit.js";
 import { InMemoryRateLimitStore, SharedRateLimiter } from "./rate-limit-store.js";
+import { defaultLevelState } from "../../domain/types.js";
 
 const NOW = new Date("2026-08-09T00:00:00.000Z");
 
@@ -23,6 +24,8 @@ function makeUser(overrides: Partial<User> = {}): User {
     career_exact_hits: 0,
     career_level: 1,
     career_best_level: 1,
+    career_last_scoring_match_at: null,
+    career_level_state: defaultLevelState(),
     deleted_at: null,
     created_at: NOW,
     updated_at: NOW,

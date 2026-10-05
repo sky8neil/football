@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { newUuid } from "../../domain/ids.js";
 import { DomainError } from "../../domain/errors.js";
+import { defaultLevelState } from "../../domain/types.js";
 import { InMemoryRepository } from "../../infrastructure/repositories.js";
 import { ProfileQueryService } from "../../application/profile.js";
 import {
@@ -37,11 +38,10 @@ describe("PATCH /v1/profile/me", () => {
       favorite_team_id: null,
       career_points: 12,
       career_valid_predictions: 1,
-      career_wdl_hits: 1,
       career_exact_hits: 1,
-      career_wdl_accuracy_percent: "100.0",
       career_level: 1,
       career_best_level: 1,
+      season_level: 1,
     }));
     const serverNow = new Date("2026-08-09T00:00:00.000Z");
 
@@ -61,11 +61,10 @@ describe("PATCH /v1/profile/me", () => {
           favorite_team_id: null,
           career_points: 12,
           career_valid_predictions: 1,
-          career_wdl_hits: 1,
           career_exact_hits: 1,
-          career_wdl_accuracy_percent: "100.0",
           career_level: 1,
           career_best_level: 1,
+          season_level: 1,
         },
         request_id: "request-profile-patch-1",
       },
@@ -98,11 +97,12 @@ describe("PATCH /v1/profile/me", () => {
       favorite_team_id: null,
       career_points: 0,
       career_valid_predictions: 0,
-      career_wdl_hits: 0,
       career_exact_hits: 0,
-      career_wdl_accuracy_percent: "0.0",
+      career_last_scoring_match_at: null,
       career_level: 1,
       career_best_level: 1,
+      career_level_state: defaultLevelState(),
+      season_level: 1,
     }));
     const rateLimiter = new InMemoryRateLimiter();
     const input = {
@@ -139,8 +139,10 @@ describe("GET /v1/profiles/:user_id", () => {
       career_valid_predictions: 1,
       career_wdl_hits: 1,
       career_exact_hits: 0,
+      career_last_scoring_match_at: null,
       career_level: 1,
       career_best_level: 1,
+      career_level_state: defaultLevelState(),
       deleted_at: null,
       created_at: new Date("2026-08-01T00:00:00Z"),
       updated_at: new Date("2026-08-01T00:00:00Z"),
@@ -162,9 +164,10 @@ describe("GET /v1/profiles/:user_id", () => {
           favorite_team_id: null,
           career_points: 3,
           career_valid_predictions: 1,
-          career_wdl_accuracy_percent: "100.0",
+          career_exact_hits: 0,
           career_level: 1,
           career_best_level: 1,
+          season_level: 1,
         },
         request_id: "request-profile-1",
       },
@@ -198,9 +201,10 @@ describe("GET /v1/profiles/:user_id", () => {
       favorite_team_id: null,
       career_points: 0,
       career_valid_predictions: 0,
-      career_wdl_accuracy_percent: null,
+      career_exact_hits: 0,
       career_level: 1,
       career_best_level: 1,
+      season_level: 1,
     }));
     const rateLimiter = new InMemoryRateLimiter();
     const input = {
@@ -239,8 +243,10 @@ describe("GET /v1/profile/me", () => {
       career_valid_predictions: 76,
       career_wdl_hits: 46,
       career_exact_hits: 8,
+      career_last_scoring_match_at: null,
       career_level: 6,
       career_best_level: 6,
+      career_level_state: defaultLevelState(),
       deleted_at: null,
       created_at: new Date("2026-08-01T00:00:00Z"),
       updated_at: new Date("2026-08-01T00:00:00Z"),
@@ -261,11 +267,10 @@ describe("GET /v1/profile/me", () => {
           favorite_team_id: null,
           career_points: 428,
           career_valid_predictions: 76,
-          career_wdl_hits: 46,
           career_exact_hits: 8,
-          career_wdl_accuracy_percent: "60.5",
           career_level: 6,
           career_best_level: 6,
+          season_level: 1,
         },
         request_id: "request-profile-me-1",
       },
@@ -289,11 +294,10 @@ describe("GET /v1/profile/me", () => {
       favorite_team_id: null,
       career_points: 0,
       career_valid_predictions: 0,
-      career_wdl_hits: 0,
       career_exact_hits: 0,
-      career_wdl_accuracy_percent: "0.0",
       career_level: 1,
       career_best_level: 1,
+      season_level: 1,
     }));
     const input = {
       authenticated_user_id: "00000000-0000-0000-0000-000000000001",

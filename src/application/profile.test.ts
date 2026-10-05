@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { newUuid } from "../domain/ids.js";
-import type { User } from "../domain/types.js";
+import { MVP_SEASON } from "../domain/config.js";
+import type { User, UserSeasonStats } from "../domain/types.js";
 import { InMemoryRepository } from "../infrastructure/repositories.js";
 import { ProfileQueryService } from "./profile.js";
+import { defaultLevelState } from "../domain/types.js";
 
 const NOW = new Date("2026-08-09T00:00:00.000Z");
 
@@ -21,7 +23,28 @@ function makeUser(overrides: Partial<User> = {}): User {
     career_exact_hits: 8,
     career_level: 6,
     career_best_level: 6,
+    career_last_scoring_match_at: null,
+    career_level_state: defaultLevelState(),
     deleted_at: null,
+    created_at: NOW,
+    updated_at: NOW,
+    ...overrides,
+  };
+}
+
+function makeSeasonStats(userId: string, overrides: Partial<UserSeasonStats> = {}): UserSeasonStats {
+  return {
+    schema_version: 1,
+    user_id: userId,
+    level_season_id: MVP_SEASON.season_id,
+    points: 120,
+    valid_predictions: 20,
+    wdl_hits: 12,
+    exact_hits: 3,
+    level: 4,
+    best_level: 5,
+    level_state: defaultLevelState(),
+    is_level_frozen: false,
     created_at: NOW,
     updated_at: NOW,
     ...overrides,
@@ -40,11 +63,21 @@ describe("ProfileQueryService", () => {
       favorite_team_id: user.favorite_team_id,
       career_points: 428,
       career_valid_predictions: 76,
-      career_wdl_hits: 46,
       career_exact_hits: 8,
-      career_wdl_accuracy_percent: "60.5",
       career_level: 6,
       career_best_level: 6,
+      season_level: 1,
+    });
+  });
+
+  it("从当前等级赛季缓存读取 season_level", async () => {
+    const repo = new InMemoryRepository();
+    const user = makeUser();
+    await repo.users.insert(user);
+    await repo.userSeasonStats.insert(makeSeasonStats(user.user_id));
+
+    await expect(new ProfileQueryService(repo).getMyProfile(user.user_id, NOW)).resolves.toMatchObject({
+      season_level: 4,
     });
   });
 
@@ -58,20 +91,22 @@ describe("ProfileQueryService", () => {
     });
   });
 
-  it("返回 active 用户公开战绩，并将准确率格式化为一位小数", async () => {
+  it("返回 active 用户公开战绩", async () => {
     const repo = new InMemoryRepository();
     const user = makeUser();
     await repo.users.insert(user);
+    await repo.userSeasonStats.insert(makeSeasonStats(user.user_id));
 
-    await expect(new ProfileQueryService(repo).getPublicProfile(user.user_id)).resolves.toEqual({
+    await expect(new ProfileQueryService(repo).getPublicProfile(user.user_id, NOW)).resolves.toEqual({
       user_id: user.user_id,
       display_name: "Sky",
       favorite_team_id: user.favorite_team_id,
       career_points: 428,
       career_valid_predictions: 76,
-      career_wdl_accuracy_percent: "60.5",
+      career_exact_hits: 8,
       career_level: 6,
       career_best_level: 6,
+      season_level: 4,
     });
   });
 
@@ -91,9 +126,10 @@ describe("ProfileQueryService", () => {
       favorite_team_id: null,
       career_points: 428,
       career_valid_predictions: 76,
-      career_wdl_accuracy_percent: "60.5",
+      career_exact_hits: 8,
       career_level: 6,
       career_best_level: 6,
+      season_level: 1,
     });
   });
 
@@ -103,7 +139,7 @@ describe("ProfileQueryService", () => {
     ).rejects.toMatchObject({ code: "USER_NOT_FOUND" });
   });
 
-  it("没有有效预测时准确率为 null", async () => {
+  it("不返回准确率字段", async () => {
     const repo = new InMemoryRepository();
     const user = makeUser({
       career_points: 0,
@@ -115,8 +151,7 @@ describe("ProfileQueryService", () => {
     });
     await repo.users.insert(user);
 
-    await expect(new ProfileQueryService(repo).getPublicProfile(user.user_id)).resolves.toMatchObject({
-      career_wdl_accuracy_percent: null,
-    });
+    const result = await new ProfileQueryService(repo).getPublicProfile(user.user_id, NOW);
+    expect(result).not.toHaveProperty("career_wdl_accuracy_percent");
   });
 });

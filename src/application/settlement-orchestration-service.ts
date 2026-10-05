@@ -7,6 +7,10 @@
 import { SettlementStatus } from "../domain/enums.js";
 import type { AppRepository } from "../infrastructure/repositories.js";
 import {
+  LevelCorrectionReevalService,
+  type LevelCorrectionReevalOutcome,
+} from "./level-correction-reeval.js";
+import {
   CorrectionSettlementService,
   type CorrectionSettlementOutcome,
 } from "./correction-settlement-service.js";
@@ -32,12 +36,28 @@ function isTerminalCorrectionStop(kind: CorrectionSettlementOutcome["kind"]): bo
   );
 }
 
+export interface LevelCorrectionReevalRunner {
+  runForSettlement(
+    settlementId: string,
+    serverNow: Date,
+  ): Promise<LevelCorrectionReevalOutcome>;
+}
+
+async function runCorrectionReeval(
+  runner: LevelCorrectionReevalRunner,
+  settlementId: string,
+  serverNow: Date,
+): Promise<void> {
+  await runner.runForSettlement(settlementId, serverNow);
+}
+
 /** 在持有的 match 结算锁已释放后，按 settled_result_version+1 顺序消化 correcting 队列。 */
 export async function continuePendingCorrections(
   repo: Pick<AppRepository, "matches">,
   correction: CorrectionSettlementService,
   matchId: string,
   serverNow: Date,
+  reeval?: LevelCorrectionReevalRunner,
 ): Promise<CorrectionSettlementOutcome | null> {
   let last: CorrectionSettlementOutcome | null = null;
 
@@ -55,6 +75,12 @@ export async function continuePendingCorrections(
 
     const outcome = await correction.correct(matchId, serverNow);
     last = outcome;
+    if (
+      reeval !== undefined &&
+      (outcome.kind === "settled" || outcome.kind === "correcting" || outcome.kind === "already_settled")
+    ) {
+      await runCorrectionReeval(reeval, outcome.settlement_id, serverNow);
+    }
     if (outcome.kind === "correcting") {
       continue;
     }
@@ -69,24 +95,38 @@ export class SettlementOrchestrationService {
   private readonly first: FirstSettlementService;
   private readonly retryService: RetrySettlementService;
   private readonly correction: CorrectionSettlementService;
+  private readonly levelCorrectionReeval: LevelCorrectionReevalRunner;
 
-  constructor(private readonly repo: AppRepository) {
+  constructor(
+    private readonly repo: AppRepository,
+    levelCorrectionReeval?: LevelCorrectionReevalRunner,
+  ) {
     const worker = createAtomicSettlementItemWorker(
       new SettlementItemApplicationService(repo),
     );
     this.first = new FirstSettlementService(repo, worker);
     this.retryService = new RetrySettlementService(repo, worker);
     this.correction = new CorrectionSettlementService(repo, worker);
+    this.levelCorrectionReeval = levelCorrectionReeval ?? new LevelCorrectionReevalService(repo);
   }
 
   async startFirst(
     matchId: string,
     serverNow: Date,
     hasBlockingAnomaly: boolean,
-  ): Promise<FirstSettlementStartOutcome> {
+  ): Promise<FirstSettlementStartOutcome | CorrectionSettlementOutcome> {
     const first = await this.first.start(matchId, serverNow, hasBlockingAnomaly);
     if (first.kind === "started") {
-      await continuePendingCorrections(this.repo, this.correction, matchId, serverNow);
+      const continued = await continuePendingCorrections(
+        this.repo,
+        this.correction,
+        matchId,
+        serverNow,
+        this.levelCorrectionReeval,
+      );
+      if (continued?.kind === "failed" || continued?.kind === "already_running") {
+        return continued;
+      }
     }
     return first;
   }
@@ -104,6 +144,7 @@ export class SettlementOrchestrationService {
           this.correction,
           settlement.match_id,
           serverNow,
+          this.levelCorrectionReeval,
         );
         if (continued?.kind === "failed") {
           return {
@@ -124,18 +165,30 @@ export class SettlementOrchestrationService {
     targetResultVersion?: number,
   ): Promise<CorrectionSettlementOutcome> {
     const first = await this.correction.correct(matchId, serverNow, targetResultVersion);
-    if (first.kind !== "correcting" && first.kind !== "settled") {
+    if (first.kind === "settled" || first.kind === "already_settled") {
+      await runCorrectionReeval(this.levelCorrectionReeval, first.settlement_id, serverNow);
+      // §15.9：本目标 settlement 已 settled 时仍需按 match 状态续跑更高未处理版本。
+      // 返回语义保持本目标优先——下游 correction 结果不回写本次 outcome。
+      await continuePendingCorrections(
+        this.repo,
+        this.correction,
+        matchId,
+        serverNow,
+        this.levelCorrectionReeval,
+      );
       return first;
     }
-    if (first.kind === "settled") {
+    if (first.kind !== "correcting") {
       return first;
     }
+    await runCorrectionReeval(this.levelCorrectionReeval, first.settlement_id, serverNow);
 
     const continued = await continuePendingCorrections(
       this.repo,
       this.correction,
       matchId,
       serverNow,
+      this.levelCorrectionReeval,
     );
     return continued ?? first;
   }

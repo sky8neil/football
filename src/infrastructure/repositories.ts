@@ -19,8 +19,8 @@
 import {
   MatchStatus,
   SCHEMA_VERSION,
+  SettlementItemStatus,
   type SettlementDocStatus,
-  type SettlementItemStatus,
 } from "../domain/enums.js";
 import {
   assertMatchResultVersionInvariants,
@@ -28,6 +28,10 @@ import {
   assertPeriodAnchorImmutable,
   assertPredictionInvariants,
   assertPredictionClosedAtImmutable,
+  assertBoardSnapshotInvariants,
+  assertGroupInvariants,
+  assertGroupMemberInvariants,
+  assertLevelHistoryInvariants,
   assertRankingInvariants,
   assertSchemaVersion,
   assertSeasonStatsInvariants,
@@ -40,7 +44,10 @@ import type {
   Admin,
   AdminAuditLog,
   Anomaly,
+  BoardSnapshot,
   DeletedOpenidMapping,
+  Group,
+  GroupMember,
   JobLock,
   LevelHistoryEntry,
   Match,
@@ -228,6 +235,11 @@ export interface SyncLogRepository {
 export interface MatchRepository {
   findById(matchId: string): Promise<Match | null>;
   findBySeason(seasonId: string): Promise<Match[]>;
+  findByLeagueSeasonRound(
+    leagueId: string,
+    seasonId: string,
+    roundId: string,
+  ): Promise<Match[]>;
   /** 当前 match_status = live 的比赛（33.1 job 级 live 巡检用）。 */
   findLive(): Promise<Match[]>;
   insert(match: Match): Promise<void>;
@@ -256,6 +268,7 @@ export interface PredictionRepository {
 export interface JobLockRepository {
   /** 原子 compare-and-set：仅在空闲或 lease 过期时获得锁。 */
   acquire(lockKey: string, ownerId: string, leaseUntil: Date): Promise<boolean>;
+  isHeld(lockKey: string, asOf: Date): Promise<boolean>;
   /** 仅 owner 且未过期时可续租。 */
   renew(lockKey: string, ownerId: string, leaseUntil: Date): Promise<boolean>;
   /** 仅 owner 可释放；非 owner 调用为空操作。 */
@@ -304,6 +317,8 @@ export interface SettlementItemRepository {
   ): Promise<SettlementItem[]>;
   /** 全局按状态查询（pending / applied / failed）。 */
   findByStatus(status: SettlementItemStatus): Promise<SettlementItem[]>;
+  /** 用户在指定时刻前 applied 的账本。 */
+  findAppliedByUserBefore(userId: string, asOf: Date): Promise<SettlementItem[]>;
   insert(item: SettlementItem): Promise<void>;
   update(item: SettlementItem): Promise<void>;
 }
@@ -315,12 +330,39 @@ export interface UnlockRepository {
   insert(unlock: Unlock): Promise<void>;
 }
 
-/** 赛季统计缓存：按 user_id + season_id 唯一。 */
+/** 赛季统计缓存：按 user_id + level_season_id 唯一。 */
 export interface UserSeasonStatsRepository {
-  findByUserAndSeason(userId: string, seasonId: string): Promise<UserSeasonStats | null>;
+  findByUserAndSeason(userId: string, levelSeasonId: string): Promise<UserSeasonStats | null>;
   findByUser(userId: string): Promise<UserSeasonStats[]>;
   insert(stats: UserSeasonStats): Promise<void>;
   update(stats: UserSeasonStats): Promise<void>;
+}
+
+export interface BoardSnapshotRepository {
+  findLatestByBoard(
+    board: BoardSnapshot["board"],
+  ): Promise<BoardSnapshot[]>;
+  findByBoardAndSnapshotAt(
+    board: BoardSnapshot["board"],
+    snapshotAt: Date,
+  ): Promise<BoardSnapshot[]>;
+  insert(snapshot: BoardSnapshot): Promise<void>;
+}
+
+export interface GroupRepository {
+  findById(groupId: string): Promise<Group | null>;
+  findByOwner(ownerUserId: string): Promise<Group[]>;
+  findByInviteCode(inviteCode: string): Promise<Group | null>;
+  insert(group: Group): Promise<void>;
+  update(group: Group): Promise<void>;
+}
+
+export interface GroupMemberRepository {
+  findByGroupAndUser(groupId: string, userId: string): Promise<GroupMember | null>;
+  findByGroup(groupId: string): Promise<GroupMember[]>;
+  findByUser(userId: string): Promise<GroupMember[]>;
+  insert(member: GroupMember): Promise<void>;
+  update(member: GroupMember): Promise<void>;
 }
 
 /** 周/月排行榜聚合：按 period_type + period_key + user_id 唯一。 */
@@ -373,8 +415,16 @@ export interface UnitOfWork {
   userSeasonStats?: UserSeasonStatsRepository;
   rankings?: RankingRepository;
   levelHistory?: LevelHistoryRepository;
+  boardSnapshots?: BoardSnapshotRepository;
+  groups?: GroupRepository;
+  groupMembers?: GroupMemberRepository;
   /** 旧适配器未实现时，settlement global rank 重算必须 Fail Closed。 */
   jobLocks?: JobLockRepository;
+  /**
+   * 在已开启的事务内建立撤销点（嵌套隔离）：回调期间的写入若抛错则逐条回滚到撤销点并
+   * 重新抛出，成功则并入外层事务；用于满足 §15.5 单 item 写入的原子性。
+   */
+  savepoint<T>(fn: (tx: UnitOfWork) => Promise<T>): Promise<T>;
 }
 
 export interface AppRepository extends UnitOfWork {
@@ -409,6 +459,10 @@ interface InMemoryStore {
   userSeasonStatsByKey: Map<string, UserSeasonStats>;
   rankingsByKey: Map<string, RankingEntry>;
   levelHistoryById: Map<string, LevelHistoryEntry>;
+  boardSnapshotsByKey: Map<string, BoardSnapshot>;
+  groupsById: Map<string, Group>;
+  groupsByInviteCode: Map<string, Group>;
+  groupMembersByKey: Map<string, GroupMember>;
   jobLocks: Map<string, JobLock>;
 }
 
@@ -440,6 +494,10 @@ function createStore(): InMemoryStore {
     userSeasonStatsByKey: new Map(),
     rankingsByKey: new Map(),
     levelHistoryById: new Map(),
+    boardSnapshotsByKey: new Map(),
+    groupsById: new Map(),
+    groupsByInviteCode: new Map(),
+    groupMembersByKey: new Map(),
     jobLocks: new Map(),
   };
 }
@@ -476,8 +534,20 @@ function unlockUserCodeKey(userId: string, unlockCode: string): string {
   return `${userId}\u0000${unlockCode}`;
 }
 
-function userSeasonStatsKey(userId: string, seasonId: string): string {
-  return `${userId}\u0000${seasonId}`;
+function userSeasonStatsKey(userId: string, levelSeasonId: string): string {
+  return `${userId}\u0000${levelSeasonId}`;
+}
+
+function boardSnapshotKey(
+  board: BoardSnapshot["board"],
+  snapshotAt: Date,
+  userId: string,
+): string {
+  return `${board}\u0000${snapshotAt.toISOString()}\u0000${userId}`;
+}
+
+function groupMemberKey(groupId: string, userId: string): string {
+  return `${groupId}\u0000${userId}`;
 }
 
 function rankingKey(
@@ -606,6 +676,8 @@ export class InMemoryRepository implements AppRepository {
     return {
       findById: (matchId) => self.findMatchById(matchId),
       findBySeason: (seasonId) => self.findMatchesBySeason(seasonId),
+      findByLeagueSeasonRound: (leagueId, seasonId, roundId) =>
+        self.findMatchesByLeagueSeasonRound(leagueId, seasonId, roundId),
       findLive: () => self.findLiveMatches(),
       insert: (match) => self.insertMatch(match),
       update: (match) => self.updateMatch(match),
@@ -633,7 +705,7 @@ export class InMemoryRepository implements AppRepository {
     return {
       findByMatchAndVersion: (matchId, resultVersion) =>
         self.findMatchResultByKey(matchId, resultVersion),
-      findLatestByMatch: (matchId) => self.findLatestMatchResult(matchId),
+      findLatestByMatch: async (matchId) => self.findLatestMatchResult(matchId),
       insert: (matchResult) => self.insertMatchResult(matchResult),
     };
   }
@@ -660,6 +732,8 @@ export class InMemoryRepository implements AppRepository {
       findBySettlementAndStatus: (settlementId, status) =>
         self.findSettlementItemsBySettlementAndStatus(settlementId, status),
       findByStatus: (status) => self.findSettlementItemsByStatus(status),
+      findAppliedByUserBefore: (userId, asOf) =>
+        self.findAppliedSettlementItemsByUserBefore(userId, asOf),
       insert: (item) => self.insertSettlementItem(item),
       update: (item) => self.updateSettlementItem(item),
     };
@@ -707,10 +781,43 @@ export class InMemoryRepository implements AppRepository {
     };
   }
 
+  get boardSnapshots(): BoardSnapshotRepository {
+    const self = this;
+    return {
+      findLatestByBoard: (board) => self.findLatestBoardSnapshots(board),
+      findByBoardAndSnapshotAt: (board, snapshotAt) =>
+        self.findBoardSnapshotsByBoardAndAt(board, snapshotAt),
+      insert: (snapshot) => self.insertBoardSnapshot(snapshot),
+    };
+  }
+
+  get groups(): GroupRepository {
+    const self = this;
+    return {
+      findById: (groupId) => self.findGroupById(groupId),
+      findByOwner: (ownerUserId) => self.findGroupsByOwner(ownerUserId),
+      findByInviteCode: (inviteCode) => self.findGroupByInviteCode(inviteCode),
+      insert: (group) => self.insertGroup(group),
+      update: (group) => self.updateGroup(group),
+    };
+  }
+
+  get groupMembers(): GroupMemberRepository {
+    const self = this;
+    return {
+      findByGroupAndUser: (groupId, userId) => self.findGroupMemberByKey(groupId, userId),
+      findByGroup: (groupId) => self.findGroupMembersByGroup(groupId),
+      findByUser: (userId) => self.findGroupMembersByUser(userId),
+      insert: (member) => self.insertGroupMember(member),
+      update: (member) => self.updateGroupMember(member),
+    };
+  }
+
   get jobLocks(): JobLockRepository {
     const self = this;
     return {
       acquire: (lockKey, ownerId, leaseUntil) => self.acquireLock(lockKey, ownerId, leaseUntil),
+      isHeld: (lockKey, asOf) => self.isLockHeld(lockKey, asOf),
       renew: (lockKey, ownerId, leaseUntil) => self.renewLock(lockKey, ownerId, leaseUntil),
       release: (lockKey, ownerId) => self.releaseLock(lockKey, ownerId),
     };
@@ -830,6 +937,9 @@ export class InMemoryRepository implements AppRepository {
     const old = this.store.usersById.get(user.user_id);
     if (old === undefined) {
       throw new DocumentNotFoundError("users", user.user_id);
+    }
+    if (user.career_best_level < old.career_best_level) {
+      throw internalError("career_best_level 只增不减");
     }
     // openid 是用户事实身份，普通业务不得变更（规范 4.2）；仅注销流程改写为墓碑值
     // （规范 4.5，openid = "deleted:" + user_id）。一旦变更必须同步唯一索引：
@@ -997,6 +1107,19 @@ export class InMemoryRepository implements AppRepository {
 
   private async findMatchesBySeason(seasonId: string): Promise<Match[]> {
     return [...this.store.matchesById.values()].filter((match) => match.season_id === seasonId);
+  }
+
+  private async findMatchesByLeagueSeasonRound(
+    leagueId: string,
+    seasonId: string,
+    roundId: string,
+  ): Promise<Match[]> {
+    return [...this.store.matchesById.values()].filter(
+      (match) =>
+        match.league_id === leagueId &&
+        match.season_id === seasonId &&
+        match.round_id === roundId,
+    );
   }
 
   private async findLiveMatches(): Promise<Match[]> {
@@ -1204,7 +1327,7 @@ export class InMemoryRepository implements AppRepository {
     return this.store.matchResultsByKey.get(matchResultKey(matchId, resultVersion)) ?? null;
   }
 
-  private async findLatestMatchResult(matchId: string): Promise<MatchResult | null> {
+  private findLatestMatchResult(matchId: string): MatchResult | null {
     let latest: MatchResult | null = null;
     for (const value of this.store.matchResultsByKey.values()) {
       if (value.match_id !== matchId) {
@@ -1227,7 +1350,8 @@ export class InMemoryRepository implements AppRepository {
       });
     }
     // 账本不可覆盖：已有更高版本时拒绝写入旧版本，防止历史结果被篡改。
-    const latest = await this.findLatestMatchResult(matchResult.match_id);
+    // 同步比较，禁止在 has(key) 校验与 set(key) 之间引入 await（否则并发同键可双通过）。
+    const latest = this.findLatestMatchResult(matchResult.match_id);
     if (latest !== null && matchResult.result_version < latest.result_version) {
       throw new StaleResultVersionError(
         matchResult.match_id,
@@ -1319,39 +1443,31 @@ export class InMemoryRepository implements AppRepository {
     if (old === undefined) {
       throw new DocumentNotFoundError("settlements", settlement.settlement_id);
     }
-    // 唯一键字段变更时必须同步唯一索引：新键不得被其他 settlement 占用，旧键索引必须移除。
-    const oldKey = settlementKey(old.match_id, old.result_version, old.rule_version);
-    const newKey = settlementKey(
-      settlement.match_id,
-      settlement.result_version,
-      settlement.rule_version,
-    );
-    const keyChanged = newKey !== oldKey;
-    if (keyChanged) {
-      const owner = this.store.settlementsByKey.get(newKey);
-      if (owner !== undefined && owner !== old) {
-        throw new UniqueConstraintError("settlements", "uk_match_version_rule", {
-          match_id: settlement.match_id,
-          result_version: settlement.result_version,
-          rule_version: settlement.rule_version,
-        });
-      }
-      this.store.settlementsByKey.delete(oldKey);
+    if (
+      old.match_id !== settlement.match_id ||
+      old.result_version !== settlement.result_version ||
+      old.rule_version !== settlement.rule_version
+    ) {
+      throw internalError("settlement 身份字段不可修改");
+    }
+    if (
+      old.is_correction !== settlement.is_correction ||
+      old.created_at.getTime() !== settlement.created_at.getTime()
+    ) {
+      throw internalError("settlement 创建事实不可修改");
     }
     this.store.settlementsById.set(settlement.settlement_id, settlement);
-    this.store.settlementsByKey.set(newKey, settlement);
+    const key = settlementKey(old.match_id, old.result_version, old.rule_version);
+    this.store.settlementsByKey.set(key, settlement);
     this.logUndo(() => {
       if (this.store.settlementsById.get(settlement.settlement_id) !== settlement) {
         return;
       }
-      if (this.store.settlementsByKey.get(newKey) !== settlement) {
+      if (this.store.settlementsByKey.get(key) !== settlement) {
         return;
       }
       this.store.settlementsById.set(settlement.settlement_id, old);
-      if (keyChanged) {
-        this.store.settlementsByKey.delete(newKey);
-      }
-      this.store.settlementsByKey.set(oldKey, old);
+      this.store.settlementsByKey.set(key, old);
     });
   }
 
@@ -1397,6 +1513,22 @@ export class InMemoryRepository implements AppRepository {
     const result: SettlementItem[] = [];
     for (const item of this.store.settlementItemsByKey.values()) {
       if (item.status === status) {
+        result.push(item);
+      }
+    }
+    return result;
+  }
+
+  private async findAppliedSettlementItemsByUserBefore(
+    userId: string,
+    asOf: Date,
+  ): Promise<SettlementItem[]> {
+    const result: SettlementItem[] = [];
+    for (const item of this.store.settlementItemsByKey.values()) {
+      if (
+        item.status === SettlementItemStatus.Applied && item.user_id === userId &&
+        item.applied_at !== null && item.applied_at.getTime() < asOf.getTime()
+      ) {
         result.push(item);
       }
     }
@@ -1486,22 +1618,22 @@ export class InMemoryRepository implements AppRepository {
     userId: string,
     seasonId: string,
   ): Promise<UserSeasonStats | null> {
-    return this.store.userSeasonStatsByKey.get(userSeasonStatsKey(userId, seasonId)) ?? null;
+    const found = this.store.userSeasonStatsByKey.get(userSeasonStatsKey(userId, seasonId));
+    return found ?? null;
   }
 
   private async findUserSeasonStats(userId: string): Promise<UserSeasonStats[]> {
-    return [...this.store.userSeasonStatsByKey.values()].filter(
-      (stats) => stats.user_id === userId,
-    );
+    return [...this.store.userSeasonStatsByKey.values()]
+      .filter((stats) => stats.user_id === userId);
   }
 
   private async insertUserSeasonStats(stats: UserSeasonStats): Promise<void> {
     assertSeasonStatsInvariants(stats);
-    const key = userSeasonStatsKey(stats.user_id, stats.season_id);
+    const key = userSeasonStatsKey(stats.user_id, stats.level_season_id);
     if (this.store.userSeasonStatsByKey.has(key)) {
       throw new UniqueConstraintError("user_season_stats", "uk_user_season", {
         user_id: stats.user_id,
-        season_id: stats.season_id,
+        level_season_id: stats.level_season_id,
       });
     }
     this.store.userSeasonStatsByKey.set(key, stats);
@@ -1514,10 +1646,19 @@ export class InMemoryRepository implements AppRepository {
 
   private async updateUserSeasonStats(stats: UserSeasonStats): Promise<void> {
     assertSeasonStatsInvariants(stats);
-    const key = userSeasonStatsKey(stats.user_id, stats.season_id);
+    const key = userSeasonStatsKey(stats.user_id, stats.level_season_id);
     const old = this.store.userSeasonStatsByKey.get(key);
     if (old === undefined) {
       throw new DocumentNotFoundError("user_season_stats", key);
+    }
+    if (stats.best_level < old.best_level) {
+      throw internalError("best_level 只增不减");
+    }
+    if (
+      old.is_level_frozen &&
+      (stats.level !== old.level || stats.best_level !== old.best_level)
+    ) {
+      throw internalError("已冻结赛季的 level/best_level 不可修改");
     }
     this.store.userSeasonStatsByKey.set(key, stats);
     this.logUndo(() => {
@@ -1600,7 +1741,25 @@ export class InMemoryRepository implements AppRepository {
   }
 
   private async insertLevelHistory(entry: LevelHistoryEntry): Promise<void> {
-    assertSchemaVersion(entry.schema_version);
+    assertLevelHistoryInvariants(entry);
+    if (
+      entry.scope === "season" &&
+      (entry.level_season_id === null || entry.level_season_id === undefined)
+    ) {
+      throw internalError("season level_history 必须包含 level_season_id");
+    }
+    if (entry.scope === "career" && entry.level_season_id !== null) {
+      throw internalError("career level_history 的 level_season_id 必须为 null");
+    }
+    if (entry.scope !== "season" && entry.scope !== "career") {
+      throw internalError("level_history scope 无效");
+    }
+    if (
+      entry.reason === "correction_reeval" &&
+      (entry.settlement_id === null || entry.settlement_id === undefined)
+    ) {
+      throw internalError("correction_reeval level_history 必须包含 settlement_id");
+    }
     if (this.store.levelHistoryById.has(entry.level_history_id)) {
       throw new UniqueConstraintError("level_history", "pk_level_history", {
         level_history_id: entry.level_history_id,
@@ -1610,6 +1769,168 @@ export class InMemoryRepository implements AppRepository {
     this.logUndo(() => {
       if (this.store.levelHistoryById.get(entry.level_history_id) === entry) {
         this.store.levelHistoryById.delete(entry.level_history_id);
+      }
+    });
+  }
+
+  private async findBoardSnapshotsByBoardAndAt(
+    board: BoardSnapshot["board"],
+    snapshotAt: Date,
+  ): Promise<BoardSnapshot[]> {
+    return [...this.store.boardSnapshotsByKey.values()].filter(
+      (snapshot) =>
+        snapshot.board === board && snapshot.snapshot_at.getTime() === snapshotAt.getTime(),
+    );
+  }
+
+  private async findLatestBoardSnapshots(
+    board: BoardSnapshot["board"],
+  ): Promise<BoardSnapshot[]> {
+    const snapshots = [...this.store.boardSnapshotsByKey.values()].filter(
+      (snapshot) => snapshot.board === board,
+    );
+    const latestAt = snapshots.reduce<Date | null>(
+      (latest, snapshot) => latest === null || snapshot.snapshot_at > latest
+        ? snapshot.snapshot_at
+        : latest,
+      null,
+    );
+    if (latestAt === null) {
+      return [];
+    }
+    return snapshots
+      .filter((snapshot) => snapshot.snapshot_at.getTime() === latestAt.getTime())
+      .sort((a, b) => a.rank - b.rank);
+  }
+
+  private async insertBoardSnapshot(snapshot: BoardSnapshot): Promise<void> {
+    assertBoardSnapshotInvariants(snapshot);
+    const key = boardSnapshotKey(snapshot.board, snapshot.snapshot_at, snapshot.user_id);
+    if (this.store.boardSnapshotsByKey.has(key)) {
+      throw new UniqueConstraintError("board_snapshots", "uk_board_snapshot_user", {
+        board: snapshot.board,
+        snapshot_at: snapshot.snapshot_at,
+        user_id: snapshot.user_id,
+      });
+    }
+    this.store.boardSnapshotsByKey.set(key, snapshot);
+    this.logUndo(() => {
+      if (this.store.boardSnapshotsByKey.get(key) === snapshot) {
+        this.store.boardSnapshotsByKey.delete(key);
+      }
+    });
+  }
+
+  private async findGroupById(groupId: string): Promise<Group | null> {
+    return this.store.groupsById.get(groupId) ?? null;
+  }
+
+  private async findGroupsByOwner(ownerUserId: string): Promise<Group[]> {
+    return [...this.store.groupsById.values()].filter(
+      (group) => group.owner_user_id === ownerUserId,
+    );
+  }
+
+  private async findGroupByInviteCode(inviteCode: string): Promise<Group | null> {
+    return this.store.groupsByInviteCode.get(inviteCode) ?? null;
+  }
+
+  private async insertGroup(group: Group): Promise<void> {
+    assertGroupInvariants(group);
+    if (this.store.groupsById.has(group.group_id)) {
+      throw new UniqueConstraintError("groups", "pk_group", { group_id: group.group_id });
+    }
+    if (this.store.groupsByInviteCode.has(group.invite_code)) {
+      throw new UniqueConstraintError("groups", "uk_invite_code", {
+        invite_code: group.invite_code,
+      });
+    }
+    this.store.groupsById.set(group.group_id, group);
+    this.store.groupsByInviteCode.set(group.invite_code, group);
+    this.logUndo(() => {
+      if (this.store.groupsById.get(group.group_id) === group) {
+        this.store.groupsById.delete(group.group_id);
+      }
+      if (this.store.groupsByInviteCode.get(group.invite_code) === group) {
+        this.store.groupsByInviteCode.delete(group.invite_code);
+      }
+    });
+  }
+
+  private async updateGroup(group: Group): Promise<void> {
+    assertGroupInvariants(group);
+    const old = this.store.groupsById.get(group.group_id);
+    if (old === undefined) {
+      throw new DocumentNotFoundError("groups", group.group_id);
+    }
+    if (old.invite_code !== group.invite_code) {
+      const owner = this.store.groupsByInviteCode.get(group.invite_code);
+      if (owner !== undefined && owner !== old) {
+        throw new UniqueConstraintError("groups", "uk_invite_code", {
+          invite_code: group.invite_code,
+        });
+      }
+      this.store.groupsByInviteCode.delete(old.invite_code);
+    }
+    this.store.groupsById.set(group.group_id, group);
+    this.store.groupsByInviteCode.set(group.invite_code, group);
+    this.logUndo(() => {
+      if (this.store.groupsById.get(group.group_id) !== group) {
+        return;
+      }
+      this.store.groupsById.set(group.group_id, old);
+      this.store.groupsByInviteCode.delete(group.invite_code);
+      this.store.groupsByInviteCode.set(old.invite_code, old);
+    });
+  }
+
+  private async findGroupMemberByKey(
+    groupId: string,
+    userId: string,
+  ): Promise<GroupMember | null> {
+    return this.store.groupMembersByKey.get(groupMemberKey(groupId, userId)) ?? null;
+  }
+
+  private async findGroupMembersByGroup(groupId: string): Promise<GroupMember[]> {
+    return [...this.store.groupMembersByKey.values()].filter(
+      (member) => member.group_id === groupId,
+    );
+  }
+
+  private async findGroupMembersByUser(userId: string): Promise<GroupMember[]> {
+    return [...this.store.groupMembersByKey.values()].filter(
+      (member) => member.user_id === userId,
+    );
+  }
+
+  private async insertGroupMember(member: GroupMember): Promise<void> {
+    assertGroupMemberInvariants(member);
+    const key = groupMemberKey(member.group_id, member.user_id);
+    if (this.store.groupMembersByKey.has(key)) {
+      throw new UniqueConstraintError("group_members", "uk_group_user", {
+        group_id: member.group_id,
+        user_id: member.user_id,
+      });
+    }
+    this.store.groupMembersByKey.set(key, member);
+    this.logUndo(() => {
+      if (this.store.groupMembersByKey.get(key) === member) {
+        this.store.groupMembersByKey.delete(key);
+      }
+    });
+  }
+
+  private async updateGroupMember(member: GroupMember): Promise<void> {
+    assertGroupMemberInvariants(member);
+    const key = groupMemberKey(member.group_id, member.user_id);
+    const old = this.store.groupMembersByKey.get(key);
+    if (old === undefined) {
+      throw new DocumentNotFoundError("group_members", key);
+    }
+    this.store.groupMembersByKey.set(key, member);
+    this.logUndo(() => {
+      if (this.store.groupMembersByKey.get(key) === member) {
+        this.store.groupMembersByKey.set(key, old);
       }
     });
   }
@@ -1718,15 +2039,19 @@ export class InMemoryRepository implements AppRepository {
     if (old === undefined) {
       throw new DocumentNotFoundError("anomalies", anomaly.anomaly_id);
     }
-    const keyChanged = old.anomaly_key !== anomaly.anomaly_key;
-    if (keyChanged) {
-      const owner = this.store.anomaliesByKey.get(anomaly.anomaly_key);
-      if (owner !== undefined && owner !== old) {
-        throw new UniqueConstraintError("anomalies", "uk_anomaly_key", {
-          anomaly_key: anomaly.anomaly_key,
-        });
-      }
-      this.store.anomaliesByKey.delete(old.anomaly_key);
+    if (
+      old.anomaly_id !== anomaly.anomaly_id ||
+      old.anomaly_key !== anomaly.anomaly_key ||
+      old.match_id !== anomaly.match_id ||
+      old.type !== anomaly.type
+    ) {
+      throw internalError("anomaly 身份字段不可修改");
+    }
+    if (
+      old.blocking !== anomaly.blocking ||
+      old.first_seen_at.getTime() !== anomaly.first_seen_at.getTime()
+    ) {
+      throw internalError("anomaly 非可更新字段不可修改");
     }
     this.store.anomaliesById.set(anomaly.anomaly_id, anomaly);
     this.store.anomaliesByKey.set(anomaly.anomaly_key, anomaly);
@@ -1735,7 +2060,6 @@ export class InMemoryRepository implements AppRepository {
         return;
       }
       this.store.anomaliesById.set(anomaly.anomaly_id, old);
-      this.store.anomaliesByKey.delete(anomaly.anomaly_key);
       this.store.anomaliesByKey.set(old.anomaly_key, old);
     });
   }
@@ -1794,6 +2118,11 @@ export class InMemoryRepository implements AppRepository {
     return true;
   }
 
+  private async isLockHeld(lockKey: string, asOf: Date): Promise<boolean> {
+    const existing = this.store.jobLocks.get(lockKey);
+    return existing !== undefined && existing.lease_until.getTime() > asOf.getTime();
+  }
+
   private async renewLock(
     lockKey: string,
     ownerId: string,
@@ -1844,12 +2173,31 @@ export class InMemoryRepository implements AppRepository {
     } catch (err) {
       // 回滚必须按写入的逆序执行（LIFO）：同一文档被多次 update/insert 时，
       // 只有从最后一次写入往回撤销才能恢复正确状态，否则会留下悬挂索引/过期数据。
-      for (const undo of [...tx.undoLog].reverse()) {
-        undo();
-      }
+      rollbackUndoLog(tx.undoLog);
       throw err;
     } finally {
       release();
     }
+  }
+
+  async savepoint<T>(fn: (tx: UnitOfWork) => Promise<T>): Promise<T> {
+    if (this.undoLog === null) {
+      throw internalError("savepoint 必须在事务内调用");
+    }
+    const undoLog = this.undoLog;
+    const marker = undoLog.length;
+    try {
+      return await fn(this);
+    } catch (err) {
+      rollbackUndoLog(undoLog.splice(marker));
+      throw err;
+    }
+  }
+}
+
+/** 回滚必须按写入的逆序执行（LIFO），从最后一次写入往回撤销才能恢复正确状态。 */
+function rollbackUndoLog(undoLog: UndoFn[]): void {
+  for (const undo of [...undoLog].reverse()) {
+    undo();
   }
 }

@@ -33,6 +33,7 @@ import {
   type SettlementItemWorker,
 } from "./first-settlement-service.js";
 import { RetrySettlementService } from "./retry-settlement-service.js";
+import { defaultLevelState } from "../domain/types.js";
 import {
   createAtomicSettlementItemWorker,
   SettlementItemApplicationService,
@@ -112,6 +113,8 @@ function makeUser(index: number): User {
     career_exact_hits: 0,
     career_level: 1,
     career_best_level: 1,
+    career_last_scoring_match_at: null,
+    career_level_state: defaultLevelState(),
     deleted_at: null,
     created_at: NOW,
     updated_at: NOW,

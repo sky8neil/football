@@ -15,7 +15,7 @@ describe("admin user stats rebuild OpenAPI contract", () => {
       /  \/admin\/rebuild\/users\/\{user_id\}:[\s\S]*?['"]200['"]:[\s\S]*?AdminRebuildUserStatsEnvelope/,
     );
     expect(specification).toMatch(
-      /    AdminRebuildUserStatsData:[\s\S]*?required: \[user_id, rebuilt_season_count, audit_id\]/,
+      /    AdminRebuildUserStatsData:[\s\S]*?required: \[user_id, rebuilt_season_count, level_state_changed, audit_id\]/,
     );
   });
 

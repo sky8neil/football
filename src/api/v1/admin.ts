@@ -1,6 +1,6 @@
 import { conflictError, internalError, validationError } from "../../domain/errors.js";
 import { FIXED_CONFIG_V1 } from "../../domain/config.js";
-import { PeriodType, SettlementStatus } from "../../domain/enums.js";
+import { PeriodType, RankingBoard, SettlementStatus } from "../../domain/enums.js";
 import { isValidUuid } from "../../domain/ids.js";
 import { isValidPeriodKey } from "../../domain/time.js";
 import type {
@@ -8,6 +8,7 @@ import type {
   AdminResultCorrectionOutcome,
   AdminResultCorrectionService,
 } from "../../application/admin-result-correction.js";
+import type { AdminWriteAuthorizer } from "../../application/admin.js";
 import type {
   AdminRetrySettlementOutcome,
   RetrySettlementCommand,
@@ -45,7 +46,7 @@ const ADMIN_RESULT_CORRECTION_FIELDS = new Set([
 ]);
 
 const ADMIN_REBUILD_RANKINGS_FIELDS = new Set([
-  "period_type",
+  "board",
   "period_key",
   "reason",
 ]);
@@ -62,24 +63,25 @@ function assertIntegerInRange(
 }
 
 export function validateAdminResultCorrectionPayload(
-  payload: Record<string, unknown>,
+  payload: unknown,
 ): AdminResultCorrectionInput {
-  assertUnknownFields(payload, ADMIN_RESULT_CORRECTION_FIELDS);
-  assertIntegerInRange(payload.expected_result_version, "expected_result_version", 0, Number.MAX_SAFE_INTEGER);
-  assertIntegerInRange(payload.regular_home_score, "regular_home_score", 0, 99);
-  assertIntegerInRange(payload.regular_away_score, "regular_away_score", 0, 99);
+  const body = payload as Record<string, unknown>;
+  assertUnknownFields(body, ADMIN_RESULT_CORRECTION_FIELDS);
+  assertIntegerInRange(body.expected_result_version, "expected_result_version", 0, Number.MAX_SAFE_INTEGER);
+  assertIntegerInRange(body.regular_home_score, "regular_home_score", 0, 99);
+  assertIntegerInRange(body.regular_away_score, "regular_away_score", 0, 99);
   if (
-    typeof payload.reason !== "string" ||
-    payload.reason.length < 1 ||
-    payload.reason.length > 500
+    typeof body.reason !== "string" ||
+    body.reason.length < 1 ||
+    body.reason.length > 500
   ) {
     throw validationError("reason 长度必须为 1..500", { field: "reason" });
   }
   return {
-    expected_result_version: payload.expected_result_version,
-    regular_home_score: payload.regular_home_score,
-    regular_away_score: payload.regular_away_score,
-    reason: payload.reason,
+    expected_result_version: body.expected_result_version,
+    regular_home_score: body.regular_home_score,
+    regular_away_score: body.regular_away_score,
+    reason: body.reason,
   };
 }
 
@@ -98,29 +100,39 @@ export function validateAdminUserId(value: unknown): string {
 }
 
 export function validateAdminRebuildRankingsPayload(
-  payload: Record<string, unknown>,
+  payload: unknown,
 ): AdminRebuildRankingsInput {
-  assertUnknownFields(payload, ADMIN_REBUILD_RANKINGS_FIELDS);
-  if (payload.period_type !== PeriodType.Week && payload.period_type !== PeriodType.Month) {
-    throw validationError("period_type 必须是 week 或 month", { field: "period_type" });
+  const body = payload as Record<string, unknown>;
+  assertUnknownFields(body, ADMIN_REBUILD_RANKINGS_FIELDS);
+  if (!Object.values(RankingBoard).includes(body.board as RankingBoard)) {
+    throw validationError("board 必须是 week、career 或 strength", { field: "board" });
+  }
+  const board = body.board as RankingBoard;
+  let periodKey: string | null = null;
+  if (board === RankingBoard.Week) {
+    if (
+      typeof body.period_key !== "string" ||
+      !isValidPeriodKey(PeriodType.Week, body.period_key)
+    ) {
+      throw validationError("week board 必须携带有效 period_key", { field: "period_key" });
+    }
+    periodKey = body.period_key;
+  } else if (Object.prototype.hasOwnProperty.call(body, "period_key")) {
+    throw validationError("career/strength board 禁止携带 period_key", {
+      field: "period_key",
+    });
   }
   if (
-    typeof payload.period_key !== "string" ||
-    !isValidPeriodKey(payload.period_type, payload.period_key)
-  ) {
-    throw validationError("period_key 格式与 period_type 不匹配", { field: "period_key" });
-  }
-  if (
-    typeof payload.reason !== "string" ||
-    payload.reason.length < 1 ||
-    payload.reason.length > 500
+    typeof body.reason !== "string" ||
+    body.reason.length < 1 ||
+    body.reason.length > 500
   ) {
     throw validationError("reason 长度必须为 1..500", { field: "reason" });
   }
   return {
-    period_type: payload.period_type,
-    period_key: payload.period_key,
-    reason: payload.reason,
+    board,
+    period_key: periodKey,
+    reason: body.reason,
   };
 }
 
@@ -136,6 +148,24 @@ async function checkAdminRateLimit(
       serverNow,
     );
   }
+}
+
+async function preflightAdmin(
+  service: AdminWriteAuthorizer,
+  value: string | null | undefined,
+): Promise<string> {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw conflictError("UNAUTHORIZED", "需要可信管理员身份");
+  }
+  await service.authorizeAdmin(value);
+  return value;
+}
+
+function validateEmptyAdminBody(body: unknown): void {
+  if (body === undefined || body === null) {
+    return;
+  }
+  assertUnknownFields(body as Record<string, unknown>, new Set());
 }
 
 function assertResultCorrectionResponse(
@@ -177,7 +207,7 @@ function assertResultCorrectionResponse(
 export interface PostAdminResultCorrectionInput {
   trusted_openid?: string | null;
   match_id: unknown;
-  body: Record<string, unknown>;
+  body: unknown;
   server_now: Date;
   request_id: string;
   rate_limiter?: RateLimiter;
@@ -200,14 +230,15 @@ export interface PostAdminResultCorrectionSuccessResponse {
 }
 
 export async function postAdminResultCorrection(
-  service: Pick<AdminResultCorrectionService, "correct">,
+  service: Pick<AdminResultCorrectionService, "correct" | "authorizeAdmin">,
   input: PostAdminResultCorrectionInput,
 ): Promise<PostAdminResultCorrectionSuccessResponse> {
+  const trustedOpenid = await preflightAdmin(service, input.trusted_openid);
   const matchId = validateAdminMatchId(input.match_id);
   const correction = validateAdminResultCorrectionPayload(input.body);
-  await checkAdminRateLimit(input.trusted_openid, input.server_now, input.rate_limiter);
+  await checkAdminRateLimit(trustedOpenid, input.server_now, input.rate_limiter);
   const outcome = await service.correct(
-    input.trusted_openid,
+    trustedOpenid,
     matchId,
     correction,
     input.server_now,
@@ -233,6 +264,7 @@ export async function postAdminResultCorrection(
 export interface PostAdminRetrySettlementInput {
   trusted_openid?: string | null;
   match_id: unknown;
+  body?: unknown;
   server_now: Date;
   request_id: string;
   rate_limiter?: RateLimiter;
@@ -274,10 +306,12 @@ export async function postAdminRetrySettlement(
   service: RetrySettlementCommand,
   input: PostAdminRetrySettlementInput,
 ): Promise<PostAdminRetrySettlementSuccessResponse> {
+  const trustedOpenid = await preflightAdmin(service, input.trusted_openid);
   const matchId = validateAdminMatchId(input.match_id);
-  await checkAdminRateLimit(input.trusted_openid, input.server_now, input.rate_limiter);
+  validateEmptyAdminBody(input.body);
+  await checkAdminRateLimit(trustedOpenid, input.server_now, input.rate_limiter);
   const outcome: AdminRetrySettlementOutcome = await service.retry(
-    input.trusted_openid,
+    trustedOpenid,
     matchId,
     input.server_now,
   );
@@ -325,6 +359,7 @@ export async function postAdminRetrySettlement(
 export interface PostAdminRebuildUserStatsInput {
   trusted_openid?: string | null;
   user_id: unknown;
+  body?: unknown;
   server_now: Date;
   request_id: string;
   rate_limiter?: RateLimiter;
@@ -336,6 +371,7 @@ export interface PostAdminRebuildUserStatsSuccessResponse {
     data: {
       user_id: string;
       rebuilt_season_count: number;
+      level_state_changed: boolean;
       audit_id: string;
     };
     request_id: string;
@@ -347,10 +383,12 @@ export async function postAdminRebuildUserStats(
   service: AdminRebuildUserStatsCommand,
   input: PostAdminRebuildUserStatsInput,
 ): Promise<PostAdminRebuildUserStatsSuccessResponse> {
+  const trustedOpenid = await preflightAdmin(service, input.trusted_openid);
   const userId = validateAdminUserId(input.user_id);
-  await checkAdminRateLimit(input.trusted_openid, input.server_now, input.rate_limiter);
+  validateEmptyAdminBody(input.body);
+  await checkAdminRateLimit(trustedOpenid, input.server_now, input.rate_limiter);
   const outcome: AdminRebuildUserStatsOutcome = await service.rebuild(
-    input.trusted_openid,
+    trustedOpenid,
     userId,
     input.server_now,
   );
@@ -371,6 +409,7 @@ export async function postAdminRebuildUserStats(
       data: {
         user_id: userId,
         rebuilt_season_count: rebuiltSeasonCount,
+        level_state_changed: outcome.level_state_changed,
         audit_id: outcome.audit_log.audit_id,
       },
       request_id: input.request_id,
@@ -380,7 +419,7 @@ export async function postAdminRebuildUserStats(
 
 export interface PostAdminRebuildRankingsInput {
   trusted_openid?: string | null;
-  body: Record<string, unknown>;
+  body: unknown;
   server_now: Date;
   request_id: string;
   rate_limiter?: RateLimiter;
@@ -390,8 +429,8 @@ export interface PostAdminRebuildRankingsSuccessResponse {
   status: 200;
   body: {
     data: {
-      period_type: AdminRebuildRankingsInput["period_type"];
-      period_key: string;
+      board: AdminRebuildRankingsInput["board"];
+      period_key: string | null;
       rebuilt_entry_count: number;
       audit_id: string;
     };
@@ -399,25 +438,25 @@ export interface PostAdminRebuildRankingsSuccessResponse {
   };
 }
 
-/** 第 48.2 节成功 envelope；内部排行榜和审计文档不直接暴露给 API。 */
+/** 第 30.6 节成功 envelope；内部排行榜和审计文档不直接暴露给 API。 */
 export async function postAdminRebuildRankings(
   service: AdminRebuildRankingsCommand,
   input: PostAdminRebuildRankingsInput,
 ): Promise<PostAdminRebuildRankingsSuccessResponse> {
+  const trustedOpenid = await preflightAdmin(service, input.trusted_openid);
   const rebuild = validateAdminRebuildRankingsPayload(input.body);
-  await checkAdminRateLimit(input.trusted_openid, input.server_now, input.rate_limiter);
+  await checkAdminRateLimit(trustedOpenid, input.server_now, input.rate_limiter);
   const outcome: AdminRebuildRankingsOutcome = await service.rebuild(
-    input.trusted_openid,
-    rebuild.period_type,
+    trustedOpenid,
+    rebuild.board,
     rebuild.period_key,
     rebuild.reason,
     input.server_now,
   );
-  if (!Array.isArray(outcome.rankings)) {
-    throw internalError("管理员 rankings rebuild 返回的 rankings 摘要无效");
+  if (outcome.board !== rebuild.board || outcome.period_key !== rebuild.period_key) {
+    throw internalError("管理员 rankings rebuild 返回的目标榜单不一致");
   }
-  const rebuiltEntryCount = outcome.rankings.length;
-  assertNonNegativeSafeInteger(rebuiltEntryCount, "rebuilt_entry_count");
+  assertNonNegativeSafeInteger(outcome.rebuilt_entry_count, "rebuilt_entry_count");
   if (!isValidUuid(outcome.audit_log.audit_id)) {
     throw internalError("管理员 rankings rebuild 缺少审计记录");
   }
@@ -425,9 +464,9 @@ export async function postAdminRebuildRankings(
     status: 200,
     body: {
       data: {
-        period_type: rebuild.period_type,
+        board: rebuild.board,
         period_key: rebuild.period_key,
-        rebuilt_entry_count: rebuiltEntryCount,
+        rebuilt_entry_count: outcome.rebuilt_entry_count,
         audit_id: outcome.audit_log.audit_id,
       },
       request_id: input.request_id,

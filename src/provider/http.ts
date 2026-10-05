@@ -70,8 +70,9 @@ export interface ProviderHttpClient {
 }
 
 export interface ApiFootballFixturesQuery {
-  dateFrom: string;
-  dateTo: string;
+  dateFrom?: string;
+  dateTo?: string;
+  fixtureId?: string;
   leagueId: string;
   season: string;
   round?: string;
@@ -124,51 +125,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function isPositiveInteger(value: unknown): value is number {
-  return typeof value === "number" && Number.isInteger(value) && value > 0;
-}
-
-function isProviderSeason(value: unknown): boolean {
-  return (
-    typeof value === "string" && value.length > 0 ||
-    typeof value === "number" && Number.isInteger(value) && value > 0
-  );
-}
-
-function isApiFootballFixture(value: unknown): value is ApiFootballFixture {
-  if (!isRecord(value)) {
-    return false;
-  }
-  const fixture = value.fixture;
-  const league = value.league;
-  const teams = value.teams;
-  if (!isRecord(fixture) || !isRecord(league) || !isRecord(teams)) {
-    return false;
-  }
-
-  const status = fixture.status;
-  const home = teams.home;
-  const away = teams.away;
-  return (
-    isPositiveInteger(fixture.id) &&
-    typeof fixture.date === "string" &&
-    fixture.date.length > 0 &&
-    typeof fixture.timestamp === "number" &&
-    Number.isFinite(fixture.timestamp) &&
-    isRecord(status) &&
-    typeof status.short === "string" &&
-    status.short.length > 0 &&
-    isPositiveInteger(league.id) &&
-    isProviderSeason(league.season) &&
-    typeof league.round === "string" &&
-    league.round.length > 0 &&
-    isRecord(home) &&
-    isRecord(away) &&
-    isPositiveInteger(home.id) &&
-    isPositiveInteger(away.id)
-  );
-}
-
 function isApiFootballTeam(value: unknown): value is ApiFootballTeam {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return false;
@@ -216,16 +172,16 @@ export class ApiFootballClient {
 
   async getFixtures(query: ApiFootballFixturesQuery): Promise<ApiFootballFixture[]> {
     const env = await this.request<ApiFootballFixture>("fixtures", {
-      from: query.dateFrom,
-      to: query.dateTo,
       league: query.leagueId,
       season: query.season,
       timezone: "UTC",
+      ...(query.dateFrom !== undefined ? { from: query.dateFrom } : {}),
+      ...(query.dateTo !== undefined ? { to: query.dateTo } : {}),
+      ...(query.fixtureId !== undefined ? { id: query.fixtureId } : {}),
       ...(query.round !== undefined ? { round: query.round } : {}),
     });
-    if (!env.response.every(isApiFootballFixture)) {
-      throw new ProviderDataError("provider fixtures response missing fixture fields");
-    }
+    // 31.5：逐条校验，不因单条非法丢弃整批。非法项原样返回，由 mapper 以
+    // 实体级 PROVIDER_DATA_INVALID fail-closed（不使整包成为不可重试错误）。
     return env.response;
   }
 
@@ -237,9 +193,7 @@ export class ApiFootballClient {
       season: query.season,
       timezone: "UTC",
     });
-    if (!env.response.every(isApiFootballFixture)) {
-      throw new ProviderDataError("provider fixtures response missing fixture fields");
-    }
+    // 31.5：逐条校验，非法项交由 mapper 逐实体失败。
     return env.response;
   }
 

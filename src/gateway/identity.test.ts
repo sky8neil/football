@@ -10,6 +10,7 @@ import {
   type GatewayRuntimeConfig,
 } from "./config.js";
 import { resolveTrustedOpenid } from "./identity.js";
+import { defaultLevelState } from "../domain/types.js";
 
 const TEST_CURSOR_SECRET = "test-match-cursor-secret";
 const MOCK_OPENID = "mock-openid-identity";
@@ -140,6 +141,8 @@ describe("resolveIdentity（D-P1 方案 B，§4.5.1）", () => {
       career_exact_hits: 0,
       career_level: 1,
       career_best_level: 1,
+      career_last_scoring_match_at: null,
+      career_level_state: defaultLevelState(),
       deleted_at: null,
       created_at: NOW,
       updated_at: NOW,
@@ -206,7 +209,7 @@ describe("resolveIdentity（D-P1 方案 B，§4.5.1）", () => {
     });
   });
 
-  it("D11：无 mapping 的历史墓碑用户 → unregistered（原 openid 不被误判 deleted）", async () => {
+  it("无 mapping 的历史墓碑用户 → unregistered（原 openid 不被误判 deleted）", async () => {
     const repo = new InMemoryRepository();
     const oldUserId = "00000000-0000-4000-8000-000000000043";
     await repo.users.insert({
@@ -222,7 +225,7 @@ describe("resolveIdentity（D-P1 方案 B，§4.5.1）", () => {
     });
   });
 
-  it("D10：迁移前脏数据（users 仍挂原 openid 且 deleted）→ 仍解析为 deleted", async () => {
+  it("迁移前脏数据（users 仍挂原 openid 且 deleted）→ 仍解析为 deleted", async () => {
     const repo = new InMemoryRepository();
     const openid = "openid-resolve-dirty";
     const dirtyUserId = "00000000-0000-4000-8000-000000000044";

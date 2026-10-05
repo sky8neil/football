@@ -1,6 +1,7 @@
 import { FIXED_CONFIG_V1 } from "../../domain/config.js";
-import { PeriodType } from "../../domain/enums.js";
+import { RankingBoard, RankingScope } from "../../domain/enums.js";
 import { validationError } from "../../domain/errors.js";
+import { isValidUuid } from "../../domain/ids.js";
 import { isValidPeriodKey } from "../../domain/time.js";
 import type {
   RankingQuery,
@@ -8,23 +9,22 @@ import type {
   RankingQueryService,
 } from "../../application/ranking-query.js";
 import { assertUnknownFields } from "./validation.js";
-import {
-  defaultApiRateLimiter,
-  type RateLimiter,
-} from "./rate-limit.js";
+import { defaultApiRateLimiter, type RateLimiter } from "./rate-limit.js";
 
 const RANKINGS_QUERY_FIELDS = new Set([
-  "period_type",
+  "board",
   "period_key",
+  "scope",
+  "group_id",
   "limit",
   "cursor",
 ]);
 
-export type RankingsQuery = Omit<RankingQuery, "server_now">;
+export type RankingsQuery = Omit<RankingQuery, "server_now" | "authenticated_user_id">;
 
 export interface GetRankingsInput {
   authenticated_user_id?: string | null;
-  public_source: string;
+  public_source?: string;
   query: Record<string, unknown>;
   server_now: Date;
   request_id: string;
@@ -35,20 +35,23 @@ export interface GetRankingsSuccessResponse {
   status: 200;
   body: {
     data: {
+      board: RankingQueryResult["board"];
+      scope: RankingQueryResult["scope"];
+      period_key: string | null;
+      updated_at: string | null;
       items: RankingQueryResult["items"];
       page: {
         next_cursor: string | null;
         has_more: boolean;
       };
+      me?: RankingQueryResult["me"];
     };
     request_id: string;
   };
 }
 
 function parseLimit(value: unknown): number {
-  if (value === undefined) {
-    return FIXED_CONFIG_V1.API_DEFAULT_LIMIT;
-  }
+  if (value === undefined) return FIXED_CONFIG_V1.API_DEFAULT_LIMIT;
   if (typeof value !== "string" || !/^\d+$/.test(value)) {
     throw validationError("limit 必须是整数", { field: "limit" });
   }
@@ -61,23 +64,40 @@ function parseLimit(value: unknown): number {
 
 export function validateRankingsQuery(query: Record<string, unknown>): RankingsQuery {
   assertUnknownFields(query, RANKINGS_QUERY_FIELDS);
-  if (query.period_type !== PeriodType.Week && query.period_type !== PeriodType.Month) {
-    throw validationError("period_type 必须是 week 或 month", { field: "period_type" });
+  if (!Object.values(RankingBoard).includes(query.board as RankingQuery["board"])) {
+    throw validationError("board 必须是 week、career 或 strength", { field: "board" });
+  }
+  const board = query.board as RankingQuery["board"];
+  const scope = query.scope === undefined ? RankingScope.Global : query.scope;
+  if (!Object.values(RankingScope).includes(scope as RankingQuery["scope"])) {
+    throw validationError("scope 必须是 global 或 group", { field: "scope" });
   }
   const periodKey = query.period_key === undefined ? null : query.period_key;
-  if (
-    periodKey !== null &&
-    (typeof periodKey !== "string" || !isValidPeriodKey(query.period_type, periodKey))
-  ) {
-    throw validationError("period_key 格式与 period_type 不匹配", { field: "period_key" });
+  if (board === RankingBoard.Week) {
+    if (query.period_key !== undefined &&
+      (typeof periodKey !== "string" || !isValidPeriodKey("week", periodKey))) {
+      throw validationError("period_key 必须是有效 ISO 周", { field: "period_key" });
+    }
+  } else if (query.period_key !== undefined) {
+    throw validationError("period_key 仅适用于 week 榜", { field: "period_key" });
+  }
+  const groupId = query.group_id === undefined ? null : query.group_id;
+  if (scope === RankingScope.Group) {
+    if (typeof groupId !== "string" || !isValidUuid(groupId)) {
+      throw validationError("scope=group 时 group_id 必须为 UUID v4", { field: "group_id" });
+    }
+  } else if (query.group_id !== undefined) {
+    throw validationError("scope=global 时禁止携带 group_id", { field: "group_id" });
   }
   const cursor = query.cursor === undefined ? null : query.cursor;
   if (cursor !== null && typeof cursor !== "string") {
     throw validationError("cursor 必须是字符串", { field: "cursor" });
   }
   return {
-    period_type: query.period_type,
-    period_key: periodKey,
+    board,
+    period_key: periodKey as string | null,
+    scope: scope as RankingQuery["scope"],
+    group_id: groupId as string | null,
     limit: parseLimit(query.limit),
     cursor,
   };
@@ -95,22 +115,29 @@ export async function getRankings(
   input: GetRankingsInput,
 ): Promise<GetRankingsSuccessResponse> {
   const query = validateRankingsQuery(input.query);
-  const publicSource = requirePublicSource(input.public_source);
-  await (input.rate_limiter ?? defaultApiRateLimiter).check(
-    "public_reads",
-    publicSource,
-    input.server_now,
-  );
-  const result = await service.list({ ...query, server_now: input.server_now });
+  const userId = input.authenticated_user_id ?? null;
+  const limiter = input.rate_limiter ?? defaultApiRateLimiter;
+  if (userId !== null) {
+    await limiter.check("authenticated_reads", userId, input.server_now);
+  } else {
+    await limiter.check("public_reads", requirePublicSource(input.public_source), input.server_now);
+  }
+  const result = await service.list({
+    ...query,
+    server_now: input.server_now,
+    authenticated_user_id: userId,
+  });
   return {
     status: 200,
     body: {
       data: {
+        board: result.board,
+        scope: result.scope,
+        period_key: result.period_key,
+        updated_at: result.updated_at,
         items: result.items,
-        page: {
-          next_cursor: result.next_cursor,
-          has_more: result.has_more,
-        },
+        page: { next_cursor: result.next_cursor, has_more: result.has_more },
+        ...(result.me === undefined ? {} : { me: result.me }),
       },
       request_id: input.request_id,
     },

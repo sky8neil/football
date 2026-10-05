@@ -8,6 +8,8 @@ import {
 } from "./admin.js";
 import { InMemoryRateLimiter } from "./rate-limit.js";
 
+const authorizeAdmin = async (_openid: string): Promise<void> => undefined;
+
 const VALID_REQUEST = {
   expected_result_version: 1,
   regular_home_score: 1,
@@ -20,12 +22,15 @@ describe("validateAdminResultCorrectionPayload", () => {
     expect(validateAdminResultCorrectionPayload(VALID_REQUEST)).toEqual(VALID_REQUEST);
   });
 
-  it("拒绝客户端传入 admin_id", () => {
+  it("M122 管理员不能通过 result API 直接编辑积分", () => {
     expect(() =>
       validateAdminResultCorrectionPayload({ ...VALID_REQUEST, admin_id: "client-admin" }),
     ).toThrowError(DomainError);
     expect(() =>
       validateAdminResultCorrectionPayload({ ...VALID_REQUEST, admin_id: "client-admin" }),
+    ).toThrowError(expect.objectContaining({ code: "VALIDATION_ERROR" }));
+    expect(() =>
+      validateAdminResultCorrectionPayload({ ...VALID_REQUEST, career_points: 999 }),
     ).toThrowError(expect.objectContaining({ code: "VALIDATION_ERROR" }));
   });
 
@@ -98,7 +103,7 @@ describe("POST /v1/admin/matches/:match_id/result-corrections", () => {
       } as AdminResultCorrectionOutcome["audit_log"],
     }));
 
-    const response = await postAdminResultCorrection({ correct }, {
+    const response = await postAdminResultCorrection({ authorizeAdmin, correct }, {
       trusted_openid: "trusted-admin-openid",
       match_id: matchId,
       body: VALID_REQUEST,
@@ -151,7 +156,7 @@ describe("POST /v1/admin/matches/:match_id/result-corrections", () => {
     }));
 
     await expect(
-      postAdminResultCorrection({ correct }, {
+      postAdminResultCorrection({ authorizeAdmin, correct }, {
         trusted_openid: "trusted-admin-openid",
         match_id: matchId,
         body: VALID_REQUEST,
@@ -186,7 +191,7 @@ describe("POST /v1/admin/matches/:match_id/result-corrections", () => {
     }));
 
     await expect(
-      postAdminResultCorrection({ correct }, {
+      postAdminResultCorrection({ authorizeAdmin, correct }, {
         trusted_openid: "trusted-admin-openid",
         match_id: matchId,
         body: VALID_REQUEST,
@@ -221,7 +226,7 @@ describe("POST /v1/admin/matches/:match_id/result-corrections", () => {
     }));
 
     await expect(
-      postAdminResultCorrection({ correct }, {
+      postAdminResultCorrection({ authorizeAdmin, correct }, {
         trusted_openid: "trusted-admin-openid",
         match_id: matchId,
         body: VALID_REQUEST,
@@ -256,7 +261,7 @@ describe("POST /v1/admin/matches/:match_id/result-corrections", () => {
     }));
 
     await expect(
-      postAdminResultCorrection({ correct }, {
+      postAdminResultCorrection({ authorizeAdmin, correct }, {
         trusted_openid: "trusted-admin-openid",
         match_id: matchId,
         body: VALID_REQUEST,
@@ -300,10 +305,10 @@ describe("POST /v1/admin/matches/:match_id/result-corrections", () => {
     };
 
     for (let attempt = 0; attempt < 60; attempt += 1) {
-      await expect(postAdminResultCorrection({ correct }, input)).resolves.toBeDefined();
+      await expect(postAdminResultCorrection({ authorizeAdmin, correct }, input)).resolves.toBeDefined();
     }
 
-    await expect(postAdminResultCorrection({ correct }, input)).rejects.toMatchObject({
+    await expect(postAdminResultCorrection({ authorizeAdmin, correct }, input)).rejects.toMatchObject({
       code: "RATE_LIMITED",
     });
     expect(correct).toHaveBeenCalledTimes(60);

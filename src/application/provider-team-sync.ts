@@ -1,4 +1,4 @@
-import { MVP_SEASON } from "../domain/config.js";
+import { SUPPORTED_LEAGUES, type SupportedLeague } from "../domain/config.js";
 import { Provider, SCHEMA_VERSION, TeamStatus } from "../domain/enums.js";
 import { internalError, validationError } from "../domain/errors.js";
 import { newUuid } from "../domain/ids.js";
@@ -77,12 +77,21 @@ export class ProviderTeamSyncService {
 
   async sync(serverNow: Date): Promise<ProviderTeamSyncOutcome> {
     assertValidServerNow(serverNow);
-    const providerTeams = await this.client.getTeams({
-      leagueId: MVP_SEASON.api_football_league_id,
-      season: MVP_SEASON.api_football_season,
-    });
-    if (!Array.isArray(providerTeams)) {
-      throw new ProviderDataError("provider teams response must be an array");
+    const batches: Array<{
+      league: SupportedLeague;
+      teams: readonly ApiFootballTeam[];
+    }> = [];
+    let teamsRead = 0;
+    for (const league of SUPPORTED_LEAGUES) {
+      const providerTeams = await this.client.getTeams({
+        leagueId: league.api_football_league_id,
+        season: league.api_football_season,
+      });
+      if (!Array.isArray(providerTeams)) {
+        throw new ProviderDataError("provider teams response must be an array");
+      }
+      batches.push({ league, teams: providerTeams });
+      teamsRead += providerTeams.length;
     }
 
     return this.repo.withTransaction(async (tx) => {
@@ -90,52 +99,55 @@ export class ProviderTeamSyncService {
       let teamsCreated = 0;
       let teamsUnchanged = 0;
 
-      for (const raw of providerTeams) {
-        const parsed = parseProviderTeam(raw);
-        const existingMapping =
-          await tx.teamProviderMappings.findByProviderAndExternalId(
-            Provider.ApiFootball,
-            parsed.provider_team_id,
-          );
+      for (const batch of batches) {
+        for (const raw of batch.teams) {
+          const parsed = parseProviderTeam(raw);
+          const existingMapping =
+            await tx.teamProviderMappings.findByProviderAndExternalId(
+              Provider.ApiFootball,
+              parsed.provider_team_id,
+            );
 
-        if (existingMapping !== null) {
-          const existingTeam = await tx.teams.findById(existingMapping.team_id);
-          if (existingTeam === null) {
-            throw internalError("Provider team mapping 指向不存在的 team");
+          if (existingMapping !== null) {
+            const existingTeam = await tx.teams.findById(existingMapping.team_id);
+            if (existingTeam === null) {
+              throw internalError("Provider team mapping 指向不存在的 team");
+            }
+            teamsUnchanged += 1;
+            continue;
           }
-          teamsUnchanged += 1;
-          continue;
+
+          const teamId = newUuid();
+          const team: Team = {
+            schema_version: SCHEMA_VERSION,
+            team_id: teamId,
+            league_id: batch.league.league_id,
+            name: parsed.name,
+            short_name: null,
+            primary_color: null,
+            secondary_color: null,
+            status: TeamStatus.Active,
+            created_at: serverNow,
+            updated_at: serverNow,
+          };
+          const mapping: TeamProviderMapping = {
+            schema_version: SCHEMA_VERSION,
+            team_id: teamId,
+            provider: Provider.ApiFootball,
+            provider_team_id: parsed.provider_team_id,
+            created_at: serverNow,
+            updated_at: serverNow,
+          };
+
+          await tx.teams.insert(team);
+          await tx.teamProviderMappings.insert(mapping);
+          teamsCreated += 1;
         }
-
-        const teamId = newUuid();
-        const team: Team = {
-          schema_version: SCHEMA_VERSION,
-          team_id: teamId,
-          name: parsed.name,
-          short_name: null,
-          primary_color: null,
-          secondary_color: null,
-          status: TeamStatus.Active,
-          created_at: serverNow,
-          updated_at: serverNow,
-        };
-        const mapping: TeamProviderMapping = {
-          schema_version: SCHEMA_VERSION,
-          team_id: teamId,
-          provider: Provider.ApiFootball,
-          provider_team_id: parsed.provider_team_id,
-          created_at: serverNow,
-          updated_at: serverNow,
-        };
-
-        await tx.teams.insert(team);
-        await tx.teamProviderMappings.insert(mapping);
-        teamsCreated += 1;
       }
 
       return {
         kind: "completed",
-        teams_read: providerTeams.length,
+        teams_read: teamsRead,
         teams_created: teamsCreated,
         teams_unchanged: teamsUnchanged,
       };

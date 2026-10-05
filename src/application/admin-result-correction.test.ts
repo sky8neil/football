@@ -321,7 +321,7 @@ describe("AdminResultCorrectionService", () => {
     expect(await repo.adminAuditLogs.findByEntity("match", match.match_id)).toEqual([]);
   });
 
-  it("缺少可信身份、未知 admin 或 disabled admin 均拒绝", async () => {
+  it("M121 非管理员调用 admin API 时拒绝，且缺少身份返回 AUTH_REQUIRED", async () => {
     const repo = new InMemoryRepository();
     const match = await seedSettledMatch(repo);
     const service = new AdminResultCorrectionService(repo);

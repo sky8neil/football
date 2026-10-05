@@ -11,7 +11,7 @@ import {
   type RateLimiter,
 } from "./rate-limit.js";
 
-const SHARE_CARD_QUERY_FIELDS = new Set(["season_id", "round_id"]);
+const SHARE_CARD_QUERY_FIELDS = new Set(["league_id", "season_id", "round_id"]);
 
 export interface ShareCardSuccessResponse {
   status: 200;

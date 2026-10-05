@@ -379,5 +379,8 @@ describe("admin anomalies API", () => {
     expect(specification).toMatch(
       /        details:\n          type: object\n          additionalProperties: false\n          const: \{\}/,
     );
+    expect(specification).toMatch(
+      /Anomaly:[\s\S]*?oneOf:[\s\S]*?status:[\s\S]*?const: open[\s\S]*?resolved_at:[\s\S]*?const: null[\s\S]*?resolution:[\s\S]*?const: null[\s\S]*?status:[\s\S]*?const: resolved/,
+    );
   });
 });

@@ -4,8 +4,14 @@
  * 事务前后应调用相应断言；违反即抛出 InternalError（数据损坏）。
  */
 import { SCHEMA_VERSION, SettlementDocStatus, SettlementPhase } from "./enums.js";
+import { FIXED_CONFIG_V1 } from "./config.js";
 import { internalError } from "./errors.js";
 import type {
+  BoardSnapshot,
+  Group,
+  GroupMember,
+  LevelHistoryEntry,
+  LevelState,
   Match,
   Prediction,
   RankingEntry,
@@ -32,6 +38,30 @@ export function assertSchemaVersion(version: unknown): asserts version is typeof
   }
 }
 
+function assertLevelRange(field: string, value: number): void {
+  assert(Number.isInteger(value) && value >= FIXED_CONFIG_V1.LEVEL_MIN, `${field} >= 1`);
+  assert(value <= FIXED_CONFIG_V1.LEVEL_MAX, `${field} <= 6`);
+}
+
+function assertLevelState(state: LevelState, prefix: string): void {
+  assert(
+    state.below_count === 0 || state.below_count === 1,
+    `${prefix}.below_count in {0,1}`,
+  );
+  assert(
+    Number.isInteger(state.last_eval_n) &&
+      state.last_eval_n >= 0 &&
+      state.last_eval_n <= FIXED_CONFIG_V1.LEVEL_WINDOW_MAX_N,
+    `${prefix}.last_eval_n <= 300`,
+  );
+  assert(
+    Number.isInteger(state.last_eval_score_sum) &&
+      state.last_eval_score_sum >= 0 &&
+      state.last_eval_score_sum <= 12 * state.last_eval_n,
+    `0 <= ${prefix}.last_eval_score_sum <= 12n`,
+  );
+}
+
 export function assertUserCareerInvariants(user: User): void {
   assertSchemaVersion(user.schema_version);
   assert(user.career_points >= 0, "career_points >= 0");
@@ -46,10 +76,20 @@ export function assertUserCareerInvariants(user: User): void {
     user.career_wdl_hits <= user.career_valid_predictions,
     "career_wdl_hits <= career_valid_predictions",
   );
+  assertLevelRange("career_level", user.career_level);
+  assertLevelRange("career_best_level", user.career_best_level);
+  assert(
+    user.career_level < 2 || user.career_valid_predictions >= FIXED_CONFIG_V1.LEVEL_RATED_MIN_VALID,
+    "career_level >= 2 requires career_valid_predictions >= 20",
+  );
   assert(
     user.career_best_level >= user.career_level,
     "career_best_level >= career_level",
   );
+
+  if (user.career_level_state !== undefined) {
+    assertLevelState(user.career_level_state, "career_level_state");
+  }
 }
 
 export function assertSeasonStatsInvariants(stats: UserSeasonStats): void {
@@ -63,7 +103,17 @@ export function assertSeasonStatsInvariants(stats: UserSeasonStats): void {
     stats.wdl_hits <= stats.valid_predictions,
     "season wdl_hits <= valid_predictions",
   );
+  assertLevelRange("season level", stats.level);
+  assertLevelRange("season best_level", stats.best_level);
   assert(stats.best_level >= stats.level, "season best_level >= level");
+  assert(
+    stats.level < 2 || stats.valid_predictions >= FIXED_CONFIG_V1.LEVEL_RATED_MIN_VALID,
+    "season level >= 2 requires 20 valid_predictions",
+  );
+
+  if (stats.level_state !== undefined) {
+    assertLevelState(stats.level_state, "level_state");
+  }
 }
 
 export function assertRankingInvariants(entry: RankingEntry): void {
@@ -77,6 +127,55 @@ export function assertRankingInvariants(entry: RankingEntry): void {
     entry.wdl_hits <= entry.valid_predictions,
     "rankings wdl_hits <= valid_predictions",
   );
+}
+
+export function assertLevelHistoryInvariants(entry: LevelHistoryEntry): void {
+  assertSchemaVersion(entry.schema_version);
+  assertLevelRange("from_level", entry.from_level);
+  assertLevelRange("to_level", entry.to_level);
+  assert(entry.from_level !== entry.to_level, "level_history from != to");
+  assert(
+    entry.reason === "weekly_eval" ||
+      entry.reason === "correction_reeval" ||
+      entry.reason === "rebuild",
+    "level_history reason closed",
+  );
+  assert(
+    entry.reason === "rebuild" || Math.abs(entry.to_level - entry.from_level) <= 1,
+    "non-rebuild level_history changes at most one level",
+  );
+}
+
+export function assertBoardSnapshotInvariants(snapshot: BoardSnapshot): void {
+  assertSchemaVersion(snapshot.schema_version);
+  assert(snapshot.board === "career" || snapshot.board === "strength", "board in {career,strength}");
+  assert(Number.isInteger(snapshot.rank) && snapshot.rank >= 1, "snapshot rank >= 1");
+  if (snapshot.snapshot_kind === "head") {
+    assert(snapshot.user_id === "00000000-0000-0000-0000-000000000000", "snapshot head user id");
+    assert(snapshot.rank === 1, "snapshot head rank");
+    assert(
+      snapshot.career_points === null &&
+        snapshot.career_exact_hits === null &&
+        snapshot.career_valid_predictions === null &&
+        snapshot.career_last_scoring_match_at === null &&
+        snapshot.window_score_sum === null &&
+        snapshot.window_n === null,
+      "snapshot head payload is empty",
+    );
+  } else {
+    assert(snapshot.snapshot_kind === undefined, "snapshot kind closed");
+  }
+}
+
+export function assertGroupInvariants(group: Group): void {
+  assertSchemaVersion(group.schema_version);
+  assert(group.member_count >= 0, "groups.member_count >= 0");
+  assert(group.status === "active" || group.status === "dissolved", "group status closed");
+}
+
+export function assertGroupMemberInvariants(member: GroupMember): void {
+  assertSchemaVersion(member.schema_version);
+  assert(member.status === "active" || member.status === "left", "group member status closed");
 }
 
 export function assertPredictionInvariants(prediction: Prediction): void {

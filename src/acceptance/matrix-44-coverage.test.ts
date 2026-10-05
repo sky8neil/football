@@ -1,13 +1,35 @@
 /**
- * 第 44 节验收矩阵可追踪覆盖：扫描测试标题中的条目 ID。
- * 本轮冻结要求：C17-C23、F38-F42、D24-D28、M100-M104、G43-G52 必须可追踪。
+ * 第 44 节验收矩阵可追踪覆盖：扫描测试标题中的 v2 条目 ID。
+ * 自身被排除在标题扫描外，避免基线断言标题反向满足覆盖要求。
  */
 import { describe, expect, it } from "vitest";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
+const MATRIX_GROUPS: Readonly<Record<string, readonly string[]>> = {
+  A: Array.from({ length: 10 }, (_, index) => `A${index + 1}`),
+  B: Array.from({ length: 6 }, (_, index) => `B${index + 11}`),
+  C: Array.from({ length: 7 }, (_, index) => `C${index + 17}`),
+  D: Array.from({ length: 5 }, (_, index) => `D${index + 24}`),
+  E: Array.from({ length: 9 }, (_, index) => `E${index + 29}`),
+  F: Array.from({ length: 5 }, (_, index) => `F${index + 38}`),
+  G: Array.from({ length: 10 }, (_, index) => `G${index + 43}`),
+  H: Array.from({ length: 7 }, (_, index) => `H${index + 53}`),
+  I: Array.from({ length: 6 }, (_, index) => `I${index + 60}`),
+  J: Array.from({ length: 12 }, (_, index) => `J${index + 66}`),
+  K: Array.from({ length: 11 }, (_, index) => `K${index + 78}`),
+  L: Array.from({ length: 26 }, (_, index) => `L${index + 89}`),
+  M: Array.from({ length: 8 }, (_, index) => `M${index + 115}`),
+  N: Array.from({ length: 6 }, (_, index) => `N${index + 123}`),
+};
+
+const EXCLUDED_MATRIX_IDS: Readonly<Record<string, string>> = {
+  L112: "Q3（§17.13 模板回测发布门禁）待确认且未实现；本切片不实现回测（SPEC_GAP）",
+};
+
 function collectTestTitles(root: string): string[] {
   const titles: string[] = [];
+  const coverageTest = join(root, "acceptance", "matrix-44-coverage.test.ts");
   const stack = [root];
   while (stack.length > 0) {
     const dir = stack.pop()!;
@@ -19,7 +41,7 @@ function collectTestTitles(root: string): string[] {
         stack.push(path);
         continue;
       }
-      if (!name.endsWith(".test.ts")) continue;
+      if (!name.endsWith(".test.ts") || path === coverageTest) continue;
       const text = readFileSync(path, "utf8");
       for (const match of text.matchAll(/\bit\(\s*["'`]([^"'`]+)["'`]/g)) {
         titles.push(match[1]!);
@@ -32,73 +54,36 @@ function collectTestTitles(root: string): string[] {
 function coveredIds(titles: readonly string[]): Set<string> {
   const ids = new Set<string>();
   for (const title of titles) {
-    for (const match of title.matchAll(/\b([A-N]\d{2,3})\b/g)) {
+    for (const match of title.matchAll(/\b([A-N]\d{2,3}|A[1-9])\b/g)) {
       ids.add(match[1]!);
     }
   }
   return ids;
 }
 
-describe("第 44 节验收矩阵可追踪覆盖", () => {
-  const titles = collectTestTitles(join(process.cwd(), "src"));
-  const covered = coveredIds(titles);
+describe("第 44 节验收矩阵 v2 可追踪覆盖", () => {
+  const allIds = Object.values(MATRIX_GROUPS).flat();
+  const excludedIds = new Set(Object.keys(EXCLUDED_MATRIX_IDS));
+  const covered = coveredIds(collectTestTitles(join(process.cwd(), "src")));
 
-  it("C17-C23 延期条目全部可追踪", () => {
-    for (const id of ["C17", "C18", "C19", "C20", "C21", "C22", "C23"]) {
-      expect(covered.has(id), `${id} missing`).toBe(true);
+  for (const [group, ids] of Object.entries(MATRIX_GROUPS)) {
+    it(`${group} 组验收项全部可追踪（明确排除项除外）`, () => {
+      for (const id of ids) {
+        if (excludedIds.has(id)) continue;
+        expect(covered.has(id), `${id} missing`).toBe(true);
+      }
+    });
+  }
+
+  it("基线包含 §44 A1-N128 全部 128 项，且覆盖或显式排除每项", () => {
+    expect(allIds).toHaveLength(128);
+    expect(new Set(allIds).size).toBe(128);
+    for (const id of allIds) {
+      expect(covered.has(id) || excludedIds.has(id), `${id} 未覆盖且未显式排除`).toBe(true);
     }
-  });
-
-  it("D24-D28 并发与幂等条目全部可追踪", () => {
-    for (const id of ["D24", "D25", "D26", "D27", "D28"]) {
-      expect(covered.has(id), `${id} missing`).toBe(true);
-    }
-  });
-
-  it("F38-F42 无效比赛条目全部可追踪", () => {
-    for (const id of ["F38", "F39", "F40", "F41", "F42"]) {
-      expect(covered.has(id), `${id} missing`).toBe(true);
-    }
-  });
-
-  it("M100-M104 注销条目全部可追踪", () => {
-    for (const id of ["M100", "M101", "M102", "M103", "M104"]) {
-      expect(covered.has(id), `${id} missing`).toBe(true);
-    }
-  });
-
-  it("G43-G52 Provider 数据条目全部可追踪", () => {
-    for (const id of [
-      "G43",
-      "G44",
-      "G45",
-      "G46",
-      "G47",
-      "G48",
-      "G49",
-      "G50",
-      "G51",
-      "G52",
-    ]) {
-      expect(covered.has(id), `${id} missing`).toBe(true);
-    }
-  });
-
-  it("H53-H59 result_version 条目全部可追踪", () => {
-    for (const id of ["H53", "H54", "H55", "H56", "H57", "H58", "H59"]) {
-      expect(covered.has(id), `${id} missing`).toBe(true);
-    }
-  });
-
-  it("I60-I65 结算幂等条目全部可追踪", () => {
-    for (const id of ["I60", "I61", "I62", "I63", "I64", "I65"]) {
-      expect(covered.has(id), `${id} missing`).toBe(true);
-    }
-  });
-
-  it("N108-N111 Rebuild 与一致性条目全部可追踪（49.5 事实源修订）", () => {
-    for (const id of ["N108", "N109", "N110", "N111"]) {
-      expect(covered.has(id), `${id} missing`).toBe(true);
+    for (const id of excludedIds) {
+      expect(allIds).toContain(id);
+      expect(EXCLUDED_MATRIX_IDS[id]?.trim().length).toBeGreaterThan(0);
     }
   });
 });

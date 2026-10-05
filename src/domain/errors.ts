@@ -41,3 +41,19 @@ export function conflictError(
 export function internalError(message: string): DomainError {
   return new DomainError("INTERNAL_ERROR", message);
 }
+
+export function groupError(
+  code:
+    | "GROUP_NOT_FOUND"
+    | "GROUP_DISSOLVED"
+    | "GROUP_ALREADY_MEMBER"
+    | "GROUP_NOT_MEMBER"
+    | "GROUP_MEMBER_LIMIT_REACHED"
+    | "GROUP_JOIN_LIMIT_REACHED"
+    | "GROUP_OWNED_LIMIT_REACHED"
+    | "GROUP_OWNER_CANNOT_LEAVE",
+  message: string,
+  details: ErrorDetails = null,
+): DomainError {
+  return new DomainError(code, message, details);
+}

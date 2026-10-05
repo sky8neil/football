@@ -12,7 +12,7 @@
  * 本文件不 import 真实 SDK，以免改动 package.json。
  */
 import { SCHEMA_VERSION } from "../domain/enums.js";
-import type { User } from "../domain/types.js";
+import { defaultLevelState, type LevelState, type User } from "../domain/types.js";
 import { DocumentNotFoundError, type UserRepository } from "./repositories.js";
 
 // TODO(B1 接线后): 接入 @cloudbase/node-sdk
@@ -59,8 +59,10 @@ export interface CloudBaseUserDocument {
   career_valid_predictions: number;
   career_wdl_hits: number;
   career_exact_hits: number;
+  career_last_scoring_match_at: Date | null;
   career_level: number;
   career_best_level: number;
+  career_level_state: LevelState;
   deleted_at: Date | null;
   created_at: Date;
   updated_at: Date;
@@ -181,6 +183,43 @@ function parseNullableString(value: unknown): string | null {
   return value;
 }
 
+function parseNullableNumber(value: unknown, field: string): number | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  return requireNumber(value, field);
+}
+
+function parseLevelState(value: unknown): LevelState {
+  if (value === undefined) {
+    return defaultLevelState();
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("CloudBaseUserRepository: users.career_level_state is invalid");
+  }
+  const raw = value as Record<string, unknown>;
+  return {
+    below_count: raw.below_count === undefined ? 0 : requireNumber(raw.below_count, "career_level_state.below_count"),
+    week_base_level: parseNullableNumber(raw.week_base_level, "career_level_state.week_base_level"),
+    week_base_below_count: parseNullableNumber(
+      raw.week_base_below_count,
+      "career_level_state.week_base_below_count",
+    ),
+    week_base_as_of: parseNullableDate(raw.week_base_as_of, "career_level_state.week_base_as_of"),
+    last_eval_as_of: parseNullableDate(raw.last_eval_as_of, "career_level_state.last_eval_as_of"),
+    last_eval_n: raw.last_eval_n === undefined ? 0 : requireNumber(raw.last_eval_n, "career_level_state.last_eval_n"),
+    last_eval_score_sum:
+      raw.last_eval_score_sum === undefined
+        ? 0
+        : requireNumber(raw.last_eval_score_sum, "career_level_state.last_eval_score_sum"),
+    last_eval_b_points:
+      raw.last_eval_b_points === undefined
+        ? 0
+        : requireNumber(raw.last_eval_b_points, "career_level_state.last_eval_b_points"),
+    last_eval_rule_version: parseNullableString(raw.last_eval_rule_version),
+  };
+}
+
 function parseUserStatus(value: unknown): User["status"] {
   if (value === "active" || value === "deleted") {
     return value;
@@ -283,8 +322,10 @@ export class CloudBaseUserRepository implements UserRepository {
       career_valid_predictions: user.career_valid_predictions,
       career_wdl_hits: user.career_wdl_hits,
       career_exact_hits: user.career_exact_hits,
+      career_last_scoring_match_at: user.career_last_scoring_match_at ?? null,
       career_level: user.career_level,
       career_best_level: user.career_best_level,
+      career_level_state: user.career_level_state,
       deleted_at: user.deleted_at,
       created_at: user.created_at,
       updated_at: user.updated_at,
@@ -313,8 +354,13 @@ export class CloudBaseUserRepository implements UserRepository {
       ),
       career_wdl_hits: requireNumber(raw.career_wdl_hits, "career_wdl_hits"),
       career_exact_hits: requireNumber(raw.career_exact_hits, "career_exact_hits"),
+      career_last_scoring_match_at: parseNullableDate(
+        raw.career_last_scoring_match_at,
+        "career_last_scoring_match_at",
+      ),
       career_level: requireNumber(raw.career_level, "career_level"),
       career_best_level: requireNumber(raw.career_best_level, "career_best_level"),
+      career_level_state: parseLevelState(raw.career_level_state),
       deleted_at: parseNullableDate(raw.deleted_at, "deleted_at"),
       created_at: parseDate(raw.created_at, "created_at"),
       updated_at: parseDate(raw.updated_at, "updated_at"),

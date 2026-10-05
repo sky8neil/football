@@ -12,6 +12,7 @@ function emptyInput(): DailyConsistencyInput {
     career: [],
     season_stats: [],
     rankings: [],
+    board_snapshots: [],
     active_settlements: [],
   };
 }
@@ -21,6 +22,7 @@ function makeLockRepository(acquired: boolean) {
     acquire: vi.fn(
       async (_lockKey: string, _ownerId: string, _leaseUntil: Date) => acquired,
     ),
+    isHeld: vi.fn(async () => false),
     renew: vi.fn(
       async (_lockKey: string, _ownerId: string, _leaseUntil: Date) => true,
     ),
@@ -171,6 +173,7 @@ describe("DailyConsistencyService", () => {
         ],
         season_stats: [],
         rankings: [],
+        board_snapshots: [],
         active_settlements: [],
       })),
     };
@@ -234,6 +237,7 @@ describe("DailyConsistencyService", () => {
         ],
         season_stats: [],
         rankings: [],
+        board_snapshots: [],
         active_settlements: [],
       })),
     };
@@ -283,7 +287,7 @@ describe("DailyConsistencyService", () => {
         season_stats: [
           {
             user_id: "user-1",
-            season_id: "season-1",
+            level_season_id: "season-1",
             actual: {
               points: 0,
               valid_predictions: 0,
@@ -325,15 +329,13 @@ describe("DailyConsistencyService", () => {
             },
           },
         ],
+        board_snapshots: [],
         active_settlements: [
           {
             match_id: "match-1",
             user_ids: ["user-1"],
             season_id: "season-1",
-            periods: [
-              { period_type: "week", period_key: "2026-W32" },
-              { period_type: "month", period_key: "2026-08" },
-            ],
+            periods: [{ period_type: "week", period_key: "2026-W32" }],
           },
         ],
       })),
@@ -358,8 +360,7 @@ describe("DailyConsistencyService", () => {
       status: "success",
       items_changed: 0,
       last_error_code: null,
-      last_error_message:
-        "skipped_active_settlement:match-1 [users:user-1;season:season-1;periods:week:2026-W32,month:2026-08]",
+      last_error_message: "skipped_active_settlement:match-1 [users:user-1;season:season-1;periods:week:2026-W32]",
     }));
   });
 

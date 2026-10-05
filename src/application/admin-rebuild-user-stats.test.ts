@@ -7,6 +7,7 @@ import {
   AdminRebuildUserStatsService,
 } from "./admin-rebuild-user-stats.js";
 import { userStatsRebuildLockKey } from "./stats-rebuild-service.js";
+import { defaultLevelState } from "../domain/types.js";
 
 const NOW = new Date("2026-08-09T00:00:00.000Z");
 const USER_ID = "00000000-0000-4000-8000-000000000010";
@@ -25,8 +26,10 @@ function makeUser(): User {
     career_valid_predictions: 9,
     career_wdl_hits: 9,
     career_exact_hits: 9,
-    career_level: 2,
+    career_level: 1,
     career_best_level: 2,
+    career_last_scoring_match_at: null,
+    career_level_state: defaultLevelState(),
     deleted_at: null,
     created_at: NOW,
     updated_at: NOW,
@@ -109,13 +112,15 @@ function makeSeasonStats(): UserSeasonStats {
   return {
     schema_version: 1,
     user_id: USER_ID,
-    season_id: "2026_2027",
+    level_season_id: "2026_2027",
     points: 88,
     valid_predictions: 8,
     wdl_hits: 7,
     exact_hits: 6,
-    level: 3,
+    level: 1,
     best_level: 4,
+    level_state: defaultLevelState(),
+    is_level_frozen: false,
     created_at: NOW,
     updated_at: NOW,
   };
@@ -196,7 +201,7 @@ describe("AdminRebuildUserStatsService", () => {
         career_valid_predictions: 9,
         career_wdl_hits: 9,
         career_exact_hits: 9,
-        career_level: 2,
+        career_level: 1,
         career_best_level: 2,
         season_stats_changed_count: 0,
       },
@@ -208,6 +213,7 @@ describe("AdminRebuildUserStatsService", () => {
         career_level: 1,
         career_best_level: 2,
         season_stats_changed_count: 1,
+        level_state_changed: false,
       },
     });
     await expect(repo.adminAuditLogs.findByEntity("user", USER_ID)).resolves.toHaveLength(1);
@@ -254,7 +260,7 @@ describe("AdminRebuildUserStatsService", () => {
 
     await expect(
       new AdminRebuildUserStatsService(repo).rebuild("admin-openid", USER_ID, NOW),
-    ).rejects.toMatchObject({ code: "SETTLEMENT_ALREADY_RUNNING" });
+    ).rejects.toMatchObject({ code: "USER_STATS_REBUILD_ALREADY_RUNNING" });
     await repo.jobLocks.release(lockKey, "existing-owner");
   });
 

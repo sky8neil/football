@@ -7,12 +7,14 @@ import {
   SettlementStatus,
 } from "../domain/enums.js";
 import { newUuid } from "../domain/ids.js";
-import type {
-  Match,
-  MatchResult,
-  Prediction,
-  SettlementDoc,
-  SettlementItem,
+import {
+  defaultLevelState,
+  type Match,
+  type MatchResult,
+  type Prediction,
+  type SettlementDoc,
+  type SettlementItem,
+  type User,
 } from "../domain/types.js";
 import {
   InMemoryRepository,
@@ -153,6 +155,30 @@ function makePrediction(matchId: string, overrides: Partial<Prediction> = {}): P
     updated_at: FINISH_AT,
     ...overrides,
   };
+}
+
+function makeUser(overrides: Partial<User> = {}): User {
+  return {
+    schema_version: 1,
+    user_id: newUuid(),
+    openid: `user-${newUuid()}`,
+    unionid: null,
+    nickname: "User",
+    favorite_team_id: null,
+    status: "active",
+    career_points: 0,
+    career_valid_predictions: 0,
+    career_wdl_hits: 0,
+    career_exact_hits: 0,
+    career_level: 1,
+    career_best_level: 1,
+    career_last_scoring_match_at: null,
+    career_level_state: defaultLevelState(),
+    deleted_at: null,
+    created_at: FINISH_AT,
+    updated_at: FINISH_AT,
+    ...overrides,
+  } as User;
 }
 
 function makeFailedSettlement(overrides: Partial<SettlementDoc> = {}): SettlementDoc {
@@ -329,6 +355,7 @@ describe("RetrySettlementService.retry - 成功路径", () => {
             settlements: tx.settlements,
             settlementItems: tx.settlementItems,
             unlocks: tx.unlocks,
+            savepoint: (callback) => tx.savepoint(callback),
           }),
         ),
     });
@@ -385,6 +412,7 @@ describe("RetrySettlementService.retry - 成功路径", () => {
             settlements: tx.settlements,
             settlementItems: tx.settlementItems,
             unlocks: tx.unlocks,
+            savepoint: (callback) => tx.savepoint(callback),
           }),
         ),
     });
@@ -906,5 +934,59 @@ describe("RetrySettlementService.retry - 部分失败恢复集成", () => {
       settlement_id: settlement.settlement_id,
     });
     expect(workerCalls).toEqual(["p_fail"]);
+  });
+
+  it("失败项聚合写入被隔离回滚，重试成功只记账一次（§15.5/§15.4）", async () => {
+    const { repo, match } = await setup();
+    const settlement = makeFailedSettlement({ match_id: match.match_id, result_version: 1 });
+    await repo.settlements.insert(settlement);
+    const user = makeUser();
+    await repo.users.insert(user);
+    await repo.settlementItems.insert(
+      makeItem({
+        settlement_id: settlement.settlement_id,
+        prediction_id: "p1",
+        user_id: user.user_id,
+      }),
+    );
+
+    const failing = new RetrySettlementService(repo, async (_item, _result, context) => {
+      const tx = context!.tx;
+      const current = await tx.users.findById(user.user_id);
+      await tx.users.update({
+        ...current!,
+        career_points: current!.career_points + 99,
+        updated_at: NOW,
+      });
+      throw new Error("boom");
+    });
+    const failedOutcome = await failing.retry(settlement.settlement_id, NOW);
+    expect(failedOutcome.kind).toBe("failed");
+    // 失败项自身的聚合写入不得保留。
+    expect((await repo.users.findById(user.user_id))?.career_points).toBe(0);
+
+    const succeeding = new RetrySettlementService(repo, async (_item, _result, context) => {
+      const tx = context!.tx;
+      const current = await tx.users.findById(user.user_id);
+      await tx.users.update({
+        ...current!,
+        career_points: current!.career_points + 7,
+        updated_at: NOW,
+      });
+    });
+    const okOutcome = await succeeding.retry(settlement.settlement_id, NOW);
+    expect(okOutcome.kind).toBe("settled");
+    expect((await repo.users.findById(user.user_id))?.career_points).toBe(7);
+
+    // 重复 retry 不再记账。
+    const repeatOutcome = await succeeding.retry(settlement.settlement_id, NOW);
+    expect(repeatOutcome.kind).toBe("already_settled");
+    expect((await repo.users.findById(user.user_id))?.career_points).toBe(7);
+    expect(
+      (await repo.settlementItems.findBySettlementAndPrediction(
+        settlement.settlement_id,
+        "p1",
+      ))?.status,
+    ).toBe(SettlementItemStatus.Applied);
   });
 });

@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  LevelScope,
   MatchScoreValue,
   MatchStatus,
   PeriodType,
+  RankingBoard,
   Result,
   SettlementDocStatus,
   SettlementItemStatus,
@@ -24,10 +26,16 @@ import {
   RebuildUserStatsService,
   userStatsRebuildLockKey,
 } from "./stats-rebuild-service.js";
+import { defaultLevelState } from "../domain/types.js";
+import { buildLevelInputs } from "../domain/levels.js";
 import {
   RebuildPeriodRankingsService,
   periodRankingsRebuildLockKey,
 } from "./ranking-rebuild-service.js";
+import {
+  buildReplayFacts,
+  loadAppliedSettlementFacts,
+} from "./rebuild-service-support.js";
 
 const NOW = new Date("2026-08-09T00:00:00.000Z");
 const WEEK_ANCHOR = new Date("2026-08-05T12:00:00.000Z");
@@ -47,6 +55,8 @@ function makeUser(userId: string, overrides: Partial<User> = {}): User {
     career_exact_hits: 0,
     career_level: 1,
     career_best_level: 1,
+    career_last_scoring_match_at: null,
+    career_level_state: defaultLevelState(),
     deleted_at: null,
     created_at: NOW,
     updated_at: NOW,
@@ -198,13 +208,15 @@ function makeSeasonStats(
   return {
     schema_version: 1,
     user_id: userId,
-    season_id: seasonId,
+    level_season_id: seasonId,
     points: 99,
     valid_predictions: 20,
     wdl_hits: 10,
     exact_hits: 5,
     level: 3,
     best_level: 4,
+    level_state: defaultLevelState(),
+    is_level_frozen: false,
     created_at: NOW,
     updated_at: NOW,
     ...overrides,
@@ -279,7 +291,7 @@ describe("RebuildUserStatsService", () => {
     ).resolves.toBe(true);
   });
 
-  it("只用 applied ledger + match_results + matches 重建 career/season/level，并保留历史 unlock/best", async () => {
+  it("固定注入评估周后按 replay 重建等级，并按 period_anchor_at 合并赛季", async () => {
     const repo = new InMemoryRepository();
     await repo.users.insert(
       makeUser("u1", {
@@ -288,7 +300,7 @@ describe("RebuildUserStatsService", () => {
         career_wdl_hits: 99,
         career_exact_hits: 99,
         career_level: 4,
-        career_best_level: 7,
+        career_best_level: 6,
       }),
     );
     await repo.userSeasonStats.insert(
@@ -296,7 +308,7 @@ describe("RebuildUserStatsService", () => {
     );
     await repo.userSeasonStats.insert(
       makeSeasonStats("u1", "stale_season", {
-        level: 3,
+        level: 1,
         best_level: 4,
       }),
     );
@@ -305,12 +317,16 @@ describe("RebuildUserStatsService", () => {
       level_history_id: "career-history",
       user_id: "u1",
       scope: "career",
-      season_id: null,
+      level_season_id: null,
       from_level: 5,
       to_level: 6,
-      wdl_hits: 50,
-      valid_predictions: 80,
-      reason: "settlement",
+      reason: "weekly_eval",
+      eval_as_of: NOW,
+      window_n: 80,
+      window_score_sum: 50,
+      b_points: 0,
+      level_rule_version: "level_v3.0",
+      settlement_id: null,
       changed_at: NOW,
     });
     await repo.unlocks.insert({
@@ -324,11 +340,11 @@ describe("RebuildUserStatsService", () => {
     });
 
     const m1 = makeMatch("m1", WEEK_ANCHOR, {
-      result_version: 2,
-      settled_result_version: 2,
+      result_version: 3,
+      settled_result_version: 3,
     });
     const p1 = makePrediction("p1", "u1", "m1");
-    await insertFact(repo, m1, p1, [1, 2], [
+    await insertFact(repo, m1, p1, [1, 3], [
       {
         id: "s1",
         version: 1,
@@ -336,8 +352,8 @@ describe("RebuildUserStatsService", () => {
       },
       {
         id: "s2",
-        version: 2,
-        item: makeItem("s2", "p1", "u1", 2, {
+        version: 3,
+        item: makeItem("s2", "p1", "u1", 3, {
           old_score: MatchScoreValue.ExactHit,
           new_score: MatchScoreValue.WdlHit,
           score_delta: -9,
@@ -371,37 +387,33 @@ describe("RebuildUserStatsService", () => {
       },
     ]);
 
-    const outcome = await new RebuildUserStatsService(repo).rebuildUserStats("u1", NOW);
+    const outcome = await new RebuildUserStatsService(
+      repo,
+      new Date("2026-08-03T02:00:00.000Z"),
+    ).rebuildUserStats("u1", NOW);
 
     expect(outcome.user).toMatchObject({
       career_points: 3,
       career_valid_predictions: 2,
       career_wdl_hits: 1,
       career_exact_hits: 0,
+      career_last_scoring_match_at: WEEK_ANCHOR,
       career_level: 1,
-      career_best_level: 7,
+      career_best_level: 6,
     });
     expect(outcome.season_stats).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          season_id: "2025_2026",
-          points: 0,
-          valid_predictions: 1,
-          wdl_hits: 0,
-          exact_hits: 0,
-          level: 1,
-        }),
-        expect.objectContaining({
-          season_id: "2026_2027",
+          level_season_id: "2026_2027",
           points: 3,
-          valid_predictions: 1,
+          valid_predictions: 2,
           wdl_hits: 1,
           exact_hits: 0,
           level: 1,
           best_level: 4,
         }),
         expect.objectContaining({
-          season_id: "stale_season",
+          level_season_id: "stale_season",
           points: 0,
           valid_predictions: 0,
           wdl_hits: 0,
@@ -413,7 +425,7 @@ describe("RebuildUserStatsService", () => {
     );
     expect(await repo.unlocks.findByUser("u1")).toHaveLength(1);
     expect((await repo.levelHistory.findByUser("u1")).filter((entry) => entry.reason === "rebuild"))
-      .toHaveLength(2);
+      .toHaveLength(1);
   });
 
   it("缺少 applied item 的正式 match_result 时 fail closed 且不写入聚合", async () => {
@@ -459,18 +471,119 @@ describe("RebuildUserStatsService", () => {
       .toMatchObject({ code: "SETTLEMENT_ALREADY_RUNNING" });
     await repo.jobLocks.release(key, owner);
   });
+
+  it("cancelled 比赛仍带 applied item 时参与 rebuild，不被误杀", async () => {
+    const repo = new InMemoryRepository();
+    await repo.users.insert(makeUser("u1"));
+    const match = makeMatch("cancelled-match", WEEK_ANCHOR, {
+      match_status: MatchStatus.Cancelled,
+    });
+    await insertFact(
+      repo,
+      match,
+      makePrediction("cancelled-prediction", "u1", match.match_id),
+      [1],
+      [{
+        id: "cancelled-settlement",
+        version: 1,
+        item: makeItem("cancelled-settlement", "cancelled-prediction", "u1", 1),
+      }],
+    );
+
+    const outcome = await new RebuildUserStatsService(repo).rebuildUserStats("u1", NOW);
+
+    expect(outcome.user).toMatchObject({
+      career_points: 12,
+      career_valid_predictions: 1,
+      career_wdl_hits: 1,
+      career_exact_hits: 1,
+    });
+  });
+
+  it("applied 账本加载对 settling/correcting 比赛纵深防御抛 SETTLEMENT_ALREADY_RUNNING", async () => {
+    const repo = new InMemoryRepository();
+    const match = makeMatch("active-ledger-match", WEEK_ANCHOR, {
+      settlement_status: SettlementStatus.Correcting,
+    });
+    const item = makeItem("active-ledger-settlement", "active-ledger-prediction", "u1", 1);
+    await insertFact(
+      repo,
+      match,
+      makePrediction("active-ledger-prediction", "u1", match.match_id),
+      [1],
+      [{ id: "active-ledger-settlement", version: 1, item }],
+    );
+
+    await expect(loadAppliedSettlementFacts(repo, [item])).rejects.toMatchObject({
+      code: "SETTLEMENT_ALREADY_RUNNING",
+    });
+  });
+});
+
+describe("loadAppliedSettlementFacts 回放输入排序", () => {
+  it("同一 prediction 多版本纠错乱序输入与顺序输入窗口 n/S/B 一致", async () => {
+    const repo = new InMemoryRepository();
+    const match = makeMatch("order-match", WEEK_ANCHOR, {
+      result_version: 2,
+      settled_result_version: 2,
+    });
+    const prediction = makePrediction("order-prediction", "u1", match.match_id);
+    const v1 = makeItem("order-settlement-v1", "order-prediction", "u1", 1);
+    const v2 = makeItem("order-settlement-v2", "order-prediction", "u1", 2, {
+      old_score: MatchScoreValue.ExactHit,
+      new_score: MatchScoreValue.WdlHit,
+      score_delta: -9,
+      old_wdl_hit: true,
+      new_wdl_hit: true,
+      old_exact_hit: true,
+      new_exact_hit: false,
+      valid_prediction_delta: 0,
+    });
+    await repo.matches.insert(match);
+    await repo.predictions.insert(prediction);
+    await repo.matchResults.insert(makeResult(match.match_id, 1));
+    await repo.matchResults.insert(makeResult(match.match_id, 2));
+    await repo.settlements.insert(makeSettlement(v1.settlement_id, match.match_id, 1));
+    await repo.settlements.insert(makeSettlement(v2.settlement_id, match.match_id, 2));
+    await repo.settlementItems.insert(v1);
+    await repo.settlementItems.insert(v2);
+
+    const asOf = new Date(NOW.getTime() + 1000);
+    const sequential = buildLevelInputs(
+      buildReplayFacts(await loadAppliedSettlementFacts(repo, [v1, v2])).facts,
+      LevelScope.Career,
+      asOf,
+    );
+    const shuffled = buildLevelInputs(
+      buildReplayFacts(await loadAppliedSettlementFacts(repo, [v2, v1])).facts,
+      LevelScope.Career,
+      asOf,
+    );
+
+    expect(sequential).toEqual(shuffled);
+    expect(sequential).toEqual({ n: 1, S: 3, b_points: 3, valid_total: 1 });
+  });
 });
 
 describe("RebuildPeriodRankingsService", () => {
-  it("从目标周期 matches 的 applied ledger 全量重建聚合、last_scoring、global_rank，并保留 is_final", async () => {
+  it("K88 保留历史周榜 is_final，按 applied ledger 重建 correction 后 rank", async () => {
     const repo = new InMemoryRepository();
     await repo.users.insert(makeUser("u1"));
     await repo.users.insert(makeUser("u2"));
 
     const facts = [
       {
-        match: makeMatch("r1", new Date("2026-08-03T12:00:00.000Z")),
-        prediction: makePrediction("rp1", "u1", "r1"),
+        match: makeMatch("r1", new Date("2026-08-03T12:00:00.000Z"), {
+          result_version: 2,
+          settled_result_version: 2,
+          regular_home_score: 2,
+        }),
+        prediction: makePrediction("rp1", "u1", "r1", {
+          match_score: MatchScoreValue.WdlHit,
+          wdl_hit: true,
+          exact_hit: false,
+          applied_result_version: 2,
+        }),
         item: makeItem("rs1", "rp1", "u1", 1),
       },
       {
@@ -531,6 +644,23 @@ describe("RebuildPeriodRankingsService", () => {
       },
     ];
     for (const fact of facts) {
+      if (fact.match.match_id === "r1") {
+        const correction = makeItem("rs1-correction", "rp1", "u1", 2, {
+          old_score: MatchScoreValue.ExactHit,
+          new_score: MatchScoreValue.WdlHit,
+          score_delta: -9,
+          old_wdl_hit: true,
+          new_wdl_hit: true,
+          old_exact_hit: true,
+          new_exact_hit: false,
+          valid_prediction_delta: 0,
+        });
+        await insertFact(repo, fact.match, fact.prediction, [1, 2], [
+          { id: fact.item.settlement_id, version: 1, item: fact.item },
+          { id: correction.settlement_id, version: 2, item: correction },
+        ]);
+        continue;
+      }
       await insertFact(repo, fact.match, fact.prediction, [1], [
         { id: fact.item.settlement_id, version: 1, item: fact.item },
       ]);
@@ -549,26 +679,27 @@ describe("RebuildPeriodRankingsService", () => {
 
     expect(outcome.rankings).toEqual([
       expect.objectContaining({
-        user_id: "u1",
-        period_score: 15,
-        valid_predictions: 3,
-        wdl_hits: 2,
-        exact_hits: 1,
-        last_scoring_match_at: new Date("2026-08-04T12:00:00.000Z"),
-        global_rank: 1,
-        is_final: true,
-      }),
-      expect.objectContaining({
         user_id: "u2",
         period_score: 12,
         valid_predictions: 3,
         wdl_hits: 1,
         exact_hits: 1,
+        last_scoring_match_at: new Date("2026-08-06T12:00:00.000Z"),
+        global_rank: 1,
+      }),
+      expect.objectContaining({
+        user_id: "u1",
+        period_score: 6,
+        valid_predictions: 3,
+        wdl_hits: 2,
+        exact_hits: 0,
+        last_scoring_match_at: new Date("2026-08-04T12:00:00.000Z"),
         global_rank: 2,
+        is_final: true,
       }),
     ]);
     expect(await repo.rankings.findByPeriodAndUser(PeriodType.Week, "2026-W32", "u1"))
-      .toMatchObject({ period_score: 15, global_rank: 1, is_final: true });
+      .toMatchObject({ period_score: 6, global_rank: 2, is_final: true });
   });
 
   it("目标周期存在 settling/correcting match 时返回 SETTLEMENT_ALREADY_RUNNING", async () => {
@@ -615,5 +746,68 @@ describe("RebuildPeriodRankingsService", () => {
         NOW,
       ),
     ).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+  });
+
+  it("只允许 week period_type", async () => {
+    const repo = new InMemoryRepository();
+
+    await expect(
+      new RebuildPeriodRankingsService(repo).rebuildPeriodRankings(
+        PeriodType.Month,
+        "2026-08",
+        NOW,
+      ),
+    ).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+  });
+
+  it("week rebuild 跨六联赛装载不同 season_id 的比赛", async () => {
+    const repo = new InMemoryRepository();
+    await repo.users.insert(makeUser("u1"));
+    const chineseMatch = makeMatch("chinese-match", WEEK_ANCHOR, {
+      league_id: "chinese_super_league",
+      season_id: "2026",
+    });
+    await insertFact(
+      repo,
+      chineseMatch,
+      makePrediction("chinese-prediction", "u1", "chinese-match"),
+      [1],
+      [{
+        id: "chinese-settlement",
+        version: 1,
+        item: makeItem("chinese-settlement", "chinese-prediction", "u1", 1),
+      }],
+    );
+
+    const outcome = await new RebuildPeriodRankingsService(repo).rebuildPeriodRankings(
+      PeriodType.Week,
+      "2026-W32",
+      NOW,
+    );
+
+    expect(outcome.rankings).toEqual([
+      expect.objectContaining({ user_id: "u1", period_score: 12, global_rank: 1 }),
+    ]);
+  });
+
+  it("rebuildBoardSnapshot writes a new career snapshot version", async () => {
+    const repo = new InMemoryRepository();
+    await repo.users.insert(makeUser("u1", {
+      career_points: 24,
+      career_wdl_hits: 2,
+      career_exact_hits: 2,
+      career_valid_predictions: 3,
+    }));
+
+    const outcome = await new RebuildPeriodRankingsService(repo).rebuildBoardSnapshot(
+      RankingBoard.Career,
+      NOW,
+    );
+
+    expect(outcome.snapshots).toEqual([
+      expect.objectContaining({ board: RankingBoard.Career, user_id: "u1", rank: 1 }),
+    ]);
+    await expect(repo.boardSnapshots.findByBoardAndSnapshotAt(RankingBoard.Career, NOW))
+      .resolves.toHaveLength(1);
   });
 });

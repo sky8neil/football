@@ -1,0 +1,352 @@
+{
+  "viewports": [
+    {
+      "page": "home",
+      "width": 320,
+      "overflow": false,
+      "nav": {
+        "height": 64,
+        "bottom": 844,
+        "position": "fixed",
+        "icon": "22px",
+        "label": "10px",
+        "color": "rgb(47, 138, 58)"
+      },
+      "greeting": "13px",
+      "subtitle": "10px",
+      "badImages": [],
+      "controlOverflow": []
+    },
+    {
+      "page": "rankings-over50",
+      "width": 320,
+      "overflow": false,
+      "nav": {
+        "height": 64,
+        "bottom": 844,
+        "position": "fixed",
+        "icon": "22px",
+        "label": "10px",
+        "color": "rgb(47, 138, 58)"
+      },
+      "greeting": "13px",
+      "subtitle": "10px",
+      "badImages": [],
+      "controlOverflow": []
+    },
+    {
+      "page": "rankings-under50",
+      "width": 320,
+      "overflow": false,
+      "nav": {
+        "height": 64,
+        "bottom": 844,
+        "position": "fixed",
+        "icon": "22px",
+        "label": "10px",
+        "color": "rgb(47, 138, 58)"
+      },
+      "greeting": "13px",
+      "subtitle": "10px",
+      "badImages": [],
+      "controlOverflow": []
+    },
+    {
+      "page": "my",
+      "width": 320,
+      "overflow": false,
+      "nav": {
+        "height": 64,
+        "bottom": 844,
+        "position": "fixed",
+        "icon": "22px",
+        "label": "10px",
+        "color": "rgb(47, 138, 58)"
+      },
+      "greeting": "13px",
+      "subtitle": "10px",
+      "badImages": [],
+      "controlOverflow": []
+    },
+    {
+      "page": "home",
+      "width": 375,
+      "overflow": false,
+      "nav": {
+        "height": 64,
+        "bottom": 844,
+        "position": "fixed",
+        "icon": "22px",
+        "label": "10px",
+        "color": "rgb(47, 138, 58)"
+      },
+      "greeting": "14px",
+      "subtitle": "11px",
+      "badImages": [],
+      "controlOverflow": []
+    },
+    {
+      "page": "rankings-over50",
+      "width": 375,
+      "overflow": false,
+      "nav": {
+        "height": 64,
+        "bottom": 844,
+        "position": "fixed",
+        "icon": "22px",
+        "label": "10px",
+        "color": "rgb(47, 138, 58)"
+      },
+      "greeting": "14px",
+      "subtitle": "11px",
+      "badImages": [],
+      "controlOverflow": []
+    },
+    {
+      "page": "rankings-under50",
+      "width": 375,
+      "overflow": false,
+      "nav": {
+        "height": 64,
+        "bottom": 844,
+        "position": "fixed",
+        "icon": "22px",
+        "label": "10px",
+        "color": "rgb(47, 138, 58)"
+      },
+      "greeting": "14px",
+      "subtitle": "11px",
+      "badImages": [],
+      "controlOverflow": []
+    },
+    {
+      "page": "my",
+      "width": 375,
+      "overflow": false,
+      "nav": {
+        "height": 64,
+        "bottom": 844,
+        "position": "fixed",
+        "icon": "22px",
+        "label": "10px",
+        "color": "rgb(47, 138, 58)"
+      },
+      "greeting": "14px",
+      "subtitle": "11px",
+      "badImages": [],
+      "controlOverflow": []
+    },
+    {
+      "page": "home",
+      "width": 390,
+      "overflow": false,
+      "nav": {
+        "height": 64,
+        "bottom": 844,
+        "position": "fixed",
+        "icon": "22px",
+        "label": "10px",
+        "color": "rgb(47, 138, 58)"
+      },
+      "greeting": "14px",
+      "subtitle": "11px",
+      "badImages": [],
+      "controlOverflow": []
+    },
+    {
+      "page": "rankings-over50",
+      "width": 390,
+      "overflow": false,
+      "nav": {
+        "height": 64,
+        "bottom": 844,
+        "position": "fixed",
+        "icon": "22px",
+        "label": "10px",
+        "color": "rgb(47, 138, 58)"
+      },
+      "greeting": "14px",
+      "subtitle": "11px",
+      "badImages": [],
+      "controlOverflow": []
+    },
+    {
+      "page": "rankings-under50",
+      "width": 390,
+      "overflow": false,
+      "nav": {
+        "height": 64,
+        "bottom": 844,
+        "position": "fixed",
+        "icon": "22px",
+        "label": "10px",
+        "color": "rgb(47, 138, 58)"
+      },
+      "greeting": "14px",
+      "subtitle": "11px",
+      "badImages": [],
+      "controlOverflow": []
+    },
+    {
+      "page": "my",
+      "width": 390,
+      "overflow": false,
+      "nav": {
+        "height": 64,
+        "bottom": 844,
+        "position": "fixed",
+        "icon": "22px",
+        "label": "10px",
+        "color": "rgb(47, 138, 58)"
+      },
+      "greeting": "14px",
+      "subtitle": "11px",
+      "badImages": [],
+      "controlOverflow": []
+    },
+    {
+      "page": "home",
+      "width": 430,
+      "overflow": false,
+      "nav": {
+        "height": 64,
+        "bottom": 844,
+        "position": "fixed",
+        "icon": "22px",
+        "label": "10px",
+        "color": "rgb(47, 138, 58)"
+      },
+      "greeting": "14px",
+      "subtitle": "11px",
+      "badImages": [],
+      "controlOverflow": []
+    },
+    {
+      "page": "rankings-over50",
+      "width": 430,
+      "overflow": false,
+      "nav": {
+        "height": 64,
+        "bottom": 844,
+        "position": "fixed",
+        "icon": "22px",
+        "label": "10px",
+        "color": "rgb(47, 138, 58)"
+      },
+      "greeting": "14px",
+      "subtitle": "11px",
+      "badImages": [],
+      "controlOverflow": []
+    },
+    {
+      "page": "rankings-under50",
+      "width": 430,
+      "overflow": false,
+      "nav": {
+        "height": 64,
+        "bottom": 844,
+        "position": "fixed",
+        "icon": "22px",
+        "label": "10px",
+        "color": "rgb(47, 138, 58)"
+      },
+      "greeting": "14px",
+      "subtitle": "11px",
+      "badImages": [],
+      "controlOverflow": []
+    },
+    {
+      "page": "my",
+      "width": 430,
+      "overflow": false,
+      "nav": {
+        "height": 64,
+        "bottom": 844,
+        "position": "fixed",
+        "icon": "22px",
+        "label": "10px",
+        "color": "rgb(47, 138, 58)"
+      },
+      "greeting": "14px",
+      "subtitle": "11px",
+      "badImages": [],
+      "controlOverflow": []
+    },
+    {
+      "page": "home",
+      "width": 1440,
+      "overflow": false,
+      "nav": {
+        "height": 64,
+        "bottom": 900,
+        "position": "fixed",
+        "icon": "22px",
+        "label": "10px",
+        "color": "rgb(47, 138, 58)"
+      },
+      "greeting": "14px",
+      "subtitle": "11px",
+      "badImages": [],
+      "controlOverflow": []
+    },
+    {
+      "page": "rankings-over50",
+      "width": 1440,
+      "overflow": false,
+      "nav": {
+        "height": 64,
+        "bottom": 900,
+        "position": "fixed",
+        "icon": "22px",
+        "label": "10px",
+        "color": "rgb(47, 138, 58)"
+      },
+      "greeting": "14px",
+      "subtitle": "11px",
+      "badImages": [],
+      "controlOverflow": []
+    },
+    {
+      "page": "rankings-under50",
+      "width": 1440,
+      "overflow": false,
+      "nav": {
+        "height": 64,
+        "bottom": 900,
+        "position": "fixed",
+        "icon": "22px",
+        "label": "10px",
+        "color": "rgb(47, 138, 58)"
+      },
+      "greeting": "14px",
+      "subtitle": "11px",
+      "badImages": [],
+      "controlOverflow": []
+    },
+    {
+      "page": "my",
+      "width": 1440,
+      "overflow": false,
+      "nav": {
+        "height": 64,
+        "bottom": 900,
+        "position": "fixed",
+        "icon": "22px",
+        "label": "10px",
+        "color": "rgb(47, 138, 58)"
+      },
+      "greeting": "14px",
+      "subtitle": "11px",
+      "badImages": [],
+      "controlOverflow": []
+    }
+  ],
+  "interactions": [
+    "比赛：展开比分预测并提交，显示提交成功状态",
+    "排行榜：实力榜、群榜切换及规则弹窗",
+    "38 场状态：不显示实力榜入口",
+    "我的：统计范围、账户编辑、等级说明及三页导航闭环",
+    "对照入口：三个页面同屏预览并切换排行榜状态"
+  ],
+  "errors": []
+}

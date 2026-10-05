@@ -10,7 +10,7 @@ import {
   SettlementStatus,
 } from "../domain/enums.js";
 import { newUuid } from "../domain/ids.js";
-import { calculatePeriodKey } from "../domain/time.js";
+import { calculatePeriodKey, levelSeasonOf } from "../domain/time.js";
 import type { Match, MatchProviderMapping, User } from "../domain/types.js";
 import { InMemoryRepository } from "../infrastructure/repositories.js";
 import type { NormalizedFixture } from "../provider/fixture-mapper.js";
@@ -18,6 +18,7 @@ import { canSubmitPrediction } from "../domain/prediction-policy.js";
 import { PredictionService } from "./predictions.js";
 import { ProviderResultSyncService } from "./provider-result-sync.js";
 import { ProviderStatusSyncService } from "./provider-status-sync.js";
+import { defaultLevelState } from "../domain/types.js";
 
 const MATCH_ID = "00000000-0000-4000-8000-0000000000c1";
 const PROVIDER_MATCH_ID = "44000017";
@@ -43,6 +44,8 @@ function makeUser(overrides: Partial<User> = {}): User {
     career_exact_hits: 0,
     career_level: 1,
     career_best_level: 1,
+    career_last_scoring_match_at: null,
+    career_level_state: defaultLevelState(),
     deleted_at: null,
     created_at: BEFORE_DEADLINE,
     updated_at: BEFORE_DEADLINE,
@@ -340,30 +343,38 @@ describe("C. 延期（规范 44-C）", () => {
     expect(calculatePeriodKey(PeriodType.Week, match!.period_anchor_at!)).toBe("2026-W34");
   });
 
-  it("C22 延期跨月，最终归延期后新月", async () => {
-    const { repo, status, result } = await setup();
+  it("C22 延期跨等级赛季边界，最终归属延期后等级赛季", async () => {
+    const originalKickoff = new Date("2026-06-30T15:30:00.000Z");
+    const crossSeasonKickoff = new Date("2026-06-30T16:00:00.000Z");
+    const beforeOriginalDeadline = new Date(originalKickoff.getTime() - 11 * 60 * 1000);
+    const { repo, status, result } = await setup(makeMatch({
+      kickoff_at: originalKickoff,
+      prediction_deadline_at: new Date(originalKickoff.getTime() - 10 * 60 * 1000),
+      created_at: beforeOriginalDeadline,
+      updated_at: beforeOriginalDeadline,
+    }));
 
-    expect(calculatePeriodKey(PeriodType.Month, ORIGINAL_KICKOFF)).toBe("2026-08");
-    expect(calculatePeriodKey(PeriodType.Month, CROSS_MONTH_KICKOFF)).toBe("2026-09");
+    expect(levelSeasonOf(originalKickoff)).toBe("2025_2026");
+    expect(levelSeasonOf(crossSeasonKickoff)).toBe("2026_2027");
 
     await status.applyPostponedFixture(
-      makeFixture({ kickoffAt: CROSS_MONTH_KICKOFF }),
+      makeFixture({ kickoffAt: originalKickoff }),
       { case: "C22-postponed" },
-      BEFORE_DEADLINE,
+      beforeOriginalDeadline,
     );
     await status.applyScheduledFixture(
       makeFixture({
         status: { kind: MatchStatus.Scheduled, kickoffConfirmed: true },
         rawStatus: "NS",
-        kickoffAt: CROSS_MONTH_KICKOFF,
+        kickoffAt: crossSeasonKickoff,
       }),
       { case: "C22-reschedule" },
-      BEFORE_DEADLINE,
+      beforeOriginalDeadline,
     );
 
     let match = await repo.matches.findById(MATCH_ID);
     expect(match?.period_anchor_at).toBeNull();
-    expect(match?.kickoff_at).toEqual(CROSS_MONTH_KICKOFF);
+    expect(match?.kickoff_at).toEqual(crossSeasonKickoff);
 
     await result.applyFinishedFixture(
       {
@@ -373,11 +384,11 @@ describe("C. 延期（规范 44-C）", () => {
         rawStatus: "FT",
       },
       { case: "C22-finished" },
-      new Date(CROSS_MONTH_KICKOFF.getTime() + 2 * 60 * 60 * 1000),
+      new Date(crossSeasonKickoff.getTime() + 2 * 60 * 60 * 1000),
     );
 
     match = await repo.matches.findById(MATCH_ID);
-    expect(match?.period_anchor_at).toEqual(CROSS_MONTH_KICKOFF);
-    expect(calculatePeriodKey(PeriodType.Month, match!.period_anchor_at!)).toBe("2026-09");
+    expect(match?.period_anchor_at).toEqual(crossSeasonKickoff);
+    expect(levelSeasonOf(match!.period_anchor_at!)).toBe("2026_2027");
   });
 });

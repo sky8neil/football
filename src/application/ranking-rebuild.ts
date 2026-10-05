@@ -2,7 +2,7 @@
  * 排行榜周期纯重建函数（阶段 5 切片 I）。
  *
  * 从 applied settlement_items 账本与 prediction->period / prediction->period_anchor_at
- * 映射重建指定 week/month 周期 rankings，作为旧聚合缓存的替代来源
+ * 映射重建指定 week 周期 rankings，作为旧聚合缓存的替代来源
  * （禁止使用任何旧 rankings 缓存）。输入为调用方提供的 item 列表与映射；
  * 本模块不访问 repository / 数据库。
  *
@@ -16,16 +16,16 @@
  *   period_anchor_at 最大值；period_score=0 时按 domain lastScoringForPeriodScore
  *   强制 null。
  *
- * 排序唯一入口为 domain compareRankingEntry（规范 0.4 / 19.4）：
- *   period_score DESC -> wdl 准确率 DESC（交叉乘法，禁止浮点）-> exact_hits DESC
+ * 排序唯一入口为 domain compareRankingEntry（规范 0.4 / 19.5）：
+ *   week：period_score DESC -> exact_hits DESC -> valid_predictions ASC
  *   -> last_scoring_match_at ASC（null 排后）-> user_id ASC。
- * global_rank（19.2 / 19.6）：valid_predictions < 3 为 null；>=3 为排序位置。
+ * global_rank（19.1 / 19.5）：valid_predictions < 1 为 null；>=1 为排序位置。
  *
  * 账本完整性校验（非法 ledger 抛 INVALID_LEDGER）：
  * - status=applied、score_delta=(new_score-old_score)、valid_prediction_delta∈{0,1}
  * - exact_hit 命中必须同时 wdl_hit（old/new）
  * - 每个 prediction 必须提供 period 与 anchor 映射
- * - 全部 item 必须属于同一 (period_type, period_key)；period_type 必须是 week/month
+ * - 全部 item 必须属于同一 (period_type, period_key)；period_type 必须是 week
  *   （非法类型抛 INVALID_PERIOD_TYPE）
  * - 聚合结果满足 period_score>=0、counts>=0、exact<=wdl<=valid
  *
@@ -33,21 +33,22 @@
  */
 import {
   compareRankingEntry,
+  compareWeekCareerEntry,
   lastScoringForPeriodScore,
   rankForPosition,
   type RankingComparable,
 } from "../domain/ranking.js";
-import { PeriodType, SettlementItemStatus } from "../domain/enums.js";
+import { PeriodType, RankingBoard, SettlementItemStatus } from "../domain/enums.js";
 import { DomainError } from "../domain/errors.js";
 import type { SettlementItem } from "../domain/types.js";
 
 export interface PeriodRef {
-  period_type: PeriodType;
+  period_type: typeof PeriodType.Week;
   period_key: string;
 }
 
 export interface RebuiltRankingEntry {
-  period_type: PeriodType;
+  period_type: typeof PeriodType.Week;
   period_key: string;
   user_id: string;
   period_score: number;
@@ -87,10 +88,10 @@ function hitDelta(newHit: boolean, oldHit: boolean): number {
 }
 
 function assertPeriodType(periodType: PeriodType): void {
-  if (periodType !== PeriodType.Week && periodType !== PeriodType.Month) {
+  if (periodType !== PeriodType.Week) {
     throw new DomainError(
       INVALID_PERIOD_TYPE,
-      `period_type 必须是 week 或 month（收到 ${String(periodType)}）`,
+      `period_type 必须是 week（收到 ${String(periodType)}）`,
       { period_type: periodType },
     );
   }
@@ -129,7 +130,7 @@ export function rebuildPeriodRankings(
     return [];
   }
 
-  let period: { period_type: PeriodType; period_key: string } | null = null;
+  let period: PeriodRef | null = null;
   const byUser = new Map<string, Accumulator>();
   const latestByPrediction = new Map<string, LatestItemState>();
 
@@ -142,7 +143,7 @@ export function rebuildPeriodRankings(
     }
     assertPeriodType(ref.period_type);
     if (period === null) {
-      period = { period_type: ref.period_type, period_key: ref.period_key };
+      period = ref;
     } else if (
       period.period_type !== ref.period_type ||
       period.period_key !== ref.period_key
@@ -219,7 +220,7 @@ export function rebuildPeriodRankings(
     }
   }
 
-  const periodInfo = period as { period_type: PeriodType; period_key: string };
+  const periodInfo = period as PeriodRef;
   const ranked: Array<{
     entry: Omit<RebuiltRankingEntry, "global_rank">;
     comparable: RankingComparable;
@@ -251,7 +252,9 @@ export function rebuildPeriodRankings(
     });
   }
 
-  ranked.sort((a, b) => compareRankingEntry(a.comparable, b.comparable));
+  ranked.sort((a, b) =>
+    compareRankingEntry(RankingBoard.Week, a.comparable, b.comparable),
+  );
 
   return ranked.map(({ entry }, index) => ({
     ...entry,

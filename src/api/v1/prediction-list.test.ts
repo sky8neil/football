@@ -39,23 +39,28 @@ const RESULT: PredictionHistoryResult = {
 const NOW = new Date("2026-08-11T00:00:00.000Z");
 
 describe("GET /v1/predictions/me", () => {
-  it("校验 season_id、limit、cursor，默认绑定 MVP 赛季", () => {
+  it("校验 league_id/season_id、limit、cursor；缺省全部联赛", () => {
     expect(validateMyPredictionsQuery({})).toEqual({
-      season_id: "2026_2027",
+      league_id: null,
+      season_id: null,
       limit: 20,
       cursor: null,
     });
     expect(validateMyPredictionsQuery({
+      league_id: "la_liga",
       season_id: "2026_2027",
       limit: "2",
       cursor: "opaque",
     })).toEqual({
+      league_id: "la_liga",
       season_id: "2026_2027",
       limit: 2,
       cursor: "opaque",
     });
     for (const query of [
-      { season_id: "2025_2026" },
+      { season_id: "2026_2027" },
+      { league_id: "chinese_super_league", season_id: "2026_2027" },
+      { league_id: "eredivisie" },
       { season_id: null },
       { limit: "0" },
       { limit: "101" },
@@ -75,7 +80,7 @@ describe("GET /v1/predictions/me", () => {
       query: PredictionHistoryQuery,
     ): Promise<PredictionHistoryResult> => {
       expect(userId).toBe("00000000-0000-4000-8000-000000000001");
-      expect(query).toEqual({ season_id: "2026_2027", limit: 20, cursor: null });
+      expect(query).toEqual({ league_id: null, season_id: null, limit: 20, cursor: null });
       return RESULT;
     };
 
@@ -160,7 +165,7 @@ describe("GET /v1/predictions/me", () => {
       /  \/predictions\/me:\n    get:[\s\S]*?submitted_at DESC、prediction_id DESC[\s\S]*?base64url \+ HMAC opaque[\s\S]*?正式比分缺失时，[\s\S]*?均为 null/,
     );
     expect(specification).toMatch(
-      /        - name: season_id[\s\S]*?const: 2026_2027[\s\S]*?default: 2026_2027/,
+      /        - name: season_id[\s\S]*?enum: \[2026_2027, '2026'\][\s\S]*?仅可与 league_id 同时提供/,
     );
     expect(specification).toMatch(
       /  \/predictions\/me:\n    get:[\s\S]*?'429':[\s\S]*?RateLimited/,

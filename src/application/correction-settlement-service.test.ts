@@ -196,11 +196,13 @@ async function seedCorrectionSettlement(
   repo: InMemoryRepository,
   matchId: string,
   items: SettlementItem[],
+  isCorrection = true,
 ): Promise<SettlementDoc> {
   const settlement = makeSettlement({
     match_id: matchId,
     result_version: 2,
     status: SettlementDocStatus.Pending,
+    is_correction: isCorrection,
   });
   await repo.settlements.insert(settlement);
   for (const item of items) {
@@ -514,6 +516,7 @@ describe("CorrectionSettlementService.correct - 版本推进", () => {
             settlements: tx.settlements,
             settlementItems: tx.settlementItems,
             unlocks: tx.unlocks,
+            savepoint: (callback) => tx.savepoint(callback),
           }),
         ),
     });
@@ -627,8 +630,7 @@ describe("CorrectionSettlementService.correct - 重复调用与复用", () => {
 
   it("复用已有 settlement 的 is_correction 冲突时 Fail Closed", async () => {
     const { repo, match } = await setupCorrection();
-    const settlement = await seedCorrectionSettlement(repo, match.match_id, []);
-    await repo.settlements.update({ ...settlement, is_correction: false });
+    const settlement = await seedCorrectionSettlement(repo, match.match_id, [], false);
     const worker = vi.fn<SettlementItemWorker>(async () => {});
 
     await expect(
@@ -812,6 +814,7 @@ describe("CorrectionSettlementService.correct - 部分失败恢复", () => {
       settlementItems: repo.settlementItems,
       unlocks: repo.unlocks,
       jobLocks: repo.jobLocks,
+      savepoint: (callback) => repo.savepoint(callback),
       withTransaction: <T>(fn: (tx: UnitOfWork) => Promise<T>) =>
         repo.withTransaction((tx) => {
           const matches = {
@@ -845,6 +848,7 @@ describe("CorrectionSettlementService.correct - 部分失败恢复", () => {
             settlements: tx.settlements,
             settlementItems: tx.settlementItems,
             unlocks: tx.unlocks,
+            savepoint: (callback) => tx.savepoint(callback),
           });
         }),
     };

@@ -1,12 +1,22 @@
 import { AdminRole, AdminStatus } from "../domain/enums.js";
 import { conflictError, internalError } from "../domain/errors.js";
 import type { Admin } from "../domain/types.js";
-import type { UnitOfWork } from "../infrastructure/repositories.js";
+import type { AppRepository, UnitOfWork } from "../infrastructure/repositories.js";
+
+export interface AdminWriteAuthorizer {
+  authorizeAdmin(trustedOpenid: string): Promise<void>;
+}
 
 /**
  * 管理员身份只接受可信微信上下文中的 openid。请求 body 中的 admin_id 不参与授权。
  */
 export class AdminAuthorizationService {
+  async authorizeAdmin(repo: AppRepository, trustedOpenid: string): Promise<void> {
+    await repo.withTransaction(async (tx) => {
+      await this.requireActiveAdmin(tx, trustedOpenid);
+    });
+  }
+
   async requireActiveAdmin(
     tx: UnitOfWork,
     trustedOpenid: string | null | undefined,

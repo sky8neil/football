@@ -56,7 +56,7 @@ function appliedWdl(version: number): Partial<Prediction> {
 }
 
 describe("computeSettlementItemDelta - 结算 item delta 计算", () => {
-  it("0 -> 12：未结算预测精确命中，score_delta = +12", () => {
+  it("J68 0 -> 12：未结算预测精确命中，score_delta = +12", () => {
     const delta = computeSettlementItemDelta(makePrediction(), result, V1);
     expect(delta).toEqual({
       old_score: MatchScoreValue.Miss,
@@ -70,7 +70,7 @@ describe("computeSettlementItemDelta - 结算 item delta 计算", () => {
     } satisfies SettlementItemDelta);
   });
 
-  it("12 -> 3：exact 命中被修正为仅 wdl 命中，score_delta = -9", () => {
+  it("J66 12 -> 3：exact 命中被修正为仅 wdl 命中，score_delta = -9", () => {
     const delta = computeSettlementItemDelta(
       makePrediction(appliedExact(1)),
       { regular_home_score: 3, regular_away_score: 1 },
@@ -88,7 +88,7 @@ describe("computeSettlementItemDelta - 结算 item delta 计算", () => {
     } satisfies SettlementItemDelta);
   });
 
-  it("3 -> 0：wdl 命中被修正为 miss，score_delta = -3", () => {
+  it("J67 3 -> 0：wdl 命中被修正为 miss，score_delta = -3", () => {
     const delta = computeSettlementItemDelta(
       makePrediction(appliedWdl(1)),
       { regular_home_score: 1, regular_away_score: 1 },
@@ -132,7 +132,7 @@ describe("computeSettlementItemDelta - valid_prediction_delta", () => {
     expect(delta.valid_prediction_delta).toBe(1);
   });
 
-  it("已结算（修正）valid_prediction_delta = 0，不重复计数", () => {
+  it("J69 correction 的 valid_prediction_delta = 0，不重复计数", () => {
     const first = computeSettlementItemDelta(
       makePrediction(appliedWdl(1)),
       { regular_home_score: 3, regular_away_score: 1 },

@@ -5,6 +5,7 @@ import {
   MatchScoreValue,
   MatchStatus,
   PeriodType,
+  RankingBoard,
   Result,
   SettlementDocStatus,
   SettlementItemStatus,
@@ -207,7 +208,7 @@ describe("AdminRebuildRankingsService", () => {
       details: { field: "server_now" },
     });
     await expect(
-      repo.adminAuditLogs.findByEntity("ranking_period", "week:2026-W32"),
+      repo.adminAuditLogs.findByEntity("ranking_period", "week-2026-W32"),
     ).resolves.toEqual([]);
   });
 
@@ -232,7 +233,7 @@ describe("AdminRebuildRankingsService", () => {
         valid_predictions: 1,
         wdl_hits: 1,
         exact_hits: 1,
-        global_rank: null,
+        global_rank: 1,
         is_final: true,
       }),
     ]);
@@ -240,9 +241,10 @@ describe("AdminRebuildRankingsService", () => {
       admin_id: ADMIN_ID,
       action: "rebuild_rankings",
       entity_type: "ranking_period",
-      entity_id: "week:2026-W32",
+      entity_id: "week-2026-W32",
       reason: "一致性修复",
       old_value: {
+        board: RankingBoard.Week,
         entry_count: 1,
         ranked_entry_count: 1,
         total_period_score: 99,
@@ -250,14 +252,15 @@ describe("AdminRebuildRankingsService", () => {
         is_final: true,
       },
       new_value: {
+        board: RankingBoard.Week,
         entry_count: 1,
-        ranked_entry_count: 0,
+        ranked_entry_count: 1,
         total_period_score: 12,
-        max_global_rank: null,
+        max_global_rank: 1,
         is_final: true,
       },
     });
-    await expect(repo.adminAuditLogs.findByEntity("ranking_period", "week:2026-W32"))
+    await expect(repo.adminAuditLogs.findByEntity("ranking_period", "week-2026-W32"))
       .resolves.toHaveLength(1);
   });
 
@@ -333,7 +336,7 @@ describe("AdminRebuildRankingsService", () => {
         NOW,
       ),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
-    await expect(repo.adminAuditLogs.findByEntity("ranking_period", "week:2026-W32"))
+    await expect(repo.adminAuditLogs.findByEntity("ranking_period", "week-2026-W32"))
       .resolves.toEqual([]);
   });
 
@@ -375,7 +378,7 @@ describe("AdminRebuildRankingsService", () => {
         NOW,
       ),
     ).rejects.toMatchObject({ code: "SETTLEMENT_ALREADY_RUNNING" });
-    await expect(repo.adminAuditLogs.findByEntity("ranking_period", "week:2026-W32"))
+    await expect(repo.adminAuditLogs.findByEntity("ranking_period", "week-2026-W32"))
       .resolves.toEqual([]);
   });
 
@@ -409,5 +412,76 @@ describe("AdminRebuildRankingsService", () => {
         NOW,
       ),
     ).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+  });
+
+  it("career snapshot rebuild 使用 board 审计标识并全量生成快照", async () => {
+    const repo = new InMemoryRepository();
+    await seedAdmin(repo);
+    await repo.users.insert({
+      schema_version: 1,
+      user_id: "user-career",
+      openid: "openid-user-career",
+      unionid: null,
+      nickname: "Career User",
+      favorite_team_id: null,
+      status: "active",
+      career_points: 36,
+      career_valid_predictions: 3,
+      career_wdl_hits: 2,
+      career_exact_hits: 2,
+      career_last_scoring_match_at: ANCHOR,
+      career_level: 1,
+      career_best_level: 1,
+      career_level_state: {
+        below_count: 0,
+        week_base_level: null,
+        week_base_below_count: null,
+        week_base_as_of: null,
+        last_eval_as_of: null,
+        last_eval_n: 0,
+        last_eval_score_sum: 0,
+        last_eval_b_points: 0,
+        last_eval_rule_version: null,
+      },
+      deleted_at: null,
+      created_at: NOW,
+      updated_at: NOW,
+    });
+
+    const outcome = await new AdminRebuildRankingsService(repo).rebuild(
+      "admin-openid",
+      RankingBoard.Career,
+      null,
+      "一致性修复",
+      NOW,
+    );
+
+    expect(outcome).toMatchObject({
+      board: RankingBoard.Career,
+      period_key: null,
+      rebuilt_entry_count: 1,
+      audit_log: {
+        entity_id: "career-snapshot",
+        old_value: { board: RankingBoard.Career, entry_count: 0, total_career_points: 0 },
+        new_value: { board: RankingBoard.Career, entry_count: 1, total_career_points: 36 },
+      },
+    });
+    await expect(repo.boardSnapshots.findByBoardAndSnapshotAt(RankingBoard.Career, NOW))
+      .resolves.toHaveLength(1);
+  });
+
+  it("career/strength snapshot rebuild 遇到活跃结算比赛返回 409", async () => {
+    const repo = new InMemoryRepository();
+    await seedAdmin(repo);
+    await repo.matches.insert(makeMatch({ settlement_status: SettlementStatus.Settling }));
+
+    await expect(new AdminRebuildRankingsService(repo).rebuild(
+      "admin-openid",
+      RankingBoard.Career,
+      null,
+      "一致性修复",
+      NOW,
+    )).rejects.toMatchObject({ code: "SETTLEMENT_ALREADY_RUNNING" });
+    await expect(repo.boardSnapshots.findLatestByBoard(RankingBoard.Career)).resolves.toEqual([]);
   });
 });

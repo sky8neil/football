@@ -12,6 +12,7 @@ import type { AdminAuditLog } from "../domain/types.js";
 import type { AppRepository } from "../infrastructure/repositories.js";
 import {
   AdminAuthorizationService,
+  type AdminWriteAuthorizer,
 } from "./admin.js";
 import {
   RetrySettlementService,
@@ -72,7 +73,7 @@ function createRetryAuditWriter(adminId: string): SettlementRetryAuditWriter {
   };
 }
 
-export interface RetrySettlementCommand {
+export interface RetrySettlementCommand extends AdminWriteAuthorizer {
   retry(
     trustedOpenid: string | null | undefined,
     matchId: string,
@@ -99,6 +100,10 @@ export class AdminRetrySettlementService implements RetrySettlementCommand {
       createAtomicSettlementItemWorker(new SettlementItemApplicationService(repo));
     this.retryService = new RetrySettlementService(repo, worker);
     this.correctionService = new CorrectionSettlementService(repo, worker);
+  }
+
+  authorizeAdmin(trustedOpenid: string): Promise<void> {
+    return this.authorization.authorizeAdmin(this.repo, trustedOpenid);
   }
 
   async retry(
@@ -194,6 +199,7 @@ export class AdminRetrySettlementService implements RetrySettlementCommand {
     }
 
     // 第 15.9 节：retried settlement finalize 后继续消化更高未处理 result_version。
+    // 后续版本的成败只体现在 match 状态与下一个 failed target，不回写本次响应（§30.4）。
     if (outcome.kind === "settled" || outcome.kind === "correcting") {
       await continuePendingCorrections(
         this.repo,
@@ -201,33 +207,18 @@ export class AdminRetrySettlementService implements RetrySettlementCommand {
         matchId,
         serverNow,
       );
-      if (outcome.kind === "correcting") {
-        const matchAfter = await this.repo.matches.findById(matchId);
-        if (matchAfter?.settlement_status === SettlementStatus.Settled) {
-          outcome = {
-            ...outcome,
-            kind: "settled",
-          };
-        } else if (matchAfter?.settlement_status === SettlementStatus.Failed) {
-          const failed: CorrectionSettlementOutcome = {
-            kind: "failed",
-            settlement_id: outcome.settlement_id,
-            settlement_created: outcome.settlement_created,
-            target_result_version: outcome.target_result_version,
-            processed_count: outcome.processed_count,
-            skipped_applied_count: outcome.skipped_applied_count,
-            ...(outcome.audit_log === undefined ? {} : { audit_log: outcome.audit_log }),
-          };
-          outcome = failed;
-        }
-      }
     }
 
-    if (
-      outcome.kind === "settled" ||
-      outcome.kind === "failed" ||
-      outcome.kind === "correcting"
-    ) {
+    // §30.4：成功体 outcome 枚举收敛为 settled | failed。目标 settlement 正常完成即
+    // settled（即使 match 因更高未处理版本仍为 correcting）；仅目标自身 failed 才 failed。
+    if (outcome.kind === "settled" || outcome.kind === "correcting") {
+      return {
+        ...outcome,
+        kind: "settled",
+        result_version: target.result_version,
+      };
+    }
+    if (outcome.kind === "failed") {
       return {
         ...outcome,
         result_version: target.result_version,

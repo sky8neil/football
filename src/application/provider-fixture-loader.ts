@@ -1,4 +1,4 @@
-import { FIXED_CONFIG_V1, MVP_SEASON } from "../domain/config.js";
+import { FIXED_CONFIG_V1, SUPPORTED_LEAGUES } from "../domain/config.js";
 import { internalError, validationError } from "../domain/errors.js";
 import { parseKickoff } from "../provider/kickoff.js";
 import type {
@@ -46,6 +46,29 @@ function formatUtcDate(value: Date): string {
   return value.toISOString().slice(0, 10);
 }
 
+/**
+ * 安全读取原始 fixture 的 kickoff（31.5 逐条容错）：结构非法项返回 null，
+ * 交由窗口保留为「无法解析」项，最终由 mapper 以实体级 PROVIDER_DATA_INVALID 失败。
+ */
+function parseFixtureKickoff(fixture: ApiFootballFixture): Date | null {
+  const raw = (fixture as { fixture?: unknown } | null | undefined)?.fixture;
+  if (typeof raw !== "object" || raw === null) {
+    return null;
+  }
+  const fields = raw as { timestamp?: unknown; date?: unknown };
+  return parseKickoff(fields.timestamp, fields.date).kickoffAt;
+}
+
+async function loadFixturesForSupportedLeagues(
+  load: (leagueId: string, season: string) => Promise<readonly ApiFootballFixture[]>,
+): Promise<ApiFootballFixture[]> {
+  const fixtures: ApiFootballFixture[] = [];
+  for (const league of SUPPORTED_LEAGUES) {
+    fixtures.push(...await load(league.api_football_league_id, league.api_football_season));
+  }
+  return fixtures;
+}
+
 function nearMatchWindowHours(): { earliest: number; latest: number } {
   const config = SYNC_TASKS_V1.near_match;
   if (
@@ -69,18 +92,16 @@ export function createFutureScheduleLoader(
     const dateTo = new Date(
       serverNow.getTime() + FIXED_CONFIG_V1.SYNC_FUTURE_DAYS * DAY_MS,
     );
-    const query: ApiFootballFixturesQuery = {
-      dateFrom: formatUtcDate(serverNow),
-      dateTo: formatUtcDate(dateTo),
-      leagueId: MVP_SEASON.api_football_league_id,
-      season: MVP_SEASON.api_football_season,
-    };
-    const fixtures = await client.getFixtures(query);
+    const fixtures = await loadFixturesForSupportedLeagues((leagueId, season) =>
+      client.getFixtures({
+        dateFrom: formatUtcDate(serverNow),
+        dateTo: formatUtcDate(dateTo),
+        leagueId,
+        season,
+      }),
+    );
     return fixtures.flatMap((fixture) => {
-      const kickoff = parseKickoff(
-        fixture.fixture.timestamp,
-        fixture.fixture.date,
-      ).kickoffAt;
+      const kickoff = parseFixtureKickoff(fixture);
       if (
         kickoff === null ||
         kickoff.getTime() >= serverNow.getTime() &&
@@ -102,18 +123,17 @@ export function createNearMatchLoader(
     const window = nearMatchWindowHours();
     const earliestKickoff = new Date(serverNow.getTime() + window.earliest * HOUR_MS);
     const latestKickoff = new Date(serverNow.getTime() + window.latest * HOUR_MS);
-    const fixtures = await client.getFixtures({
-      dateFrom: formatUtcDate(earliestKickoff),
-      dateTo: formatUtcDate(latestKickoff),
-      leagueId: MVP_SEASON.api_football_league_id,
-      season: MVP_SEASON.api_football_season,
-    });
+    const fixtures = await loadFixturesForSupportedLeagues((leagueId, season) =>
+      client.getFixtures({
+        dateFrom: formatUtcDate(earliestKickoff),
+        dateTo: formatUtcDate(latestKickoff),
+        leagueId,
+        season,
+      }),
+    );
 
     return fixtures.flatMap((fixture) => {
-      const kickoff = parseKickoff(
-        fixture.fixture.timestamp,
-        fixture.fixture.date,
-      ).kickoffAt;
+      const kickoff = parseFixtureKickoff(fixture);
       if (
         kickoff === null ||
         kickoff.getTime() >= earliestKickoff.getTime() &&
@@ -140,57 +160,20 @@ export function createLiveMatchLoader(
     const latestKickoff = new Date(
       serverNow.getTime() + config.windowStartHoursBeforeKickoff * HOUR_MS,
     );
-    // P1-3（32.4）：收窄下界——live 窗口为 T-2h ~ finished，不扫"过去任意 kickoff"；
-    // 加 DAY_MS 硬下界避免跨日脏数据（超长 live 由 LIVE_TOO_LONG anomaly 巡检互补）。
-    const earliestKickoff = new Date(serverNow.getTime() - DAY_MS);
-    const fixtures = await client.getFixtures({
-      dateFrom: formatUtcDate(earliestKickoff),
-      dateTo: formatUtcDate(latestKickoff),
-      leagueId: MVP_SEASON.api_football_league_id,
-      season: MVP_SEASON.api_football_season,
-    });
+    const fixtures = await loadFixturesForSupportedLeagues((leagueId, season) =>
+      client.getFixtures({
+        dateFrom: formatUtcDate(serverNow),
+        dateTo: formatUtcDate(latestKickoff),
+        leagueId,
+        season,
+      }),
+    );
 
     return fixtures.flatMap((fixture) => {
-      const kickoff = parseKickoff(
-        fixture.fixture.timestamp,
-        fixture.fixture.date,
-      ).kickoffAt;
-      if (
-        kickoff === null ||
-        (kickoff.getTime() >= earliestKickoff.getTime() &&
-          kickoff.getTime() <= latestKickoff.getTime())
-      ) {
-        return [{ fixture, payload: { fixture } }];
-      }
-      return [];
-    });
-  };
-}
-
-/** 生成 32.5 的 post_finish_verify loader；HTTP client 由外部注入，本模块不连接 Provider。 */
-export function createPostFinishVerifyLoader(
-  client: PostFinishVerifyFixtureClient,
-): ProviderFixtureBatchLoader {
-  return async (serverNow) => {
-    assertValidDate(serverNow);
-    const earliestKickoff = new Date(serverNow.getTime() - DAY_MS);
-    const fixtures = await client.getFixtures({
-      dateFrom: formatUtcDate(earliestKickoff),
-      dateTo: formatUtcDate(serverNow),
-      leagueId: MVP_SEASON.api_football_league_id,
-      season: MVP_SEASON.api_football_season,
-    });
-
-    return fixtures.flatMap((fixture) => {
-      const kickoff = parseKickoff(
-        fixture.fixture.timestamp,
-        fixture.fixture.date,
-      ).kickoffAt;
-      if (
-        kickoff === null ||
-        kickoff.getTime() >= earliestKickoff.getTime() &&
-          kickoff.getTime() <= serverNow.getTime()
-      ) {
+      const kickoff = parseFixtureKickoff(fixture);
+      // 32.4：窗口为「T-2h ～ finished」，不设下界——已开赛（kickoff < server_now）
+      // 且未 finished 的场次必须继续进入高频批次，直到收到 finished 为止。
+      if (kickoff === null || kickoff.getTime() <= latestKickoff.getTime()) {
         return [{ fixture, payload: { fixture } }];
       }
       return [];
@@ -204,11 +187,9 @@ export function createFullScheduleVerifyLoader(
 ): ProviderFixtureBatchLoader {
   return async (serverNow) => {
     assertValidDate(serverNow);
-    const query: ApiFootballSeasonFixturesQuery = {
-      leagueId: MVP_SEASON.api_football_league_id,
-      season: MVP_SEASON.api_football_season,
-    };
-    const fixtures = await client.getSeasonFixtures(query);
+    const fixtures = await loadFixturesForSupportedLeagues((leagueId, season) =>
+      client.getSeasonFixtures({ leagueId, season }),
+    );
     return fixtures.map((fixture) => ({
       fixture,
       payload: { fixture },

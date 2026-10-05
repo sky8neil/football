@@ -8,7 +8,11 @@ import type {
   PredictionHistoryQueryService,
   PredictionHistoryResult,
 } from "../../application/prediction-query.js";
-import { FIXED_CONFIG_V1, MVP_SEASON } from "../../domain/config.js";
+import {
+  FIXED_CONFIG_V1,
+  findSupportedLeagueById,
+  isSupportedLeagueId,
+} from "../../domain/config.js";
 import type { PredictionService, SubmitPredictionResult } from "../../application/predictions.js";
 import { assertUnknownFields, submitPredictionStatus } from "./validation.js";
 import {
@@ -23,7 +27,7 @@ const PREDICTION_BODY_FIELDS = new Set([
   "away_score",
 ]);
 
-const PREDICTION_HISTORY_QUERY_FIELDS = new Set(["season_id", "limit", "cursor"]);
+const PREDICTION_HISTORY_QUERY_FIELDS = new Set(["league_id", "season_id", "limit", "cursor"]);
 
 export interface PostPredictionInput {
   authenticated_user_id?: string | null;
@@ -193,16 +197,31 @@ export function validateMyPredictionsQuery(
   query: Record<string, unknown>,
 ): PredictionHistoryQuery {
   assertUnknownFields(query, PREDICTION_HISTORY_QUERY_FIELDS);
-  const seasonId = query.season_id;
-  if (seasonId !== undefined && seasonId !== MVP_SEASON.season_id) {
-    throw validationError("season_id 必须是已知赛季", { field: "season_id" });
+  const leagueId = query.league_id === undefined ? null : query.league_id;
+  if (leagueId !== null && (typeof leagueId !== "string" || !isSupportedLeagueId(leagueId))) {
+    throw validationError("league_id 不是有效联赛", { field: "league_id" });
+  }
+  if (query.season_id !== undefined && typeof query.season_id !== "string") {
+    throw validationError("season_id 必须是字符串", { field: "season_id" });
+  }
+  const seasonId = query.season_id === undefined ? null : query.season_id;
+  if (seasonId !== null && leagueId === null && query.cursor === undefined) {
+    throw validationError("season_id 仅能与 league_id 同时提供", { field: "season_id" });
+  }
+  if (
+    seasonId !== null &&
+    leagueId !== null &&
+    findSupportedLeagueById(leagueId)?.season_id !== seasonId
+  ) {
+    throw validationError("season_id 必须等于该联赛当前登记值", { field: "season_id" });
   }
   const cursor = query.cursor;
   if (cursor !== undefined && typeof cursor !== "string") {
     throw validationError("cursor 格式无效", { field: "cursor" });
   }
   return {
-    season_id: MVP_SEASON.season_id,
+    league_id: leagueId,
+    season_id: seasonId,
     limit: parseHistoryLimit(query.limit),
     cursor: cursor === undefined ? null : cursor,
   };

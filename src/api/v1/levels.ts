@@ -37,7 +37,7 @@ export async function getMyLevels(
     userId,
     input.server_now,
   );
-  const data = await service.getLevels(userId);
+  const data = await service.getLevels(userId, input.server_now);
   return {
     status: 200,
     body: {

@@ -12,20 +12,19 @@ const MOCK_OPENID = "mock-openid-v5";
 const NOW = new Date("2026-08-09T12:00:00.000Z");
 
 const FROZEN_RANKING_ITEM_KEYS = [
-  "global_rank",
+  "rank",
   "user_id",
   "display_name",
   "favorite_team_id",
+  "career_level",
   "period_score",
   "valid_predictions",
-  "wdl_hits",
   "exact_hits",
-  "wdl_accuracy_percent",
   "last_scoring_match_at",
 ] as const;
 
 type RankingItem = Record<string, unknown> & {
-  global_rank: number;
+  rank: number;
   user_id: string;
   display_name: string;
   period_score: number;
@@ -34,6 +33,10 @@ type RankingItem = Record<string, unknown> & {
 
 type RankingPage = {
   data: {
+    board: string;
+    scope: string;
+    period_key: string | null;
+    updated_at: string | null;
     items: RankingItem[];
     page: { next_cursor: string | null; has_more: boolean };
   };
@@ -86,14 +89,14 @@ async function seedRankings(
 }
 
 describe("GET /v1/rankings", () => {
-  it("returns 200 with non-empty week items sorted by global_rank", async () => {
+  it("returns 200 with non-empty week items sorted by rank", async () => {
     const harness = makeHarness();
     await seedRankings(harness);
 
     const response = await request(harness, {
       method: "GET",
       path: "/v1/rankings",
-      query: { period_type: "week" },
+      query: { board: "week" },
     });
 
     expect(response.status).toBe(200);
@@ -101,11 +104,15 @@ describe("GET /v1/rankings", () => {
     expect(body.data.items.length).toBeGreaterThan(0);
     expect(body.data.page.has_more).toBe(false);
     expect(body.data.page.next_cursor).toBeNull();
-    const ranks = body.data.items.map((item) => item.global_rank);
+    const ranks = body.data.items.map((item) => item.rank);
     expect(ranks).toEqual([...ranks].sort((a, b) => a - b));
     expect(ranks[0]).toBe(1);
     expect(body).toEqual({
       data: {
+        board: "week",
+        scope: "global",
+        period_key: "2026-W32",
+        updated_at: NOW.toISOString(),
         items: expect.any(Array),
         page: { next_cursor: null, has_more: false },
       },
@@ -113,25 +120,21 @@ describe("GET /v1/rankings", () => {
     });
   });
 
-  it("returns 200 for period_type=month", async () => {
+  it("returns 422 when month board is requested", async () => {
     const harness = makeHarness();
     await seedRankings(harness);
 
     const response = await request(harness, {
       method: "GET",
       path: "/v1/rankings",
-      query: { period_type: "month" },
+      query: { board: "month" },
     });
 
-    expect(response.status).toBe(200);
-    const body = response.body as RankingPage;
-    expect(body.data.items.length).toBeGreaterThan(0);
-    expect(body.data.items.map((item) => item.global_rank)).toEqual(
-      body.data.items.map((item) => item.global_rank).sort((a, b) => a - b),
-    );
+    expect(response.status).toBe(422);
+    expect(response.body).toEqual(expect.objectContaining({ code: "VALIDATION_ERROR" }));
   });
 
-  it("returns 422 VALIDATION_ERROR when period_type is missing", async () => {
+  it("returns 422 VALIDATION_ERROR when board is missing", async () => {
     const harness = makeHarness();
     const response = await request(harness, {
       method: "GET",
@@ -145,12 +148,12 @@ describe("GET /v1/rankings", () => {
     }));
   });
 
-  it("returns 422 VALIDATION_ERROR when period_type is illegal", async () => {
+  it("returns 422 VALIDATION_ERROR when board is illegal", async () => {
     const harness = makeHarness();
     const response = await request(harness, {
       method: "GET",
       path: "/v1/rankings",
-      query: { period_type: "year" },
+      query: { board: "year" },
     });
 
     expect(response.status).toBe(422);
@@ -167,12 +170,16 @@ describe("GET /v1/rankings", () => {
     const response = await request(harness, {
       method: "GET",
       path: "/v1/rankings",
-      query: { period_type: "week", period_key: "2020-W01" },
+      query: { board: "week", period_key: "2020-W01" },
     });
 
     expect(response.status).toBe(200);
     expect(response.body).toEqual({
       data: {
+        board: "week",
+        scope: "global",
+        period_key: "2020-W01",
+        updated_at: null,
         items: [],
         page: { next_cursor: null, has_more: false },
       },
@@ -185,12 +192,16 @@ describe("GET /v1/rankings", () => {
     const response = await request(harness, {
       method: "GET",
       path: "/v1/rankings",
-      query: { period_type: "week" },
+      query: { board: "week" },
     });
 
     expect(response.status).toBe(200);
     expect(response.body).toEqual({
       data: {
+        board: "week",
+        scope: "global",
+        period_key: "2026-W32",
+        updated_at: null,
         items: [],
         page: { next_cursor: null, has_more: false },
       },
@@ -198,28 +209,27 @@ describe("GET /v1/rankings", () => {
     });
   });
 
-  it("pages with limit=1 then returns the remainder via cursor", async () => {
+  it("honors a smaller page limit and carries the query through its cursor", async () => {
     const harness = makeHarness();
     await seedRankings(harness);
 
     const first = await request(harness, {
       method: "GET",
       path: "/v1/rankings",
-      query: { period_type: "week", limit: "1" },
+      query: { board: "week", limit: "1" },
     });
     expect(first.status).toBe(200);
     const firstBody = first.body as RankingPage;
     expect(firstBody.data.items).toHaveLength(1);
     expect(firstBody.data.page.has_more).toBe(true);
     expect(typeof firstBody.data.page.next_cursor).toBe("string");
-    expect(firstBody.data.items[0]?.global_rank).toBe(1);
+    expect(firstBody.data.items[0]?.rank).toBe(1);
 
     const second = await request(harness, {
       method: "GET",
       path: "/v1/rankings",
       query: {
-        period_type: "week",
-        limit: "20",
+        board: "week",
         cursor: firstBody.data.page.next_cursor ?? "",
       },
     });
@@ -227,7 +237,7 @@ describe("GET /v1/rankings", () => {
     const secondBody = second.body as RankingPage;
     expect(secondBody.data.items.length).toBeGreaterThan(0);
     expect(secondBody.data.items[0]?.user_id).not.toBe(firstBody.data.items[0]?.user_id);
-    expect(secondBody.data.items.every((item) => item.global_rank > 1)).toBe(true);
+    expect(secondBody.data.items.every((item) => item.rank > 1)).toBe(true);
     expect(secondBody.data.page.has_more).toBe(false);
     expect(secondBody.data.page.next_cursor).toBeNull();
   });
@@ -239,20 +249,19 @@ describe("GET /v1/rankings", () => {
     const response = await request(harness, {
       method: "GET",
       path: "/v1/rankings",
-      query: { period_type: "week" },
+      query: { board: "week" },
     });
     expect(response.status).toBe(200);
     const body = response.body as RankingPage;
     const item = body.data.items[0]!;
     expect(item).toEqual(expect.objectContaining({
-      global_rank: expect.any(Number),
+      rank: expect.any(Number),
       user_id: expect.any(String),
       display_name: expect.any(String),
+      career_level: expect.any(Number),
       period_score: expect.any(Number),
       valid_predictions: expect.any(Number),
-      wdl_hits: expect.any(Number),
       exact_hits: expect.any(Number),
-      wdl_accuracy_percent: expect.any(String),
     }));
     expect(item).toHaveProperty("favorite_team_id");
     expect(item).toHaveProperty("last_scoring_match_at");
@@ -261,6 +270,8 @@ describe("GET /v1/rankings", () => {
     expect(item).not.toHaveProperty("openid");
     expect(item).not.toHaveProperty("team_name");
     expect(item).not.toHaveProperty("is_final");
+    expect(item).not.toHaveProperty("wdl_hits");
+    expect(item).not.toHaveProperty("wdl_accuracy_percent");
   });
 
   it("does not bind ranking seed users to mock openid so init stays 201", async () => {

@@ -78,6 +78,7 @@ function makeTeam(teamId: string): Team {
   return {
     schema_version: 1,
     team_id: teamId,
+    league_id: "premier_league",
     name: `Team ${teamId}`,
     short_name: null,
     primary_color: null,
@@ -236,7 +237,7 @@ describe("ProviderStatusSyncService", () => {
     await expect(repo.matches.findById(MATCH_ID)).resolves.toEqual(match);
   });
 
-  it("scheduled 响应缺少 kickoff 时保持已有可信字段并返回可计数失败", async () => {
+  it("N128 scheduled 响应不完整时保留已有可信字段，不清为 null", async () => {
     const { repo, match } = await setup();
     const incompleteFixture = makeFixture({
       kickoffAt: null,
@@ -958,6 +959,69 @@ describe("ProviderStatusSyncService", () => {
     ]);
   });
 
+  it("已 abandoned 且结算已离开 pending：再次推送 abandoned 走 unchanged，不产生 blocking 冲突", async () => {
+    const abandonedSettled = makeMatch({
+      match_status: MatchStatus.Abandoned,
+      settlement_status: SettlementStatus.Settled,
+      settled_result_version: 1,
+      result_version: 1,
+      regular_home_score: 0,
+      regular_away_score: 0,
+      result_source: "admin",
+      settled_at: SECOND_NOW,
+    });
+    const { repo } = await setup(abandonedSettled);
+    const service = new ProviderStatusSyncService(repo);
+
+    await expect(
+      service.applyAbandonedFixture(
+        makeAbandonedFixture(),
+        { provider: "fixture" },
+        SECOND_NOW,
+      ),
+    ).resolves.toEqual({
+      kind: "unchanged",
+      match_id: MATCH_ID,
+      match_status: MatchStatus.Abandoned,
+    });
+
+    await expect(repo.matches.findById(MATCH_ID)).resolves.toEqual(abandonedSettled);
+    await expect(
+      repo.anomalies.findByKey(`${MATCH_ID}:${AnomalyType.ProviderStateConflict}`),
+    ).resolves.toBeNull();
+  });
+
+  it("真非法状态回退（finished -> abandoned）仍报 blocking 冲突", async () => {
+    const finished = makeMatch({
+      match_status: MatchStatus.Finished,
+      settlement_status: SettlementStatus.Pending,
+      finish_detected_at: FIRST_NOW,
+    });
+    const { repo } = await setup(finished);
+    const service = new ProviderStatusSyncService(repo);
+
+    await expect(
+      service.applyAbandonedFixture(
+        makeAbandonedFixture(),
+        { provider: "fixture", transition: "finished->abandoned" },
+        SECOND_NOW,
+      ),
+    ).resolves.toEqual({
+      kind: "conflict",
+      match_id: MATCH_ID,
+      match_status: MatchStatus.Finished,
+      anomaly_type: AnomalyType.ProviderStateConflict,
+    });
+
+    await expect(repo.matches.findById(MATCH_ID)).resolves.toEqual(finished);
+    await expect(
+      repo.anomalies.findByKey(`${MATCH_ID}:${AnomalyType.ProviderStateConflict}`),
+    ).resolves.toMatchObject({
+      status: AnomalyStatus.Open,
+      blocking: true,
+    });
+  });
+
   it("已 settled 比赛收到 cancelled 时保留历史结算并记录 blocking anomaly", async () => {
     const settled = makeMatch({
       match_status: MatchStatus.Finished,
@@ -1053,6 +1117,28 @@ describe("ProviderStatusSyncService", () => {
       match_status: MatchStatus.Postponed,
       kickoff_at: new Date("2026-08-16T03:00:00.000Z"),
     });
+  });
+
+  it("C23 按联赛 round_max 忽略超限 Provider round", async () => {
+    const { repo } = await setup(makeMatch({ league_id: "bundesliga" }));
+    const service = new ProviderStatusSyncService(repo);
+
+    await service.applyScheduledFixture(
+      makeFixture({
+        leagueProviderId: "78",
+        round: "Regular Season - 35",
+        kickoffAt: new Date("2026-08-09T02:00:00.000Z"),
+        kickoffConfirmed: true,
+        status: { kind: MatchStatus.Scheduled, kickoffConfirmed: true },
+        rawStatus: "NS",
+      }),
+      { provider: "fixture", note: "round-over-limit" },
+      FIRST_NOW,
+    );
+
+    await expect(repo.matches.findById(MATCH_ID)).resolves.toMatchObject({ round_id: "01" });
+    await expect(repo.anomalies.findByKey(`${MATCH_ID}:${AnomalyType.ProviderDataInvalid}`))
+      .resolves.toBeNull();
   });
 
   it("finished -> live 不回退状态，并保存 blocking anomaly 与冲突快照", async () => {

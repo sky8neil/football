@@ -18,7 +18,7 @@ export const UNIQUE_INDEXES: readonly IndexDef[] = [
   {
     collection: "user_season_stats",
     name: "uk_user_season",
-    fields: ["user_id", "season_id"],
+    fields: ["user_id", "level_season_id"],
     unique: true,
   },
   {
@@ -87,6 +87,24 @@ export const UNIQUE_INDEXES: readonly IndexDef[] = [
     collection: "deleted_openid_mappings",
     name: "uk_deleted_openid",
     fields: ["original_openid"],
+    unique: true,
+  },
+  {
+    collection: "board_snapshots",
+    name: "uk_board_snapshot_user",
+    fields: ["board", "snapshot_at", "user_id"],
+    unique: true,
+  },
+  {
+    collection: "groups",
+    name: "uk_invite_code",
+    fields: ["invite_code"],
+    unique: true,
+  },
+  {
+    collection: "group_members",
+    name: "uk_group_user",
+    fields: ["group_id", "user_id"],
     unique: true,
   },
 ] as const;
@@ -168,6 +186,48 @@ export const QUERY_INDEXES: readonly IndexDef[] = [
     collection: "level_history",
     name: "ix_level_history_user_changed",
     fields: ["user_id", "changed_at:desc"],
+    unique: false,
+  },
+  {
+    collection: "level_history",
+    name: "ix_level_history_user_scope_season",
+    fields: ["user_id", "scope", "level_season_id", "changed_at:desc"],
+    unique: false,
+  },
+  {
+    collection: "user_season_stats",
+    name: "ix_user_season_level",
+    fields: ["level_season_id", "level:desc"],
+    unique: false,
+  },
+  {
+    collection: "board_snapshots",
+    name: "ix_board_snapshots_rank",
+    fields: ["board", "snapshot_at:desc", "rank"],
+    unique: false,
+  },
+  {
+    collection: "board_snapshots",
+    name: "ix_board_snapshots_user",
+    fields: ["board", "user_id", "snapshot_at:desc"],
+    unique: false,
+  },
+  {
+    collection: "groups",
+    name: "ix_groups_owner_status",
+    fields: ["owner_user_id", "status"],
+    unique: false,
+  },
+  {
+    collection: "group_members",
+    name: "ix_group_members_user_status",
+    fields: ["user_id", "status"],
+    unique: false,
+  },
+  {
+    collection: "group_members",
+    name: "ix_group_members_group_status",
+    fields: ["group_id", "status"],
     unique: false,
   },
   {

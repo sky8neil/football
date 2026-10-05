@@ -54,6 +54,11 @@ export class PeriodFinalizeService {
     serverNow: Date,
   ): Promise<PeriodFinalizeOutcome> {
     assertValidServerNow(serverNow);
+    if (periodType !== PeriodType.Week) {
+      throw new DomainError("VALIDATION_ERROR", "period finalize 只支持 week", {
+        period_type: periodType,
+      });
+    }
     const endAt = periodEndAt(periodType, periodKey);
     if (serverNow.getTime() < endAt.getTime()) {
       return {

@@ -13,6 +13,7 @@ import {
   type CloudBaseUserDocument,
 } from "./cloudbase-repository.js";
 import { DocumentNotFoundError } from "./repositories.js";
+import { defaultLevelState } from "../domain/types.js";
 
 const CREATED_AT = new Date("2026-08-01T00:00:00.000Z");
 const UPDATED_AT = new Date("2026-08-02T00:00:00.000Z");
@@ -44,6 +45,8 @@ function makeUser(overrides: Partial<User> = {}): User {
     career_exact_hits: 0,
     career_level: 1,
     career_best_level: 1,
+    career_last_scoring_match_at: null,
+    career_level_state: defaultLevelState(),
     deleted_at: null,
     created_at: CREATED_AT,
     updated_at: UPDATED_AT,
@@ -209,7 +212,19 @@ describe("CloudBaseUserRepository", () => {
 
   it("findByOpenid queries the namespaced users collection by openid and maps a hit", async () => {
     const { repo, database } = createRepo();
-    const stored = makeUser();
+    const careerLevelState = {
+      ...defaultLevelState(),
+      below_count: 1,
+      week_base_level: 3,
+      week_base_below_count: 1,
+      week_base_as_of: new Date("2026-08-03T02:00:00.000Z"),
+      last_eval_as_of: new Date("2026-08-10T02:00:00.000Z"),
+      last_eval_n: 20,
+      last_eval_score_sum: 180,
+      last_eval_b_points: 250,
+      last_eval_rule_version: "level_v3.0",
+    };
+    const stored = makeUser({ career_level_state: careerLevelState });
     database.seed("football-test_users", stored.user_id, {
       _id: stored.user_id,
       user_id: stored.user_id,
@@ -222,8 +237,10 @@ describe("CloudBaseUserRepository", () => {
       career_valid_predictions: 0,
       career_wdl_hits: 0,
       career_exact_hits: 0,
+      career_last_scoring_match_at: null,
       career_level: 1,
       career_best_level: 1,
+      career_level_state: careerLevelState,
       deleted_at: null,
       created_at: CREATED_AT,
       updated_at: UPDATED_AT,
@@ -234,6 +251,17 @@ describe("CloudBaseUserRepository", () => {
     expect(database.whereCalls).toEqual([
       { collection: "football-test_users", filter: { openid: OPENID } },
     ]);
+  });
+
+  it("career_level_state 缺失时回填 schema 默认值", async () => {
+    const { repo, database } = createRepo();
+    const storedDocument = { ...makeUser() } as unknown as Record<string, unknown>;
+    delete storedDocument.career_level_state;
+    database.seed("football-test_users", USER_ID, storedDocument);
+
+    await expect(repo.findByOpenid(OPENID)).resolves.toMatchObject({
+      career_level_state: defaultLevelState(),
+    });
   });
 
   it("findByOpenid returns null when no document matches", async () => {
@@ -266,8 +294,10 @@ describe("CloudBaseUserRepository", () => {
         career_valid_predictions: 0,
         career_wdl_hits: 0,
         career_exact_hits: 0,
+        career_last_scoring_match_at: null,
         career_level: 1,
         career_best_level: 1,
+        career_level_state: defaultLevelState(),
         deleted_at: null,
         created_at: CREATED_AT,
         updated_at: UPDATED_AT,

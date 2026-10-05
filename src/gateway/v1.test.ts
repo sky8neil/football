@@ -52,11 +52,13 @@ function request(
   });
 }
 
-async function firstSeededMatchId(harness: ReturnType<typeof makeHarness>): Promise<string> {
+async function firstSeededScheduledMatchId(harness: ReturnType<typeof makeHarness>): Promise<string> {
   await seedGatewayRepository(harness.repo, NOW);
   const listed = await request(harness, { method: "GET", path: "/v1/matches" });
-  const body = listed.body as { data: { items: Array<{ match_id: string }> } };
-  const matchId = body.data.items[0]?.match_id;
+  const body = listed.body as {
+    data: { items: Array<{ match_id: string; match_status: string }> };
+  };
+  const matchId = body.data.items.find((item) => item.match_status === "scheduled")?.match_id;
   if (matchId === undefined) {
     throw new Error("seeded matches missing");
   }
@@ -66,7 +68,7 @@ async function firstSeededMatchId(harness: ReturnType<typeof makeHarness>): Prom
 describe("GET /v1/matches/{match_id}", () => {
   it("returns 200 with my_prediction null for a seeded match", async () => {
     const harness = makeHarness();
-    const matchId = await firstSeededMatchId(harness);
+    const matchId = await firstSeededScheduledMatchId(harness);
 
     const response = await request(harness, {
       method: "GET",
@@ -135,7 +137,7 @@ describe("POST /v1/predictions", () => {
 
   it("returns 401 when mock identity exists but the user was never initialized", async () => {
     const harness = makeHarness(makeConfig({ mock_trusted_openid: MOCK_OPENID }));
-    const matchId = await firstSeededMatchId(harness);
+    const matchId = await firstSeededScheduledMatchId(harness);
 
     const response = await request(harness, {
       method: "POST",
@@ -158,7 +160,7 @@ describe("POST /v1/predictions", () => {
 
   it("creates, replays, and rejects conflicting prediction submits after init", async () => {
     const harness = makeHarness(makeConfig({ mock_trusted_openid: MOCK_OPENID }));
-    const matchId = await firstSeededMatchId(harness);
+    const matchId = await firstSeededScheduledMatchId(harness);
 
     const init = await request(harness, {
       method: "POST",
@@ -225,7 +227,7 @@ describe("POST /v1/predictions", () => {
 
   it("returns 422 when idempotency_key is missing or a score is out of range", async () => {
     const harness = makeHarness(makeConfig({ mock_trusted_openid: MOCK_OPENID }));
-    const matchId = await firstSeededMatchId(harness);
+    const matchId = await firstSeededScheduledMatchId(harness);
     const init = await request(harness, {
       method: "POST",
       path: "/v1/session/init",

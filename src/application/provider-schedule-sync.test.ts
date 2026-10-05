@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MatchStatus, Provider, SettlementStatus } from "../domain/enums.js";
+import { AnomalyType, MatchStatus, Provider, SettlementStatus } from "../domain/enums.js";
 import { MVP_SEASON } from "../domain/config.js";
 import { newUuid } from "../domain/ids.js";
 import type { Team, TeamProviderMapping } from "../domain/types.js";
@@ -14,6 +14,7 @@ function makeTeam(teamId: string): Team {
   return {
     schema_version: 1,
     team_id: teamId,
+    league_id: "premier_league",
     name: `Team ${teamId}`,
     short_name: null,
     primary_color: null,
@@ -109,7 +110,7 @@ describe("Provider schedule discovery", () => {
     ]);
   });
 
-  it("round 无法严格解析为 01..38 时 fail closed 且不创建比赛事实", async () => {
+  it("round 无法解析时记录实体级 PROVIDER_DATA_INVALID 且不创建比赛事实", async () => {
     const repo = new InMemoryRepository();
     await seedTeams(repo);
     const fixture: ApiFootballFixture = makeApiFixture({
@@ -120,7 +121,10 @@ describe("Provider schedule discovery", () => {
 
     await expect(
       new ProviderFixtureSyncService(repo).applyFixture(fixture, { fixture }, NOW),
-    ).rejects.toMatchObject({ code: "PROVIDER_DATA_ERROR" });
+    ).resolves.toMatchObject({
+      kind: "failed",
+      anomaly_types: [AnomalyType.ProviderDataInvalid],
+    });
     await expect(
       repo.matchProviderMappings.findByProviderAndExternalId(
         Provider.ApiFootball,
@@ -128,6 +132,71 @@ describe("Provider schedule discovery", () => {
       ),
     ).resolves.toBeNull();
     await expect(repo.matches.findBySeason(MVP_SEASON.season_id)).resolves.toEqual([]);
+  });
+
+  it("德甲 round 34 可入库，round 35 作为实体级 PROVIDER_DATA_INVALID 失败", async () => {
+    const repo = new InMemoryRepository();
+    await seedTeams(repo);
+    const round34 = makeApiFixture({
+      fixtureId: 1100200,
+      statusShort: "NS",
+      leagueId: 78,
+      round: "Regular Season - 34",
+    });
+    const round35 = makeApiFixture({
+      fixtureId: 1100201,
+      statusShort: "NS",
+      leagueId: 78,
+      round: "Regular Season - 35",
+    });
+
+    const applied = await new ProviderFixtureSyncService(repo).applyFixture(
+      round34,
+      { fixture: round34 },
+      NOW,
+    );
+    expect(applied).toMatchObject({ kind: "applied" });
+    const mapping = await repo.matchProviderMappings.findByProviderAndExternalId(
+      Provider.ApiFootball,
+      "1100200",
+    );
+    await expect(repo.matches.findById(mapping!.match_id)).resolves.toMatchObject({
+      league_id: "bundesliga",
+      season_id: "2026_2027",
+      round_id: "34",
+    });
+
+    await expect(
+      new ProviderFixtureSyncService(repo).applyFixture(round35, { fixture: round35 }, NOW),
+    ).resolves.toMatchObject({
+      kind: "failed",
+      anomaly_types: [AnomalyType.ProviderDataInvalid],
+    });
+    await expect(
+      repo.matchProviderMappings.findByProviderAndExternalId(Provider.ApiFootball, "1100201"),
+    ).resolves.toBeNull();
+  });
+
+  it("中超 match.season_id 为自然年 2026", async () => {
+    const repo = new InMemoryRepository();
+    await seedTeams(repo);
+    const fixture = makeApiFixture({
+      fixtureId: 1100300,
+      statusShort: "NS",
+      leagueId: 169,
+      round: "Regular Season - 1",
+    });
+
+    await new ProviderFixtureSyncService(repo).applyFixture(fixture, { fixture }, NOW);
+    const mapping = await repo.matchProviderMappings.findByProviderAndExternalId(
+      Provider.ApiFootball,
+      "1100300",
+    );
+    await expect(repo.matches.findById(mapping!.match_id)).resolves.toMatchObject({
+      league_id: "chinese_super_league",
+      season_id: "2026",
+      round_id: "01",
+    });
   });
 
   it("缺少 Provider 球队 mapping 时 fail closed 且不创建比赛事实", async () => {

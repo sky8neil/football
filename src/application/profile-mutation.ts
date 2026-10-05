@@ -113,7 +113,7 @@ export class ProfileMutationService {
         updated_at: serverNow,
       });
 
-      return new ProfileQueryService(tx).getMyProfile(userId);
+      return new ProfileQueryService(tx).getMyProfile(userId, serverNow);
     });
   }
 

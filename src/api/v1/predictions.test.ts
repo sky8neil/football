@@ -129,6 +129,17 @@ describe("POST /v1/predictions", () => {
       .toThrowError(expect.objectContaining({ code: "VALIDATION_ERROR" }));
   });
 
+  it("M120 客户端传 user_id 不能冒充其他用户", async () => {
+    const command = makeCommand(predictionResult(true));
+    await expect(postPrediction(command, {
+      authenticated_user_id: USER_ID,
+      body: { ...body(), user_id: "another-user" },
+      server_now: NOW,
+      request_id: "request-prediction-spoofed-user",
+    })).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+    expect(command.submit).not.toHaveBeenCalled();
+  });
+
   it("在调用 application service 前执行每用户每分钟 10 次限流", async () => {
     const command = makeCommand(predictionResult(true));
     const rateLimiter = new InMemoryRateLimiter();

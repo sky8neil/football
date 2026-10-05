@@ -1,4 +1,4 @@
-import { FIXED_CONFIG_V1 } from "../../domain/config.js";
+import { FIXED_CONFIG_V1, isSupportedLeagueId } from "../../domain/config.js";
 import { MatchStatus } from "../../domain/enums.js";
 import { validationError } from "../../domain/errors.js";
 import { isValidUuid } from "../../domain/ids.js";
@@ -14,7 +14,7 @@ import {
   type RateLimiter,
 } from "./rate-limit.js";
 
-const MATCHES_QUERY_FIELDS = new Set(["from", "to", "status", "limit", "cursor"]);
+const MATCHES_QUERY_FIELDS = new Set(["from", "to", "status", "league_id", "limit", "cursor"]);
 
 export type MatchesQuery = Omit<MatchListQuery, "server_now" | "authenticated_user_id">;
 
@@ -113,10 +113,15 @@ export function validateMatchesQuery(query: Record<string, unknown>): MatchesQue
   if (cursor !== null && typeof cursor !== "string") {
     throw validationError("cursor 必须是字符串", { field: "cursor" });
   }
+  const leagueId = query.league_id === undefined ? null : query.league_id;
+  if (leagueId !== null && (typeof leagueId !== "string" || !isSupportedLeagueId(leagueId))) {
+    throw validationError("league_id 不是有效联赛", { field: "league_id" });
+  }
   return {
     from: parseDate(query.from, "from"),
     to: parseDate(query.to, "to"),
     status: status as MatchListQuery["status"],
+    league_id: leagueId,
     limit: parseLimit(query.limit),
     cursor,
   };

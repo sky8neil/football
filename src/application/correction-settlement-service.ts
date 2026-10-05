@@ -45,6 +45,7 @@ import {
 } from "./first-settlement-service.js";
 import { nextSettlementVersion } from "./result-correction-plan.js";
 import { assertValidServerNow } from "./period-finalize.js";
+import { rebuildSettlementWeekRanks } from "./settlement-item-application-service.js";
 import {
   settlementMatchLockKey,
   snapshotSettlementForAudit,
@@ -301,13 +302,26 @@ export class CorrectionSettlementService {
             }
 
             lockRenewal.assertHealthy();
-            let itemAppliedByWorker = false;
             try {
-              const workResult = await this.itemWorker(item, result, {
-                tx,
-                server_now: serverNow,
+              // §15.5：单 item 的预测/聚合/unlock 与 item→applied 必须同事务；
+              // savepoint 隔离失败项自身写入，失败记录在回滚后另行提交。
+              await tx.savepoint(async (itemTx) => {
+                const workResult = await this.itemWorker(item, result, {
+                  tx: itemTx,
+                  server_now: serverNow,
+                });
+                if (workResult?.item_applied !== true) {
+                  await itemTx.settlementItems.update({
+                    ...item,
+                    status: SettlementItemStatus.Applied,
+                    applied_at: serverNow,
+                    attempt_count: item.attempt_count + 1,
+                    last_error_code: null,
+                    last_error_message: null,
+                    updated_at: serverNow,
+                  });
+                }
               });
-              itemAppliedByWorker = workResult?.item_applied === true;
             } catch (err) {
               const { code, message } = workerErrorInfo(err);
               await tx.settlementItems.update({
@@ -355,21 +369,24 @@ export class CorrectionSettlementService {
 
             lockRenewal.assertHealthy();
             processedCount += 1;
-            if (!itemAppliedByWorker) {
-              await tx.settlementItems.update({
-                ...item,
-                status: SettlementItemStatus.Applied,
-                applied_at: serverNow,
-                attempt_count: item.attempt_count + 1,
-                last_error_code: null,
-                last_error_message: null,
-                updated_at: serverNow,
-              });
-            }
           }
 
           await tx.settlements.update({
             ...runningSettlement,
+            phase: SettlementPhase.RebuildRanks,
+            updated_at: serverNow,
+          });
+          if (items.length > 0 && match.period_anchor_at !== null) {
+            await rebuildSettlementWeekRanks(tx, match.period_anchor_at, serverNow);
+          }
+          const finalizingSettlement: SettlementDoc = {
+            ...runningSettlement,
+            phase: SettlementPhase.Finalize,
+            updated_at: serverNow,
+          };
+          await tx.settlements.update(finalizingSettlement);
+          await tx.settlements.update({
+            ...finalizingSettlement,
             status: SettlementDocStatus.Settled,
             phase: SettlementPhase.Done,
             settled_at: serverNow,

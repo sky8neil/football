@@ -1,0 +1,170 @@
+/* Shared visual contract for the three v0.1 screens. */
+:root {
+  --ui-ink: #163024;
+  --ui-secondary: #42564a;
+  --ui-muted: #52665b;
+  --ui-positive: #1a5c26;
+  --ui-selected: #2f8a3a;
+  --ui-line: rgba(255,255,255,.88);
+  --ui-card: rgba(255,255,255,.68);
+  --ui-shadow: 0 8px 24px rgba(23,60,35,.08);
+  --ui-font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+  --font-family-cn: var(--ui-font);
+  --font-family-number: var(--ui-font);
+  --text-primary: var(--ui-ink);
+  --text-secondary: var(--ui-secondary);
+  --text-muted: var(--ui-muted);
+  --text-positive: var(--ui-positive);
+  --ink: var(--ui-ink);
+  --ink-soft: var(--ui-secondary);
+  --ink-faint: var(--ui-muted);
+  --radius-card: 16px;
+  --surface-card: var(--ui-card);
+  --surface-card-strong: rgba(255,255,255,.76);
+  --shadow-card: var(--ui-shadow);
+}
+html { background: #e8eee7; }
+body { display: block; margin: 0; padding: 0; background: #e8eee7; font: 13px/1.5 var(--ui-font); color: var(--ui-ink); }
+body *, body *::before, body *::after { box-sizing: border-box; letter-spacing: 0; }
+button, input, select { font-family: var(--ui-font); }
+button, a { -webkit-tap-highlight-color: transparent; }
+body .num, .date strong, .bug strong, .pred b, .result b, .stepper .score, .stepper-sep {
+  font-family: var(--ui-font); font-variant-numeric: tabular-nums;
+}
+body .phone, body #app {
+  width: min(100%, 390px); max-width: 390px; margin: 0 auto;
+  min-height: 100dvh; height: auto; border-radius: 0;
+  position: relative; isolation: isolate; background: transparent;
+  box-shadow: 0 0 32px rgba(23,60,35,.08);
+}
+body #app { overflow: clip; padding-bottom: calc(80px + env(safe-area-inset-bottom, 0px)); }
+body #app::before, body #app::after, body .phone::before, body .page-bg { display: none; }
+body .backdrop { display: none; }
+body .phone::after, body #app > .ui-background {
+  content: ""; position: fixed; top: 0; bottom: 0; left: 50%; transform: translateX(-50%);
+  width: min(100%,390px); z-index: -1; pointer-events: none;
+  background: linear-gradient(180deg,rgba(255,255,255,.16),rgba(244,248,244,.5)), url("assets/pitch.webp") center top / cover no-repeat;
+}
+body .status { display: flex; align-items: center; justify-content: space-between; height: calc(36px + env(safe-area-inset-top,0px)); padding: env(safe-area-inset-top,0px) 24px 0; font-size: 11px; font-weight: 600; }
+body .status svg { width: 56px; height: 12px; }
+body .welcome { margin: 0; padding: 8px 16px 16px; border: 0; display: flex; align-items: center; gap: 9px; }
+body .welcome > button { flex: 0 0 34px; width: 34px; height: 34px; padding: 0; }
+body .welcome .avatar, body .welcome > img { width: 34px; height: 34px; object-fit: cover; padding: 0; border: 1px solid white; border-radius: 50%; }
+body .welcome-copy { min-width: 0; flex: 1; }
+body .welcome-copy b { display: block; font-size: 14px; line-height: 1.5; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+body .welcome-copy small { display: block; font-size: 11px; line-height: 1.5; color: var(--ui-secondary); margin: 0; }
+body .welcome-id { margin-left: auto; flex-shrink: 0; white-space: nowrap; font-size: 10px; padding: 3px 7px; border: 1px solid var(--ui-line); border-radius: 99px; background: rgba(255,255,255,.6); }
+body .content { padding-left: 16px; padding-right: 16px; padding-bottom: calc(110px + env(safe-area-inset-bottom,0px)); }
+body .card, body .match { border-radius: 16px; border: 1px solid var(--ui-line); box-shadow: var(--ui-shadow); }
+body .card:not(.hero):not(.next-level-panel), body .match, body .match.is-open { background: var(--ui-card); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
+body h2, body .list-heading h2, body .upgrade-heading h2 { font-size: 15px; line-height: 1.5; font-weight: 700; }
+body .eyebrow { font-size: 11px; line-height: 1.5; font-weight: 600; color: var(--ui-secondary); }
+body .section-title { margin: 22px 0 10px; }
+body .section-title p, body .text-button, body .date-range, body .stats-footer,
+body .group-copy small, body .group-rank small, body .group-actions button,
+body .result-bottom, body .result-state, body .evaluation, body .upgrade-note,
+body .upgrade-integral-note, body .level-path span, body .board-meta,
+body .list-heading small, body .rank-columns, body .person small,
+body .plinth small, body .score small, body .board-footer, body .summary-note,
+body .my-position-copy small, body .my-position-value small, body .my-position-label {
+  font-size: 11px; line-height: 1.6;
+}
+body .pill, body .level, body .identity h1 span, body .hero-stamp { font-size: 10px; line-height: 1.5; }
+body .text-button { min-height: 36px; }
+body .icon { width: 20px; height: 20px; stroke-width: 1.7; }
+body .edit { width: 36px; height: 36px; }
+body .edit .icon, body .utility .icon:first-child { width: 20px; height: 20px; }
+body .text-button .icon, body .utility .icon:last-child, body .group-row > .icon { width: 14px; height: 14px; }
+body .rule-button, body .upgrade-help { width: 32px; height: 32px; display: grid; place-items: center; font-size: 14px; flex-shrink: 0; }
+body .rule-button svg, body .upgrade-help svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; }
+body.variant-1 .hero, body .next-level-panel {
+  background: linear-gradient(160deg,#1a2b44,#122033); color: #fff;
+  border-color: rgba(255,255,255,.18); border-radius: 16px; padding: 16px;
+}
+body.variant-1 .hero::after { display: none; }
+body.variant-1 .hero h2 { font-size: 15px; }
+body .hero h2 .hero-scope { display: block; margin-top: 3px; font-size: 11px; line-height: 1.5; font-weight: 400; color: #dbe5e3; overflow-wrap: anywhere; }
+body .hero .hero-metrics b, body.variant-1 .hero .hero-metrics b,
+body.variant-1 .hero .hero-metrics > div:last-child b, body .metrics b { font-size: 24px; line-height: 1.3; font-weight: 700; }
+body .hero-metrics { gap: 8px; }
+body .hero-metrics > div { min-width: 0; }
+body .hero-metrics small, body .hero .personal-status p, body .hero .personal-status .subtle { font-size: 11px; line-height: 1.6; }
+body .hero .hero-metrics small, body .next-level-panel .evaluation, body .next-level-panel .upgrade-note { color: #dbe5e3; }
+body .next-level-panel .upgrade-condition, body .next-level-panel .upgrade-condition b,
+body .upgrade-integral, body .upgrade-integral b { font-size: 12px; line-height: 1.6; }
+body .next-level-panel .level-path { margin: 18px 0; }
+body .next-level-panel .level-path i { width: 30px; height: 30px; font-size: 12px; }
+body .next-level-panel .level-path::before { top: 15px; }
+body .metrics span { font-size: 11px; line-height: 1.5; }
+body .group-copy b, body .person b, body .utility button, body .fixture b { font-size: 13px; line-height: 1.5; }
+body .group-actions .icon { width: 16px; height: 16px; }
+body .result-top { align-items: flex-start; }
+body .result-points { font-size: 20px; white-space: nowrap; }
+body .result-points small { font-size: 10px; }
+body .result-bottom { flex-wrap: wrap; row-gap: 6px; }
+body .fixture { min-width: 0; }
+body .fixture b { overflow-wrap: anywhere; }
+body .actual { margin-left: 8px; }
+body .segmented { padding: 3px; border-radius: 10px; }
+body .segmented button { font-size: 12px; min-height: 30px; padding: 4px 8px; }
+body .scope-switch button, body .board-tabs button { font-size: 13px; font-weight: 500; }
+body .scope-switch button[aria-selected=true], body .board-tabs button[aria-selected=true] { font-weight: 700; color: var(--ui-positive); }
+body .board-tabs button small, body .page-heading .eyebrow, body .preview-state, body .summary-note.extension { display: none; }
+body .page-heading { margin: 6px 0 16px; }
+body .page-heading h1 { font-size: 20px; line-height: 1.5; font-weight: 700; }
+body .page-heading p { margin-top: 3px; font-size: 11px; }
+body .rank-row { min-height: 78px; }
+body .rank-row .crest { padding: 0; width: 34px; height: 34px; object-fit: cover; }
+body .person b { overflow-wrap: anywhere; }
+body .person small { margin-top: 4px; }
+body .podium-person img { padding: 0; object-fit: cover; }
+body .podium-person .name { font-size: 12px; }
+body .podium-rank { font-size: 10px; font-weight: 600; }
+body .rank-row .score { font-size: 22px; flex-shrink: 0; }
+body .load-more { font-size: 12px; border-radius: 10px; }
+body .my-dock { width: min(calc(100% - 32px),358px); bottom: calc(74px + env(safe-area-inset-bottom,0px)); font-size: 11px; }
+body .leagues-wrap { margin: 0 16px 8px; padding: 5px 8px; border-radius: 16px; }
+body .leagues { padding: 0; gap: 8px; justify-content: space-between; }
+body .league { flex: 1; min-width: 0; font-size: 12px; gap: 4px; }
+body .league-logo { width: 24px; height: 24px; object-fit: contain; }
+body .league.active { color: var(--ui-positive); }
+body .date { border-radius: 12px; }
+body .date em, body .hint, body .meta, body .team small, body .bug em { font-size: 11px; }
+body .date.active, body .date.active strong { color: var(--ui-selected); }
+body .team b { font-size: 13px; }
+body .state { font-size: 10px; }
+body .cta { min-height: 36px; border-radius: 10px; font-size: 12px; }
+body .lock-chip, body .live-chip, body .result { font-size: 11px; }
+body .pred-hint, body .submit-note { font-size: 11px; line-height: 1.6; }
+body .submit-btn { font-size: 13px; min-height: 44px; }
+body .ui-nav {
+  position: fixed; left: 50%; bottom: 0; transform: translateX(-50%);
+  width: min(100%,390px); height: calc(64px + env(safe-area-inset-bottom,0px));
+  padding: 6px 12px calc(6px + env(safe-area-inset-bottom,0px));
+  display: grid; grid-template-columns: repeat(3,minmax(0,1fr));
+  z-index: 20; background: rgba(255,255,255,.96); border-top: 1px solid #dce6df;
+  backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+}
+body .ui-nav a { display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 4px; text-decoration: none; font-size: 10px; line-height: 1.4; font-weight: 500; color: var(--ui-muted); min-width: 0; }
+body .ui-nav svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+body .ui-nav [aria-current=page] { color: var(--ui-selected); font-weight: 700; }
+body .ui-nav [aria-current=page] svg { stroke-width: 2; }
+body dialog { border-radius: 16px; padding: 22px 18px; max-height: 80dvh; overflow-y: auto; }
+body dialog h2 { font-size: 16px; line-height: 1.5; }
+body dialog h3 { font-size: 13px; }
+body dialog p, body dialog .dialog-content, body dialog .score-range { font-size: 12px; line-height: 1.8; }
+body dialog .close { width: 32px; height: 32px; font-size: 22px; }
+body dialog .primary, body .dialog-cta { min-height: 44px; font-size: 13px; border-radius: 10px; }
+body .toast { bottom: calc(88px + env(safe-area-inset-bottom,0px)); max-width: calc(100% - 40px); font-size: 12px; }
+body .end-note { font-size: 11px; padding-top: 22px; }
+body .end-note span { display: none; }
+body .desk, body .desktop-note { display: none; }
+@media(max-width:360px) {
+  body .welcome-id { padding: 3px 5px; font-size: 9px; }
+  body .welcome-copy b { font-size: 13px; }
+  body .welcome-copy small { font-size: 10px; }
+  body .hero .hero-metrics b, body.variant-1 .hero .hero-metrics b, body.variant-1 .hero .hero-metrics > div:last-child b { font-size: 20px; }
+  body .hero-metrics small { font-size: 10px; }
+  body .person small { font-size: 10px; }
+  body .rank-row { gap: 7px; padding-left: 8px; padding-right: 8px; }
+}

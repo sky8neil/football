@@ -1,5 +1,5 @@
 /**
- * 第 44 节 M. 注销与权限验收矩阵（M100-M104；M105-M107 见既有 API/admin 测试）。
+ * 第 44 节 M. 注销与权限验收矩阵（v2 编号 M115-M122）。
  */
 import { describe, expect, it } from "vitest";
 import { UserStatus } from "../domain/enums.js";
@@ -9,9 +9,10 @@ import { InMemoryRepository } from "../infrastructure/repositories.js";
 import { ProfileMutationService } from "./profile-mutation.js";
 import { ProfileQueryService } from "./profile.js";
 import { SessionService } from "./session.js";
+import { defaultLevelState } from "../domain/types.js";
 
 const NOW = new Date("2026-08-09T00:00:00.000Z");
-const ORIGINAL_OPENID = "openid-m100-original";
+const ORIGINAL_OPENID = "openid-m115-original";
 
 function makeUser(overrides: Partial<User> = {}): User {
   return {
@@ -28,6 +29,8 @@ function makeUser(overrides: Partial<User> = {}): User {
     career_exact_hits: 0,
     career_level: 1,
     career_best_level: 1,
+    career_last_scoring_match_at: null,
+    career_level_state: defaultLevelState(),
     deleted_at: null,
     created_at: NOW,
     updated_at: NOW,
@@ -108,7 +111,7 @@ function makeRanking(userId: string): RankingEntry {
 }
 
 describe("M. 注销与权限（规范 44-M）", () => {
-  it("M100 注销后原 openid 从用户事实身份中移除", async () => {
+  it("M115 注销后原 openid 从用户事实身份中移除", async () => {
     const repo = new InMemoryRepository();
     const user = makeUser();
     await repo.users.insert(user);
@@ -131,7 +134,7 @@ describe("M. 注销与权限（规范 44-M）", () => {
     });
   });
 
-  it("M101 注销历史 prediction 保留", async () => {
+  it("M116 注销历史 prediction 保留", async () => {
     const repo = new InMemoryRepository();
     const user = makeUser();
     const match = makeMatch();
@@ -148,7 +151,7 @@ describe("M. 注销与权限（规范 44-M）", () => {
     ).resolves.toEqual(prediction);
   });
 
-  it("M102 注销历史排行榜保留", async () => {
+  it("M117 注销历史排行榜保留", async () => {
     const repo = new InMemoryRepository();
     const user = makeUser();
     const ranking = makeRanking(user.user_id);
@@ -162,7 +165,7 @@ describe("M. 注销与权限（规范 44-M）", () => {
     ).resolves.toEqual(ranking);
   });
 
-  it("M103 公开显示名为 已注销用户", async () => {
+  it("M118 公开显示名为 已注销用户", async () => {
     const repo = new InMemoryRepository();
     const user = makeUser();
     await repo.users.insert(user);
@@ -177,7 +180,7 @@ describe("M. 注销与权限（规范 44-M）", () => {
     });
   });
 
-  it("M104 同 openid 再注册创建新 user_id", async () => {
+  it("M119 同 openid 再注册创建新 user_id", async () => {
     const repo = new InMemoryRepository();
     const user = makeUser();
     await repo.users.insert(user);

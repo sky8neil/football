@@ -195,7 +195,7 @@ describe("V2 list status matrix", () => {
     }
   });
 
-  it("M13: finished unsettled prediction caches stay null; settled caches are non-null", async () => {
+  it("finished unsettled prediction caches stay null; settled caches are non-null", async () => {
     const { harness, userId } = await seedAuthedHarness();
     const items = await listItems(harness);
     const finished = items.find((item) => item.match_status === "finished");

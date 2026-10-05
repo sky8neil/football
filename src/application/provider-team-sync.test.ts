@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { MVP_SEASON } from "../domain/config.js";
+import { SUPPORTED_LEAGUES } from "../domain/config.js";
 import { Provider, SCHEMA_VERSION, TeamStatus } from "../domain/enums.js";
 import { newUuid } from "../domain/ids.js";
 import type { TeamProviderMapping } from "../domain/types.js";
@@ -25,31 +25,40 @@ function orphanMapping(providerTeamId: string): TeamProviderMapping {
 }
 
 describe("ProviderTeamSyncService", () => {
-  it("使用固定英超赛季查询，并首次创建 active team 与 Provider mapping", async () => {
+  it("遍历六联赛查询，并首次创建带 league_id 的 active team 与 Provider mapping", async () => {
     const repo = new InMemoryRepository();
-    const getTeams = vi.fn(async () => [
-      providerTeam(40, "Home FC", "HFC"),
-      providerTeam(41, "Away FC"),
-    ] as const);
+    const getTeams = vi.fn(async (query: { leagueId: string; season: string }) => {
+      if (query.leagueId === "39") {
+        return [providerTeam(40, "Home FC", "HFC"), providerTeam(41, "Away FC")] as const;
+      }
+      if (query.leagueId === "169") {
+        return [providerTeam(500, "CSL FC")] as const;
+      }
+      return [] as const;
+    });
     const service = new ProviderTeamSyncService(repo, { getTeams });
 
     await expect(service.sync(NOW)).resolves.toEqual({
       kind: "completed",
-      teams_read: 2,
-      teams_created: 2,
+      teams_read: 3,
+      teams_created: 3,
       teams_unchanged: 0,
     });
-    expect(getTeams).toHaveBeenCalledWith({
-      leagueId: MVP_SEASON.api_football_league_id,
-      season: MVP_SEASON.api_football_season,
-    });
+    expect(getTeams).toHaveBeenCalledTimes(SUPPORTED_LEAGUES.length);
+    expect(getTeams.mock.calls.map((call) => call[0])).toEqual(
+      SUPPORTED_LEAGUES.map((row) => ({
+        leagueId: row.api_football_league_id,
+        season: row.api_football_season,
+      })),
+    );
 
-    const mapping = await repo.teamProviderMappings.findByProviderAndExternalId(
+    const eplMapping = await repo.teamProviderMappings.findByProviderAndExternalId(
       Provider.ApiFootball,
       "40",
     );
-    expect(mapping).not.toBeNull();
-    await expect(repo.teams.findById(mapping!.team_id)).resolves.toMatchObject({
+    expect(eplMapping).not.toBeNull();
+    await expect(repo.teams.findById(eplMapping!.team_id)).resolves.toMatchObject({
+      league_id: "premier_league",
       name: "Home FC",
       short_name: null,
       primary_color: null,
@@ -59,11 +68,24 @@ describe("ProviderTeamSyncService", () => {
       updated_at: NOW,
       schema_version: SCHEMA_VERSION,
     });
+    const cslMapping = await repo.teamProviderMappings.findByProviderAndExternalId(
+      Provider.ApiFootball,
+      "500",
+    );
+    await expect(repo.teams.findById(cslMapping!.team_id)).resolves.toMatchObject({
+      league_id: "chinese_super_league",
+      name: "CSL FC",
+    });
   });
 
   it("重复同步命中已有 mapping 时保持球队事实不变并幂等返回", async () => {
     const repo = new InMemoryRepository();
-    const getTeams = vi.fn(async () => [providerTeam(40, "Renamed by Provider", "NEW")] as const);
+    const getTeams = vi.fn(async (query: { leagueId: string }) => {
+      if (query.leagueId === "39") {
+        return [providerTeam(40, "Renamed by Provider", "NEW")] as const;
+      }
+      return [] as const;
+    });
     const service = new ProviderTeamSyncService(repo, { getTeams });
 
     await service.sync(NOW);
@@ -89,7 +111,8 @@ describe("ProviderTeamSyncService", () => {
     const repo = new InMemoryRepository();
     await repo.teamProviderMappings.insert(orphanMapping("40"));
     const service = new ProviderTeamSyncService(repo, {
-      getTeams: async () => [providerTeam(40, "Home FC")],
+      getTeams: async (query: { leagueId: string }) =>
+        query.leagueId === "39" ? [providerTeam(40, "Home FC")] : [],
     });
 
     await expect(service.sync(NOW)).rejects.toMatchObject({ code: "INTERNAL_ERROR" });
@@ -104,7 +127,8 @@ describe("ProviderTeamSyncService", () => {
     const repo = new InMemoryRepository();
     const invalid = providerTeam(41, "");
     const service = new ProviderTeamSyncService(repo, {
-      getTeams: async () => [providerTeam(40, "Home FC"), invalid],
+      getTeams: async (query: { leagueId: string }) =>
+        query.leagueId === "39" ? [providerTeam(40, "Home FC"), invalid] : [],
     });
 
     await expect(service.sync(NOW)).rejects.toMatchObject({ code: "PROVIDER_DATA_ERROR" });

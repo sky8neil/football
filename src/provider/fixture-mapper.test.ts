@@ -160,7 +160,7 @@ describe("fixture normalize mapper（31.3/31.4/31.5）", () => {
     );
   });
 
-  it("非 MVP 英超联赛 -> PROVIDER_DATA_INVALID + entityFailed", () => {
+  it("未知联赛 -> PROVIDER_DATA_INVALID + entityFailed", () => {
     const result = normalizeFixture(makeApiFixture({ leagueId: 40 }));
 
     expect(result.entityFailed).toBe(true);
@@ -169,15 +169,22 @@ describe("fixture normalize mapper（31.3/31.4/31.5）", () => {
         type: AnomalyType.ProviderDataInvalid,
         details: expect.objectContaining({
           field: "league.id",
-          expected: "39",
           actual: "40",
         }),
       }),
     );
   });
 
-  it("非 MVP 赛季 -> PROVIDER_DATA_INVALID + entityFailed", () => {
-    const result = normalizeFixture(makeApiFixture({ season: "2025" }));
+  it("SUPPORTED_LEAGUES 中的西甲当前赛季可归一化", () => {
+    const result = normalizeFixture(makeApiFixture({ leagueId: 140, season: "2026" }));
+
+    expect(result.entityFailed).toBe(false);
+    expect(result.fixture.leagueProviderId).toBe("140");
+    expect(result.fixture.season).toBe("2026");
+  });
+
+  it("已知联赛但 season 与登记值不符 -> PROVIDER_DATA_INVALID + entityFailed", () => {
+    const result = normalizeFixture(makeApiFixture({ leagueId: 78, season: "2025" }));
 
     expect(result.entityFailed).toBe(true);
     expect(result.anomalies).toContainEqual(
@@ -207,6 +214,25 @@ describe("fixture normalize mapper（31.3/31.4/31.5）", () => {
     );
   });
 
+  it("round 超过联赛 round_max -> PROVIDER_DATA_INVALID + entityFailed", () => {
+    const result = normalizeFixture(
+      makeApiFixture({ leagueId: 78, round: "Regular Season - 35" }),
+    );
+
+    expect(result.fixture.roundId).toBeNull();
+    expect(result.entityFailed).toBe(true);
+    expect(result.anomalies).toContainEqual(
+      expect.objectContaining({
+        type: AnomalyType.ProviderDataInvalid,
+        details: {
+          field: "league.round",
+          actual: "Regular Season - 35",
+          round_max: 34,
+        },
+      }),
+    );
+  });
+
   it("1H -> live，不抽取比分", () => {
     const result = normalizeFixture(
       makeApiFixture({ statusShort: "1H", fulltimeHome: 1, fulltimeAway: 0 }),
@@ -220,6 +246,7 @@ describe("fixture normalize mapper（31.3/31.4/31.5）", () => {
       makeApiFixture({ round: "Round 5", season: "2026", leagueId: 39 }),
     );
     expect(result.fixture.round).toBe("Round 5");
+    expect(result.fixture.roundId).toBe("05");
     expect(result.fixture.season).toBe("2026");
     expect(result.fixture.leagueProviderId).toBe("39");
   });

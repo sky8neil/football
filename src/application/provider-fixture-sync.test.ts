@@ -93,6 +93,7 @@ function makeTeam(teamId: string): Team {
   return {
     schema_version: 1,
     team_id: teamId,
+    league_id: "premier_league",
     name: `Team ${teamId}`,
     short_name: null,
     primary_color: null,
@@ -406,6 +407,27 @@ describe("ProviderFixtureSyncService", () => {
       status: AnomalyStatus.Resolved,
       resolved_at: new Date("2026-08-09T00:03:00.000Z"),
       resolution: "provider data valid",
+    });
+  });
+
+  it("结构非法 fixture（缺可识别标识）逐条失败并留 provider_error snapshot 证据", async () => {
+    const repo = new InMemoryRepository();
+    const service = new ProviderFixtureSyncService(repo);
+
+    await expect(
+      service.applyFixture({} as ApiFootballFixture, { fixture: {} }, NOW),
+    ).resolves.toMatchObject({
+      kind: "failed",
+      match_id: null,
+      anomaly_types: [AnomalyType.ProviderDataInvalid],
+    });
+
+    const evidence = await repo.providerSnapshots.findByEntity("match", null);
+    expect(evidence).toHaveLength(1);
+    expect(evidence[0]).toMatchObject({
+      event_type: "provider_error",
+      provider_entity_id: "",
+      payload: { fixture: {} },
     });
   });
 

@@ -11,12 +11,16 @@ import type {
   AdminStatus,
   AnomalyStatus,
   AnomalyType,
+  GroupMemberStatus,
+  GroupStatus,
+  LeagueId,
   LevelHistoryReason,
   LevelScope,
   MatchScoreValue,
   MatchStatus,
   PeriodType,
   Provider,
+  RankingBoard,
   Result,
   ResultSource,
   ScoringRuleVersion,
@@ -48,6 +52,32 @@ export interface DeletedOpenidMapping extends BaseDoc {
   updated_at: Date;
 }
 
+export interface LevelState {
+  below_count: number;
+  week_base_level: number | null;
+  week_base_below_count: number | null;
+  week_base_as_of: Date | null;
+  last_eval_as_of: Date | null;
+  last_eval_n: number;
+  last_eval_score_sum: number;
+  last_eval_b_points: number;
+  last_eval_rule_version: string | null;
+}
+
+export function defaultLevelState(): LevelState {
+  return {
+    below_count: 0,
+    week_base_level: null,
+    week_base_below_count: null,
+    week_base_as_of: null,
+    last_eval_as_of: null,
+    last_eval_n: 0,
+    last_eval_score_sum: 0,
+    last_eval_b_points: 0,
+    last_eval_rule_version: null,
+  };
+}
+
 export interface User extends BaseDoc {
   user_id: string;
   openid: string;
@@ -59,8 +89,10 @@ export interface User extends BaseDoc {
   career_valid_predictions: number;
   career_wdl_hits: number;
   career_exact_hits: number;
+  career_last_scoring_match_at: Date | null;
   career_level: number;
   career_best_level: number;
+  career_level_state: LevelState;
   deleted_at: Date | null;
   created_at: Date;
   updated_at: Date;
@@ -68,19 +100,22 @@ export interface User extends BaseDoc {
 
 export interface UserSeasonStats extends BaseDoc {
   user_id: string;
-  season_id: string;
+  level_season_id: string;
   points: number;
   valid_predictions: number;
   wdl_hits: number;
   exact_hits: number;
   level: number;
   best_level: number;
+  level_state: LevelState;
+  is_level_frozen: boolean;
   created_at: Date;
   updated_at: Date;
 }
 
 export interface Team extends BaseDoc {
   team_id: string;
+  league_id: LeagueId;
   name: string;
   short_name: string | null;
   primary_color: string | null;
@@ -100,7 +135,7 @@ export interface TeamProviderMapping extends BaseDoc {
 
 export interface Match extends BaseDoc {
   match_id: string;
-  league_id: string;
+  league_id: LeagueId;
   season_id: string;
   round_id: string;
   home_team_id: string;
@@ -233,13 +268,55 @@ export interface LevelHistoryEntry extends BaseDoc {
   level_history_id: string;
   user_id: string;
   scope: LevelScope;
-  season_id: string | null;
+  level_season_id: string | null;
   from_level: number;
   to_level: number;
-  wdl_hits: number;
-  valid_predictions: number;
   reason: LevelHistoryReason;
+  eval_as_of: Date;
+  window_n: number;
+  window_score_sum: number;
+  b_points: number;
+  level_rule_version: string;
+  settlement_id: string | null;
   changed_at: Date;
+}
+
+export const BOARD_SNAPSHOT_HEAD_USER_ID = "00000000-0000-0000-0000-000000000000";
+
+export interface BoardSnapshot extends BaseDoc {
+  snapshot_id: string;
+  board: typeof RankingBoard.Career | typeof RankingBoard.Strength;
+  snapshot_at: Date;
+  user_id: string;
+  snapshot_kind?: "head";
+  rank: number;
+  career_points: number | null;
+  career_exact_hits: number | null;
+  career_valid_predictions: number | null;
+  career_last_scoring_match_at: Date | null;
+  window_score_sum: number | null;
+  window_n: number | null;
+  created_at: Date;
+}
+
+export interface Group extends BaseDoc {
+  group_id: string;
+  owner_user_id: string;
+  invite_code: string;
+  status: GroupStatus;
+  member_count: number;
+  created_at: Date;
+  updated_at: Date;
+}
+
+export interface GroupMember extends BaseDoc {
+  group_id: string;
+  user_id: string;
+  status: GroupMemberStatus;
+  joined_at: Date;
+  left_at: Date | null;
+  created_at: Date;
+  updated_at: Date;
 }
 
 export interface AdminAuditLog extends BaseDoc {

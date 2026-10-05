@@ -84,8 +84,12 @@ describe("PeriodFinalizeService", () => {
     ).resolves.toMatchObject({ finalized_count: 1, skipped_count: 1 });
 
     await expect(repo.rankings.findByPeriod(PeriodType.Week, "2026-W32")).resolves.toEqual([
-      expect.objectContaining({ user_id: entry.user_id, is_final: true, updated_at: NOW }),
-      expect.objectContaining({ user_id: alreadyFinal.user_id, is_final: true }),
+      expect.objectContaining({ user_id: entry.user_id, is_final: true, updated_at: entry.updated_at }),
+      expect.objectContaining({
+        user_id: alreadyFinal.user_id,
+        is_final: true,
+        updated_at: alreadyFinal.updated_at,
+      }),
     ]);
 
     await expect(
@@ -108,6 +112,14 @@ describe("PeriodFinalizeService", () => {
     await expect(repo.rankings.findByPeriod(PeriodType.Week, "2026-W32")).resolves.toEqual([
       entry,
     ]);
+  });
+
+  it("拒绝 finalize month period", async () => {
+    const repo = new InMemoryRepository();
+
+    await expect(
+      new PeriodFinalizeService(repo).finalize(PeriodType.Month, "2026-08", NOW),
+    ).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
   });
 
   it("使用 period_finalize job lock，锁冲突时跳过且不写入", async () => {

@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { MVP_SEASON } from "../../domain/config.js";
+import { MVP_SEASON, SUPPORTED_LEAGUES } from "../../domain/config.js";
 import { newUuid } from "../../domain/ids.js";
 import { InMemoryRepository } from "../../infrastructure/repositories.js";
 import { ShareCardQueryService } from "../../application/share-card.js";
 import { DomainError } from "../../domain/errors.js";
+import { defaultLevelState } from "../../domain/types.js";
 import {
   getShareCardMe,
   validateShareCardQuery,
@@ -11,19 +12,28 @@ import {
 import { InMemoryRateLimiter } from "./rate-limit.js";
 
 describe("share-card API query", () => {
-  it("要求显式 season_id/round_id，并拒绝未知值与未知参数", () => {
-    expect(validateShareCardQuery({ season_id: MVP_SEASON.season_id, round_id: "01" })).toEqual({
-      season_id: MVP_SEASON.season_id,
-      round_id: "01",
-    });
+  it("要求显式 league_id/season_id/round_id，并拒绝未知值与未知参数", () => {
+    for (const league of SUPPORTED_LEAGUES) {
+      expect(validateShareCardQuery({
+        league_id: league.league_id,
+        season_id: league.season_id,
+        round_id: "01",
+      })).toEqual({
+        league_id: league.league_id,
+        season_id: league.season_id,
+        round_id: "01",
+      });
+    }
 
     for (const query of [
+      { season_id: MVP_SEASON.season_id, round_id: "01" },
       { round_id: "01" },
-      { season_id: MVP_SEASON.season_id },
-      { season_id: "2027_2028", round_id: "01" },
-      { season_id: MVP_SEASON.season_id, round_id: "00" },
-      { season_id: MVP_SEASON.season_id, round_id: "39" },
-      { season_id: MVP_SEASON.season_id, round_id: "01", cursor: "x" },
+      { league_id: MVP_SEASON.league_id, season_id: MVP_SEASON.season_id },
+      { league_id: "eredivisie", season_id: MVP_SEASON.season_id, round_id: "01" },
+      { league_id: MVP_SEASON.league_id, season_id: "2027_2028", round_id: "01" },
+      { league_id: MVP_SEASON.league_id, season_id: MVP_SEASON.season_id, round_id: "00" },
+      { league_id: MVP_SEASON.league_id, season_id: MVP_SEASON.season_id, round_id: "39" },
+      { league_id: MVP_SEASON.league_id, season_id: MVP_SEASON.season_id, round_id: "01", cursor: "x" },
     ]) {
       expect(() => validateShareCardQuery(query)).toThrow(DomainError);
       expect(() => validateShareCardQuery(query)).toThrowError(
@@ -47,8 +57,10 @@ describe("share-card API query", () => {
       career_valid_predictions: 0,
       career_wdl_hits: 0,
       career_exact_hits: 0,
+      career_last_scoring_match_at: null,
       career_level: 1,
       career_best_level: 1,
+      career_level_state: defaultLevelState(),
       deleted_at: null,
       created_at: new Date("2026-08-01T00:00:00Z"),
       updated_at: new Date("2026-08-01T00:00:00Z"),
@@ -56,7 +68,7 @@ describe("share-card API query", () => {
 
     const response = await getShareCardMe(new ShareCardQueryService(repo), {
       authenticated_user_id: userId,
-      query: { season_id: MVP_SEASON.season_id, round_id: "01" },
+      query: { league_id: MVP_SEASON.league_id, season_id: MVP_SEASON.season_id, round_id: "01" },
       server_now: new Date("2026-08-11T00:00:00.000Z"),
       request_id: "request-share-card-1",
     });
@@ -68,6 +80,7 @@ describe("share-card API query", () => {
       display_name: "Sky",
       favorite_team_id: null,
       season_level: 1,
+      league_id: MVP_SEASON.league_id,
       round_id: "01",
       round_predictions: 0,
       round_wdl_hits: 0,
@@ -81,7 +94,7 @@ describe("share-card API query", () => {
     await expect(
       getShareCardMe(new ShareCardQueryService(new InMemoryRepository()), {
         authenticated_user_id: null,
-        query: { season_id: MVP_SEASON.season_id, round_id: "01" },
+        query: { league_id: MVP_SEASON.league_id, season_id: MVP_SEASON.season_id, round_id: "01" },
         server_now: new Date("2026-08-11T00:00:00.000Z"),
         request_id: "request-share-card-2",
       }),
@@ -104,8 +117,10 @@ describe("share-card API query", () => {
       career_valid_predictions: 0,
       career_wdl_hits: 0,
       career_exact_hits: 0,
+      career_last_scoring_match_at: null,
       career_level: 1,
       career_best_level: 1,
+      career_level_state: defaultLevelState(),
       deleted_at: null,
       created_at: serverNow,
       updated_at: serverNow,
@@ -113,7 +128,7 @@ describe("share-card API query", () => {
     const rateLimiter = new InMemoryRateLimiter();
     const input = {
       authenticated_user_id: userId,
-      query: { season_id: MVP_SEASON.season_id, round_id: "01" },
+      query: { league_id: MVP_SEASON.league_id, season_id: MVP_SEASON.season_id, round_id: "01" },
       request_id: "request-share-card-rate-limit",
       server_now: serverNow,
       rate_limiter: rateLimiter,

@@ -1,0 +1,51 @@
+/* v0.3-cc 墨青 + 金：深色块改为偏青的墨绿（与品牌绿、"已提交"青色同属冷绿一侧），
+   并用一抹暖金只标"最关键的一个数字"，用色相差制造重点。「正绿」仍只给「去预测」。 */
+:root {
+  --navy-700: #174340;
+  --navy-900: #0a2828;
+  --deep-a: #174340;
+  --deep-b: #0a2828;
+  --deep-accent: #f3cf6b;
+}
+body.variant-1 .hero, body .next-level-panel {
+  background:
+    radial-gradient(110% 80% at 0% 0%, rgba(80,200,170,.16), transparent 55%),
+    linear-gradient(160deg, var(--deep-a), var(--deep-b));
+  border-color: rgba(120,220,200,.20);
+  box-shadow: 0 10px 28px rgba(10,40,40,.28), inset 0 1px 0 rgba(255,255,255,.10);
+}
+body .match.is-live .bug, body .match.is-done .bug {
+  background: linear-gradient(180deg, var(--deep-a), var(--deep-b));
+  border-color: var(--deep-b);
+  box-shadow: 0 8px 16px rgba(10,40,40,.22), inset 0 1px 0 rgba(255,255,255,.12);
+}
+/* 金色只出现一次：排行榜 = 我的排名；我的页 = 当前等级节点 */
+body.variant-1 .hero .hero-metrics b { color: #fff; }
+body.variant-1 .hero .hero-metrics > div:first-child b { color: var(--deep-accent); }
+body .next-level-panel .level-path .current { color: var(--deep-accent); }
+body .next-level-panel .level-path .current i { background: var(--deep-accent); color: #3a2c00; }
+
+/* 排行榜范围：并入深色概览卡内部 —— 控件放在它所控制的内容里 */
+body .scope-switch { display: none; }
+body .hero .scope-switch {
+  display: flex; width: fit-content; padding: 2px; gap: 2px; margin: 0 0 12px; border-radius: 99px;
+  background: rgba(255,255,255,.12); border: 1px solid rgba(255,255,255,.14);
+}
+body .hero .scope-switch button {
+  min-height: 28px; padding: 2px 14px; white-space: nowrap; border-radius: 99px; font-size: 12px; font-weight: 500; color: #dbe5e3; background: none; box-shadow: none;
+}
+body .hero .scope-switch button[aria-selected=true] { background: rgba(255,255,255,.94); color: var(--deep-b); font-weight: 700; }
+body .hero .hero-scope { display: none; }
+body .hero .group-picker {
+  display: flex; align-items: center; gap: 8px; margin: -2px 0 12px; padding: 0; background: none; border: 0; box-shadow: none; backdrop-filter: none;
+}
+body .hero .group-picker label { font-size: 11px; color: #dbe5e3; flex: none; }
+body .hero .group-picker select {
+  flex: 1; min-width: 0; height: 30px; padding: 0 8px; border-radius: 8px; border: 1px solid rgba(255,255,255,.2);
+  background: rgba(255,255,255,.12); color: #fff; font-size: 12px;
+}
+body .hero .group-picker select option { color: #163024; }
+body .group-picker:not(.in-hero) { display: none; }
+body .hero .group-picker.in-hero, body .card.group-picker.in-hero { background: none !important; border: 0 !important; box-shadow: none !important; padding: 0 !important; }
+body .hero .group-picker label { display: none; }
+body .hero .group-picker select { background: rgba(255,255,255,.12) !important; color: #fff !important; font-weight: 600; }

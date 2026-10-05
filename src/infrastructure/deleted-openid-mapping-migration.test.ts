@@ -3,6 +3,7 @@ import { SCHEMA_VERSION, UserStatus } from "../domain/enums.js";
 import { newUuid } from "../domain/ids.js";
 import type { DeletedOpenidMapping, User } from "../domain/types.js";
 import { InMemoryRepository } from "./repositories.js";
+import { defaultLevelState } from "../domain/types.js";
 import {
   migrateDeletedOpenidMappings,
   rollbackDeletedOpenidMappings,
@@ -25,6 +26,8 @@ function makeUser(overrides: Partial<User> = {}): User {
     career_exact_hits: 0,
     career_level: 1,
     career_best_level: 1,
+    career_last_scoring_match_at: null,
+    career_level_state: defaultLevelState(),
     deleted_at: null,
     created_at: NOW,
     updated_at: NOW,
@@ -45,7 +48,7 @@ function makeMapping(overrides: Partial<DeletedOpenidMapping> = {}): DeletedOpen
 }
 
 describe("migrateDeletedOpenidMappings（D-P1 §6.10 M3）", () => {
-  it("D10：脏 deleted（openid 仍为原微信 openid）→ 写 mapping + 墓碑 + 清 PII，resolver 仍 deleted", async () => {
+  it("脏 deleted（openid 仍为原微信 openid）→ 写 mapping + 墓碑 + 清 PII，resolver 仍 deleted", async () => {
     const repo = new InMemoryRepository();
     const openid = "openid-dirty-migrate";
     const user = makeUser({ openid, status: "deleted", deleted_at: NOW, nickname: "Old" });
@@ -72,7 +75,7 @@ describe("migrateDeletedOpenidMappings（D-P1 §6.10 M3）", () => {
     });
   });
 
-  it("D11：已墓碑且无 mapping 的 deleted 用户 → 跳过并记录 unmigrated（SPEC_GAP）", async () => {
+  it("已墓碑且无 mapping 的 deleted 用户 → 跳过并记录 unmigrated（SPEC_GAP）", async () => {
     const repo = new InMemoryRepository();
     const user = makeUser({
       status: "deleted",

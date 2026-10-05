@@ -7,6 +7,7 @@ import {
 } from "../domain/errors.js";
 import { isValidUuid } from "../domain/ids.js";
 import { assertUserCareerInvariants } from "../domain/invariants.js";
+import { levelSeasonOf } from "../domain/time.js";
 import type { User } from "../domain/types.js";
 import type { AppRepository } from "../infrastructure/repositories.js";
 
@@ -16,9 +17,10 @@ export interface PublicProfileData {
   favorite_team_id: string | null;
   career_points: number;
   career_valid_predictions: number;
-  career_wdl_accuracy_percent: string | null;
+  career_exact_hits: number;
   career_level: number;
   career_best_level: number;
+  season_level: number;
 }
 
 export interface MyProfileData {
@@ -27,18 +29,10 @@ export interface MyProfileData {
   favorite_team_id: string | null;
   career_points: number;
   career_valid_predictions: number;
-  career_wdl_hits: number;
   career_exact_hits: number;
-  career_wdl_accuracy_percent: string | null;
   career_level: number;
   career_best_level: number;
-}
-
-function formatAccuracyPercent(validPredictions: number, wdlHits: number): string | null {
-  if (validPredictions === 0) {
-    return null;
-  }
-  return (wdlHits * 100 / validPredictions).toFixed(1);
+  season_level: number;
 }
 
 function displayName(user: User): string {
@@ -52,9 +46,9 @@ function displayName(user: User): string {
 }
 
 export class ProfileQueryService {
-  constructor(private readonly repo: Pick<AppRepository, "users">) {}
+  constructor(private readonly repo: Pick<AppRepository, "users" | "userSeasonStats">) {}
 
-  async getMyProfile(userId: string): Promise<MyProfileData> {
+  async getMyProfile(userId: string, serverNow: Date = new Date()): Promise<MyProfileData> {
     if (!isValidUuid(userId)) {
       throw validationError("user_id 必须为 UUID v4", { field: "user_id" });
     }
@@ -70,6 +64,10 @@ export class ProfileQueryService {
       throw internalError("active 用户缺少 nickname");
     }
     assertUserCareerInvariants(user);
+    const seasonStats = await this.repo.userSeasonStats?.findByUserAndSeason(
+      userId,
+      levelSeasonOf(serverNow),
+    );
 
     return {
       user_id: user.user_id,
@@ -77,18 +75,14 @@ export class ProfileQueryService {
       favorite_team_id: user.favorite_team_id,
       career_points: user.career_points,
       career_valid_predictions: user.career_valid_predictions,
-      career_wdl_hits: user.career_wdl_hits,
       career_exact_hits: user.career_exact_hits,
-      career_wdl_accuracy_percent: formatAccuracyPercent(
-        user.career_valid_predictions,
-        user.career_wdl_hits,
-      ),
       career_level: user.career_level,
       career_best_level: user.career_best_level,
+      season_level: seasonStats?.level ?? 1,
     };
   }
 
-  async getPublicProfile(userId: string): Promise<PublicProfileData> {
+  async getPublicProfile(userId: string, serverNow: Date = new Date()): Promise<PublicProfileData> {
     if (!isValidUuid(userId)) {
       throw validationError("user_id 必须为 UUID v4", { field: "user_id" });
     }
@@ -98,6 +92,10 @@ export class ProfileQueryService {
       throw notFoundError("USER");
     }
     assertUserCareerInvariants(user);
+    const seasonStats = await this.repo.userSeasonStats?.findByUserAndSeason(
+      userId,
+      levelSeasonOf(serverNow),
+    );
 
     return {
       user_id: user.user_id,
@@ -105,12 +103,10 @@ export class ProfileQueryService {
       favorite_team_id: user.status === UserStatus.Deleted ? null : user.favorite_team_id,
       career_points: user.career_points,
       career_valid_predictions: user.career_valid_predictions,
-      career_wdl_accuracy_percent: formatAccuracyPercent(
-        user.career_valid_predictions,
-        user.career_wdl_hits,
-      ),
+      career_exact_hits: user.career_exact_hits,
       career_level: user.career_level,
       career_best_level: user.career_best_level,
+      season_level: seasonStats?.level ?? 1,
     };
   }
 }

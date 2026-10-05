@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { MVP_SEASON } from "../domain/config.js";
+import { MVP_SEASON, SUPPORTED_LEAGUES } from "../domain/config.js";
 import {
   MatchStatus,
   Provider,
@@ -15,6 +15,7 @@ import type { ApiFootballFixture } from "../provider/types.js";
 import { ProviderPostFinishVerifyService } from "./provider-post-finish.js";
 
 const NOW = new Date("2026-08-10T12:34:56.000Z");
+const KICKOFF_OVER_24_HOURS_AGO = new Date("2026-08-09T10:00:00.000Z");
 
 async function seedMappedMatch(
   repo: InMemoryRepository,
@@ -25,6 +26,7 @@ async function seedMappedMatch(
   const makeTeam = (teamId: string, name: string): Team => ({
     schema_version: 1,
     team_id: teamId,
+    league_id: "premier_league",
     name,
     short_name: null,
     primary_color: null,
@@ -49,7 +51,7 @@ async function seedMappedMatch(
   await repo.teamProviderMappings.insert(makeMapping(homeTeamId, "40"));
   await repo.teamProviderMappings.insert(makeMapping(awayTeamId, "41"));
 
-  const kickoffAt = new Date("2026-08-10T12:00:00.000Z");
+  const kickoffAt = KICKOFF_OVER_24_HOURS_AGO;
   const match: Match = {
     schema_version: 1,
     match_id: newUuid(),
@@ -98,36 +100,30 @@ describe("ProviderPostFinishVerifyService", () => {
     const fixture = makeApiFixture({
       fixtureId: 1200041,
       statusShort: "FT",
-      date: "2026-08-10T12:00:00.000Z",
-      timestamp: Date.parse("2026-08-10T12:00:00.000Z") / 1000,
+      date: KICKOFF_OVER_24_HOURS_AGO.toISOString(),
+      timestamp: KICKOFF_OVER_24_HOURS_AGO.getTime() / 1000,
       round: "Regular Season - 1",
     });
     const getTeams = vi.fn(async (query: {
       leagueId: string;
       season: string;
     }) => {
-      expect(query).toEqual({
-        leagueId: MVP_SEASON.api_football_league_id,
-        season: MVP_SEASON.api_football_season,
-      });
+      if (query.leagueId !== MVP_SEASON.api_football_league_id) {
+        return [];
+      }
+      expect(query.season).toBe(MVP_SEASON.api_football_season);
       return [
         { team: { id: 40, name: "Home FC" } },
         { team: { id: 41, name: "Away FC" } },
       ];
     });
     const getFixtures = vi.fn(async (query: {
-      dateFrom: string;
-      dateTo: string;
+      fixtureId?: string;
       leagueId: string;
       season: string;
     }): Promise<readonly ApiFootballFixture[]> => {
-      expect(query).toEqual({
-        dateFrom: "2026-08-09",
-        dateTo: "2026-08-10",
-        leagueId: MVP_SEASON.api_football_league_id,
-        season: MVP_SEASON.api_football_season,
-      });
-      return [fixture];
+      expect(query.season).toBe(MVP_SEASON.api_football_season);
+      return query.fixtureId === "1200041" ? [fixture] : [];
     });
 
     const outcome = await new ProviderPostFinishVerifyService(repo, {
@@ -161,8 +157,13 @@ describe("ProviderPostFinishVerifyService", () => {
       settlement_status: SettlementStatus.Waiting,
       result_version: 1,
     });
-    expect(getTeams).toHaveBeenCalledTimes(1);
+    expect(getTeams).toHaveBeenCalledTimes(SUPPORTED_LEAGUES.length);
     expect(getFixtures).toHaveBeenCalledTimes(1);
+    expect(getFixtures.mock.calls[0]?.[0]).toMatchObject({
+      fixtureId: "1200041",
+      leagueId: MVP_SEASON.api_football_league_id,
+      season: MVP_SEASON.api_football_season,
+    });
   });
 
   it("highFrequencyUntilFirstSettlement 下 finished+settled 场次被过滤出批次", async () => {
@@ -201,12 +202,14 @@ describe("ProviderPostFinishVerifyService", () => {
       statusShort: "FT",
       fulltimeHome: 2,
       fulltimeAway: 1,
-      date: "2026-08-10T12:00:00.000Z",
-      timestamp: Date.parse("2026-08-10T12:00:00.000Z") / 1000,
+      date: KICKOFF_OVER_24_HOURS_AGO.toISOString(),
+      timestamp: KICKOFF_OVER_24_HOURS_AGO.getTime() / 1000,
       round: "Regular Season - 1",
     });
     const getTeams = vi.fn(async () => []);
-    const getFixtures = vi.fn(async () => [fixture] as readonly ApiFootballFixture[]);
+    const getFixtures = vi.fn(async (query: { fixtureId?: string }) =>
+      query.fixtureId === "1200042" ? [fixture] : [],
+    );
 
     const outcome = await new ProviderPostFinishVerifyService(repo, {
       getTeams,
@@ -223,7 +226,7 @@ describe("ProviderPostFinishVerifyService", () => {
         items_failed: 0,
       },
     });
-    expect(getFixtures).toHaveBeenCalledTimes(1);
+    expect(getFixtures).not.toHaveBeenCalled();
     await expect(repo.matches.findById(mapping!.match_id)).resolves.toMatchObject({
       match_status: MatchStatus.Finished,
       settlement_status: SettlementStatus.Settled,
@@ -251,12 +254,14 @@ describe("ProviderPostFinishVerifyService", () => {
       statusShort: "FT",
       fulltimeHome: 2,
       fulltimeAway: 1,
-      date: "2026-08-10T12:00:00.000Z",
-      timestamp: Date.parse("2026-08-10T12:00:00.000Z") / 1000,
+      date: KICKOFF_OVER_24_HOURS_AGO.toISOString(),
+      timestamp: KICKOFF_OVER_24_HOURS_AGO.getTime() / 1000,
       round: "Regular Season - 1",
     });
     const getTeams = vi.fn(async () => []);
-    const getFixtures = vi.fn(async () => [fixture] as readonly ApiFootballFixture[]);
+    const getFixtures = vi.fn(async (query: { fixtureId?: string }) =>
+      query.fixtureId === "1200043" ? [fixture] : [],
+    );
 
     const outcome = await new ProviderPostFinishVerifyService(repo, {
       getTeams,

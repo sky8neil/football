@@ -19,10 +19,10 @@ const WEEK: PeriodRef = {
   period_type: PeriodType.Week,
   period_key: "2026_W32",
 };
-const MONTH: PeriodRef = {
+const MONTH = {
   period_type: PeriodType.Month,
   period_key: "2026_08",
-};
+} as unknown as PeriodRef;
 const OTHER_WEEK: PeriodRef = {
   period_type: PeriodType.Week,
   period_key: "2026_W33",
@@ -144,7 +144,7 @@ describe("rebuildPeriodRankings - 聚合", () => {
         wdl_hits: 1,
         exact_hits: 1,
         last_scoring_match_at: t("2026-08-05T20:00:00Z"),
-        global_rank: null,
+        global_rank: 1,
       },
     ]);
   });
@@ -152,20 +152,20 @@ describe("rebuildPeriodRankings - 聚合", () => {
   it("仅 wdl 命中：period_score=3 / valid=1 / wdl=1 / exact=0", () => {
     const result = rebuildPeriodRankings(
       [wdlItem("p1")],
-      periodMap([["p1", MONTH]]),
+      periodMap([["p1", WEEK]]),
       anchorMap([["p1", t("2026-08-05T20:00:00Z")]]),
     );
     expect(result).toEqual([
       {
-        period_type: "month",
-        period_key: "2026_08",
+        period_type: "week",
+        period_key: "2026_W32",
         user_id: "u1",
         period_score: 3,
         valid_predictions: 1,
         wdl_hits: 1,
         exact_hits: 0,
         last_scoring_match_at: t("2026-08-05T20:00:00Z"),
-        global_rank: null,
+        global_rank: 1,
       },
     ]);
   });
@@ -315,7 +315,7 @@ describe("rebuildPeriodRankings - last_scoring_match_at", () => {
     expect(result[0]!.last_scoring_match_at).toEqual(t("2026-08-07T20:00:00Z"));
   });
 
-  it("修正到 0 的 prediction 不再计入 last_scoring（按最高 source result）", () => {
+  it("J77 修正到 0 的 prediction 不再计入 last_scoring（按最高 source result）", () => {
     const first = exactItem("p1");
     const toZero = makeItem({
       prediction_id: "p1",
@@ -417,8 +417,8 @@ describe("rebuildPeriodRankings - 排序与 global_rank", () => {
     );
     expect(result.map((e) => e.user_id)).toEqual(["u2", "u1", "u3"]);
     expect(result[0]!.global_rank).toBe(1);
-    expect(result[1]!.global_rank).toBeNull();
-    expect(result[2]!.global_rank).toBeNull();
+    expect(result[1]!.global_rank).toBe(2);
+    expect(result[2]!.global_rank).toBe(3);
   });
 
   it("valid_predictions>=3 全部入榜，按排序位置分配 rank", () => {
@@ -455,8 +455,8 @@ describe("rebuildPeriodRankings - 排序与 global_rank", () => {
     ]);
   });
 
-  it("入榜位置按全量排序位置计算（含未入榜用户）", () => {
-    // u_high: 1 场 12 分（exact）排最前但未入榜（valid 1）
+  it("1 场即入榜：排序位置即 global_rank", () => {
+    // u_high: 1 场 12 分（exact）排最前，门槛=1 后有 rank 1
     // u_eligible: 3 场 3 分 -> 排序位置 2 => rank 2
     const result = rebuildPeriodRankings(
       [exactItem("h", "u_high"), wdlItem("e1", "u_eligible"), missItem("e2", "u_eligible"), missItem("e3", "u_eligible")],
@@ -474,14 +474,14 @@ describe("rebuildPeriodRankings - 排序与 global_rank", () => {
       ]),
     );
     expect(result.map((e) => [e.user_id, e.global_rank])).toEqual([
-      ["u_high", null],
+      ["u_high", 1],
       ["u_eligible", 2],
     ]);
   });
 
-  it("同分用户按精确准确率交叉乘法排序，不受显示四舍五入影响", () => {
-    // u_a: 12 分 / valid 2 / wdl 1 / exact 1（50%）
-    // u_b: 12 分 / valid 3 / wdl 1 / exact 1（33.3%）
+  it("同分同 exact 时 valid_predictions ASC（更少场次优先），不再用准确率", () => {
+    // u_a: 12 分 / valid 2 / exact 1
+    // u_b: 12 分 / valid 3 / exact 1
     const result = rebuildPeriodRankings(
       [exactItem("a1", "u_a"), missItem("a2", "u_a"), exactItem("b1", "u_b"), missItem("b2", "u_b"), missItem("b3", "u_b")],
       periodMap([
@@ -502,7 +502,7 @@ describe("rebuildPeriodRankings - 排序与 global_rank", () => {
     expect(result.map((e) => e.user_id)).toEqual(["u_a", "u_b"]);
   });
 
-  it("correction 修正后按最新账本重排，不依赖旧 rankings 缓存", () => {
+  it("K88 correction 修正后按最新账本重排，不依赖旧 rankings 缓存", () => {
     // alice: 0->12 后修正 12->0 => 0 分；bob: 3 场 wdl => 9 分
     const aliceToZero = makeItem({
       prediction_id: "a1",
@@ -534,7 +534,7 @@ describe("rebuildPeriodRankings - 排序与 global_rank", () => {
     );
     expect(result.map((e) => e.user_id)).toEqual(["bob", "alice"]);
     expect(result[0]!.global_rank).toBe(1);
-    expect(result[1]!.global_rank).toBeNull();
+    expect(result[1]!.global_rank).toBe(2);
   });
 });
 
@@ -561,16 +561,15 @@ describe("rebuildPeriodRankings - 49.5 事实源", () => {
 });
 
 describe("rebuildPeriodRankings - 周期校验", () => {
-  it("支持 month 周期类型", () => {
-    const result = rebuildPeriodRankings(
-      [exactItem("p1")],
-      periodMap([["p1", MONTH]]),
-      anchorMap([["p1", t("2026-08-05T20:00:00Z")]]),
+  it("month 周期类型抛 INVALID_PERIOD_TYPE", () => {
+    const err = captureError(() =>
+      rebuildPeriodRankings(
+        [exactItem("p1")],
+        periodMap([["p1", MONTH]]),
+        anchorMap([["p1", t("2026-08-05T20:00:00Z")]]),
+      ),
     );
-    expect(result[0]).toMatchObject({
-      period_type: "month",
-      period_key: "2026_08",
-    });
+    expect(err).toMatchObject({ code: "INVALID_PERIOD_TYPE" });
   });
 
   it("非法 period_type 抛 INVALID_PERIOD_TYPE", () => {
@@ -578,7 +577,10 @@ describe("rebuildPeriodRankings - 周期校验", () => {
     const err = captureError(() =>
       rebuildPeriodRankings(
         [item],
-        periodMap([["p1", { period_type: "year" as PeriodType, period_key: "2026" }]]),
+        periodMap([[
+          "p1",
+          { period_type: "year" as PeriodType, period_key: "2026" } as unknown as PeriodRef,
+        ]]),
         anchorMap([["p1", t("2026-08-05T20:00:00Z")]]),
       ),
     );

@@ -130,7 +130,7 @@ export async function getPublicProfile(
     publicSource,
     input.server_now,
   );
-  const data = await service.getPublicProfile(userId);
+  const data = await service.getPublicProfile(userId, input.server_now);
   return {
     status: 200,
     body: {
@@ -150,7 +150,7 @@ export async function getMyProfile(
     userId,
     input.server_now,
   );
-  const data = await service.getMyProfile(userId);
+  const data = await service.getMyProfile(userId, input.server_now);
   return {
     status: 200,
     body: {

@@ -5,6 +5,7 @@ import {
   SCHEMA_VERSION,
   SettlementStatus,
 } from "../domain/enums.js";
+import { findSupportedLeagueById } from "../domain/config.js";
 import { internalError, notFoundError } from "../domain/errors.js";
 import { newUuid } from "../domain/ids.js";
 import { decidePredictionClosedAt } from "../domain/prediction-deadline.js";
@@ -13,11 +14,13 @@ import { shouldVoidOnCancel, validateSettlementTransition } from "../domain/sett
 import { computePredictionDeadline } from "../domain/time.js";
 import type { Match, ProviderSnapshot } from "../domain/types.js";
 import type { AppRepository, UnitOfWork } from "../infrastructure/repositories.js";
-import type { NormalizedFixture } from "../provider/fixture-mapper.js";
+import {
+  tryParseProviderRoundId,
+  type NormalizedFixture,
+} from "../provider/fixture-mapper.js";
 import { persistAnomalyInTransaction } from "./anomaly-persistence.js";
 import { transitionMatchSettlementStatus } from "./first-settlement-service.js";
 import { assertValidServerNow } from "./period-finalize.js";
-import { tryParseProviderRoundId } from "./provider-schedule-sync.js";
 
 export type ProviderStatusSyncOutcome =
   | {
@@ -161,7 +164,11 @@ async function recordImmutableRoundConflict(
   payload: Record<string, unknown>,
   serverNow: Date,
 ): Promise<void> {
-  const providerRoundId = tryParseProviderRoundId(fixture.round);
+  const league = findSupportedLeagueById(match.league_id);
+  if (league === undefined) {
+    return;
+  }
+  const providerRoundId = tryParseProviderRoundId(fixture.round, league.round_max);
   if (providerRoundId === null || providerRoundId === match.round_id) {
     return;
   }
@@ -959,7 +966,10 @@ export class ProviderStatusSyncService {
       const sameStatus = match.match_status === MatchStatus.Abandoned;
       const invalidTransition =
         !sameStatus && !validateMatchTransition(match.match_status, MatchStatus.Abandoned);
-      const invalidSettlement = match.settlement_status !== SettlementStatus.Pending;
+      // 33.5/41：同态（已 abandoned）不是状态回退，结算已离开 pending 不得开 blocking 冲突；
+      // 仅真正的状态变更（!sameStatus）才校验结算门闩。
+      const invalidSettlement =
+        !sameStatus && match.settlement_status !== SettlementStatus.Pending;
       if (invalidTransition || invalidSettlement) {
         await saveSnapshot(
           tx,

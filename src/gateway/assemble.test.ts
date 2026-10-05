@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { InMemoryRateLimiter } from "../api/v1/rate-limit.js";
+import type { RateLimiter } from "../api/v1/rate-limit.js";
 import { SessionService } from "../application/session.js";
 import { MatchQueryService } from "../application/match-query.js";
 import { InMemoryRepository } from "../infrastructure/repositories.js";
@@ -21,9 +22,11 @@ function makeConfig(overrides: Partial<GatewayRuntimeConfig> = {}): GatewayRunti
   };
 }
 
-function makeHarness(config: GatewayRuntimeConfig = makeConfig()) {
+function makeHarness(
+  config: GatewayRuntimeConfig = makeConfig(),
+  rateLimiter: RateLimiter = new InMemoryRateLimiter(),
+) {
   const repo = new InMemoryRepository();
-  const rateLimiter = new InMemoryRateLimiter();
   return {
     repo,
     rateLimiter,
@@ -255,6 +258,43 @@ describe("handleGatewayRequest routing", () => {
     expect(LOCAL_PUBLIC_SOURCE).toBe("local_v0");
     expect(makeConfig().public_source).toBe(LOCAL_PUBLIC_SOURCE);
   });
+
+  it("uses the configured public source for match list and detail", async () => {
+    const sources: string[] = [];
+    const rateLimiter: RateLimiter = {
+      check: (_scope, source) => {
+        sources.push(source);
+      },
+    };
+    const harness = makeHarness(
+      makeConfig({
+        public_source: "configured_source" as unknown as typeof LOCAL_PUBLIC_SOURCE,
+      }),
+      rateLimiter,
+    );
+
+    await request(harness, { method: "GET", path: "/v1/matches" });
+    await request(harness, {
+      method: "GET",
+      path: "/v1/matches/00000000-0000-4000-8000-000000000000",
+    });
+
+    expect(sources).toEqual(["configured_source", "configured_source"]);
+  });
+
+  it("seeds live, finished, and abandoned matches before the injected clock", async () => {
+    const harness = makeHarness();
+    await seedGatewayRepository(harness.repo, NOW);
+    const matches = await harness.repo.matches.findBySeason("2026_2027");
+
+    expect(
+      matches
+        .filter((match) => ["live", "finished", "abandoned"].includes(match.match_status))
+        .every((match) => match.kickoff_at.getTime() < NOW.getTime()),
+    ).toBe(true);
+    expect(matches.some((match) => match.match_status === "scheduled" && match.kickoff_at > NOW))
+      .toBe(true);
+  });
 });
 
 describe("handleGatewayRequest GET /v1/predictions/me", () => {
@@ -327,15 +367,90 @@ describe("handleGatewayRequest GET /v1/rankings", () => {
     const response = await request(harness, {
       method: "GET",
       path: "/v1/rankings",
-      query: { period_type: "week" },
+      query: { board: "week" },
     });
 
     expect(response.status).toBe(200);
     expect(response.body).toEqual({
       data: {
+        board: "week",
+        scope: "global",
+        period_key: "2026-W32",
+        updated_at: null,
         items: [],
         page: { next_cursor: null, has_more: false },
       },
+      request_id: expect.any(String),
+    });
+  });
+
+  it("returns 422 for the removed month board at the gateway", async () => {
+    const harness = makeHarness();
+    const response = await request(harness, {
+      method: "GET",
+      path: "/v1/rankings",
+      query: { board: "month" },
+    });
+
+    expect(response.status).toBe(422);
+    expect(response.body).toEqual(expect.objectContaining({
+      code: "VALIDATION_ERROR",
+      request_id: expect.any(String),
+    }));
+  });
+});
+
+describe("handleGatewayRequest S7 routes", () => {
+  it.each([
+    ["PATCH", "/v1/profile/me", { nickname: "Sky" }, 401],
+    ["DELETE", "/v1/profile/me", undefined, 401],
+    ["GET", "/v1/profiles/00000000-0000-4000-8000-000000000001", undefined, 404],
+    ["GET", "/v1/predictions/me/00000000-0000-4000-8000-000000000001", undefined, 401],
+    ["GET", "/v1/share-card/me", undefined, 401],
+    ["GET", "/v1/admin/anomalies", undefined, 401],
+    ["POST", "/v1/admin/matches/00000000-0000-4000-8000-000000000001/result-corrections", {
+      expected_result_version: 0,
+      regular_home_score: 1,
+      regular_away_score: 0,
+      reason: "test",
+    }, 401],
+    ["POST", "/v1/admin/matches/00000000-0000-4000-8000-000000000001/retry-settlement", undefined, 401],
+    ["POST", "/v1/admin/rebuild/users/00000000-0000-4000-8000-000000000001", undefined, 401],
+    ["POST", "/v1/admin/rebuild/rankings", { board: "week", period_key: "2026-W32", reason: "test" }, 401],
+    ["POST", "/v1/groups", {}, 401],
+    ["POST", "/v1/groups/join", { invite_code: "AB23CD45" }, 401],
+    ["POST", "/v1/groups/00000000-0000-4000-8000-000000000001/leave", undefined, 401],
+    ["DELETE", "/v1/groups/00000000-0000-4000-8000-000000000001", undefined, 401],
+    ["GET", "/v1/groups/me", undefined, 401],
+    ["GET", "/v1/groups/00000000-0000-4000-8000-000000000001", undefined, 401],
+  ] as const)("routes %s %s", async (method, path, body, status) => {
+    const harness = makeHarness();
+    const response = await request(harness, { method, path, body });
+
+    expect(response.status).toBe(status);
+    expect(response.body).not.toEqual(expect.objectContaining({ message: "不支持的请求" }));
+  });
+
+  it("routes authenticated /v1/groups/me before the group ID route", async () => {
+    const harness = makeHarness(makeConfig({
+      environment: "dev",
+      mock_trusted_openid: MOCK_OPENID,
+    }));
+    const init = await request(harness, {
+      method: "POST",
+      path: "/v1/session/init",
+      body: { nickname: "Sky" },
+    });
+    expect(init.status).toBe(201);
+
+    const response = await request(harness, {
+      method: "GET",
+      path: "/v1/groups/me",
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      data: { items: [], page: { next_cursor: null, has_more: false } },
       request_id: expect.any(String),
     });
   });

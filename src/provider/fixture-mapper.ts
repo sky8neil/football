@@ -7,7 +7,7 @@
  * - 返回相应 blocking 或数据异常 anomaly。
  */
 import { AnomalyType } from "../domain/enums.js";
-import { MVP_SEASON } from "../domain/config.js";
+import { findSupportedLeagueByProviderId } from "../domain/config.js";
 import { parseKickoff, KICKOFF_TOLERANCE_MS } from "./kickoff.js";
 import { mapProviderStatus, type ProviderFixtureStatus } from "./status.js";
 import type { ApiFootballFixture } from "./types.js";
@@ -23,6 +23,7 @@ export interface NormalizedFixture {
   leagueProviderId: string;
   season: string | null;
   round: string | null;
+  roundId?: string | null;
   homeTeamProviderId: string;
   awayTeamProviderId: string;
   kickoffAt: Date | null;
@@ -42,6 +43,24 @@ export interface NormalizeFixtureResult {
 
 export const FINAL_SCORE_MIN = 0;
 export const FINAL_SCORE_MAX = 99;
+
+export function tryParseProviderRoundId(
+  round: string | null,
+  roundMax: number,
+): string | null {
+  if (typeof round !== "string") {
+    return null;
+  }
+  const match = /(\d{1,2})$/.exec(round.trim());
+  if (match === null) {
+    return null;
+  }
+  const number = Number(match[1]);
+  if (!Number.isInteger(number) || number < 1 || number > roundMax) {
+    return null;
+  }
+  return String(number).padStart(2, "0");
+}
 
 function isIntegerScore(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value);
@@ -72,6 +91,7 @@ function emptyFixture(): NormalizedFixture {
     leagueProviderId: "",
     season: null,
     round: null,
+    roundId: null,
     homeTeamProviderId: "",
     awayTeamProviderId: "",
     kickoffAt: null,
@@ -118,14 +138,17 @@ export function normalizeFixture(raw: ApiFootballFixture): NormalizeFixtureResul
     typeof leagueId === "number" && Number.isInteger(leagueId) && leagueId > 0
       ? String(leagueId)
       : "";
+  const registeredLeague =
+    leagueProviderId.length === 0
+      ? undefined
+      : findSupportedLeagueByProviderId(leagueProviderId);
   if (leagueProviderId.length === 0) {
     anomalies.push(dataInvalid({ field: "league.id" }));
     entityFailed = true;
-  } else if (leagueProviderId !== MVP_SEASON.api_football_league_id) {
+  } else if (registeredLeague === undefined) {
     anomalies.push(
       dataInvalid({
         field: "league.id",
-        expected: MVP_SEASON.api_football_league_id,
         actual: leagueProviderId,
       }),
     );
@@ -142,11 +165,14 @@ export function normalizeFixture(raw: ApiFootballFixture): NormalizeFixtureResul
   if (season === null) {
     anomalies.push(dataInvalid({ field: "league.season" }));
     entityFailed = true;
-  } else if (season !== MVP_SEASON.api_football_season) {
+  } else if (
+    registeredLeague !== undefined &&
+    season !== registeredLeague.api_football_season
+  ) {
     anomalies.push(
       dataInvalid({
         field: "league.season",
-        expected: MVP_SEASON.api_football_season,
+        expected: registeredLeague.api_football_season,
         actual: season,
       }),
     );
@@ -157,9 +183,22 @@ export function normalizeFixture(raw: ApiFootballFixture): NormalizeFixtureResul
     typeof raw.league?.round === "string" && raw.league.round.length > 0
       ? raw.league.round
       : null;
+  let roundId: string | null = null;
   if (round === null) {
     anomalies.push(dataInvalid({ field: "league.round" }));
     entityFailed = true;
+  } else if (registeredLeague !== undefined) {
+    roundId = tryParseProviderRoundId(round, registeredLeague.round_max);
+    if (roundId === null) {
+      anomalies.push(
+        dataInvalid({
+          field: "league.round",
+          actual: round,
+          round_max: registeredLeague.round_max,
+        }),
+      );
+      entityFailed = true;
+    }
   }
 
   const rawStatus = raw.fixture.status?.short;
@@ -232,6 +271,7 @@ export function normalizeFixture(raw: ApiFootballFixture): NormalizeFixtureResul
       leagueProviderId,
       season,
       round,
+      roundId,
       homeTeamProviderId,
       awayTeamProviderId,
       kickoffAt: kickoff.kickoffAt,

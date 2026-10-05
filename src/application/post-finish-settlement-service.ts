@@ -1,5 +1,6 @@
 import { internalError } from "../domain/errors.js";
 import type { AppRepository } from "../infrastructure/repositories.js";
+import type { CorrectionSettlementOutcome } from "./correction-settlement-service.js";
 import type { FirstSettlementStartOutcome } from "./first-settlement-service.js";
 import { assertValidServerNow } from "./period-finalize.js";
 import { SettlementOrchestrationService } from "./settlement-orchestration-service.js";
@@ -12,7 +13,10 @@ export class PostFinishSettlementService {
     this.orchestration = new SettlementOrchestrationService(repo);
   }
 
-  async start(matchId: string, serverNow: Date): Promise<FirstSettlementStartOutcome> {
+  async start(
+    matchId: string,
+    serverNow: Date,
+  ): Promise<FirstSettlementStartOutcome | CorrectionSettlementOutcome> {
     assertValidServerNow(serverNow);
     if (this.repo.anomalies === undefined) {
       throw internalError("anomalies repository port 未配置");

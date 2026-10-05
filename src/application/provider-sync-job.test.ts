@@ -134,12 +134,12 @@ describe("ProviderFixtureSyncJobService", () => {
     });
   });
 
-  it("Provider loader 失败时记录 failed log、释放锁且不改变比赛", async () => {
+  it("N127 Provider 网络失败时记录 failed log、释放锁且不改变比赛状态", async () => {
     const repo = new InMemoryRepository();
     const match = makeMatch();
     await seedMatch(repo, match, "1100003");
     const syncLogs = recordingSyncLogs();
-    const failure = new Error("provider unavailable");
+    const failure = new Error("provider network unavailable");
     const load = vi.fn(async () => Promise.reject(failure));
     const service = new ProviderFixtureSyncJobService(
       { jobLocks: repo.jobLocks, syncLogs },
@@ -153,7 +153,7 @@ describe("ProviderFixtureSyncJobService", () => {
       status: "failed",
       items_failed: 1,
       last_error_code: "INTERNAL_ERROR",
-      last_error_message: "provider unavailable",
+      last_error_message: "provider network unavailable",
     }));
   });
 
@@ -405,6 +405,7 @@ describe("ProviderFixtureSyncJobService", () => {
         {
           jobLocks: {
             acquire,
+            isHeld: vi.fn(async () => false),
             renew: vi.fn(async () => true),
             release,
           },
@@ -444,7 +445,12 @@ describe("ProviderFixtureSyncJobService", () => {
       );
       const service = new ProviderFixtureSyncJobService(
         {
-          jobLocks: { acquire, renew, release: vi.fn(async () => undefined) },
+          jobLocks: {
+            acquire,
+            isHeld: vi.fn(async () => false),
+            renew,
+            release: vi.fn(async () => undefined),
+          },
           syncLogs,
         },
         { applyFixture: vi.fn(async () => ({
@@ -486,6 +492,7 @@ describe("ProviderFixtureSyncJobService", () => {
       }));
       const jobLocks = {
         acquire: vi.fn(async () => true),
+        isHeld: vi.fn(async () => false),
         renew: vi.fn(async () => false),
         release: vi.fn(async () => undefined),
       };
@@ -525,6 +532,7 @@ describe("ProviderFixtureSyncJobService", () => {
       );
       const jobLocks = {
         acquire: vi.fn(async () => true),
+        isHeld: vi.fn(async () => false),
         renew: vi.fn(async () => {
           throw renewError;
         }),
@@ -568,7 +576,12 @@ describe("ProviderFixtureSyncJobService", () => {
     const release = vi.fn(async (_lockKey: string, _ownerId: string) => undefined);
     const service = new ProviderFixtureSyncJobService(
       {
-        jobLocks: { acquire, renew: vi.fn(async () => true), release },
+        jobLocks: {
+          acquire,
+          isHeld: vi.fn(async () => false),
+          renew: vi.fn(async () => true),
+          release,
+        },
         syncLogs,
       },
       new ProviderFixtureSyncService(repo),
@@ -598,6 +611,7 @@ describe("ProviderFixtureSyncJobService", () => {
   it("无效 server_now 时在获取 Provider job lock 前 Fail Closed", async () => {
     const jobLocks = {
       acquire: vi.fn(async () => true),
+      isHeld: vi.fn(async () => false),
       renew: vi.fn(async () => true),
       release: vi.fn(async () => undefined),
     };

@@ -1,216 +1,199 @@
 # 赛事预言家（football）
 
-英超 2026_2027 赛事比分预测 MVP。
+六大联赛（英超、西甲、意甲、德甲、法甲、中超）2026_2027 赛季比分预测：后端核心 + 微信小程序。
+
+## 项目现状
+
+- **后端核心（业务规范 v2.0）已完成**：等级 v3.0（周评估 / 赛季冻结 / 修正重评）、三榜（周榜 / 生涯榜 / 实力榜）、等级赛季、群组与群榜、分享卡、结算账本、统计与榜单重建、每日一致性对账、Provider 同步与调度、管理端接口。
+- **验证基线**：130 个测试文件、1303 项用例全绿；`typecheck` / 全量测试 / `build` / `git diff --check` 均通过。
+- **小程序**：7 个页面 + 4 个 tabBar 栏目；视觉系统已 token 化（Design System V1）；服务层按 OpenAPI 契约经网关访问。
+- **现状边界**：真实 CloudBase、微信运行时与 Provider 生产 key 的接线与验证不在本地实现范围内；当前验证由内存参照仓储 + 单元/契约测试完成。
 
 ## 文档入口
 
-- **业务唯一规范**：[`docs/MVP__v1.0.md`](docs/MVP__v1.0.md)
-- **需求、冻结决策、开发计划、迁移与复盘文档**：统一位于 [`docs/`](docs/)，索引见 [`docs/INDEX.md`](docs/INDEX.md)
-- **API 合同**：[`src/api/v1/openapi.yaml`](src/api/v1/openapi.yaml)
+- **业务唯一规范**：[`docs/MVP__v2.0.md`](docs/MVP__v2.0.md)（v1.0 归档只读：[`docs/MVP__v1.0.md`](docs/MVP__v1.0.md)）
+- **文档索引**：[`docs/INDEX.md`](docs/INDEX.md)；需求、决策、开发计划与过程记录统一收录于 [`docs/`](docs/)
+- **API 合同**：[`src/api/v1/openapi.yaml`](src/api/v1/openapi.yaml)（接口字段、状态码与 envelope 的唯一实现依据）
 - **小程序代码**：[`miniprogram/`](miniprogram/)
-> ⚠️ **视觉事实来源（V1 起）**：**小程序实现本身** —— `miniprogram/pages/matches/`（母版页）
-> ＋ `miniprogram/styles/design-tokens.wxss`（tokens）。设计稿 HTML 自 V1 起**降级为参考稿**，
-> 老文档与老 token 只用于差异分析，优先级低于实现代码。
+- **视觉事实来源（V1 起）**：**小程序实现本身**——`miniprogram/pages/matches/`（母版页）＋ `miniprogram/styles/design-tokens.wxss`（tokens）；设计稿 HTML 为参考稿。Design System 文档：[`docs/UI_DESIGN_SYSTEM.md`](docs/UI_DESIGN_SYSTEM.md)
+- **首页视觉参考稿（参考非事实）**：[`docs/design/赛事预言家首页-高保真-v8.6-球场背景玻璃版.html`](docs/design/赛事预言家首页-高保真-v8.6-球场背景玻璃版.html)
+- **视觉回归工具与基线**：`docs/design/scripts/`（`verify-home-migration.py`、`home-view-model.mjs`、`extract-home-visuals.py`、`diff-home-visuals.py`），基线在 `docs/design/baselines/`
 
-- **首页视觉参考稿（非事实来源）**：[`docs/design/赛事预言家首页-高保真-v8.6-球场背景玻璃版.html`](docs/design/赛事预言家首页-高保真-v8.6-球场背景玻璃版.html)（球场背景 + 玻璃卡参考）；`…-v8.6-联赛无底.html` 是更早的历史稿
-- **Design System V1（正式）**：[`docs/UI_DESIGN_SYSTEM.md`](docs/UI_DESIGN_SYSTEM.md)；tokens 为 `miniprogram/styles/design-tokens.wxss`
-- **视觉回归工具**：`docs/design/scripts/`（`home-view-model.mjs` → `extract-home-visuals.py` → `diff-home-visuals.py`），基线留在 `docs/design/baselines/`
+## 已完成功能（后端）
 
-文档目录已经统一收纳当前需求文档、业务规范、开发计划、API 冻结审查、迁移说明和反向 Review 文档。后续新增项目文档也应放入 `docs/`，README 只保留项目入口和开发约定。
+### 领域与核心规则
 
-## 当前已完成的后端功能
+- TypeScript strict、ESM、Vitest；固定 `schema_version=1` 的配置与领域模型。
+- 时间与周期（Asia/Shanghai）、等级赛季边界（`level_season_of`，8 月切换）、比分推导、计分（s / S / n / B 四项）、排行榜比较器。
+- 等级 **v3.0**：每周一 10:00 截面周评估（任务 10:10 启动）、首期保护期、赛季冻结、`best_level` 只增不减、非 rebuild 变更 `|Δ|≤1` 等不变量；生涯与等级赛季双 scope。
+- 比赛状态机、预测提交服务端校验（截止时间、两层幂等、UUID v4 幂等键）、结算状态机。
+- `finished` 且无正式比分时保持 `waiting`：比分与结算字段为 `null`，不把缺失比分当 0。
 
-当前代码已完成一套可由内存适配器和单元/契约测试验证的 MVP 后端核心。**真实 CloudBase、微信运行时和 Provider 生产接线仍需单独完成并验证**，不能把本地测试实现当成生产集成已完成。
+### 结算账本
 
-### 领域与核心业务
+- 不可变 `match_results`（版本严格递增、禁止回退）、`settlements`、`settlement_items`。
+- item 级原子性（savepoint 隔离：失败项写入不落库、失败记录独立提交）、`applied` 幂等、`pending/failed` 恢复。
+- 首次结算、失败重试、赛果修正；相位流转 ApplyItems → RebuildRanks → Finalize → Done；finalize 按 §15.9 顺序重读 `result_version` 追平后续版本。
+- 修正重评（`level_correction_reeval`，as_of = `settled_at`，周评估前后双向消化待处理修正）。
 
-- TypeScript strict、ESM、Vitest、固定 `schema_version=1` 配置、领域类型和枚举。
-- 时间/周期、比分推导、计分、等级、排行榜比较、比赛状态机、预测策略和结算状态机。
-- 预测提交服务端校验、截止时间判断、两层幂等及 UUID v4 幂等键。
-- `finished` 但没有正式比分时保持待结算语义：状态进入 `waiting`，比分和结算字段保持 `null`，不把缺失比分当作 0。
-- 结算账本：不可变 `match_results`、`settlements`、`settlement_items`，结果版本严格递增，item 应用支持 pending/failed 恢复和 applied 幂等。
-- 首次结算、失败重试、赛果修正、按版本连续追平，以及从 applied ledger 重建统计、等级、排行榜和 unlock。
-- Provider 结果/状态同步的状态机保护、异常快照、anomaly、锁、lease、retry、`sync_logs` 与可信 `server_now` 语义。
+### 重建与对账
 
-### API 与身份
+- 用户统计 / 等级 / 排行榜 / 榜单快照重建，维护锁去重（并发冲突返回 409）。
+- 每日一致性对账：从 applied 账本重算并比对，只报警、不自动改账本；跳过 settling/correcting 比赛及其受影响用户与周期。
+- 榜单快照：career 每 60 分钟、strength 每 24 小时 + 周评估完成后刷新一次；career/strength 榜单按最新快照读取，week 榜直接读 rankings。
 
-- 用户端 API：会话初始化、比赛列表/详情、预测提交、我的预测/详情、公开排行榜、资料、等级、解锁、分享卡。
-- 管理端 API：anomaly 查询、赛果修正、结算重试、用户统计重建、排行榜重建。
-- 统一成功 envelope：`data + request_id`；分页使用 `items + page.next_cursor + page.has_more`。
-- 统一错误 envelope：`code + message + request_id + details`；前端程序分支使用 HTTP 状态码和 `code`，不解析 `message`。
-- H4 已关闭：不使用 Bearer/JWT、Cookie 或服务端 session token；身份由网关/运行时注入可信 `openid`，客户端禁止提交 `openid`、`user_id` 或 JWT。
-- 已注销用户、未注册身份、缺失可信身份和 active 用户按冻结语义区分处理；旧身份映射不可直接登录或复活旧账号。
-- Provider adapter、CloudBase adapter、调度入口和限流共享存储均已有本地契约/骨架与测试，但真实环境验证不在本地测试范围内。
+### 群组与分享卡
 
-### 当前边界
+- 群组：创建、邀请码加入、退出、解散；上限：拥有 5、加入 20、单群成员 500；群榜仅成员可见、独立重排。
+- 分享卡：生涯积分 + 指定联赛/赛季/轮次四项战绩。
 
-- **已完成不等于生产上线**：真实 CloudBase 数据库、唯一约束/事务/原子语义、微信 `OPENID` 生产注入、云函数触发器、API-Football key 和真实 Provider 同步仍需环境接线与验证。
-- 第 44 节验收矩阵、完整 Provider 端到端同步和部分运维 anomaly 能力仍应以 `docs/DEVELOPMENT_PLAN.md` 的实际记录为准。
-- 不在首版前端范围：管理端 UI、anomaly `details` 白名单扩展、unlock 后端展示元数据、JWT/Cookie/session token、客户端自带 openid。
+### Provider 同步与调度
+
+- 五类同步任务：`future_schedule`（6h）、`full_schedule_verify`（24h）、`near_match`（30min）、`live_match`（3min，窗口「T-2h ～ finished」）、`post_finish_verify`（3min）。
+- 调度任务：`period_finalize`（1h）、`daily_consistency`（24h）、`weekly_level_eval`（周一 10:10）、`level_correction_reeval`（事件触发）、榜单快照（60min / 24h）。
+- 状态机保护（禁止状态回退）、异常快照、anomaly、job lock + lease、retry、`sync_logs`、注入式 `server_now` 语义；Provider 批次逐条容错（非法条目实体级留证，不弃整包）。
+
+### API 一览（v1：22 条路径 / 25 个操作）
+
+- 会话与身份：`POST /v1/session/init`（身份由运行时注入可信 `openid`，不使用 Bearer/JWT/Cookie/session token）。
+- 比赛：`GET /v1/matches`、`GET /v1/matches/{match_id}`。
+- 预测：`POST /v1/predictions`、`GET /v1/predictions/me`、`GET /v1/predictions/me/{prediction_id}`。
+- 资料：`GET|PATCH|DELETE /v1/profile/me`、`GET /v1/profiles/{user_id}`。
+- 等级/解锁/分享卡：`GET /v1/levels/me`、`GET /v1/unlocks/me`、`GET /v1/share-card/me`。
+- 排行榜：`GET /v1/rankings`（week / career / strength；scope=global / group）。
+- 群组：`POST /v1/groups`、`POST /v1/groups/join`、`GET /v1/groups/me`、`GET /v1/groups/{group_id}`、`POST /v1/groups/{group_id}/leave`、`DELETE /v1/groups/{group_id}`。
+- 管理端：`GET /v1/admin/anomalies`、`POST /v1/admin/matches/{match_id}/result-corrections`、`POST /v1/admin/matches/{match_id}/retry-settlement`、`POST /v1/admin/rebuild/users/{user_id}`、`POST /v1/admin/rebuild/rankings`（变更写审计）。
+- 成功 envelope：`data + request_id`；分页 `items + page.next_cursor + page.has_more`；错误 envelope：`code + message + request_id + details`。
+
+### 数据模型与仓储
+
+- 集合（23 个）：`users`、`teams`、`matches`、`predictions`、`match_results`、`settlements`、`settlement_items`、`rankings`、`level_history`、`user_season_stats`、`unlocks`、`board_snapshots`、`groups`、`group_members`、`anomalies`、`provider_snapshots`、`sync_logs`、`job_locks`、`admins`、`admin_audit_logs`、`deleted_openid_mappings`、`team_provider_mappings`、`match_provider_mappings`。
+- 内存参照实现（测试与本地开发）+ CloudBase 适配器（同一仓储契约）；Schema 与索引定义见 `src/schema/`。
+
+### 小程序（微信）
+
+- 页面：`session`、`matches`（视觉母版页）、`match-detail`、`my-predictions`、`profile`、`unlocks`、`rankings`；tabBar：比赛、我的预测、排行榜、我的。
+- 服务层 `miniprogram/services/` 按 OpenAPI 契约经网关访问（`config.gatewayOrigin`）；比赛页当前以本地夹具驱动 UI 开发。
+- 排行榜页支持三榜切换并展示「我的排行」块（ranked / not_participated / below_threshold）。
+- Logo 资源经 `logo-registry.js` 查询：`getTeamLogo(leagueId, teamId)` / `getLeagueLogo(leagueId)`；资源规格见下文。
 
 ## 前端开发规范
 
-Backend API Freeze Review 已通过，H4 已关闭；可以开始用户端前端。但前端必须服从以下文档和顺序：
+1. **先读业务和 UI 范围**：`docs/MVP__v2.0.md`、`docs/C0_H5_MINIMUM_USER_SCOPE_DECISION__v1.0.md`、`docs/C1_PLATFORM_NEUTRAL_WIREFRAME_ACCEPTANCE__v1.0.md`。
+2. **接口只认 OpenAPI**：以 `src/api/v1/openapi.yaml` 为字段、状态码与 envelope 的唯一依据；不凭 UI 需要扩展 API。
+3. **先平台无关，后平台实现**：先页面信息架构与状态矩阵，再微信实现。
+4. **状态由后端合同驱动**：`can_predict` + `can_predict_reason` 直接控制预测入口；前端不重复计算截止时间与可预测性。
+5. **null 保留语义**：比分 / `match_score` / `wdl_hit` / `exact_hit` 为 `null` 时显示「待结算 / 暂无比分」，不用 0 代替。
+6. **分页 cursor 是 opaque**：只原样回传 `next_cursor`，不解析、不拼接、不自行构造。
+7. **错误处理**：程序分支用 HTTP 状态码 + `code`；`message` 只用于展示；覆盖 loading、empty、422/500/网络错误、401、409 `USER_DELETED`、429、延期、取消、待结算与已提交状态。
+8. **身份边界**：前端不保存/生成 JWT，不传 `openid`/`user_id` 作为身份；可信身份由运行时注入。
+9. **字段缺口不猜测**：队名取不到时跳转比赛详情；unlock 名称/图标用前端静态映射；anomaly 详情不在首版范围。
+10. **开发顺序**：导航壳 → 比赛列表 → 比赛详情/预测提交 → 我的预测 → 资料/等级/解锁 → 排行榜 → 全局状态与错误回归 → 真机/模拟器验收；每个切片先写可验证测试再实现，再跑 typecheck、相关测试与全量测试。
 
-1. **先读业务和 UI 范围**：`docs/MVP__v1.0.md`、`docs/C0_H5_MINIMUM_USER_SCOPE_DECISION__v1.0.md`、`docs/C1_PLATFORM_NEUTRAL_WIREFRAME_ACCEPTANCE__v1.0.md`。
-2. **接口只认 OpenAPI**：以 `src/api/v1/openapi.yaml` 为接口字段、成功/失败状态码和 envelope 唯一实现依据；不得凭 UI 需要扩展 API。
-3. **先平台无关，后平台实现**：先完成页面信息架构、状态矩阵和低保真验收，再实现微信小程序页面；不得在页面中发明 Web/微信特有的后端身份协议。
-4. **状态由后端合同驱动**：`can_predict` + `can_predict_reason` 直接控制预测入口；不要在前端重复计算截止时间或比赛可预测性。
-5. **null 必须保留语义**：正式比分、`match_score`、`wdl_hit`、`exact_hit` 为 `null` 时显示“待结算/暂无比分”，禁止用 0 代替。
-6. **分页 cursor 是 opaque**：只原样回传 `next_cursor`，不得解析、拼接或自行构造。
-7. **错误处理**：程序逻辑用 HTTP 状态码和 `code`；`message` 只用于展示。至少覆盖 loading、empty、422/500/网络错误、401、409 `USER_DELETED`、429、延期、取消、无比分待结算和已提交状态。
-8. **身份安全边界**：前端不保存/生成 JWT，不传 openid、user_id 作为身份，不添加自定义身份 Header；B3 负责可信运行时身份注入。
-9. **已知字段缺口不猜测**：`predictions/me` 没有球队名称嵌套对象，需要队名时跳转比赛详情；unlock 只依赖 `unlock_code`、`threshold_points`、`unlocked_at`，名称/图标使用前端静态映射；anomaly 详情首版不做。
-10. **开发顺序**：导航壳 → 比赛列表 → 比赛详情/预测提交 → 我的预测 → 资料/等级/解锁 → 排行榜 → 全局状态和错误回归 → 真机/模拟器验收。每个垂直切片都应先写可验证 UI/适配测试，再实现，再跑 typecheck、相关测试和全量测试。
+首版页面范围：会话初始化、比赛列表、比赛详情 + 预测提交、我的预测、我的资料/等级、解锁、排行榜；资料编辑、账号注销、公开他人资料、分享卡为二次切片；管理端不做 UI。
 
-首版页面范围固定为：会话初始化、比赛列表、比赛详情+预测提交、我的预测、我的资料/等级、解锁、排行榜。资料编辑、账号注销、公开他人资料、分享卡是可选二次切片；管理端页面不做。
-
-## 前端视觉规则（已定稿）
-
-以下规则以 `docs/design/赛事预言家首页-高保真-v8.6-联赛无底.html`（页面结构、交互、动画）和 `docs/design/赛事预言家首页-高保真-v8.6-球场背景玻璃版.html`（背景与卡片质感）为视觉基线，已经用户确认冻结。**后续任何前端开发必须遵守，不得擅自改变**；如需调整，先改首页视觉稿并重新确认。
+## 前端视觉与交互规则（已冻结）
 
 ### 1. 视觉基线
 
-- 按 **390px** 宽度设计，兼容 375–430px；设计稿与实现必须同源（单文件 HTML 首页 + Global UI Design System）。
-- 视觉 Source of Truth：`docs/UI_DESIGN_SYSTEM.md`（token、语义色、组件状态）；颜色一律使用语义 token，不直接写 primitive HEX。
-- 页面布局、配色、卡片结构、Logo 位置是冻结基线：不重做页面、不改布局配色、不新增页面结构。
-- 背景三层配方（radial glow × 2 + 垂直渐变）、半透明联赛托盘、状态色左侧竖条是当前首页视觉签名，可复用但不强制每个页面复制。
+- 按 **390px** 宽度设计，兼容 375–430px；设计稿与实现同源（单文件 HTML + Design System V1）。
+- 颜色一律使用语义 token（`styles/design-tokens.wxss`），不直接写 primitive HEX。
+- 页面布局、配色、卡片结构、Logo 位置为冻结基线：不重做页面、不改布局配色、不新增页面结构。
+- 背景三层配方（radial glow × 2 + 垂直渐变）、半透明联赛托盘、状态色左侧竖条为首页视觉签名。
 
-### 2. 比赛卡片与预测状态机（已冻结）
+### 2. 比赛卡片与预测状态机
 
-- 卡片包含：`match-top`（时间/联赛 + 状态徽章）→ `faceoff`（主客队 + 比分区）→ `foot`（预测入口/结果）→ `pred-wrap`（展开预测区）。
-- 预测 UI 状态只允许四种，互不混用：
+- 卡片结构：`match-top`（时间/联赛 + 状态徽章）→ `faceoff`（主客队 + 比分区）→ `foot`（预测入口/结果）→ `pred-wrap`（展开预测区）。
+- 预测 UI 状态仅四种：`collapsed | editing | submitting | submitted_locked`；业务状态独立：`open | lock | live | done`，两者不互相推导。
+- **状态隔离 key 为 `联赛:日期:比赛ID`**（如 `epl:17:a`）；`drafts`、`uiStates`、`submittedMap` 均按该 key 存储。
+- 同一时间最多一张卡处于 `editing`/`submitted_locked`；点另一张「去预测」先收回旧卡。
+- 提交成功进入 `submitted_locked`（「✓ 预测已提交」），点页面任意位置收回；提交失败保留草稿并回到 `editing`。
+- 已提交的卡在切换联赛/日期重绘后仍显示「我的预测 X:X · 已锁定」。
 
-  ```text
-  collapsed | editing | submitting | submitted_locked
-  ```
-
-- 业务状态独立：`open`（可预测）/ `lock`（已提交）/ `live` / `done`；UI 状态与业务状态分离，不互相推导。
-- **状态隔离 key 必须是 `联赛:日期:比赛ID`**（如 `epl:17:a`），禁止用裸比赛 ID、卡片索引或联赛索引共享状态。`drafts`、`uiStates`、`submittedMap` 全部按该 key 存储。
-- 同一时间最多一张卡处于 `editing`/`submitted_locked`；点另一张「去预测」时先收回旧卡再展开新卡。
-- 提交成功后进入 `submitted_locked`，显示「✓ 预测已提交」；**不自动收回**，点页面任意位置才收回。
-- 提交失败必须保留草稿比分并回到 `editing`，可重试。
-- 已提交（`submittedMap`）的卡在切换联赛/日期重绘后仍显示「我的预测 X:X · 已锁定」，不重新出现「去预测」。
-
-### 3. 动画规则（时长已定稿，不得自行改）
+### 3. 动画（时长已定稿）
 
 | 场景 | 时长 | 实现 |
 |---|---|---|
 | 卡片展开/收回（editing ↔ collapsed） | 320ms | `grid-template-rows 0fr↔1fr` + opacity + 位移 |
-| 提交成功后编辑区 → 反馈区收缩 | **900ms** | `max-height` 可插值过渡 |
+| 提交成功后编辑区 → 反馈区收缩 | 900ms | `max-height` 可插值过渡 |
 | 点击页面收回（submitted_locked → collapsed） | 320ms | 走基类展开/收回过渡 |
 | 联赛/日期切换 | 淡出 180ms + 淡入 240ms | `view-exit` / `view-enter` |
-| 最后一张卡展开后自动滚动 | **900ms** | `requestAnimationFrame` 缓动，不直接改 scrollTop |
-| 展开卡片滚动对齐 | — | 卡片底部对齐 feed 可视区底部 + 12px 余量，考虑页面缩放比 |
+| 最后一张卡展开后自动滚动 | 900ms | `requestAnimationFrame` 缓动 |
+| 展开卡片滚动对齐 | — | 卡片底部对齐 feed 可视区底部 + 12px 余量 |
 
-- 收回动画必须平滑过渡，禁止 `display:none` 瞬间消失；折叠态用 `0fr` + 负 margin 补偿，不留空白。
-- 编辑控件隐藏用 `opacity + pointer-events` 而不是 `display:none`，保证高度可插值。
-- 成功反馈文字必须相对可见反馈框垂直居中（绝对定位 `inset:0` + flex）。
+- 收回使用平滑过渡（`0fr` + 负 margin 补偿）；编辑控件隐藏用 `opacity + pointer-events`（保证高度可插值）。
+- 成功反馈文字相对反馈框垂直居中（绝对定位 `inset:0` + flex）。
 - 尊重 `prefers-reduced-motion: reduce`：动画全部关闭。
 
-### 4. 交互边界（已定稿）
+### 4. 交互边界
 
-- 「去预测」按钮点击 → 由 feed 事件委托处理（先收回旧的再展开新的），页面级点击监听必须跳过它，避免误收。
+- 「去预测」由 feed 事件委托处理（先收回再展开）；页面级点击监听跳过它。
 - 编辑中卡片内部（stepper、提交按钮）点击不触发页面收回；页面其他位置点击收回所有非 collapsed 卡片。
-- 点击 stepper 修改比分：非负、立即更新比分和主胜/平局/客胜判定；重新展开时草稿归零（0:0）。
-- 预测默认比分 0:0；收回后重开恢复 0:0，不残留旧比分 DOM。
-- 切换联赛/日期时先收回展开卡片，再淡出→重绘→淡入。
+- 比分 stepper：非负、立即更新并判定主胜/平局/客胜；重新展开草稿归零（0:0）。
+- 切换联赛/日期先收回展开卡，再淡出 → 重绘 → 淡入。
 
-### 5. Logo 与图像规格（已定稿）
+### 5. 首页日期条
 
-- Logo 源：`/root/football_logos`（只读）；运行时资源：`docs/design/assets/logos/`；生成脚本：`docs/design/scripts/generate-logo-manifest.js`、`inline-logo-assets.py`。
-- 查询入口：`logo-registry.js` 的 `getTeamLogo(leagueId, teamId)` / `getLeagueLogo(leagueId)`；队徽自带 `leagueId`；找不到回退占位图 `placeholders/team-placeholder.png`。
-- 尺寸：五大联赛球队队徽 128×128 px、联赛 Logo 256×256 px、**中超队徽 256×256 px**（2026-09-16 从 512 下调，为控主包体积）；全部 PNG 透明背景、sRGB。
-- 队徽/联赛 Logo 由 `data-league-id` / `data-team-id` 注入，不在业务数据里写死路径。
+- 开放 `今天 … 今天+10`（共 11 天）；常量 `DATE_SPAN_DAYS` 定义在 `miniprogram/pages/matches/matches.js`，`verify-home-migration.py` 校验其等于 11。
+- 日期条独占整行宽度；日期项 112rpx 宽 + 12rpx 间距 + 两侧 32rpx 内边距（一屏约 5.5 个，右缘露半格提示可横滑）。
+- 日期项为「星期 + 号码」两行，跨周同名星期不加月份区分。
 
-### 6. 首页背景图与玻璃卡（2026-09-16 新增，已冻结）
+### 6. 首页第一行昵称
 
-- **结构**：`<image class="page-bg" mode="aspectFill">` 绝对定位铺满页面 + 内容层抬 `z-index`。**不要用 WXSS 的 `background-image` 引本地图**——真机不生效；base64 会把 WXSS 撑到几百 KB。
-- **参数**：白蒙层 65% + 素材降饱和 15%（**已烘进素材**，比运行时再叠一层省体积）；卡片玻璃 54%。
-- **玻璃档位**：`.match` 54% ／ `.match.is-open` 58% ／ `.pred-area` 50% ／ 联赛托盘 48%；日期选中态保持实心白。
-  V1 起由 token 承载：`--match-card-background` / `--match-card-background-strong` / `--surface-pred` / `--surface-tray`（值只写在 `styles/design-tokens.wxss`）。
-- **2026-09-26 可读性修整**：分工是**模糊柔化草地纹理（观感）+ 白底遮盖保证文字对比度（可读性）**。blur 档位：卡片 36rpx（`--blur-card`）／托盘 14rpx（`--blur-tray`）（卡片白底 54% 比托盘 48% 厚，透过来的背景少，同样 blur 观感更弱，故取值更高）。`.bug`（vs 框）改回**实色渐变**、显式 `backdrop-filter: none`，与雾白卡面形成层级区分——**不要再把它玻璃化成半透明白**，否则又会和卡面糊在一起。校验：`python3 docs/design/scripts/verify-home-migration.py`（含该不变式检查）。
-- **素材**：`miniprogram/assets/images/home-pitch-bg.webp`（780×1386，86 KB）。重新生成：`python3 docs/design/scripts/build-bg-assets.py`（源图 `docs/design/assets/bg/pitch-source.webp`）。
-- **文字对比度规则**：落在背景图或玻璃卡上的文字必须实测 **≥4.5:1**。首页因此把文字色压深一档：`--text-secondary` `#3b4f43`、`--text-muted` `#42564a`、`--text-positive` `#1a5c26`。
-  **V1 起这三项统一收敛到 tokens 的 semantic 层**（原先写在 `matches.wxss` 的 `page` 覆盖块，已随 token 化合并；旧的 `#5b7166` / `#86a092` 已废弃——在球场照片上只有 1.1–4.7:1）。
-- **注意**：新增落在背景上的内容容器必须显式 `position: relative; z-index: 1`，否则会被绝对定位的背景层盖住。
-- **降级**：`backdrop-filter` 在部分安卓机型失效时会退化成纯半透明面板（文字对比度仍达标，因为底图已淡到 65%）。
+- 文案一行连写：`昵称，今天看哪场？`（逗号 U+FF0C、问号 U+FF1F，全角）；`view.brand-name` 容器 + 两个 `<text>`（昵称段 / 后半句），两段不设 `display`/宽度/`vertical-align`（保持单一文本流，`verify-home-migration.py` 有对应不变式守卫）。
+- 昵称来源：「头像昵称填写能力」（基础库 2.21.2+，`pages/session` 的 `<input type="nickname"/>`，用户确认一次）。
+- 链路：会话页确认 → `POST /v1/session/init`（服务端校验并 trim）→ 本地缓存 → 首页 `onLoad` 读取。
+- 缓存 key、兜底文案（`球友`）与读写归一化统一在 `miniprogram/utils/nickname.js`；昵称显示超过 12 字截断为「前 11 字…」（`truncateNickname()`，保证后半句一定显示得下）。
+- 跳转首页 tabBar 页使用 `wx.switchTab`（源码含对应测试守卫）。
 
-### 7. 首页日期条（2026-09-26 决策，已冻结）
+### 7. 首页顶栏 Logo 与间距
 
-- **开放范围**：`今天 … 今天+10`（含今天，共 11 个）。常量 `DATE_SPAN_DAYS` 在 `miniprogram/pages/matches/matches.js`，改这一个数字即可；`verify-home-migration.py` 会校验它等于 11。
-- **铺满整行**：右侧原来的日历按钮已**移除**——它一直只是占位（`onCalendarTap` 仅弹一句「日历选择即将开放」的 toast，不是真实功能）。日期条现在独占整行宽度，比之前多露出约一个日期。
-- **尺寸刻意不变**：日期项仍是 112rpx 宽 + 12rpx 间距 + 两侧 32rpx 内边距，**不压缩排列**。一屏约 5.5 个，右边缘自然露出半格，作为「可横向滑动」的提示。
-- **跨周同名星期不特殊处理**：日期项是「星期 + 号码」两行，11 天必然跨周（会出现两个「周一」），靠号码区分即可，不加月份。
-- **数据尚未按日期过滤（未完成项）**：`loadFirstPage()` 只按联赛过滤，**所有日期共用同一份列表**；`dayBounds()` 已定义但**从未被调用**。本轮按「只做 UI」推进，接真实数据时需补齐按日期过滤，并让 11 天各自有赛程。
+- `.mark`：`--mark-size`（64rpx）绿底圆角方块 + `--mark-gradient`、`--mark-radius`；`.mark-ball`：36rpx 白色足球位图（`assets/icons/icon-ball.png`，108×108 RGBA）。
+- 品牌行与联赛行之间净空 8px：实现为 `.leagues-wrap` 的 `margin-top: var(--home-tray-offset)`（20rpx）；校验脚本按 2rpx = 1px 比对设计稿（`.leagues-wrap { margin-top: 10px }`）并校验净空。
+- 顶栏为绝对定位 + `.topbar-spacer` 占位模型；改动只盯「联赛行上外边距」这一个值。
 
-### 8. 首页第一行昵称（2026-09-26 决策，已冻结）
+### 8. 首页背景与玻璃卡
 
-- **文案**：一行连写 `昵称，今天看哪场？`，两个标点都是中文全角（逗号 U+FF0C、问号 U+FF1F）。**不要**把逗号拆成独立元素——原先 `.brand-copy` 带 `gap`，拆开会让逗号被推开成「昵称␣␣，今天…」。
-- **昵称来源（关键约束）**：微信自 2022-10-25 24:00 起收回了 `wx.getUserProfile` 的昵称能力——生效后发布的新版本一律返回默认灰头像与昵称「微信用户」，**昵称无法静默获取**。唯一合规路径是「头像昵称填写能力」（基础库 2.21.2+）：`pages/session` 的 `<input type="nickname"/>`，用户点进输入框时微信自动预填其微信昵称，用户确认一次即可。
-- **链路**：用户确认昵称 → `POST /v1/session/init`（服务端校验并 trim，MVP §24.1 响应 data 含 `nickname`）→ 写入本地缓存 → 首页 `onLoad` 读取展示。
-- **唯一真相**：缓存 key（`nickname`）、兜底文案（`球友`）、读写归一化都在 `miniprogram/utils/nickname.js`；首页读、会话页写都走它，**不要在页面里各写一份字面量**。测试：`miniprogram/pages/matches/matches.brand.test.mjs`。
-- **兜底**：缓存缺失／空白／脏数据一律显示「球友」（首次进入、未登录、账号已注销都会走到这里）。
-- **长昵称**：服务端允许 1～32 grapheme；**超过 12 字在 JS 里截断成「前 11 字…」**（`truncateNickname()`，`NICKNAME_DISPLAY_MAX = 12`），因此「，今天看哪场？」**一定显示得下**（截断后最长 12 + 7 = 19 字；按 750rpx 页宽等比例实测整行约 552rpx ＜ 顶栏内容区约 686rpx，余量约 134rpx）。截断放在 JS 而不是 CSS，是因为 CSS 逐段限宽需要 `display:inline-block`，而微信的 `<text>` 是组件、会导致上下错行（见下一条）。CSS 的整行省略仅作极窄屏兜底。
-- **第一行必须是一个行内文本流（别再踩这个坑）**：结构是 `view.brand-name` 容器 + 两个 `<text>`（昵称段 / 「，今天看哪场？」）。**两段都不要设 `display`／宽度／`vertical-align`**——微信的 `<text>` 是**组件**而非标准行内元素，把它变成 `inline-block` 盒子后，同一行会被拆成两个盒子、出现**上下错行**（2026-09-26 实机踩到，才把「逐段限宽」撤掉）。校验脚本已加守卫：`.brand-nick`／`.brand-sub` 一旦出现 `display`/`width`/`vertical-align` 即报错。
-- **跳首页必须用 `wx.switchTab`**：`/pages/matches/matches` 属于 tabBar 页面，`wx.redirectTo` / `wx.navigateTo` 不被受理且**静默失败**（不报错、不跳转），用错会让用户卡在会话页出不去。会话页源码里已加测试守卫。
+- 结构：`<image class="page-bg" mode="aspectFill">` 绝对定位铺满 + 内容层抬 `z-index`；新增背景上的容器需显式 `position: relative; z-index: 1`。
+- 素材：`miniprogram/assets/images/home-pitch-bg.webp`（780×1386，86 KB）；参数：白蒙层 65% + 素材降饱和 15%（已烘进素材）；重新生成：`python3 docs/design/scripts/build-bg-assets.py`。
+- 玻璃档位（V1 起由 token 承载）：`.match` 54% / `.match.is-open` 58% / `.pred-area` 50% / 联赛托盘 48%；日期选中态实心白。
+- blur：卡片 36rpx（`--blur-card`）、托盘 14rpx（`--blur-tray`）；`.bug`（vs 框）为实色渐变、`backdrop-filter: none`，与雾白卡面形成层级。
+- 文字对比度：落在背景图/玻璃卡上的文字实测 ≥4.5:1（`--text-secondary` `#3b4f43`、`--text-muted` `#42564a`、`--text-positive` `#1a5c26`）。
+- `backdrop-filter` 不可用时退化为纯半透明面板（对比度仍达标）。
 
-### 9. 首页顶栏 logo 与联赛行间距（2026-09-26 决策）
+## 图像与资源规格
 
-- **logo**：`.mark`（`--mark-size` 64rpx 绿底圆角方块，`--mark-gradient`，`--mark-radius`）+ `.mark-ball`（36rpx 白色足球位图）。**不要删这两条规则**——`61c3f43` 重构顶栏时只删了样式、WXML 节点还留着，结果首页左上角一直空白且不报任何错。`verify-home-migration.py` 已加守卫：缺规则／缺位图／位图规格不对都会红。
-- **球标位图**：`miniprogram/assets/icons/icon-ball.png`（108×108 RGBA，约 2.9 KB），矢量源 `docs/design/assets/icons/icon-ball.svg`，几何与设计稿 `.mark` 内联 SVG 同源。重新生成：`python3 docs/design/scripts/build-icon-assets.py`（依赖 `cairosvg` + Pillow，缺了会直接报错提示；脚本自带墨迹 bbox / 透明底自检）。小程序不能内联 SVG，且 WXSS 引本地图片不生效，所以走 `<image>` + 位图。
-- **间距**：品牌行（顶栏绝对定位，top 40px + 高 44px → 底边 84px）与联赛行之间留 **8px** 净空。实现是 `.leagues-wrap` 的 `margin-top: var(--home-tray-offset)` = 20rpx（原 4rpx，托盘顶 78px → 86px）。联赛行是顶栏之后**第一个流式元素**，所以改这一个值就等于「联赛行及其下方整体下移」。设计稿对应项是追加块里的 `.leagues-wrap { margin-top: 10px }`（原 2px）；校验脚本按 2rpx = 1px 比对这两个值，并校验净空 = 8px、托盘没有压回顶栏里。
-- **两边竖向模型不同**（设计稿顶栏在流式布局里，小程序顶栏绝对定位 + `.topbar-spacer` 占位），不要追像素级一致，盯住「联赛行上外边距」这一个值即可。
-- **测试文件不进包**：`miniprogram/project.config.json` 的 `packOptions.ignore` 用 `suffix` 规则排除 `.test.mjs` / `.test.ts`（该字段的 `value` 不支持通配符与正则，所以用后缀；规则值大小写不敏感）。此前该数组为空，`matches.brand.test.mjs`、`predictions.uuid.test.mjs` 会被打进小程序包。校验脚本会检查覆盖情况。
+图像资源优先 SVG 或 PNG；图标统一线宽、圆角与品牌色，不含文字；资源放 `miniprogram/assets/`（`icons/`、`tabbar/`、`illustrations/`、`brand/`），不把二进制资源放源码根目录或文档目录。
 
-## 前端图像与资源规格
-
-图像资源应优先使用 SVG 或 PNG；图标保持统一线宽、圆角和品牌色，不使用带文字的图标，避免不同字号下出现重复文案。资源应放在 `miniprogram/assets/`，按 `icons/`、`tabbar/`、`illustrations/`、`brand/` 分类；不得把二进制资源提交到源码根目录或文档目录。
-
-### 首批必须提供的图像
+### 首批规格
 
 | 资源 | 数量 | 设计稿尺寸 | 交付尺寸/格式 | 用途 |
 |---|---:|---:|---:|---|
-| TabBar 图标 | 4 个 | 48×48 px | PNG 96×96 px（2x，透明背景）或 SVG | 比赛、我的预测、排行榜、我的 |
-| TabBar 选中态 | 4 个 | 48×48 px | PNG 96×96 px（2x）或 SVG | 与未选中态一一对应 |
-| 空状态插图 | 3 个 | 160×160 px | PNG 320×320 px（2x，透明背景）或 SVG | 无比赛、无预测、无解锁 |
+| TabBar 图标（含选中态） | 各 4 个 | 48×48 px | PNG 96×96 px（2x，透明）或 SVG | 比赛、我的预测、排行榜、我的 |
+| 空状态插图 | 3 个 | 160×160 px | PNG 320×320 px（2x）或 SVG | 无比赛、无预测、无解锁 |
 | 通用错误/断网插图 | 2 个 | 200×160 px | PNG 400×320 px（2x）或 SVG | 网络错误、服务暂不可用 |
-| 注销/不可用状态插图 | 1 个 | 200×160 px | PNG 400×320 px（2x）或 SVG | `USER_DELETED` / 无可信身份 |
-| 品牌 Logo | 1 个 | 160×48 px | PNG 320×96 px（2x，透明背景）或 SVG | 启动/会话初始化页 |
+| 注销/不可用插图 | 1 个 | 200×160 px | PNG 400×320 px（2x）或 SVG | `USER_DELETED` / 无可信身份 |
+| 品牌 Logo | 1 个 | 160×48 px | PNG 320×96 px（2x）或 SVG | 启动/会话初始化页 |
 
-**线性图标工具链（2026-09-26 起）**：几何唯一真相放在设计稿里（如 `.cal` 的内联 SVG，viewBox 16×16、stroke 1.4、圆头描边）。小程序 WXSS 不能引用本地图片路径，故由 `python3 docs/design/scripts/build-icon-assets.py` 按该几何烘成 @6x 位图（96×96、透明底、色值 = 首页 `--color-text-secondary`），矢量源同步产出到 `design/assets/icons/`。改色或改几何请改脚本常量后重跑，**不要手改位图**。缩小时用 BOX（面积平均），不要用 LANCZOS——后者有负瓣，会给细描边染出一圈振铃噪边。
+### 规格与工具链
 
-注意：`icon-calendar` 目前**没有任何页面在用**——日期条已改为铺满整行的日期列表，日历入口被移除（见 §7）。因此该位图**不放进小程序包**（避免未使用资源占体积），只保留生成脚本与矢量源；将来哪个页面需要它，重跑脚本即可。
-
-### 可选资源
-
-- 比赛详情页的轻量足球/球场装饰：设计稿 375×120 px，交付 PNG 750×240 px或 SVG；不得承载业务文字。
-- 解锁资源预览：每种 64×64 px 设计稿，交付 PNG 128×128 px或 SVG；只对应既有静态 `unlock_code`，不新增 API 字段。
-- 启动页背景：设计稿 375×812 px，交付 PNG 750×1624 px；只有在确认包体积可接受时再提供，优先 CSS/WXSS 实现。
-
-### 图像交付要求
-
-- 所有 PNG 使用透明背景（启动背景除外），色彩空间 sRGB。
-- 提供 `@2x` 文件或 SVG；禁止把截图直接当图标。
-- 文件名使用小写 kebab-case，例如 `tab-matches.png`、`tab-matches-active.png`、`empty-predictions.svg`。
-- 每个图像同时提供 light/dark 版本的前提是 UI 需求明确要求；当前首版默认先交付单一主题。
-- 图像资源不能包含 openid、JWT、用户头像等动态或敏感信息。
-- 设计稿与源文件（SVG/Figma/AI 等）应与导出资源一起交付，源文件不放 `miniprogram/assets/`，可放项目外部设计交付目录。
+- 队徽/联赛 Logo：五大联赛队徽 128×128、联赛 Logo 256×256、中超队徽 256×256（PNG 透明底、sRGB）；由 `logo-registry.js` 的 `getTeamLogo` / `getLeagueLogo` 查询（队徽自带 `leagueId`，缺图回退 `placeholders/team-placeholder.png`）；源 `/root/football_logos`，运行时资源 `docs/design/assets/logos/`，生成脚本 `generate-logo-manifest.js`、`inline-logo-assets.py`。
+- 线性图标：几何真相在设计稿内联 SVG；由 `python3 docs/design/scripts/build-icon-assets.py` 烘成 @6x 位图（96×96、透明底）；矢量源产出到 `docs/design/assets/icons/`；缩放用面积平均（BOX）。
+- 交付要求：PNG 透明底（启动背景除外）、sRGB；文件名小写 kebab-case；不得包含 openid/JWT/头像等动态或敏感信息；源文件不放 `miniprogram/assets/`。
+- 测试文件不进包：`miniprogram/project.config.json` 的 `packOptions.ignore` 以 `suffix` 规则排除 `.test.mjs`/`.test.ts`（校验脚本检查覆盖）。
 
 ## 常用命令
 
 ```sh
 npm run typecheck   # tsc --noEmit 全量类型检查
-npm test            # vitest run
+npm test            # vitest run（全量测试）
 npm run build       # tsc -p tsconfig.build.json 产出 dist/
-npm test -- --run src/api/v1/openapi-auth-h4.test.ts  # H4/API 合同回归
 
 # 首页视觉（Design System 母版页）—— 改 token / WXSS 后必须跑
-python3 docs/design/scripts/verify-home-migration.py                     # 结构 + 不变式 + 取值（无需浏览器）
-node    docs/design/scripts/home-view-model.mjs --out /tmp/hv            # 用真实页面代码生成各状态 data
+python3 docs/design/scripts/verify-home-migration.py                 # 结构 + 不变式 + 取值（无需浏览器）
+node    docs/design/scripts/home-view-model.mjs --out /tmp/hv        # 用真实页面代码生成各状态 data
 python3 docs/design/scripts/extract-home-visuals.py --views /tmp/hv --out /tmp/hv/after.json
 python3 docs/design/scripts/diff-home-visuals.py /tmp/hv/before.json /tmp/hv/after.json
-                                                                        # 必须「逐项一致」；有差异须查明原因
 ```
 
 ## Git 约定
@@ -218,4 +201,4 @@ python3 docs/design/scripts/diff-home-visuals.py /tmp/hv/before.json /tmp/hv/aft
 - 开发前检查并保留现有工作区变更；不覆盖或 reset 未提交工作。
 - 不提交 `.env`、Provider key、CloudBase 凭证、日志、真实数据库或监督器输出。
 - 完成功能后必须运行 typecheck、相关测试、全量测试、build 和 `git diff --check`。
-- 当前项目仍需将真实环境验证结果与未完成项明确记录，不能把本地骨架宣称为生产完成。
+- 真实环境验证结果与未完成项需明确记录，不把本地骨架宣称为生产完成。

@@ -15,10 +15,21 @@ export interface SyncTaskConfig {
   windowEndHoursBeforeKickoff?: number;
   intervalHours?: number;
   intervalMinutes?: number;
+  cronExpression?: string;
   highFrequencyUntilFirstSettlement?: boolean;
 }
 
-export const SYNC_TASKS_V1: Record<SyncJobType, SyncTaskConfig> = {
+export const SYNC_TASKS_V1: Partial<Record<SyncJobType, SyncTaskConfig>> & {
+  future_schedule: SyncTaskConfig;
+  full_schedule_verify: SyncTaskConfig;
+  near_match: SyncTaskConfig;
+  live_match: SyncTaskConfig;
+  post_finish_verify: SyncTaskConfig;
+  period_finalize: SyncTaskConfig;
+  daily_consistency: SyncTaskConfig;
+  weekly_level_eval: SyncTaskConfig;
+  level_correction_reeval: SyncTaskConfig;
+} = {
   future_schedule: {
     lookaheadDays: FIXED_CONFIG_V1.SYNC_FUTURE_DAYS,
     intervalHours: FIXED_CONFIG_V1.SYNC_NORMAL_INTERVAL_HOURS,
@@ -43,6 +54,16 @@ export const SYNC_TASKS_V1: Record<SyncJobType, SyncTaskConfig> = {
     intervalHours: 1,
   },
   daily_consistency: {
+    intervalHours: 24,
+  },
+  weekly_level_eval: {
+    cronExpression: "10 2 * * 1",
+  },
+  level_correction_reeval: {},
+  board_snapshot_career: {
+    intervalMinutes: FIXED_CONFIG_V1.CAREER_BOARD_SNAPSHOT_MINUTES,
+  },
+  board_snapshot_strength: {
     intervalHours: 24,
   },
 };

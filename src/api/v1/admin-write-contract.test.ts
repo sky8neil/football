@@ -20,11 +20,13 @@ function rejectWith(code: AdminErrorCode): never {
 }
 
 async function invokeAdminWrite(kind: AdminWrite, code: AdminErrorCode): Promise<unknown> {
+  const authorizeAdmin = async (_openid: string): Promise<void> => rejectWith(code);
   switch (kind) {
     case "result-correction":
       return postAdminResultCorrection(
-        { correct: async () => rejectWith(code) },
+        { authorizeAdmin, correct: async () => rejectWith(code) },
         {
+          trusted_openid: "trusted-admin",
           match_id: MATCH_ID,
           body: {
             expected_result_version: 1,
@@ -38,8 +40,9 @@ async function invokeAdminWrite(kind: AdminWrite, code: AdminErrorCode): Promise
       );
     case "retry-settlement":
       return postAdminRetrySettlement(
-        { retry: async () => rejectWith(code) },
+        { authorizeAdmin, retry: async () => rejectWith(code) },
         {
+          trusted_openid: "trusted-admin",
           match_id: MATCH_ID,
           server_now: NOW,
           request_id: "admin-contract-retry-settlement",
@@ -47,8 +50,9 @@ async function invokeAdminWrite(kind: AdminWrite, code: AdminErrorCode): Promise
       );
     case "rebuild-user":
       return postAdminRebuildUserStats(
-        { rebuild: async () => rejectWith(code) },
+        { authorizeAdmin, rebuild: async () => rejectWith(code) },
         {
+          trusted_openid: "trusted-admin",
           user_id: USER_ID,
           server_now: NOW,
           request_id: "admin-contract-rebuild-user",
@@ -56,10 +60,11 @@ async function invokeAdminWrite(kind: AdminWrite, code: AdminErrorCode): Promise
       );
     case "rebuild-rankings":
       return postAdminRebuildRankings(
-        { rebuild: async () => rejectWith(code) },
+        { authorizeAdmin, rebuild: async () => rejectWith(code) },
         {
+          trusted_openid: "trusted-admin",
           body: {
-            period_type: "week",
+            board: "week",
             period_key: "2026-W32",
             reason: "管理员合同复核",
           },
@@ -71,21 +76,28 @@ async function invokeAdminWrite(kind: AdminWrite, code: AdminErrorCode): Promise
 }
 
 describe("admin write error contract", () => {
-  it.each([
-    ["AUTH_REQUIRED", 401, "UNAUTHORIZED"],
-    ["FORBIDDEN", 403, "FORBIDDEN"],
-  ] as const)("maps %s consistently for all four admin writes", async (code, status, externalCode) => {
-    for (const kind of [
-      "result-correction",
-      "retry-settlement",
-      "rebuild-user",
-      "rebuild-rankings",
-    ] as const) {
-      const error = await invokeAdminWrite(kind, code).catch((caught: unknown) => caught);
-      const response = mapErrorToHttp(error, `request-${kind}`);
+  const adminWrites = [
+    "result-correction",
+    "retry-settlement",
+    "rebuild-user",
+    "rebuild-rankings",
+  ] as const;
 
-      expect(response.status).toBe(status);
-      expect(response.body.code).toBe(externalCode);
+  it("maps AUTH_REQUIRED consistently for all four admin writes", async () => {
+    for (const kind of adminWrites) {
+      const error = await invokeAdminWrite(kind, "AUTH_REQUIRED").catch((caught: unknown) => caught);
+      const response = mapErrorToHttp(error, `request-${kind}`);
+      expect(response.status).toBe(401);
+      expect(response.body.code).toBe("UNAUTHORIZED");
+    }
+  });
+
+  it("M121 maps non-admin FORBIDDEN to 403 for all four admin writes", async () => {
+    for (const kind of adminWrites) {
+      const error = await invokeAdminWrite(kind, "FORBIDDEN").catch((caught: unknown) => caught);
+      const response = mapErrorToHttp(error, `request-${kind}`);
+      expect(response.status).toBe(403);
+      expect(response.body.code).toBe("FORBIDDEN");
     }
   });
 });

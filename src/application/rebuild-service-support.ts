@@ -1,6 +1,6 @@
 import { FIXED_CONFIG_V1 } from "../domain/config.js";
 import { MatchScoreValue, SettlementItemStatus } from "../domain/enums.js";
-import { DomainError } from "../domain/errors.js";
+import { conflictError, DomainError } from "../domain/errors.js";
 import { calculateMatchScore } from "../domain/scoring.js";
 import type {
   Match,
@@ -9,6 +9,10 @@ import type {
   SettlementDoc,
   SettlementItem,
 } from "../domain/types.js";
+import type {
+  LevelAppliedItemFact,
+  LevelPredictionFact,
+} from "../domain/levels.js";
 import type { UnitOfWork } from "../infrastructure/repositories.js";
 
 export interface AppliedSettlementFact {
@@ -46,6 +50,7 @@ function validIntegerRange(value: number, min: number, max: number): boolean {
 export async function loadAppliedSettlementFacts(
   tx: UnitOfWork,
   items: readonly SettlementItem[],
+  options: { skipActiveSettlement?: boolean } = {},
 ): Promise<AppliedSettlementFact[]> {
   const facts: AppliedSettlementFact[] = [];
 
@@ -71,8 +76,18 @@ export async function loadAppliedSettlementFacts(
     }
 
     const match = await tx.matches.findById(settlement.match_id);
-    if (match === null || match.match_status !== "finished") {
-      throw invalidLedger(`applied item 缺少 finished match（prediction_id=${item.prediction_id}）`);
+    if (match === null) {
+      throw invalidLedger(`applied item 缺少 match（prediction_id=${item.prediction_id}）`);
+    }
+    if (activeSettlement(match)) {
+      if (options.skipActiveSettlement === true) {
+        continue;
+      }
+      throw conflictError(
+        "SETTLEMENT_ALREADY_RUNNING",
+        `applied item 所属比赛正在结算（prediction_id=${item.prediction_id}）`,
+        { match_id: match.match_id },
+      );
     }
     if (match.scoring_rule_version !== settlement.rule_version) {
       throw invalidLedger(`match 与 settlement rule_version 不一致（prediction_id=${item.prediction_id}）`);
@@ -159,29 +174,78 @@ export async function loadAppliedSettlementFacts(
 
   for (const [predictionId, list] of byPrediction) {
     list.sort((a, b) => a.item.source_result_version - b.item.source_result_version);
-    let previousScore: number = MatchScoreValue.Miss;
-    let previousWdl = false;
-    let previousExact = false;
-    let previousVersion = 0;
+    let previous: SettlementItem | null = null;
     for (const fact of list) {
       const item = fact.item;
-      if (
-        item.source_result_version !== previousVersion + 1 ||
-        item.old_score !== previousScore ||
-        item.old_wdl_hit !== previousWdl ||
-        item.old_exact_hit !== previousExact ||
-        item.valid_prediction_delta !== (previousVersion === 0 ? 1 : 0)
+      if (previous === null) {
+        if (
+          item.old_score !== MatchScoreValue.Miss ||
+          item.old_wdl_hit ||
+          item.old_exact_hit ||
+          item.valid_prediction_delta !== 1
+        ) {
+          throw invalidLedger(`prediction 的 applied ledger 首笔不合法（prediction_id=${predictionId}）`);
+        }
+      } else if (
+        item.source_result_version === previous.source_result_version ||
+        item.old_score !== previous.new_score ||
+        item.old_wdl_hit !== previous.new_wdl_hit ||
+        item.old_exact_hit !== previous.new_exact_hit ||
+        item.valid_prediction_delta !== 0
       ) {
         throw invalidLedger(`prediction 的 applied ledger 版本链断裂（prediction_id=${predictionId}）`);
       }
-      previousVersion = item.source_result_version;
-      previousScore = item.new_score;
-      previousWdl = item.new_wdl_hit;
-      previousExact = item.new_exact_hit;
+      previous = item;
     }
   }
 
   return facts;
+}
+
+export function buildReplayFacts(facts: readonly AppliedSettlementFact[]): {
+  facts: LevelPredictionFact[];
+  correctionSettledAts: Date[];
+} {
+  const byPrediction = new Map<string, LevelPredictionFact>();
+  const corrections = new Map<string, Date>();
+  for (const fact of facts) {
+    if (fact.match.period_anchor_at === null || fact.item.applied_at === null) {
+      throw invalidLedger(`applied item 缺少 applied_at 或 period_anchor_at（prediction_id=${fact.item.prediction_id}）`);
+    }
+    let prediction = byPrediction.get(fact.item.prediction_id);
+    if (prediction === undefined) {
+      prediction = {
+        prediction_id: fact.item.prediction_id,
+        match_id: fact.match.match_id,
+        league_id: fact.match.league_id,
+        period_anchor_at: fact.match.period_anchor_at,
+        applied_items: [],
+      };
+      byPrediction.set(fact.item.prediction_id, prediction);
+    } else if (
+      prediction.match_id !== fact.match.match_id ||
+      prediction.period_anchor_at.getTime() !== fact.match.period_anchor_at.getTime()
+    ) {
+      throw invalidLedger(`同一 prediction 的 match 事实不一致（prediction_id=${fact.item.prediction_id}）`);
+    }
+    (prediction.applied_items as LevelAppliedItemFact[]).push({
+      applied_at: fact.item.applied_at,
+      valid_prediction_delta: fact.item.valid_prediction_delta,
+      source_result_version: fact.item.source_result_version,
+      new_score: fact.item.new_score,
+      score_delta: fact.item.score_delta,
+    });
+    if (fact.settlement.is_correction) {
+      if (fact.settlement.settled_at === null) {
+        throw invalidLedger(`correction settlement 缺少 settled_at（settlement_id=${fact.settlement.settlement_id}）`);
+      }
+      corrections.set(fact.settlement.settlement_id, fact.settlement.settled_at);
+    }
+  }
+  return {
+    facts: [...byPrediction.values()],
+    correctionSettledAts: [...corrections.values()],
+  };
 }
 
 export function assertStatsAggregationPorts(tx: UnitOfWork): asserts tx is UnitOfWork & {

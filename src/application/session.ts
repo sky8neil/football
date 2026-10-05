@@ -10,7 +10,7 @@
 import { SCHEMA_VERSION, UserStatus } from "../domain/enums.js";
 import { internalError, validationError } from "../domain/errors.js";
 import { newUuid } from "../domain/ids.js";
-import type { User } from "../domain/types.js";
+import { defaultLevelState, type User } from "../domain/types.js";
 import {
   UniqueConstraintError,
   type AppRepository,
@@ -98,8 +98,10 @@ function buildUser(openid: string, nickname: string, now: Date): User {
     career_valid_predictions: 0,
     career_wdl_hits: 0,
     career_exact_hits: 0,
+    career_last_scoring_match_at: null,
     career_level: 1,
     career_best_level: 1,
+    career_level_state: defaultLevelState(),
     deleted_at: null,
     created_at: now,
     updated_at: now,

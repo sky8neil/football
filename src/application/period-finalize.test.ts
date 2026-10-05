@@ -21,12 +21,9 @@ const WEEK_ENTRY: RankingEntry = {
 };
 
 describe("period finalization", () => {
-  it("computes week and month end at Beijing midnight", () => {
+  it("computes week end at Beijing midnight", () => {
     expect(periodEndAt(PeriodType.Week, "2026-W32").toISOString()).toBe(
       "2026-08-09T16:00:00.000Z",
-    );
-    expect(periodEndAt(PeriodType.Month, "2026-08").toISOString()).toBe(
-      "2026-08-31T16:00:00.000Z",
     );
   });
 
@@ -37,7 +34,7 @@ describe("period finalization", () => {
     expect(finalizeRankingEntry(WEEK_ENTRY, before)).toBe(WEEK_ENTRY);
     expect(finalizeRankingEntry(WEEK_ENTRY, atEnd)).toMatchObject({
       is_final: true,
-      updated_at: atEnd,
+      updated_at: WEEK_ENTRY.updated_at,
     });
   });
 

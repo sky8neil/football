@@ -7,13 +7,13 @@
 ## 原则
 
 - **频率属于基础设施层。** 取值引用已冻结的 `SYNC_TASKS_V1`（`src/sync/config.ts`）与 `FIXED_CONFIG_V1`。`SchedulerTick` 不内置定时循环：被触发一次就执行一次。
-- **业务判断不读墙钟。** `server_now` 由触发器运行时注入（云函数入口读取系统时间或调用方传入时间），再交给 tick / runner。`now()` 只用于日志 `duration_ms`，不得写入账本、状态机或 lease。
+- **业务事实不读墙钟。** `server_now` 由触发器运行时注入（云函数入口读取系统时间或调用方传入时间），再交给 tick / runner。墙钟只用于日志 `duration_ms` 和续租 lease 的操作性到期边界；不得写入业务账本或状态机。初次 lease 仍使用注入的 `server_now`。
 - **同类任务互斥。** 锁 key 为已冻结的 `jobLockKey(jobType)`，格式 `sync:{job_type}`。同 `job_type` 的不同实例靠该锁互斥；lease 超时可接管。初次 lease = `server_now + FIXED_CONFIG_V1.JOB_LEASE_MINUTES`（当前 10 分钟，与 A3.3 一致）。
 - **调度器只调业务入口。** Provider 五类经 tick 接线时 runner 调无锁入口 `ProviderFixtureSyncJobService.executeHeldByCaller`（P1-2 方案 A，见下文最终接线）；不套 tick 时仍可走 `ProviderSyncDispatcher` / `*Service.run(serverNow)`（自带锁）。`period_finalize` / `daily_consistency` 走已有 Service 公开入口。不得在触发器里重写账本或状态机。
 
-## 7 类任务清单
+## 11 类任务清单
 
-频率列只引用 `SYNC_TASKS_V1` 已冻结字段，不在本文发明新间隔。
+频率列引用 `SYNC_TASKS_V1`；周评估 cron 使用 UTC，业务 `as_of` 固定为北京时间周一 10:00。
 
 | job_type | 频率（`SYNC_TASKS_V1`） | 执行说明 | lease 互斥 |
 | --- | --- | --- | --- |
@@ -22,8 +22,12 @@
 | `near_match` | `intervalMinutes = FIXED_CONFIG_V1.SYNC_NEAR_24H_TO_2H_INTERVAL_MINUTES`（当前 **30**） | T-24h～T-2h 窗口。触发器按 FIXED 分钟触发，窗口判断仍用注入 `server_now`。 | `sync:near_match` |
 | `live_match` | `intervalMinutes = FIXED_CONFIG_V1.SYNC_NEAR_2H_TO_FINISH_INTERVAL_MINUTES`（当前 **3**） | T-2h～finished。触发器按 FIXED 分钟触发。 | `sync:live_match` |
 | `post_finish_verify` | `intervalMinutes = 3`（`highFrequencyUntilFirstSettlement = true`） | 完赛后高频核对直至首次结算开始。是否仍需处理由业务入口按 `server_now` 判断。 | `sync:post_finish_verify` |
-| `period_finalize` | `intervalHours = 1` | 每小时触发。对 `period_end <= server_now` 的 week/month rankings 封存。周期枚举与封存决策在业务入口内用注入时间完成。 | `sync:period_finalize` |
+| `period_finalize` | `intervalHours = 1` | 每小时触发。对 `period_end <= server_now` 的 week rankings 封存。周期枚举与封存决策在业务入口内用注入时间完成。 | `sync:period_finalize` |
 | `daily_consistency` | `intervalHours = 24` | 每日一致性核对；发现缓存差异只报警/记摘要，不在调度层静默修账本。 | `sync:daily_consistency` |
+| `weekly_level_eval` | `cronExpression = "10 2 * * 1"`（UTC） | 每周一 02:10 UTC 启动；评估时刻固定为该周一 02:00 UTC，且只读 `applied_at < as_of`。成功完成后立即触发 `board_snapshot_strength`。 | `sync:weekly_level_eval` |
+| `level_correction_reeval` | 事件触发；无 interval/cron | correction settlement 进入 `phase=done` 后触发，只处理 `score_delta != 0` 的 applied items；`as_of = settled_at`。 | `sync:level_correction_reeval` |
+| `board_snapshot_career` | `intervalMinutes = FIXED_CONFIG_V1.CAREER_BOARD_SNAPSHOT_MINUTES`（当前 **60**） | 每小时生成 career board snapshot。 | `sync:board_snapshot_career` |
+| `board_snapshot_strength` | `intervalHours = 24`，另由 `weekly_level_eval` 成功完成触发 | 每日生成一次，周评估完成后立即刷新 strength board snapshot。 | `sync:board_snapshot_strength` |
 
 建议每个 `job_type` 对应一个云函数定时触发器（或同一入口按事件字段分发），cron/间隔与上表一致。不要在 tick 内 `setInterval` / sleep 等待下一轮。
 
@@ -65,10 +69,13 @@ job_type, outcome, started_at, finished_at, duration_ms, lock_key, owner_id,
 
 - `ownerId`：实例身份，建议 `instance-<host>-<pid>`。
 - `jobLocks`：生产 JobLock repository（B1 真实库未接线前不可在本环境验证）。
-- `runners`：七类业务入口，签名均为 `(serverNow: Date) => Promise<...>`。
+- `runners`：11 类业务入口，签名均为 `(serverNow: Date) => Promise<...>`。
   - Provider 五类：`ProviderSyncDispatcher.run(jobType, serverNow)` 或对应 `*Service.run(serverNow)`。
   - `period_finalize`：调用 `PeriodFinalizeService.finalize(periodType, periodKey, serverNow)`；由入口按小时枚举到期周期。
   - `daily_consistency`：调用 `DailyConsistencyService.run(serverNow)`。
+  - `weekly_level_eval`：调用 `WeeklyLevelEvalService.run(serverNow)`；成功完成后由该服务使用 `sync:board_snapshot_strength` 锁立即生成 strength snapshot，不再重复分发第二个事件。
+  - `level_correction_reeval`：correction settlement done 后调用 `LevelCorrectionReevalService.runForSettlement(settlementId, serverNow)`。
+  - `board_snapshot_career` / `board_snapshot_strength`：调用对应 `BoardSnapshotService.generate(board, serverNow)`。
 
 ### 最终接线（P1-2 方案 A）：tick 持锁，runner 走无锁业务入口
 
@@ -94,7 +101,7 @@ Provider 五类任务的 `ProviderFixtureSyncJobService` 已拆分两层入口�
 ## 待配置项（需要用户环境）
 
 - 云开发环境 id / 资源命名空间确认（dev / test / prod 隔离）。
-- 七类定时触发器的 cron / 间隔在控制台或配置中落地。
+- 11 类触发器的 cron / 间隔或 correction 事件订阅在控制台或配置中落地。
 - 生产 `job_locks` 与 `sync_logs` 所在数据库绑定。
 - 云函数入口与 tick 的组装（含 `ownerId`、日志汇出）。
 - 平台级失败重试策略确认（与 `SYNC_RETRY_V1` 分层，不重复）。

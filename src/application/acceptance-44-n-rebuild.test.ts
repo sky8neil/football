@@ -1,12 +1,12 @@
 /**
- * 第 44 节 N. Rebuild 与一致性验收矩阵（N108-N113），按 49.5 修订。
+ * 第 44 节 N. Rebuild 与一致性验收矩阵（N123-N128）。
  *
  * 唯一事实源 = status=applied 的 settlement_items + match.period_anchor_at 归属
  *   + unlock/level_history 只增不减规则；不得以 prediction 缓存命中字段为唯一输入。
- * - N108 rebuild_user_stats 后与 applied ledger 完全一致（非未结算 prediction 猜测）
- * - N109 rebuild_period_rankings 后与 applied items + period 归属完全一致
- * - N110 daily consistency 发现差异只报警，不自动修改
- * - N111 unlock 不因普通 rebuild 删除
+ * - N123 rebuild_user_stats 后与 applied ledger 完全一致（含等级回放）
+ * - N124 rebuild_period_rankings 后与 applied items + period 归属完全一致
+ * - N125 daily consistency 发现差异只报警，不自动修改
+ * - N126 unlock 不因普通 rebuild 删除
  */
 import { describe, expect, it } from "vitest";
 import {
@@ -33,6 +33,7 @@ import { checkDailyConsistency } from "./daily-consistency.js";
 import { RepositoryDailyConsistencySnapshotSource } from "./daily-consistency-snapshot.js";
 import { RebuildPeriodRankingsService } from "./ranking-rebuild-service.js";
 import { RebuildUserStatsService } from "./stats-rebuild-service.js";
+import { defaultLevelState } from "../domain/types.js";
 
 const NOW = new Date("2026-08-09T00:00:00.000Z");
 const ANCHOR = new Date("2026-08-05T12:00:00.000Z");
@@ -53,6 +54,8 @@ function makeUser(userId: string, overrides: Partial<User> = {}): User {
     career_exact_hits: 0,
     career_level: 1,
     career_best_level: 1,
+    career_last_scoring_match_at: null,
+    career_level_state: defaultLevelState(),
     deleted_at: null,
     created_at: NOW,
     updated_at: NOW,
@@ -227,7 +230,7 @@ async function insertAppliedFact(
 }
 
 describe("N. Rebuild 与一致性（规范 44-N / 49.5）", () => {
-  it("N108 rebuild_user_stats 后与 applied ledger 完全一致，污染 prediction 缓存命中字段不影响结果", async () => {
+  it("N123 rebuild_user_stats 与 applied ledger 一致，含等级回放且不受 prediction 缓存污染", async () => {
     const repo = new InMemoryRepository();
     await repo.users.insert(makeUser("u1"));
 
@@ -241,7 +244,10 @@ describe("N. Rebuild 与一致性（规范 44-N / 49.5）", () => {
     const item = makeItem("s1", "p1", "u1", 1);
     await insertAppliedFact(repo, makeMatch("m1"), polluted, item);
 
-    const outcome = await new RebuildUserStatsService(repo).rebuildUserStats("u1", NOW);
+    const outcome = await new RebuildUserStatsService(
+      repo,
+      new Date("2026-07-27T02:00:00.000Z"),
+    ).rebuildUserStats("u1", NOW);
 
     // 以 applied item 为准：12 分 / valid 1 / wdl 1 / exact 1，与 prediction 缓存无关。
     expect(outcome.user).toMatchObject({
@@ -252,16 +258,22 @@ describe("N. Rebuild 与一致性（规范 44-N / 49.5）", () => {
     });
     expect(outcome.season_stats).toEqual([
       expect.objectContaining({
-        season_id: "2026_2027",
+        level_season_id: "2026_2027",
         points: 12,
         valid_predictions: 1,
         wdl_hits: 1,
         exact_hits: 1,
       }),
     ]);
+    expect(outcome.level_state_changed).toBe(true);
+    expect(outcome.user.career_level_state).toMatchObject({
+      last_eval_as_of: new Date("2026-08-03T02:00:00.000Z"),
+      last_eval_n: 0,
+      last_eval_score_sum: 0,
+    });
   });
 
-  it("N109 rebuild_period_rankings 后与 applied items + period 归属完全一致，不读 prediction 缓存", async () => {
+  it("N124 rebuild_period_rankings 与 applied items 及 week 归属一致，不读 prediction 缓存", async () => {
     const repo = new InMemoryRepository();
     await repo.users.insert(makeUser("u1"));
     await repo.users.insert(makeUser("u2"));
@@ -299,6 +311,15 @@ describe("N. Rebuild 与一致性（规范 44-N / 49.5）", () => {
         new_exact_hit: false,
       }),
     );
+    const priorWeek = makeMatch("r3", {
+      period_anchor_at: new Date("2026-07-27T12:00:00.000Z"),
+    });
+    await insertAppliedFact(
+      repo,
+      priorWeek,
+      makePrediction("rp3", "u3", "r3"),
+      makeItem("rs3", "rp3", "u3", 1),
+    );
 
     await repo.rankings.insert(makeRanking());
 
@@ -315,18 +336,55 @@ describe("N. Rebuild 与一致性（规范 44-N / 49.5）", () => {
       valid_predictions: 1,
       wdl_hits: 1,
       exact_hits: 1,
-      global_rank: null,
+      global_rank: 1,
     });
     expect(byUser["u2"]).toMatchObject({
       period_score: 0,
       valid_predictions: 1,
       wdl_hits: 0,
       exact_hits: 0,
-      global_rank: null,
+      global_rank: 2,
     });
+    expect(byUser["u3"]).toBeUndefined();
   });
 
-  it("N110 daily consistency 发现差异只报警，不自动修改账本", async () => {
+  it("按周期结束边界封存新行，并仅在未结束周过滤注销用户", async () => {
+    const seed = async () => {
+      const repo = new InMemoryRepository();
+      await repo.users.insert(makeUser("u-active"));
+      await repo.users.insert(makeUser("u-deleted", {
+        status: "deleted",
+        nickname: null,
+        deleted_at: NOW,
+      }));
+      for (const userId of ["u-active", "u-deleted"]) {
+        const matchId = `match-${userId}`;
+        const predictionId = `prediction-${userId}`;
+        const settlementId = `settlement-${userId}`;
+        await insertAppliedFact(
+          repo,
+          makeMatch(matchId),
+          makePrediction(predictionId, userId, matchId),
+          makeItem(settlementId, predictionId, userId, 1),
+        );
+      }
+      return repo;
+    };
+
+    const currentWeek = await seed();
+    const currentOutcome = await new RebuildPeriodRankingsService(currentWeek)
+      .rebuildPeriodRankings(PeriodType.Week, WEEK_KEY, new Date("2026-08-09T12:00:00.000Z"));
+    expect(currentOutcome.rankings.map((entry) => [entry.user_id, entry.global_rank, entry.is_final]))
+      .toEqual([["u-active", 1, false]]);
+
+    const historicalWeek = await seed();
+    const historicalOutcome = await new RebuildPeriodRankingsService(historicalWeek)
+      .rebuildPeriodRankings(PeriodType.Week, WEEK_KEY, new Date("2026-08-09T16:00:00.000Z"));
+    expect(historicalOutcome.rankings.map((entry) => [entry.user_id, entry.global_rank, entry.is_final]))
+      .toEqual([["u-active", 1, true], ["u-deleted", 2, true]]);
+  });
+
+  it("N125 daily consistency 发现差异只报警，不自动修改账本", async () => {
     const repo = new InMemoryRepository();
     await repo.users.insert(makeUser("u1", { career_points: 3 }));
     const match = makeMatch("d1");
@@ -352,7 +410,7 @@ describe("N. Rebuild 与一致性（规范 44-N / 49.5）", () => {
     await expect(repo.users.findById("u1")).resolves.toMatchObject({ career_points: 3 });
   });
 
-  it("N111 unlock 不因普通 rebuild 删除", async () => {
+  it("N126 unlock 不因普通 rebuild 删除", async () => {
     const repo = new InMemoryRepository();
     await repo.users.insert(makeUser("u1"));
     await repo.unlocks.insert({

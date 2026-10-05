@@ -1,20 +1,50 @@
 import { postSessionInit } from "../api/v1/session.js";
 import { getMatch, getMatches } from "../api/v1/matches.js";
-import { getMyPredictions, postPrediction } from "../api/v1/predictions.js";
-import { getMyProfile } from "../api/v1/profile.js";
+import { getMyPrediction, getMyPredictions, postPrediction } from "../api/v1/predictions.js";
+import {
+  deleteMyProfile,
+  getMyProfile,
+  getPublicProfile,
+  patchMyProfile,
+} from "../api/v1/profile.js";
 import { getMyLevels } from "../api/v1/levels.js";
 import { getMyUnlocks } from "../api/v1/unlocks.js";
 import { getRankings } from "../api/v1/rankings.js";
+import {
+  getAdminAnomalies,
+  postAdminRebuildRankings,
+  postAdminRebuildUserStats,
+  postAdminResultCorrection,
+  postAdminRetrySettlement,
+} from "../api/v1/admin.js";
+import {
+  createGroup,
+  dissolveGroup,
+  getGroup,
+  getMyGroups,
+  joinGroup,
+  leaveGroup,
+} from "../api/v1/groups.js";
+import { getShareCardMe } from "../api/v1/share-card.js";
 import { makeRequestId, mapErrorToHttp } from "../api/v1/validation.js";
 import type { RateLimiter } from "../api/v1/rate-limit.js";
 import type { SessionService } from "../application/session.js";
 import type { MatchQueryService } from "../application/match-query.js";
 import { PredictionHistoryQueryService } from "../application/prediction-query.js";
+import { PredictionQueryService } from "../application/prediction-query.js";
 import { PredictionService } from "../application/predictions.js";
 import { ProfileQueryService } from "../application/profile.js";
+import { ProfileMutationService } from "../application/profile-mutation.js";
 import { LevelsQueryService } from "../application/levels.js";
 import { UnlocksQueryService } from "../application/unlocks.js";
 import { RankingQueryService } from "../application/ranking-query.js";
+import { ShareCardQueryService } from "../application/share-card.js";
+import { GroupsService } from "../application/groups.js";
+import { AdminAnomaliesService } from "../application/admin-anomalies.js";
+import { AdminResultCorrectionService } from "../application/admin-result-correction.js";
+import { AdminRetrySettlementService } from "../application/admin-retry-settlement.js";
+import { AdminRebuildUserStatsService } from "../application/admin-rebuild-user-stats.js";
+import { AdminRebuildRankingsService } from "../application/admin-rebuild-rankings.js";
 import { UserStatus } from "../domain/enums.js";
 import { conflictError, validationError } from "../domain/errors.js";
 import type { AppRepository } from "../infrastructure/repositories.js";
@@ -36,8 +66,10 @@ export interface GatewayRequestInput {
     session: Pick<SessionService, "init">;
     matches: Pick<MatchQueryService, "list" | "get">;
     predictions?: Pick<PredictionService, "submit"> &
-      Partial<Pick<PredictionHistoryQueryService, "listMyPredictions">>;
+      Partial<Pick<PredictionHistoryQueryService, "listMyPredictions">> &
+      Partial<Pick<PredictionQueryService, "getMyPrediction">>;
     profile?: Pick<ProfileQueryService, "getMyProfile">;
+    profileMutation?: Pick<ProfileMutationService, "updateMyProfile" | "deleteMyProfile">;
     levels?: Pick<LevelsQueryService, "getLevels">;
     unlocks?: Pick<UnlocksQueryService, "getUnlocks">;
     rankings?: Pick<RankingQueryService, "list">;
@@ -48,7 +80,7 @@ export interface GatewayRequestInput {
 
 export interface GatewayResponse {
   status: number;
-  body: unknown;
+  body?: unknown;
 }
 
 function normalizeMethod(method: string): string {
@@ -159,6 +191,14 @@ function matchIdFromPath(path: string): string | null {
   return matchId;
 }
 
+function singlePathParameter(path: string, prefix: string): string | null {
+  if (!path.startsWith(prefix)) {
+    return null;
+  }
+  const value = path.slice(prefix.length);
+  return value.length === 0 || value.includes("/") ? null : value;
+}
+
 function responseCode(body: unknown): string | undefined {
   if (typeof body === "object" && body !== null && "code" in body) {
     const code = (body as { code: unknown }).code;
@@ -224,7 +264,7 @@ export async function handleGatewayRequest(
       const identity = await resolveIdentity(trustedOpenid, input.repo);
       const result = await getMatch(input.services.matches, {
         authenticated_user_id: publicReadUserId(identity),
-        public_source: LOCAL_PUBLIC_SOURCE,
+        public_source: input.config.public_source,
         match_id: matchId,
         server_now: input.server_now,
         request_id: requestId,
@@ -242,6 +282,24 @@ export async function handleGatewayRequest(
       const result = await postPrediction(predictions, {
         authenticated_user_id: writePredictionUserId(identity),
         body,
+        server_now: input.server_now,
+        request_id: requestId,
+        rate_limiter: input.rate_limiter,
+      });
+      logGateway(requestId, path, result.status, undefined);
+      return result;
+    }
+
+    const predictionId = singlePathParameter(path, "/v1/predictions/me/");
+    if (method === "GET" && predictionId !== null) {
+      const identity = await resolveIdentity(trustedOpenid, input.repo);
+      const provided = input.services.predictions;
+      const predictions = provided?.getMyPrediction !== undefined
+        ? { getMyPrediction: provided.getMyPrediction.bind(provided) }
+        : new PredictionQueryService(input.repo);
+      const result = await getMyPrediction(predictions, {
+        authenticated_user_id: authenticatedReadUserId(identity),
+        prediction_id: predictionId,
         server_now: input.server_now,
         request_id: requestId,
         rate_limiter: input.rate_limiter,
@@ -277,6 +335,50 @@ export async function handleGatewayRequest(
         input.services.profile ?? new ProfileQueryService(input.repo);
       const result = await getMyProfile(profile, {
         authenticated_user_id: authenticatedReadUserId(identity),
+        server_now: input.server_now,
+        request_id: requestId,
+        rate_limiter: input.rate_limiter,
+      });
+      logGateway(requestId, path, result.status, undefined);
+      return result;
+    }
+
+    if (method === "PATCH" && path === "/v1/profile/me") {
+      const identity = await resolveIdentity(trustedOpenid, input.repo);
+      const body = resolveJsonObjectBody(input.body);
+      const profileMutation =
+        input.services.profileMutation ?? new ProfileMutationService(input.repo);
+      const result = await patchMyProfile(profileMutation, {
+        authenticated_user_id: authenticatedReadUserId(identity),
+        body,
+        server_now: input.server_now,
+        request_id: requestId,
+        rate_limiter: input.rate_limiter,
+      });
+      logGateway(requestId, path, result.status, undefined);
+      return result;
+    }
+
+    if (method === "DELETE" && path === "/v1/profile/me") {
+      const identity = await resolveIdentity(trustedOpenid, input.repo);
+      const profileMutation =
+        input.services.profileMutation ?? new ProfileMutationService(input.repo);
+      const result = await deleteMyProfile(profileMutation, {
+        authenticated_user_id: authenticatedReadUserId(identity),
+        server_now: input.server_now,
+        request_id: requestId,
+        rate_limiter: input.rate_limiter,
+      });
+      logGateway(requestId, path, result.status, undefined);
+      return result;
+    }
+
+    const publicProfileUserId = singlePathParameter(path, "/v1/profiles/");
+    if (method === "GET" && publicProfileUserId !== null) {
+      const profile = new ProfileQueryService(input.repo);
+      const result = await getPublicProfile(profile, {
+        user_id: publicProfileUserId,
+        public_source: input.config.public_source,
         server_now: input.server_now,
         request_id: requestId,
         rate_limiter: input.rate_limiter,
@@ -323,6 +425,172 @@ export async function handleGatewayRequest(
         authenticated_user_id: publicReadUserId(identity),
         public_source: LOCAL_PUBLIC_SOURCE,
         query: input.query,
+        server_now: input.server_now,
+        request_id: requestId,
+        rate_limiter: input.rate_limiter,
+      });
+      logGateway(requestId, path, result.status, undefined);
+      return result;
+    }
+
+    if (method === "GET" && path === "/v1/share-card/me") {
+      const identity = await resolveIdentity(trustedOpenid, input.repo);
+      const shareCard = new ShareCardQueryService(input.repo);
+      const result = await getShareCardMe(shareCard, {
+        authenticated_user_id: authenticatedReadUserId(identity),
+        query: input.query,
+        server_now: input.server_now,
+        request_id: requestId,
+        rate_limiter: input.rate_limiter,
+      });
+      logGateway(requestId, path, result.status, undefined);
+      return result;
+    }
+
+    if (method === "GET" && path === "/v1/admin/anomalies") {
+      const result = await getAdminAnomalies(
+        new AdminAnomaliesService(input.repo, input.config.match_cursor_secret),
+        {
+          trusted_openid: trustedOpenid,
+          query: input.query,
+          server_now: input.server_now,
+          request_id: requestId,
+          rate_limiter: input.rate_limiter,
+        },
+      );
+      logGateway(requestId, path, result.status, undefined);
+      return result;
+    }
+
+    const resultCorrectionMatchId = path.match(
+      /^\/v1\/admin\/matches\/([^/]+)\/result-corrections$/,
+    )?.[1];
+    if (method === "POST" && resultCorrectionMatchId !== undefined) {
+      const result = await postAdminResultCorrection(new AdminResultCorrectionService(input.repo), {
+        trusted_openid: trustedOpenid,
+        match_id: resultCorrectionMatchId,
+        body: input.body,
+        server_now: input.server_now,
+        request_id: requestId,
+        rate_limiter: input.rate_limiter,
+      });
+      logGateway(requestId, path, result.status, undefined);
+      return result;
+    }
+
+    const retrySettlementMatchId = path.match(
+      /^\/v1\/admin\/matches\/([^/]+)\/retry-settlement$/,
+    )?.[1];
+    if (method === "POST" && retrySettlementMatchId !== undefined) {
+      const result = await postAdminRetrySettlement(new AdminRetrySettlementService(input.repo), {
+        trusted_openid: trustedOpenid,
+        match_id: retrySettlementMatchId,
+        body: input.body,
+        server_now: input.server_now,
+        request_id: requestId,
+        rate_limiter: input.rate_limiter,
+      });
+      logGateway(requestId, path, result.status, undefined);
+      return result;
+    }
+
+    const rebuildUserId = singlePathParameter(path, "/v1/admin/rebuild/users/");
+    if (method === "POST" && rebuildUserId !== null) {
+      const result = await postAdminRebuildUserStats(new AdminRebuildUserStatsService(input.repo), {
+        trusted_openid: trustedOpenid,
+        user_id: rebuildUserId,
+        body: input.body,
+        server_now: input.server_now,
+        request_id: requestId,
+        rate_limiter: input.rate_limiter,
+      });
+      logGateway(requestId, path, result.status, undefined);
+      return result;
+    }
+
+    if (method === "POST" && path === "/v1/admin/rebuild/rankings") {
+      const result = await postAdminRebuildRankings(new AdminRebuildRankingsService(input.repo), {
+        trusted_openid: trustedOpenid,
+        body: input.body,
+        server_now: input.server_now,
+        request_id: requestId,
+        rate_limiter: input.rate_limiter,
+      });
+      logGateway(requestId, path, result.status, undefined);
+      return result;
+    }
+
+    const groups = new GroupsService(input.repo, {
+      cursorSecret: input.config.match_cursor_secret,
+    });
+    if (method === "POST" && path === "/v1/groups") {
+      const result = await createGroup(groups, {
+        authenticated_user_id: authenticatedReadUserId(await resolveIdentity(trustedOpenid, input.repo)),
+        body: resolveJsonObjectBody(input.body),
+        server_now: input.server_now,
+        request_id: requestId,
+        rate_limiter: input.rate_limiter,
+      });
+      logGateway(requestId, path, result.status, undefined);
+      return result;
+    }
+
+    if (method === "POST" && path === "/v1/groups/join") {
+      const result = await joinGroup(groups, {
+        authenticated_user_id: authenticatedReadUserId(await resolveIdentity(trustedOpenid, input.repo)),
+        body: resolveJsonObjectBody(input.body),
+        server_now: input.server_now,
+        request_id: requestId,
+        rate_limiter: input.rate_limiter,
+      });
+      logGateway(requestId, path, result.status, undefined);
+      return result;
+    }
+
+    if (method === "POST") {
+      const groupId = path.match(/^\/v1\/groups\/([^/]+)\/leave$/)?.[1];
+      if (groupId !== undefined) {
+        const result = await leaveGroup(groups, {
+          authenticated_user_id: authenticatedReadUserId(await resolveIdentity(trustedOpenid, input.repo)),
+          group_id: groupId,
+          server_now: input.server_now,
+          request_id: requestId,
+          rate_limiter: input.rate_limiter,
+        });
+        logGateway(requestId, path, result.status, undefined);
+        return result;
+      }
+    }
+
+    const groupId = singlePathParameter(path, "/v1/groups/");
+    if (method === "GET" && path === "/v1/groups/me") {
+      const result = await getMyGroups(groups, {
+        authenticated_user_id: authenticatedReadUserId(await resolveIdentity(trustedOpenid, input.repo)),
+        query: input.query,
+        server_now: input.server_now,
+        request_id: requestId,
+        rate_limiter: input.rate_limiter,
+      });
+      logGateway(requestId, path, result.status, undefined);
+      return result;
+    }
+
+    if (method === "GET" && groupId !== null) {
+      const result = await getGroup(groups, {
+        authenticated_user_id: authenticatedReadUserId(await resolveIdentity(trustedOpenid, input.repo)),
+        group_id: groupId,
+        server_now: input.server_now,
+        request_id: requestId,
+        rate_limiter: input.rate_limiter,
+      });
+      logGateway(requestId, path, result.status, undefined);
+      return result;
+    }
+
+    if (method === "DELETE" && groupId !== null) {
+      const result = await dissolveGroup(groups, {
+        authenticated_user_id: authenticatedReadUserId(await resolveIdentity(trustedOpenid, input.repo)),
+        group_id: groupId,
         server_now: input.server_now,
         request_id: requestId,
         rate_limiter: input.rate_limiter,

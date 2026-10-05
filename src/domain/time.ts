@@ -67,15 +67,10 @@ export function weekPeriodKey(periodAnchorAt: Date): string {
   return `${isoYear}-W${String(isoWeek).padStart(2, "0")}`;
 }
 
-/** 月周期 key：北京时间自然月，例如 2026-08。 */
-export function monthPeriodKey(periodAnchorAt: Date): string {
-  const p = toShanghaiParts(periodAnchorAt);
-  return `${p.year}-${String(p.month).padStart(2, "0")}`;
-}
-
 /**
  * 唯一实现入口（规范 0.4）：
  * calculate_period_key(period_type, period_anchor_at)
+ * 只支持 week 周期。
  */
 export function calculatePeriodKey(
   periodType: PeriodTypeValue,
@@ -83,9 +78,6 @@ export function calculatePeriodKey(
 ): string {
   if (periodType === PeriodType.Week) {
     return weekPeriodKey(periodAnchorAt);
-  }
-  if (periodType === PeriodType.Month) {
-    return monthPeriodKey(periodAnchorAt);
   }
   throw validationError("未知 period_type", { period_type: periodType });
 }
@@ -103,11 +95,6 @@ export function periodEndAt(
       period_type: periodType,
       period_key: periodKey,
     });
-  }
-
-  if (periodType === PeriodType.Month) {
-    const [year, month] = periodKey.split("-").map(Number);
-    return new Date(Date.UTC(year!, month!, 1) - SHANGHAI_OFFSET_MS);
   }
 
   const match = /^(\d{4})-W(\d{2})$/.exec(periodKey);
@@ -139,16 +126,13 @@ function weekdayOfJanuaryFirst(year: number): number {
   return date.getUTCDay();
 }
 
-/** 校验 API 使用的 week/month period_key 形状与可用范围。 */
+/** 校验 week period_key 形状与可用范围。 */
 export function isValidPeriodKey(
   periodType: PeriodTypeValue,
   periodKey: string,
 ): boolean {
   if (typeof periodKey !== "string") {
     return false;
-  }
-  if (periodType === PeriodType.Month) {
-    return /^\d{4}-(0[1-9]|1[0-2])$/.test(periodKey);
   }
   if (periodType === PeriodType.Week) {
     const match = /^(\d{4})-W(0[1-9]|[1-4]\d|5[0-3])$/.exec(periodKey);
@@ -195,4 +179,68 @@ export function settlementEarliestStart(
   waitMinutes: number = FIXED_CONFIG_V1.SETTLEMENT_WAIT_MINUTES,
 ): Date {
   return addMinutes(finishDetectedAt, waitMinutes);
+}
+
+/** 等级赛季 id：北京时间 7/1 00:00 切年，形如 "2026_2027"。 */
+export function levelSeasonOf(periodAnchorAt: Date): string {
+  const p = toShanghaiParts(periodAnchorAt);
+  const year = p.month >= 7 ? p.year : p.year - 1;
+  return `${year}_${year + 1}`;
+}
+
+function shanghaiWallToUtc(
+  year: number,
+  month: number,
+  day: number,
+  hour: number,
+  minute = 0,
+  second = 0,
+): Date {
+  return new Date(
+    Date.UTC(year, month - 1, day, hour, minute, second) - SHANGHAI_OFFSET_MS,
+  );
+}
+
+/** 是否恰好为周一 10:00:00.000 Asia/Shanghai（§17.6.2 评估时刻）。 */
+export function isMondayLevelEvalAt(date: Date): boolean {
+  const p = toShanghaiParts(date);
+  return (
+    p.weekday === 0 &&
+    p.hour === 10 &&
+    p.minute === 0 &&
+    p.second === 0 &&
+    date.getTime() % 1000 === 0
+  );
+}
+
+/**
+ * 大于等于 `from` 的最早「周一 10:00 Asia/Shanghai」评估时刻。
+ * 若 `from` 恰好是该时刻，返回其本身。
+ */
+export function nextMondayEvalAt(from: Date): Date {
+  const p = toShanghaiParts(from);
+  const thisMonday = shanghaiWallToUtc(p.year, p.month, p.day - p.weekday, 10);
+  if (from.getTime() <= thisMonday.getTime()) {
+    return thisMonday;
+  }
+  return new Date(thisMonday.getTime() + 7 * 24 * 60 * 60 * 1000);
+}
+
+/**
+ * 保护期结束时刻：首次周评估 as_of 起第 13 个周评估之后
+ *（即 `firstEvalAsOf + 13 周`；前 13 次周评估 `as_of < end` 不降级不累计）。
+ *
+ * Q1：`LEVEL_FIRST_EVAL_AS_OF` 未登记。本函数只接受显式注入的首次周一，
+ * 不得读取 null 配置去发明上线日。
+ */
+export function levelProtectionEndAsOf(firstEvalAsOf: Date): Date {
+  if (!isMondayLevelEvalAt(firstEvalAsOf)) {
+    throw validationError("首次周评估 as_of 必须是周一 10:00 Asia/Shanghai", {
+      first_eval_as_of: firstEvalAsOf.toISOString(),
+    });
+  }
+  return new Date(
+    firstEvalAsOf.getTime() +
+      FIXED_CONFIG_V1.LEVEL_PROTECTION_EVALS * 7 * 24 * 60 * 60 * 1000,
+  );
 }

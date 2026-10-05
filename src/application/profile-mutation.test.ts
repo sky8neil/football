@@ -3,6 +3,7 @@ import { TeamStatus, UserStatus } from "../domain/enums.js";
 import type { Team, User } from "../domain/types.js";
 import { InMemoryRepository } from "../infrastructure/repositories.js";
 import { ProfileMutationService } from "./profile-mutation.js";
+import { defaultLevelState } from "../domain/types.js";
 
 const NOW = new Date("2026-08-09T00:00:00.000Z");
 
@@ -21,6 +22,8 @@ function makeUser(overrides: Partial<User> = {}): User {
     career_exact_hits: 1,
     career_level: 1,
     career_best_level: 1,
+    career_last_scoring_match_at: null,
+    career_level_state: defaultLevelState(),
     deleted_at: null,
     created_at: NOW,
     updated_at: NOW,
@@ -32,6 +35,7 @@ function makeTeam(overrides: Partial<Team> = {}): Team {
   return {
     schema_version: 1,
     team_id: "00000000-0000-4000-8000-000000000011",
+    league_id: "premier_league",
     name: "Arsenal",
     short_name: "ARS",
     primary_color: null,

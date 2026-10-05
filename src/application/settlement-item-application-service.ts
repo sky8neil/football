@@ -2,15 +2,14 @@
  * settlement item 原子应用服务。
  *
  * 一个 item 的账本 delta 是唯一输入；本服务在同一事务中更新 prediction、聚合缓存、
- * 等级历史、解锁和 item 状态。旧聚合不是事实来源，但结算增量必须基于事务内当前值。
- * global_rank 重算按第 15.8 节使用 ranking:{period_type}:{period_key} 锁。
+ * 解锁和 item 状态。旧聚合不是事实来源，但结算增量必须基于事务内当前值。
+ * global_rank 在全部 item 完成后按第 15.8 节重算。
  */
 import { FIXED_CONFIG_V1 } from "../domain/config.js";
 import {
-  LevelHistoryReason,
-  LevelScope,
   MatchScoreValue,
   PeriodType,
+  RankingBoard,
   SCHEMA_VERSION,
   SettlementDocStatus,
   SettlementItemStatus,
@@ -18,18 +17,22 @@ import {
 import { assertPredictionInvariants, assertRankingInvariants, assertSeasonStatsInvariants, assertUserCareerInvariants } from "../domain/invariants.js";
 import { DomainError, conflictError, internalError, notFoundError } from "../domain/errors.js";
 import { newUuid } from "../domain/ids.js";
-import { compareRankingEntry, lastScoringForPeriodScore, rankForPosition, type RankingComparable } from "../domain/ranking.js";
-import { calculatePeriodKey } from "../domain/time.js";
-import type {
-  LevelHistoryEntry,
-  Match,
-  MatchResult,
-  Prediction,
-  RankingEntry,
-  SettlementDoc,
-  SettlementItem,
-  User,
-  UserSeasonStats,
+import {
+  compareRankingEntry,
+  lastScoringForPeriodScore,
+  rankForPosition,
+} from "../domain/ranking.js";
+import { calculatePeriodKey, levelSeasonOf } from "../domain/time.js";
+import {
+  defaultLevelState,
+  type Match,
+  type MatchResult,
+  type Prediction,
+  type RankingEntry,
+  type SettlementDoc,
+  type SettlementItem,
+  type User,
+  type UserSeasonStats,
 } from "../domain/types.js";
 import type {
   AppRepository,
@@ -40,7 +43,6 @@ import type {
 import { assertValidServerNow } from "./period-finalize.js";
 import { decideUnlockGrants } from "./unlock-decision.js";
 import { applySettlementItemDelta, computeSettlementItemDelta } from "./settlement.js";
-import { rebuildLevelState } from "./level-rebuild.js";
 import type { SettlementItemWorker, SettlementItemWorkerContext } from "./first-settlement-service.js";
 
 const INVALID_LEDGER = "INVALID_LEDGER" as const;
@@ -52,17 +54,15 @@ function invalidLedger(message: string): DomainError {
 type AggregationPorts = {
   userSeasonStats: UserSeasonStatsRepository;
   rankings: RankingRepository;
-  levelHistory: NonNullable<UnitOfWork["levelHistory"]>;
 };
 
 function requireAggregationPorts(tx: UnitOfWork): AggregationPorts {
-  if (tx.userSeasonStats === undefined || tx.rankings === undefined || tx.levelHistory === undefined) {
-    throw internalError("结算 item 缺少 career/season/ranking/level_history repository ports");
+  if (tx.userSeasonStats === undefined || tx.rankings === undefined) {
+    throw internalError("结算 item 缺少 career/season/ranking repository ports");
   }
   return {
     userSeasonStats: tx.userSeasonStats,
     rankings: tx.rankings,
-    levelHistory: tx.levelHistory,
   };
 }
 
@@ -126,20 +126,22 @@ function emptySeasonStats(userId: string, seasonId: string, now: Date): UserSeas
   return {
     schema_version: SCHEMA_VERSION,
     user_id: userId,
-    season_id: seasonId,
+    level_season_id: seasonId,
     points: 0,
     valid_predictions: 0,
     wdl_hits: 0,
     exact_hits: 0,
     level: 1,
     best_level: 1,
+    level_state: defaultLevelState(),
+    is_level_frozen: false,
     created_at: now,
     updated_at: now,
   };
 }
 
 function emptyRanking(
-  periodType: PeriodType,
+  periodType: typeof PeriodType.Week,
   periodKey: string,
   userId: string,
   now: Date,
@@ -161,36 +163,10 @@ function emptyRanking(
   };
 }
 
-function levelHistory(
-  userId: string,
-  scope: LevelScope,
-  seasonId: string | null,
-  fromLevel: number,
-  toLevel: number,
-  validPredictions: number,
-  wdlHits: number,
-  reason: LevelHistoryReason,
-  changedAt: Date,
-): LevelHistoryEntry {
-  return {
-    schema_version: SCHEMA_VERSION,
-    level_history_id: newUuid(),
-    user_id: userId,
-    scope,
-    season_id: seasonId,
-    from_level: fromLevel,
-    to_level: toLevel,
-    wdl_hits: wdlHits,
-    valid_predictions: validPredictions,
-    reason,
-    changed_at: changedAt,
-  };
-}
-
 async function lastScoringAt(
   tx: UnitOfWork,
   predictions: Prediction[],
-  periodType: PeriodType,
+  periodType: typeof PeriodType.Week,
   periodKey: string,
   updatedPrediction: Prediction,
 ): Promise<Date | null> {
@@ -216,15 +192,48 @@ async function lastScoringAt(
   return latest;
 }
 
+async function careerLastScoringAt(
+  tx: UnitOfWork,
+  predictions: Prediction[],
+  updatedPrediction: Prediction,
+): Promise<Date | null> {
+  let latest: Date | null = null;
+  for (const original of predictions) {
+    const prediction = original.prediction_id === updatedPrediction.prediction_id
+      ? updatedPrediction
+      : original;
+    if (scoreOf(prediction) <= MatchScoreValue.Miss || prediction.applied_result_version < 1) {
+      continue;
+    }
+    const match = await tx.matches.findById(prediction.match_id);
+    if (match === null || match.period_anchor_at === null) {
+      throw invalidLedger(`计分 prediction 缺少 match 或 period_anchor_at（prediction_id=${prediction.prediction_id}）`);
+    }
+    if (latest === null || match.period_anchor_at.getTime() > latest.getTime()) {
+      latest = match.period_anchor_at;
+    }
+  }
+  return latest;
+}
+
+function maxScoringAt(existing: Date | null, matchAnchorAt: Date): Date {
+  return existing === null || existing.getTime() < matchAnchorAt.getTime()
+    ? matchAnchorAt
+    : existing;
+}
+
 /** 第 15.8 节：全局 rank 按周期重算锁。 */
-export function rankingPeriodLockKey(periodType: PeriodType, periodKey: string): string {
+export function rankingPeriodLockKey(
+  periodType: typeof PeriodType.Week,
+  periodKey: string,
+): string {
   return `ranking:${periodType}:${periodKey}`;
 }
 
-async function rebuildGlobalRanks(
+export async function rebuildGlobalRanks(
   tx: UnitOfWork,
   rankings: RankingRepository,
-  periodType: PeriodType,
+  periodType: typeof PeriodType.Week,
   periodKey: string,
   now: Date,
 ): Promise<void> {
@@ -237,14 +246,14 @@ async function rebuildGlobalRanks(
   const leaseUntil = new Date(now.getTime() + FIXED_CONFIG_V1.JOB_LEASE_MINUTES * 60 * 1000);
   const acquired = await jobLocks.acquire(lockKey, ownerId, leaseUntil);
   if (!acquired) {
-    throw conflictError("SETTLEMENT_ALREADY_RUNNING", "周期排行榜重算锁被占用", {
+    throw conflictError("RANKING_REBUILD_ALREADY_RUNNING", "周期排行榜重算锁被占用", {
       lock_key: lockKey,
     });
   }
 
   try {
     const entries = await rankings.findByPeriod(periodType, periodKey);
-    const comparable: Array<{ entry: RankingEntry; value: RankingComparable }> = entries.map((entry) => ({
+    const comparable = entries.map((entry) => ({
       entry,
       value: {
         period_score: entry.period_score,
@@ -255,7 +264,7 @@ async function rebuildGlobalRanks(
         user_id: entry.user_id,
       },
     }));
-    comparable.sort((a, b) => compareRankingEntry(a.value, b.value));
+    comparable.sort((a, b) => compareRankingEntry(RankingBoard.Week, a.value, b.value));
     for (const [index, item] of comparable.entries()) {
       const globalRank = rankForPosition(item.entry.valid_predictions, index + 1);
       if (item.entry.global_rank !== globalRank) {
@@ -265,6 +274,23 @@ async function rebuildGlobalRanks(
   } finally {
     await jobLocks.release(lockKey, ownerId);
   }
+}
+
+export async function rebuildSettlementWeekRanks(
+  tx: UnitOfWork,
+  periodAnchorAt: Date,
+  now: Date,
+): Promise<void> {
+  if (tx.rankings === undefined) {
+    throw internalError("结算 rank 重算缺少 rankings repository port");
+  }
+  await rebuildGlobalRanks(
+    tx,
+    tx.rankings,
+    PeriodType.Week,
+    calculatePeriodKey(PeriodType.Week, periodAnchorAt),
+    now,
+  );
 }
 
 export type SettlementItemApplicationOutcome =
@@ -409,64 +435,58 @@ export class SettlementItemApplicationService {
       career_wdl_hits: user.career_wdl_hits + hitDelta(currentItem.new_wdl_hit, currentItem.old_wdl_hit),
       career_exact_hits: user.career_exact_hits + hitDelta(currentItem.new_exact_hit, currentItem.old_exact_hit),
     };
-    const reason = settlement.is_correction
-      ? LevelHistoryReason.Correction
-      : LevelHistoryReason.Settlement;
-    const careerLevel = rebuildLevelState(
-      LevelScope.Career,
-      updatedUserBase.career_valid_predictions,
-      updatedUserBase.career_wdl_hits,
-      user.career_level,
-      user.career_best_level,
-      reason,
-    );
+    if (match.period_anchor_at === null) {
+      throw invalidLedger(`finished match 缺少 period_anchor_at（match_id=${match.match_id}）`);
+    }
+    const levelSeasonId = levelSeasonOf(match.period_anchor_at);
+    const needsZeroCorrectionRebuild =
+      settlement.is_correction &&
+      currentItem.old_score > MatchScoreValue.Miss &&
+      currentItem.new_score === MatchScoreValue.Miss;
+    const existingCareerLastScoringAt = user.career_last_scoring_match_at ?? null;
+    let predictions: Prediction[] | null = null;
+    const getPredictions = async (): Promise<Prediction[]> => {
+      predictions ??= await tx.predictions.findByUser(user.user_id);
+      return predictions;
+    };
+    const careerNeedsRebuild =
+      needsZeroCorrectionRebuild &&
+      existingCareerLastScoringAt?.getTime() === match.period_anchor_at.getTime();
     const updatedUser: User = {
       ...user,
       career_points: updatedUserBase.career_points,
       career_valid_predictions: updatedUserBase.career_valid_predictions,
       career_wdl_hits: updatedUserBase.career_wdl_hits,
       career_exact_hits: updatedUserBase.career_exact_hits,
-      career_level: careerLevel.current_level,
-      career_best_level: careerLevel.best_level,
+      career_last_scoring_match_at: careerNeedsRebuild
+        ? await careerLastScoringAt(tx, await getPredictions(), updatedPrediction)
+        : currentItem.new_score > MatchScoreValue.Miss
+          ? maxScoringAt(existingCareerLastScoringAt, match.period_anchor_at)
+          : existingCareerLastScoringAt,
       updated_at: serverNow,
     };
     assertUserCareerInvariants(updatedUser);
 
     const seasonStats = await ports.userSeasonStats.findByUserAndSeason(
       user.user_id,
-      match.season_id,
+      levelSeasonId,
     );
     if (seasonStats === null && currentItem.valid_prediction_delta !== 1) {
-      throw invalidLedger(`修正 item 缺少已有 season stats（season_id=${match.season_id}）`);
+      throw invalidLedger(`修正 item 缺少已有 season stats（level_season_id=${levelSeasonId}）`);
     }
-    const seasonBase = seasonStats ?? emptySeasonStats(user.user_id, match.season_id, serverNow);
+    const seasonBase = seasonStats ?? emptySeasonStats(user.user_id, levelSeasonId, serverNow);
     const updatedSeasonBase = applyStatsDelta(seasonBase, currentItem);
-    const seasonLevel = rebuildLevelState(
-      LevelScope.Season,
-      updatedSeasonBase.valid_predictions,
-      updatedSeasonBase.wdl_hits,
-      seasonBase.level,
-      seasonBase.best_level,
-      reason,
-    );
     const updatedSeason: UserSeasonStats = {
       ...seasonBase,
       ...updatedSeasonBase,
-      level: seasonLevel.current_level,
-      best_level: seasonLevel.best_level,
       updated_at: serverNow,
     };
     assertSeasonStatsInvariants(updatedSeason);
 
-    const predictions = await tx.predictions.findByUser(user.user_id);
     const periodRefs = [
       {
         period_type: PeriodType.Week,
         period_key: calculatePeriodKey(PeriodType.Week, match.period_anchor_at),
-      },
-      {
-        period_type: PeriodType.Month,
-        period_key: calculatePeriodKey(PeriodType.Month, match.period_anchor_at),
       },
     ] as const;
     const rankingUpdates: Array<{ previous: RankingEntry | null; next: RankingEntry }> = [];
@@ -480,13 +500,20 @@ export class SettlementItemApplicationService {
         throw invalidLedger(`修正 item 缺少已有 ranking（${ref.period_type}:${ref.period_key}）`);
       }
       const base = existing ?? emptyRanking(ref.period_type, ref.period_key, user.user_id, serverNow);
-      const lastScoring = await lastScoringAt(
-        tx,
-        predictions,
-        ref.period_type,
-        ref.period_key,
-        updatedPrediction,
-      );
+      const rankingNeedsRebuild =
+        needsZeroCorrectionRebuild &&
+        base.last_scoring_match_at?.getTime() === match.period_anchor_at.getTime();
+      const lastScoring = rankingNeedsRebuild
+        ? await lastScoringAt(
+            tx,
+            await getPredictions(),
+            ref.period_type,
+            ref.period_key,
+            updatedPrediction,
+          )
+        : currentItem.new_score > MatchScoreValue.Miss
+          ? maxScoringAt(base.last_scoring_match_at, match.period_anchor_at)
+          : base.last_scoring_match_at;
       const next: RankingEntry = {
         ...base,
         period_score: base.period_score + currentItem.score_delta,
@@ -497,7 +524,6 @@ export class SettlementItemApplicationService {
           base.period_score + currentItem.score_delta,
           lastScoring,
         ),
-        global_rank: null,
         updated_at: serverNow,
       };
       assertRankingInvariants(next);
@@ -532,33 +558,6 @@ export class SettlementItemApplicationService {
       } else {
         await ports.rankings.update(ranking.next);
       }
-      await rebuildGlobalRanks(tx, ports.rankings, ranking.next.period_type, ranking.next.period_key, serverNow);
-    }
-    if (careerLevel.should_record_history) {
-      await ports.levelHistory.insert(levelHistory(
-        user.user_id,
-        LevelScope.Career,
-        null,
-        careerLevel.from_level as number,
-        careerLevel.to_level as number,
-        updatedUser.career_valid_predictions,
-        updatedUser.career_wdl_hits,
-        reason,
-        serverNow,
-      ));
-    }
-    if (seasonLevel.should_record_history) {
-      await ports.levelHistory.insert(levelHistory(
-        user.user_id,
-        LevelScope.Season,
-        match.season_id,
-        seasonLevel.from_level as number,
-        seasonLevel.to_level as number,
-        updatedSeason.valid_predictions,
-        updatedSeason.wdl_hits,
-        reason,
-        serverNow,
-      ));
     }
     for (const unlock of unlocks) {
       await tx.unlocks.insert(unlock);

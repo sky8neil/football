@@ -3,6 +3,7 @@ import { newUuid } from "../domain/ids.js";
 import type { User } from "../domain/types.js";
 import { InMemoryRepository } from "../infrastructure/repositories.js";
 import { UnlockPersistenceService } from "./unlock-persistence.js";
+import { defaultLevelState } from "../domain/types.js";
 
 const NOW = new Date("2026-08-09T00:00:00.000Z");
 
@@ -21,6 +22,8 @@ function makeUser(overrides: Partial<User> = {}): User {
     career_exact_hits: 0,
     career_level: 1,
     career_best_level: 1,
+    career_last_scoring_match_at: null,
+    career_level_state: defaultLevelState(),
     deleted_at: null,
     created_at: NOW,
     updated_at: NOW,
@@ -87,7 +90,7 @@ describe("UnlockPersistenceService", () => {
     expect(await repo.unlocks.findByUser(user.user_id)).toHaveLength(3);
   });
 
-  it("积分下降时保留历史解锁，不产生回收", async () => {
+  it("J76 correction 导致积分下降时保留历史解锁，不产生回收", async () => {
     const repo = new InMemoryRepository();
     const user = makeUser({ career_points: 30 });
     await repo.users.insert(user);

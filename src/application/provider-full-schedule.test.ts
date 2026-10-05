@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { MVP_SEASON } from "../domain/config.js";
+import { MVP_SEASON, SUPPORTED_LEAGUES } from "../domain/config.js";
 import { MatchStatus, Provider, SyncJobType } from "../domain/enums.js";
 import { InMemoryRepository } from "../infrastructure/repositories.js";
 import { makeApiFixture } from "../provider/fixture-factory.js";
@@ -22,10 +22,10 @@ describe("ProviderFullScheduleVerifyService", () => {
       leagueId: string;
       season: string;
     }) => {
-      expect(query).toEqual({
-        leagueId: MVP_SEASON.api_football_league_id,
-        season: MVP_SEASON.api_football_season,
-      });
+      if (query.leagueId !== MVP_SEASON.api_football_league_id) {
+        return [];
+      }
+      expect(query.season).toBe(MVP_SEASON.api_football_season);
       return [
         { team: { id: 40, name: "Home FC" } },
         { team: { id: 41, name: "Away FC" } },
@@ -35,11 +35,8 @@ describe("ProviderFullScheduleVerifyService", () => {
       leagueId: string;
       season: string;
     }): Promise<readonly ApiFootballFixture[]> => {
-      expect(query).toEqual({
-        leagueId: MVP_SEASON.api_football_league_id,
-        season: MVP_SEASON.api_football_season,
-      });
-      return [fixture];
+      expect(query.season).toBe(MVP_SEASON.api_football_season);
+      return query.leagueId === MVP_SEASON.api_football_league_id ? [fixture] : [];
     });
 
     const outcome = await new ProviderFullScheduleVerifyService(repo, {
@@ -72,8 +69,8 @@ describe("ProviderFullScheduleVerifyService", () => {
       season_id: MVP_SEASON.season_id,
       round_id: "01",
     });
-    expect(getTeams).toHaveBeenCalledTimes(1);
-    expect(getSeasonFixtures).toHaveBeenCalledTimes(1);
+    expect(getTeams).toHaveBeenCalledTimes(SUPPORTED_LEAGUES.length);
+    expect(getSeasonFixtures).toHaveBeenCalledTimes(SUPPORTED_LEAGUES.length);
   });
 
   it("full_schedule_verify 锁被占用时跳过整个任务，不调用 Provider client", async () => {

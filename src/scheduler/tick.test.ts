@@ -97,11 +97,13 @@ function createRunners(
 
 function createLocks(acquireResult = true): JobLockRepository & {
   acquire: ReturnType<typeof vi.fn>;
+  isHeld: ReturnType<typeof vi.fn>;
   renew: ReturnType<typeof vi.fn>;
   release: ReturnType<typeof vi.fn>;
 } {
   return {
     acquire: vi.fn(async () => acquireResult),
+    isHeld: vi.fn(async () => false),
     renew: vi.fn(async () => true),
     release: vi.fn(async () => undefined),
   };

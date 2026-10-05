@@ -12,6 +12,7 @@ import { handleGatewayRequest, type GatewayRequestInput } from "./assemble.js";
 import { LOCAL_PUBLIC_SOURCE, type GatewayRuntimeConfig } from "./config.js";
 import { seedGatewayRepository } from "./seed.js";
 import { MVP_SEASON } from "../domain/config.js";
+import { defaultLevelState } from "../domain/types.js";
 
 const TEST_CURSOR_SECRET = "test-match-cursor-secret-v6";
 const MOCK_OPENID = "mock-openid-v6";
@@ -81,6 +82,8 @@ async function seedDeletedUserWithMapping(
     career_exact_hits: 0,
     career_level: 1,
     career_best_level: 1,
+    career_last_scoring_match_at: null,
+    career_level_state: defaultLevelState(),
     deleted_at: NOW,
     created_at: NOW,
     updated_at: NOW,
@@ -292,7 +295,7 @@ describe("S4 deleted user（D-P1 方案 B）", () => {
     expect(response.status).toBe(200);
   });
 
-  it("D14：无 trusted openid → 公开 matches 200 且 reason=AUTH_REQUIRED；私有 401", async () => {
+  it("无 trusted openid → 公开 matches 200 且 reason=AUTH_REQUIRED；私有 401", async () => {
     const harness = makeHarness(makeConfig({ mock_trusted_openid: null }));
     await seedGatewayRepository(harness.repo, NOW);
 

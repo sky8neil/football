@@ -1,4 +1,4 @@
-import { FIXED_CONFIG_V1, MVP_SEASON } from "../domain/config.js";
+import { FIXED_CONFIG_V1, findSupportedLeagueByProviderId } from "../domain/config.js";
 import {
   MatchStatus,
   Provider,
@@ -45,45 +45,24 @@ function assertValidServerNow(serverNow: Date): void {
   }
 }
 
-/** 解析 Provider round 为 01..38；无法解析时返回 null（不抛错）。 */
-export function tryParseProviderRoundId(round: string | null): string | null {
-  if (typeof round !== "string") {
-    return null;
-  }
-  const match = /(\d{1,2})$/.exec(round.trim());
-  if (match === null) {
-    return null;
-  }
-  const number = Number(match[1]);
-  if (!Number.isInteger(number) || number < 1 || number > 38) {
-    return null;
-  }
-  return String(number).padStart(2, "0");
-}
-
-function parseRoundId(round: string | null): string {
-  const parsed = tryParseProviderRoundId(round);
-  if (parsed === null) {
-    if (typeof round !== "string") {
-      throw new ProviderDataError("provider fixture round is missing");
-    }
-    const match = /(\d{1,2})$/.exec(round.trim());
-    if (match === null) {
-      throw new ProviderDataError("provider fixture round is not a numbered round");
-    }
-    throw new ProviderDataError("provider fixture round is outside 1..38");
-  }
-  return parsed;
-}
-
+/** 解析 Provider round 为 01..roundMax；无法解析时返回 null（不抛错）。 */
 function buildMatch(
   fixture: ProviderFixture,
   homeTeamId: string,
   awayTeamId: string,
   serverNow: Date,
 ): Match {
-  if (fixture.status.kind !== MatchStatus.Scheduled || fixture.kickoffAt === null) {
-    throw internalError("Provider 赛程发现只接受 mapper 已验证的 scheduled kickoff");
+  if (
+    fixture.status.kind !== MatchStatus.Scheduled ||
+    fixture.kickoffAt === null ||
+    fixture.roundId == null
+  ) {
+    throw internalError("Provider 赛程发现只接受 mapper 已验证的 scheduled kickoff 和 round");
+  }
+
+  const league = findSupportedLeagueByProviderId(fixture.leagueProviderId);
+  if (league === undefined) {
+    throw new ProviderDataError("provider fixture league is not in SUPPORTED_LEAGUES");
   }
 
   const predictionDeadlineAt = computePredictionDeadline(
@@ -103,9 +82,9 @@ function buildMatch(
   return {
     schema_version: SCHEMA_VERSION,
     match_id: newUuid(),
-    league_id: MVP_SEASON.league_id,
-    season_id: MVP_SEASON.season_id,
-    round_id: parseRoundId(fixture.round),
+    league_id: league.league_id,
+    season_id: league.season_id,
+    round_id: fixture.roundId,
     home_team_id: homeTeamId,
     away_team_id: awayTeamId,
     kickoff_at: fixture.kickoffAt,

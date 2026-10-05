@@ -4,6 +4,7 @@ import type { Match, Prediction, User } from "../domain/types.js";
 import { DomainError } from "../domain/errors.js";
 import { newUuid } from "../domain/ids.js";
 import { InMemoryRepository } from "../infrastructure/repositories.js";
+import { defaultLevelState } from "../domain/types.js";
 import {
   PredictionHistoryCursorCodec,
   PredictionHistoryQueryService,
@@ -28,6 +29,8 @@ function makeUser(userId = USER_ID): User {
     career_exact_hits: 0,
     career_level: 1,
     career_best_level: 1,
+    career_last_scoring_match_at: null,
+    career_level_state: defaultLevelState(),
     deleted_at: null,
     created_at: NOW,
     updated_at: NOW,
@@ -139,6 +142,7 @@ describe("PredictionHistoryQueryService.listMyPredictions", () => {
     const service = new PredictionHistoryQueryService(repo, "prediction-list-secret");
 
     const first = await service.listMyPredictions(USER_ID, {
+      league_id: "premier_league",
       season_id: "2026_2027",
       limit: 1,
       cursor: null,
@@ -159,6 +163,7 @@ describe("PredictionHistoryQueryService.listMyPredictions", () => {
     expect(first.next_cursor).toEqual(expect.any(String));
 
     const second = await service.listMyPredictions(USER_ID, {
+      league_id: "premier_league",
       season_id: "2026_2027",
       limit: 10,
       cursor: first.next_cursor,
@@ -176,28 +181,38 @@ describe("PredictionHistoryQueryService.listMyPredictions", () => {
     expect(second.next_cursor).toBeNull();
   });
 
-  it("cursor 绑定 season_id，非法赛季和跨用户访问 fail closed", async () => {
+  it("cursor 绑定 league_id/season_id，非法赛季和跨用户访问 fail closed", async () => {
     const repo = await setup();
     const service = new PredictionHistoryQueryService(repo, "prediction-list-secret");
 
     await expect(service.listMyPredictions(USER_ID, {
+      league_id: "premier_league",
       season_id: "2025_2026",
+      limit: 20,
+      cursor: null,
+    })).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+    await expect(service.listMyPredictions(USER_ID, {
+      league_id: null,
+      season_id: "2026_2027",
       limit: 20,
       cursor: null,
     })).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
 
     const first = await service.listMyPredictions(USER_ID, {
+      league_id: "premier_league",
       season_id: "2026_2027",
       limit: 1,
       cursor: null,
     });
     await expect(service.listMyPredictions(USER_ID, {
+      league_id: "premier_league",
       season_id: "2026_2027",
       limit: 20,
       cursor: `${first.next_cursor!.slice(0, -1)}x`,
     })).rejects.toBeInstanceOf(DomainError);
 
     await expect(service.listMyPredictions(OTHER_USER_ID, {
+      league_id: "premier_league",
       season_id: "2026_2027",
       limit: 20,
       cursor: null,
@@ -214,7 +229,7 @@ describe("PredictionHistoryQueryService.listMyPredictions", () => {
 
     await expect(new PredictionHistoryQueryService(repo, "prediction-list-secret").listMyPredictions(
       deleted.user_id,
-      { season_id: "2026_2027", limit: 20, cursor: null },
+      { league_id: "premier_league", season_id: "2026_2027", limit: 20, cursor: null },
     )).rejects.toMatchObject({ code: "USER_DELETED" });
   });
 
@@ -223,13 +238,14 @@ describe("PredictionHistoryQueryService.listMyPredictions", () => {
 
     await expect(new PredictionHistoryQueryService(repo, "prediction-list-secret").listMyPredictions(
       "00000000-0000-4000-8000-000000000099",
-      { season_id: "2026_2027", limit: 20, cursor: null },
+      { league_id: "premier_league", season_id: "2026_2027", limit: 20, cursor: null },
     )).rejects.toMatchObject({ code: "USER_NOT_FOUND" });
   });
 
   it("拒绝签名有效但 season_id 不匹配的 cursor", async () => {
     const repo = await setup();
     const cursor = new PredictionHistoryCursorCodec("prediction-list-secret").encode({
+      league_id: "premier_league",
       season_id: "2025_2026",
       submitted_at: "2026-08-08T13:00:00.000Z",
       prediction_id: "00000000-0000-4000-8000-000000000021",
@@ -237,7 +253,7 @@ describe("PredictionHistoryQueryService.listMyPredictions", () => {
 
     await expect(new PredictionHistoryQueryService(repo, "prediction-list-secret").listMyPredictions(
       USER_ID,
-      { season_id: "2026_2027", limit: 20, cursor },
+      { league_id: "premier_league", season_id: "2026_2027", limit: 20, cursor },
     )).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
   });
 });

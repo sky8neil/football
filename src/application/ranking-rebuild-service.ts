@@ -1,9 +1,15 @@
-import { FIXED_CONFIG_V1, MVP_SEASON } from "../domain/config.js";
-import { PeriodType, SCHEMA_VERSION, SettlementItemStatus } from "../domain/enums.js";
+import { FIXED_CONFIG_V1, SUPPORTED_LEAGUES } from "../domain/config.js";
+import {
+  PeriodType,
+  RankingBoard,
+  SCHEMA_VERSION,
+  SettlementItemStatus,
+  UserStatus,
+} from "../domain/enums.js";
 import { conflictError, internalError, validationError } from "../domain/errors.js";
 import { newUuid } from "../domain/ids.js";
-import { calculatePeriodKey, isValidPeriodKey } from "../domain/time.js";
-import type { Match, RankingEntry } from "../domain/types.js";
+import { calculatePeriodKey, isValidPeriodKey, periodEndAt } from "../domain/time.js";
+import type { BoardSnapshot, Match, RankingEntry } from "../domain/types.js";
 import type { AppRepository, UnitOfWork } from "../infrastructure/repositories.js";
 import { rebuildPeriodRankings } from "./ranking-rebuild.js";
 import {
@@ -14,6 +20,7 @@ import {
 } from "./rebuild-service-support.js";
 import { assertValidServerNow } from "./period-finalize.js";
 import { rankingPeriodLockKey } from "./settlement-item-application-service.js";
+import { writeBoardSnapshotInTransaction } from "./board-snapshot.js";
 
 const REBUILD_LEASE_MILLISECONDS = FIXED_CONFIG_V1.JOB_LEASE_MINUTES * 60 * 1000;
 
@@ -23,6 +30,11 @@ export interface RebuildPeriodRankingsOutcome {
   updated_count: number;
 }
 
+export interface RebuildBoardSnapshotOutcome {
+  snapshots: BoardSnapshot[];
+  rebuilt_entry_count: number;
+}
+
 export function periodRankingsRebuildLockKey(
   periodType: PeriodType,
   periodKey: string,
@@ -30,9 +42,17 @@ export function periodRankingsRebuildLockKey(
   return `maintenance:rebuild:rankings:${periodType}:${periodKey}`;
 }
 
-export function assertPeriodType(periodType: PeriodType): void {
-  if (periodType !== PeriodType.Week && periodType !== PeriodType.Month) {
-    throw validationError("未知 period_type", { period_type: periodType });
+export function boardSnapshotRebuildLockKey(
+  board: BoardSnapshot["board"],
+): string {
+  return `maintenance:rebuild:board_snapshot:${board}`;
+}
+
+export function assertPeriodType(
+  periodType: PeriodType,
+): asserts periodType is typeof PeriodType.Week {
+  if (periodType !== PeriodType.Week) {
+    throw validationError("period_type 只支持 week", { period_type: periodType });
   }
 }
 
@@ -152,12 +172,22 @@ export class RebuildPeriodRankingsService {
 
   private async rebuildPeriodRankingsWhileHoldingRankingLock(
     tx: UnitOfWork,
-    periodType: PeriodType,
+    periodType: typeof PeriodType.Week,
     periodKey: string,
     serverNow: Date,
   ): Promise<RebuildPeriodRankingsOutcome> {
     assertRankingPort(tx);
-    const matches = await tx.matches.findBySeason(MVP_SEASON.season_id);
+    const supportedLeagueIds = new Set(SUPPORTED_LEAGUES.map((league) => league.league_id));
+    const seasonIds = [...new Set(SUPPORTED_LEAGUES.map((league) => league.season_id))];
+    const matchesById = new Map<string, Match>();
+    for (const seasonId of seasonIds) {
+      for (const match of await tx.matches.findBySeason(seasonId)) {
+        if (supportedLeagueIds.has(match.league_id)) {
+          matchesById.set(match.match_id, match);
+        }
+      }
+    }
+    const matches = [...matchesById.values()];
     const selectedMatches = targetMatches(matches, periodType, periodKey);
     for (const match of selectedMatches) {
       if (activeSettlement(match)) {
@@ -174,6 +204,7 @@ export class RebuildPeriodRankingsService {
       new Set(selectedMatches.map((match) => match.match_id)),
     );
     const facts = await loadAppliedSettlementFacts(tx, items);
+    const isHistoricalPeriod = periodEndAt(periodType, periodKey).getTime() <= serverNow.getTime();
     const periodByPrediction = new Map(
       facts.map((fact) => [
         fact.prediction.prediction_id,
@@ -186,7 +217,21 @@ export class RebuildPeriodRankingsService {
     const anchorByPrediction = new Map(
       facts.map((fact) => [fact.prediction.prediction_id, fact.match.period_anchor_at as Date]),
     );
-    const rebuilt = rebuildPeriodRankings(items, periodByPrediction, anchorByPrediction);
+    const deletedUserIds = isHistoricalPeriod
+      ? new Set<string>()
+      : new Set(
+          (await tx.users.findAll())
+            .filter((user) => user.status === UserStatus.Deleted)
+            .map((user) => user.user_id),
+        );
+    const rebuildItems = isHistoricalPeriod
+      ? items
+      : items.filter((item) => !deletedUserIds.has(item.user_id));
+    const rebuilt = rebuildPeriodRankings(
+      rebuildItems,
+      periodByPrediction,
+      anchorByPrediction,
+    );
 
     const saved: RankingEntry[] = [];
     let createdCount = 0;
@@ -202,7 +247,7 @@ export class RebuildPeriodRankingsService {
         const created: RankingEntry = {
           schema_version: SCHEMA_VERSION,
           ...entry,
-          is_final: false,
+          is_final: isHistoricalPeriod,
           created_at: serverNow,
           updated_at: serverNow,
         };
@@ -218,6 +263,7 @@ export class RebuildPeriodRankingsService {
           exact_hits: entry.exact_hits,
           last_scoring_match_at: entry.last_scoring_match_at,
           global_rank: entry.global_rank,
+          is_final: isHistoricalPeriod || existing.is_final,
           updated_at: serverNow,
         };
         await tx.rankings.update(updated);
@@ -259,6 +305,60 @@ export class RebuildPeriodRankingsService {
     serverNow: Date,
   ): Promise<RebuildPeriodRankingsOutcome> {
     return this.rebuildPeriodRankings(periodType, periodKey, serverNow);
+  }
+
+  async rebuildBoardSnapshot(
+    board: BoardSnapshot["board"],
+    serverNow: Date,
+  ): Promise<RebuildBoardSnapshotOutcome> {
+    assertValidServerNow(serverNow);
+    if (board !== RankingBoard.Career && board !== RankingBoard.Strength) {
+      throw validationError("board snapshot 只支持 career 或 strength", { board });
+    }
+
+    const lockKey = boardSnapshotRebuildLockKey(board);
+    const ownerId = newUuid();
+    const acquired = await this.repo.jobLocks.acquire(
+      lockKey,
+      ownerId,
+      new Date(serverNow.getTime() + REBUILD_LEASE_MILLISECONDS),
+    );
+    if (!acquired) {
+      throw conflictError("SETTLEMENT_ALREADY_RUNNING", "目标榜单存在并发 rebuild", {
+        lock_key: lockKey,
+      });
+    }
+
+    try {
+      return await this.repo.withTransaction((tx) =>
+        this.rebuildBoardSnapshotInTransaction(tx, board, serverNow),
+      );
+    } finally {
+      await this.repo.jobLocks.release(lockKey, ownerId);
+    }
+  }
+
+  async rebuildBoardSnapshotInTransaction(
+    tx: UnitOfWork,
+    board: BoardSnapshot["board"],
+    serverNow: Date,
+  ): Promise<RebuildBoardSnapshotOutcome> {
+    assertValidServerNow(serverNow);
+    const supportedLeagueIds = new Set(SUPPORTED_LEAGUES.map((league) => league.league_id));
+    const seasonIds = new Set(SUPPORTED_LEAGUES.map((league) => league.season_id));
+    for (const seasonId of seasonIds) {
+      for (const match of await tx.matches.findBySeason(seasonId)) {
+        if (supportedLeagueIds.has(match.league_id) && activeSettlement(match)) {
+          throw conflictError(
+            "SETTLEMENT_ALREADY_RUNNING",
+            "存在正在结算的比赛，不能重建榜单快照",
+            { match_id: match.match_id },
+          );
+        }
+      }
+    }
+    const snapshots = await writeBoardSnapshotInTransaction(tx, board, serverNow);
+    return { snapshots, rebuilt_entry_count: snapshots.length };
   }
 }
 

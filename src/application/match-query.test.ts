@@ -4,6 +4,7 @@ import type { Match, Prediction, Team, User } from "../domain/types.js";
 import { InMemoryRepository } from "../infrastructure/repositories.js";
 import { newUuid } from "../domain/ids.js";
 import { MatchQueryService } from "./match-query.js";
+import { defaultLevelState } from "../domain/types.js";
 
 const NOW = new Date("2026-08-09T12:00:00.000Z");
 const USER_ID = "00000000-0000-4000-8000-000000000001";
@@ -29,6 +30,8 @@ function makeUser(userId: string, status: User["status"] = UserStatus.Active): U
     career_exact_hits: 0,
     career_level: 1,
     career_best_level: 1,
+    career_last_scoring_match_at: null,
+    career_level_state: defaultLevelState(),
     deleted_at: status === UserStatus.Deleted ? NOW : null,
     created_at: NOW,
     updated_at: NOW,
@@ -39,6 +42,7 @@ function makeTeam(teamId: string, name: string): Team {
   return {
     schema_version: 1,
     team_id: teamId,
+    league_id: "premier_league",
     name,
     short_name: null,
     primary_color: null,
@@ -264,6 +268,20 @@ describe("MatchQueryService", () => {
       authenticated_user_id: null,
     })).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
 
+    for (const query of [
+      { from: new Date("2026-01-01T00:00:00.000Z"), to: null },
+      { from: null, to: new Date("2026-12-01T00:00:00.000Z") },
+    ]) {
+      await expect(service.list({
+        ...query,
+        status: null,
+        limit: 20,
+        cursor: null,
+        server_now: NOW,
+        authenticated_user_id: null,
+      })).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+    }
+
     const page = await service.list({
       from: null,
       to: null,
@@ -313,5 +331,48 @@ describe("MatchQueryService", () => {
       },
     });
     expect(result.my_prediction).not.toHaveProperty("idempotency_key");
+  });
+
+  it("league_id 缺省返回全部联赛，指定联赛只返回该联赛", async () => {
+    const repo = await seedRepository();
+    await repo.matches.insert(makeMatch(MATCH_A, new Date("2026-08-09T13:00:00.000Z")));
+    await repo.matches.insert(makeMatch(MATCH_B, new Date("2026-08-09T14:00:00.000Z"), {
+      league_id: "la_liga",
+    }));
+    await repo.matches.insert(makeMatch(MATCH_C, new Date("2026-08-09T15:00:00.000Z"), {
+      league_id: "chinese_super_league",
+      season_id: "2026",
+    }));
+    const service = new MatchQueryService(repo, "test-match-cursor-secret");
+    const query = {
+      from: null,
+      to: null,
+      status: null,
+      limit: 20,
+      cursor: null,
+      server_now: NOW,
+      authenticated_user_id: null,
+    };
+
+    const all = await service.list(query);
+    expect(all.items.map((item) => item.match_id)).toEqual([MATCH_A, MATCH_B, MATCH_C]);
+
+    const laLiga = await service.list({ ...query, league_id: "la_liga" });
+    expect(laLiga.items.map((item) => item.match_id)).toEqual([MATCH_B]);
+    expect(laLiga.items[0]?.league_id).toBe("la_liga");
+  });
+
+  it("非法 league_id 返回 VALIDATION_ERROR", async () => {
+    const repo = await seedRepository();
+    await expect(new MatchQueryService(repo, "test-match-cursor-secret").list({
+      from: null,
+      to: null,
+      status: null,
+      league_id: "eredivisie",
+      limit: 20,
+      cursor: null,
+      server_now: NOW,
+      authenticated_user_id: null,
+    })).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
   });
 });

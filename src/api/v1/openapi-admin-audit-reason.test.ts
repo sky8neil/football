@@ -20,17 +20,20 @@ describe("admin write reason OpenAPI contract", () => {
     expect(pathBlock(specification, "/admin/rebuild/rankings"))
       .toContain("requestBody:");
     expect(specification).toMatch(
-      /    AdminRebuildRankingsRequest:[\s\S]*?required: \[period_type, period_key, reason\]/,
+      /    AdminRebuildRankingsRequest:[\s\S]*?required: \[board, period_key, reason\]/,
     );
   });
 
-  it("does not declare a request body for retry or user stats rebuild", async () => {
+  it("allows only an optional empty body for retry and user stats rebuild", async () => {
     const specification = await readFile(new URL("./openapi.yaml", import.meta.url), "utf8");
 
     expect(pathBlock(specification, "/admin/matches/{match_id}/retry-settlement"))
-      .not.toContain("requestBody:");
+      .toContain("requestBody:");
     expect(pathBlock(specification, "/admin/rebuild/users/{user_id}"))
-      .not.toContain("requestBody:");
+      .toContain("requestBody:");
+    expect(specification).toMatch(
+      /    EmptyAdminRequest:\n      type: object\n      additionalProperties: false\n      maxProperties: 0/,
+    );
   });
 
   it("declares retry consistency failures as 500 INTERNAL_ERROR", async () => {

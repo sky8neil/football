@@ -32,7 +32,7 @@ function baseInput(): DailyConsistencyInput {
     season_stats: [
       {
         user_id: "user-1",
-        season_id: "2026_2027",
+        level_season_id: "2026_2027",
         actual: {
           points: 3,
           valid_predictions: 1,
@@ -74,6 +74,7 @@ function baseInput(): DailyConsistencyInput {
         },
       },
     ],
+    board_snapshots: [],
     active_settlements: [],
   };
 }
@@ -119,6 +120,27 @@ describe("daily consistency comparison", () => {
 
   it("skips affected users and periods for active settlements", () => {
     const input = baseInput();
+    input.rankings.push({
+      period_type: "week",
+      period_key: "2026-W32",
+      user_id: "user-2",
+      actual: {
+        period_score: 6,
+        valid_predictions: 2,
+        wdl_hits: 1,
+        exact_hits: 0,
+        last_scoring_match_at: NOW,
+        global_rank: 2,
+      },
+      expected: {
+        period_score: 6,
+        valid_predictions: 2,
+        wdl_hits: 1,
+        exact_hits: 0,
+        last_scoring_match_at: NOW,
+        global_rank: 1,
+      },
+    });
     input.active_settlements = [
       {
         match_id: "match-1",
@@ -169,5 +191,109 @@ describe("daily consistency comparison", () => {
       key: "user-2",
       fields: ["career_points"],
     });
+  });
+
+  it("reports career and strength snapshot differences without mutating caches", () => {
+    const input = baseInput();
+    input.board_snapshots = [
+      {
+        board: "career",
+        snapshot_at: NOW,
+        user_id: "user-1",
+        actual: {
+          rank: 2,
+          career_points: 3,
+          career_exact_hits: 0,
+          career_valid_predictions: 1,
+          career_last_scoring_match_at: null,
+          window_score_sum: null,
+          window_n: null,
+        },
+        expected: {
+          rank: 1,
+          career_points: 12,
+          career_exact_hits: 1,
+          career_valid_predictions: 1,
+          career_last_scoring_match_at: NOW,
+          window_score_sum: null,
+          window_n: null,
+        },
+      },
+      {
+        board: "strength",
+        snapshot_at: NOW,
+        user_id: "user-2",
+        actual: {
+          rank: 1,
+          career_points: null,
+          career_exact_hits: null,
+          career_valid_predictions: null,
+          career_last_scoring_match_at: null,
+          window_score_sum: 250,
+          window_n: 50,
+        },
+        expected: {
+          rank: 2,
+          career_points: null,
+          career_exact_hits: null,
+          career_valid_predictions: null,
+          career_last_scoring_match_at: null,
+          window_score_sum: 240,
+          window_n: 50,
+        },
+      },
+    ];
+
+    const result = checkDailyConsistency(input);
+
+    expect(result.differences).toContainEqual(expect.objectContaining({
+      scope: "board_snapshot",
+      key: `career:${NOW.toISOString()}:user-1`,
+      fields: expect.arrayContaining(["rank", "career_points"]),
+    }));
+    expect(result.differences).toContainEqual(expect.objectContaining({
+      scope: "board_snapshot",
+      key: `strength:${NOW.toISOString()}:user-2`,
+      fields: expect.arrayContaining(["rank", "window_score_sum"]),
+    }));
+    expect(input.board_snapshots[0]?.actual.career_points).toBe(3);
+  });
+
+  it("skips active-settlement users in snapshot comparisons", () => {
+    const input = baseInput();
+    input.board_snapshots = [{
+      board: "career",
+      snapshot_at: NOW,
+      user_id: "user-1",
+      actual: {
+        rank: 2,
+        career_points: 3,
+        career_exact_hits: 0,
+        career_valid_predictions: 1,
+        career_last_scoring_match_at: null,
+        window_score_sum: null,
+        window_n: null,
+      },
+      expected: {
+        rank: 1,
+        career_points: 12,
+        career_exact_hits: 1,
+        career_valid_predictions: 1,
+        career_last_scoring_match_at: NOW,
+        window_score_sum: null,
+        window_n: null,
+      },
+    }];
+    input.active_settlements = [{
+      match_id: "match-1",
+      user_ids: ["user-1"],
+      season_id: "2026_2027",
+      periods: [{ period_type: "week", period_key: "2026-W32" }],
+    }];
+
+    const result = checkDailyConsistency(input);
+
+    expect(result.differences.some((difference) => difference.scope === "board_snapshot"))
+      .toBe(false);
   });
 });

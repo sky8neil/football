@@ -23,35 +23,40 @@ const FROZEN_UNLOCK_ITEM_KEYS = [
 
 type ProfileBody = {
   data: {
+    user_id: string;
     nickname: string;
     favorite_team_id: string | null;
     career_points: number;
     career_valid_predictions: number;
-    career_wdl_hits: number;
     career_exact_hits: number;
-    career_wdl_accuracy_percent: string | null;
     career_level: number;
     career_best_level: number;
+    season_level: number;
   };
 };
 
 type LevelsBody = {
   data: {
     season: {
-      season_id: string;
-      valid_predictions: number;
-      wdl_hits: number;
-      wdl_accuracy_percent: string | null;
+      level_season_id: string;
       level: number;
       best_level: number;
+      is_rated: boolean;
+      valid_predictions: number;
+      remaining_to_rated: number;
+      is_frozen: boolean;
     };
     career: {
-      valid_predictions: number;
-      wdl_hits: number;
-      wdl_accuracy_percent: string | null;
       level: number;
       best_level: number;
+      is_rated: boolean;
+      valid_predictions: number;
+      remaining_to_rated: number;
+      last_evaluated_at: string | null;
+      next_evaluation_at: string;
+      is_former_top: boolean;
     };
+    rule_version: string;
   };
 };
 
@@ -152,15 +157,15 @@ describe("GET /v1/profile/me", () => {
     const body = response.body as ProfileBody;
     expect(body).toEqual({
       data: expect.objectContaining({
+        user_id: expect.any(String),
         nickname: "Sky",
         favorite_team_id: null,
         career_points: 0,
         career_valid_predictions: 0,
-        career_wdl_hits: 0,
         career_exact_hits: 0,
-        career_wdl_accuracy_percent: null,
         career_level: 1,
         career_best_level: 1,
+        season_level: 1,
       }),
       request_id: expect.any(String),
     });
@@ -229,20 +234,25 @@ describe("GET /v1/levels/me", () => {
     expect(response.status).toBe(200);
     const body = response.body as LevelsBody;
     expect(body.data.season).toEqual(expect.objectContaining({
-      season_id: expect.any(String),
-      valid_predictions: expect.any(Number),
-      wdl_hits: expect.any(Number),
+      level_season_id: expect.any(String),
       level: expect.any(Number),
       best_level: expect.any(Number),
+      is_rated: expect.any(Boolean),
+      valid_predictions: expect.any(Number),
+      remaining_to_rated: expect.any(Number),
+      is_frozen: expect.any(Boolean),
     }));
-    expect(body.data.season).toHaveProperty("wdl_accuracy_percent");
     expect(body.data.career).toEqual(expect.objectContaining({
+      is_rated: expect.any(Boolean),
       valid_predictions: expect.any(Number),
-      wdl_hits: expect.any(Number),
+      remaining_to_rated: expect.any(Number),
       level: expect.any(Number),
       best_level: expect.any(Number),
+      last_evaluated_at: null,
+      next_evaluation_at: expect.any(String),
+      is_former_top: expect.any(Boolean),
     }));
-    expect(body.data.career).toHaveProperty("wdl_accuracy_percent");
+    expect(body.data).toHaveProperty("rule_version", "level_v3.0");
   });
 });
 

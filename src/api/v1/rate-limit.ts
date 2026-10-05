@@ -23,6 +23,10 @@ export const RATE_LIMIT_DEFAULTS = {
     max_requests: 120,
     window_ms: ONE_MINUTE_MS,
   },
+  groups: {
+    max_requests: 10,
+    window_ms: ONE_MINUTE_MS,
+  },
 } as const;
 
 export type RateLimitScope = keyof typeof RATE_LIMIT_DEFAULTS;

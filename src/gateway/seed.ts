@@ -1,14 +1,16 @@
-import { MVP_SEASON } from "../domain/config.js";
+import { SUPPORTED_LEAGUES } from "../domain/config.js";
 import { MatchStatus, PeriodType, SCHEMA_VERSION, UserStatus } from "../domain/enums.js";
 import { newUuid } from "../domain/ids.js";
 import { calculatePeriodKey } from "../domain/time.js";
 import type { Match, RankingEntry, Team, User } from "../domain/types.js";
 import type { InMemoryRepository } from "../infrastructure/repositories.js";
+import { defaultLevelState } from "../domain/types.js";
 
 function makeTeam(teamId: string, name: string, now: Date): Team {
   return {
     schema_version: SCHEMA_VERSION,
     team_id: teamId,
+    league_id: SUPPORTED_LEAGUES[0].league_id,
     name,
     short_name: null,
     primary_color: null,
@@ -31,8 +33,8 @@ function makeMatch(
   return {
     schema_version: SCHEMA_VERSION,
     match_id: matchId,
-    league_id: MVP_SEASON.league_id,
-    season_id: MVP_SEASON.season_id,
+    league_id: SUPPORTED_LEAGUES[0].league_id,
+    season_id: SUPPORTED_LEAGUES[0].season_id,
     round_id: "01",
     home_team_id: homeTeamId,
     away_team_id: awayTeamId,
@@ -81,6 +83,8 @@ function makeRankingUser(
     career_exact_hits: 0,
     career_level: 1,
     career_best_level: 1,
+    career_last_scoring_match_at: null,
+    career_level_state: defaultLevelState(),
     deleted_at: null,
     created_at: now,
     updated_at: now,
@@ -90,14 +94,13 @@ function makeRankingUser(
 
 function makeRankingEntry(
   userId: string,
-  periodType: PeriodType,
   periodKey: string,
   now: Date,
   overrides: Partial<RankingEntry> = {},
 ): RankingEntry {
   return {
     schema_version: SCHEMA_VERSION,
-    period_type: periodType,
+    period_type: PeriodType.Week,
     period_key: periodKey,
     user_id: userId,
     period_score: 33,
@@ -124,7 +127,6 @@ export async function seedRankingLeaderboard(
   serverNow: Date,
 ): Promise<void> {
   const weekKey = calculatePeriodKey(PeriodType.Week, serverNow);
-  const monthKey = calculatePeriodKey(PeriodType.Month, serverNow);
   const lastScoringAt = new Date(serverNow.getTime() - 2 * 60 * 60 * 1000);
 
   const rows: Array<{
@@ -188,10 +190,7 @@ export async function seedRankingLeaderboard(
       last_scoring_match_at: lastScoringAt,
     };
     await repo.rankings.insert(
-      makeRankingEntry(userId, PeriodType.Week, weekKey, serverNow, stats),
-    );
-    await repo.rankings.insert(
-      makeRankingEntry(userId, PeriodType.Month, monthKey, serverNow, stats),
+      makeRankingEntry(userId, weekKey, serverNow, stats),
     );
   }
 }
@@ -220,7 +219,7 @@ export async function seedGatewayRepository(
 
   const extraSeeds: Array<{ kickoffAt: Date; overrides: Partial<Match> }> = [
     {
-      kickoffAt: new Date(serverNow.getTime() + 8 * hourMs),
+      kickoffAt: new Date(serverNow.getTime() - 8 * hourMs),
       overrides: {
         match_status: MatchStatus.Live,
         kickoff_confirmed: true,
@@ -228,7 +227,7 @@ export async function seedGatewayRepository(
       },
     },
     {
-      kickoffAt: new Date(serverNow.getTime() + 10 * hourMs),
+      kickoffAt: new Date(serverNow.getTime() - 10 * hourMs),
       overrides: {
         match_status: MatchStatus.Finished,
         regular_home_score: 2,
@@ -250,7 +249,7 @@ export async function seedGatewayRepository(
       },
     },
     {
-      kickoffAt: new Date(serverNow.getTime() + 16 * hourMs),
+      kickoffAt: new Date(serverNow.getTime() - 16 * hourMs),
       overrides: {
         match_status: MatchStatus.Abandoned,
       },

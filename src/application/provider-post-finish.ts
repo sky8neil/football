@@ -1,14 +1,13 @@
 import { MatchStatus, Provider, SettlementStatus, SyncJobType } from "../domain/enums.js";
+import { findSupportedLeagueById, SUPPORTED_LEAGUES } from "../domain/config.js";
 import { internalError } from "../domain/errors.js";
 import type { Match } from "../domain/types.js";
 import type { AppRepository } from "../infrastructure/repositories.js";
 import {
-  createPostFinishVerifyLoader,
   type PostFinishVerifyFixtureClient,
 } from "./provider-fixture-loader.js";
 import {
   ProviderFixtureSyncJobService,
-  type ProviderFixtureBatchItem,
   type ProviderFixtureBatchLoader,
   type ProviderFixtureSyncJobOutcome,
   type ProviderFixtureSyncRetryOptions,
@@ -62,15 +61,13 @@ export type ProviderPostFinishVerifyOutcome =
 export class ProviderPostFinishVerifyService {
   private readonly teamSync: ProviderTeamSyncService;
   private readonly fixtureJob: ProviderFixtureSyncJobService;
-  private readonly postFinishLoader: ProviderFixtureBatchLoader;
 
   constructor(
     private readonly repo: AppRepository,
-    client: ProviderPostFinishVerifyClient,
+    private readonly client: ProviderPostFinishVerifyClient,
     retryOptions: ProviderFixtureSyncRetryOptions = {},
   ) {
     this.teamSync = new ProviderTeamSyncService(repo, client);
-    this.postFinishLoader = createPostFinishVerifyLoader(client);
     this.fixtureJob = new ProviderFixtureSyncJobService(
       repo,
       new ProviderFixtureSyncService(repo),
@@ -83,36 +80,54 @@ export class ProviderPostFinishVerifyService {
     const config = SYNC_TASKS_V1[SyncJobType.PostFinishVerify];
     const load: ProviderFixtureBatchLoader = async (loadNow) => {
       teams ??= await this.teamSync.sync(loadNow);
-      const fixtures = await this.postFinishLoader(loadNow);
-      if (!config.highFrequencyUntilFirstSettlement) {
-        return fixtures;
+      const mappings = this.repo.matchProviderMappings;
+      if (mappings === undefined) {
+        throw internalError("post_finish_verify 缺少 match provider mappings repository");
       }
-      const kept: ProviderFixtureBatchItem[] = [];
-      for (const item of fixtures) {
-        const mappings = this.repo.matchProviderMappings;
-        if (mappings === undefined) {
-          kept.push(item);
-          continue;
-        }
-        const mapping = await mappings.findByProviderAndExternalId(
-          Provider.ApiFootball,
-          String(item.fixture.fixture.id),
-        );
-        if (mapping === null) {
-          // 无本地 mapping：保持 fail-closed 交给下游（不静默丢弃）。
-          kept.push(item);
-          continue;
-        }
-        const match = await this.repo.matches.findById(mapping.match_id);
-        if (match === null) {
-          kept.push(item);
-          continue;
-        }
-        if (includeInPostFinishHighFreq(match, config)) {
-          kept.push(item);
+      const candidates: Array<{
+        leagueId: string;
+        season: string;
+        fixtureId: string;
+      }> = [];
+      const seasonIds = new Set(SUPPORTED_LEAGUES.map((league) => league.season_id));
+      for (const seasonId of seasonIds) {
+        const matches = await this.repo.matches.findBySeason(seasonId);
+        for (const match of matches) {
+          if (!includeInPostFinishHighFreq(match, config)) {
+            continue;
+          }
+          const registeredLeague = findSupportedLeagueById(match.league_id);
+          if (registeredLeague === undefined) {
+            continue;
+          }
+          const matchMappings = await mappings.findByMatchId(match.match_id);
+          const providerMapping = matchMappings.find(
+            (mapping) => mapping.provider === Provider.ApiFootball,
+          );
+          if (providerMapping !== undefined) {
+            candidates.push({
+              leagueId: registeredLeague.api_football_league_id,
+              season: registeredLeague.api_football_season,
+              fixtureId: providerMapping.provider_match_id,
+            });
+          }
         }
       }
-      return kept;
+      const fixturesByMatch = await Promise.all(
+        candidates.map(async (candidate) =>
+          this.client.getFixtures({
+            fixtureId: candidate.fixtureId,
+            leagueId: candidate.leagueId,
+            season: candidate.season,
+          }),
+        ),
+      );
+      return fixturesByMatch.flatMap((fixtures) =>
+        fixtures.map((fixture) => ({
+          fixture,
+          payload: { fixture },
+        })),
+      );
     };
     const fixtures = await this.fixtureJob.run(
       SyncJobType.PostFinishVerify,

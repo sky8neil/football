@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>赛事预言家 · v0.2.1-cc · 深松绿 + 赛季榜 三页对照</title>
+<style>
+*{box-sizing:border-box;letter-spacing:0}body{margin:0;background:#e8eee7;color:#163024;font:13px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif}header{display:flex;align-items:center;justify-content:space-between;gap:16px;max-width:1240px;padding:24px 16px 18px;margin:auto}h1{font-size:20px;margin:0}a{color:#1a5c26;text-decoration:none}header a{font-size:12px}main{display:grid;grid-template-columns:repeat(3,minmax(0,390px));justify-content:center;align-items:start;gap:24px;padding:0 16px 24px}section{min-width:0}section>div{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;min-height:32px}h2{font-size:14px;margin:0}select{font:12px inherit;background:#fff;border:1px solid #c5d5c8;border-radius:6px;padding:5px 8px;color:#42564a}iframe{display:block;width:100%;height:812px;border:0;background:#fff}section>div a{font-size:12px}footer{text-align:center;padding:0 16px 24px;font-size:11px;color:#52665b}@media(max-width:900px){main{grid-template-columns:minmax(0,390px);gap:24px}header{max-width:422px;flex-wrap:wrap}}a:focus-visible,select:focus-visible{outline:2px solid #2f8a3a;outline-offset:3px}
+section>div{flex-wrap:wrap;gap:6px 8px}section>div h2{margin-right:auto}select{max-width:100%}
+</style>
+</head>
+<body>
+<header><h1>赛事预言家 <span style="font-weight:400;font-size:14px">v0.2.1-cc · 深松绿 + 赛季榜</span></h1><a href="README-cc.md">查看修改说明</a></header>
+<main>
+<section><div><h2>比赛</h2><a href="赛事预言家首页-高保真-v8.6-球场背景玻璃版.html" target="_blank" rel="noopener">打开页面 ↗</a></div><iframe title="比赛页" src="赛事预言家首页-高保真-v8.6-球场背景玻璃版.html"></iframe></section>
+<section><div><h2>排行榜</h2><select aria-label="排行榜样本状态" id="rank-state"><option value="over50">150 场 · 已达门槛</option><option value="under50">38 场 · 未达门槛</option></select><select aria-label="赛季资格" id="season-state"><option value="2">≥2 赛季 · 有赛季榜</option><option value="1">首个赛季 · 无赛季榜</option></select><a id="rank-link" href="rankings-v1.3-over50.html" target="_blank" rel="noopener">打开 ↗</a></div><iframe id="rank-preview" title="排行榜页" src="rankings-v1.3-over50.html"></iframe></section>
+<section><div><h2>我的</h2><a href="my-growth-v3-8.html" target="_blank" rel="noopener">打开页面 ↗</a></div><iframe title="我的页" src="my-growth-v3-8.html"></iframe></section>
+</main>
+<footer>2026-10-03 · 三个页面 / 四种页面状态</footer>
+<script>function updateRank(){const file='rankings-v1.3-'+document.querySelector('#rank-state').value+'.html?seasons='+document.querySelector('#season-state').value;document.querySelector('#rank-preview').src=file;document.querySelector('#rank-link').href=file;}document.querySelector('#rank-state').addEventListener('change',updateRank);document.querySelector('#season-state').addEventListener('change',updateRank);</script>
+</body>
+</html>

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { SCHEMA_VERSION } from "./enums.js";
+import { LevelHistoryReason, LevelScope, SCHEMA_VERSION } from "./enums.js";
 import {
+  assertLevelHistoryInvariants,
   assertMatchResultVersionInvariants,
   assertPredictionInvariants,
   assertRankingInvariants,
@@ -11,7 +12,9 @@ import {
   assertUserCareerInvariants,
 } from "./invariants.js";
 import { newUuid } from "./ids.js";
+import { defaultLevelState } from "./types.js";
 import type {
+  LevelHistoryEntry,
   Match,
   Prediction,
   RankingEntry,
@@ -20,6 +23,16 @@ import type {
   User,
   UserSeasonStats,
 } from "./types.js";
+
+describe("LevelHistoryReason", () => {
+  it("只暴露 weekly_eval、correction_reeval 与 rebuild", () => {
+    expect(Object.keys(LevelHistoryReason)).toEqual([
+      "WeeklyEval",
+      "CorrectionReeval",
+      "Rebuild",
+    ]);
+  });
+});
 
 describe("assertSchemaVersion（规范 2.5）", () => {
   it("接受固定 schema_version=1", () => {
@@ -52,6 +65,8 @@ describe("核心 invariant 入口强制 schema_version", () => {
       career_exact_hits: 0,
       career_level: 1,
       career_best_level: 1,
+      career_last_scoring_match_at: null,
+      career_level_state: defaultLevelState(),
       deleted_at: null,
       created_at: new Date("2026-08-01T00:00:00Z"),
       updated_at: new Date("2026-08-01T00:00:00Z"),
@@ -65,11 +80,13 @@ describe("核心 invariant 入口强制 schema_version", () => {
     const base = {
       schema_version: SCHEMA_VERSION,
       user_id: newUuid(),
-      season_id: "2026_2027",
+      level_season_id: "2026_2027",
       points: 0,
       valid_predictions: 0,
       wdl_hits: 0,
       exact_hits: 0,
+      level_state: defaultLevelState(),
+      is_level_frozen: false,
       updated_at: new Date("2026-08-01T00:00:00Z"),
     };
     expect(() =>
@@ -84,6 +101,7 @@ describe("核心 invariant 入口强制 schema_version", () => {
         ...base,
         level: 3,
         best_level: 3,
+        valid_predictions: 20,
       } as UserSeasonStats),
     ).not.toThrow();
     expect(() =>
@@ -91,15 +109,49 @@ describe("核心 invariant 入口强制 schema_version", () => {
         ...base,
         level: 3,
         best_level: 5,
+        valid_predictions: 20,
       } as UserSeasonStats),
     ).not.toThrow();
+    expect(() =>
+      assertSeasonStatsInvariants({
+        ...base,
+        level: 2,
+        best_level: 2,
+        valid_predictions: 19,
+      } as UserSeasonStats),
+    ).toThrow(expect.objectContaining({ code: "INTERNAL_ERROR" }));
+  });
+
+  it("§40 仅 rebuild 允许 level_history 跨级", () => {
+    const entry: LevelHistoryEntry = {
+      schema_version: SCHEMA_VERSION,
+      level_history_id: newUuid(),
+      user_id: newUuid(),
+      scope: LevelScope.Career,
+      level_season_id: null,
+      from_level: 2,
+      to_level: 5,
+      reason: LevelHistoryReason.WeeklyEval,
+      eval_as_of: new Date("2026-08-10T02:00:00Z"),
+      window_n: 20,
+      window_score_sum: 200,
+      b_points: 300,
+      level_rule_version: "level_v3.0",
+      settlement_id: null,
+      changed_at: new Date("2026-08-10T02:10:00Z"),
+    };
+    expect(() => assertLevelHistoryInvariants(entry)).toThrow(
+      expect.objectContaining({ code: "INTERNAL_ERROR" }),
+    );
+    expect(() => assertLevelHistoryInvariants({ ...entry, reason: LevelHistoryReason.Rebuild }))
+      .not.toThrow();
   });
 
   it("season stats / ranking / prediction / settlement / match 同样拒绝", () => {
     const season = {
       schema_version: 0,
       user_id: newUuid(),
-      season_id: "2026_2027",
+      level_season_id: "2026_2027",
       points: 0,
       valid_predictions: 0,
       wdl_hits: 0,
@@ -230,5 +282,74 @@ describe("核心 invariant 入口强制 schema_version", () => {
     expect(() => assertMatchResultVersionInvariants(match)).toThrow(
       expect.objectContaining({ code: "INTERNAL_ERROR" }),
     );
+  });
+
+  it("career/season 等级必须 1..6；career Lv2 起需有效预测>=20", () => {
+    const userBase = {
+      schema_version: SCHEMA_VERSION,
+      user_id: newUuid(),
+      openid: "openid",
+      unionid: null,
+      nickname: null,
+      favorite_team_id: null,
+      status: "active" as const,
+      career_points: 0,
+      career_valid_predictions: 19,
+      career_wdl_hits: 0,
+      career_exact_hits: 0,
+      career_last_scoring_match_at: null,
+      career_level: 2,
+      career_best_level: 2,
+      career_level_state: defaultLevelState(),
+      deleted_at: null,
+      created_at: new Date("2026-08-01T00:00:00Z"),
+      updated_at: new Date("2026-08-01T00:00:00Z"),
+    };
+    expect(() => assertUserCareerInvariants(userBase as User)).toThrow(
+      expect.objectContaining({ code: "INTERNAL_ERROR" }),
+    );
+    expect(() =>
+      assertUserCareerInvariants({ ...userBase, career_valid_predictions: 20 } as User),
+    ).not.toThrow();
+    expect(() =>
+      assertUserCareerInvariants({ ...userBase, career_level: 7, career_best_level: 7 } as User),
+    ).toThrow(expect.objectContaining({ code: "INTERNAL_ERROR" }));
+    expect(() =>
+      assertUserCareerInvariants({
+        ...userBase,
+        career_level: 1,
+        career_best_level: 1,
+        career_valid_predictions: 0,
+      } as User),
+    ).not.toThrow();
+
+    const season = {
+      schema_version: SCHEMA_VERSION,
+      user_id: newUuid(),
+      level_season_id: "2026_2027",
+      points: 0,
+      valid_predictions: 0,
+      wdl_hits: 0,
+      exact_hits: 0,
+      level: 8,
+      best_level: 8,
+      level_state: defaultLevelState(),
+      is_level_frozen: false,
+      created_at: new Date("2026-08-01T00:00:00Z"),
+      updated_at: new Date("2026-08-01T00:00:00Z"),
+    } as unknown as UserSeasonStats;
+    expect(() => assertSeasonStatsInvariants(season)).toThrow(
+      expect.objectContaining({ code: "INTERNAL_ERROR" }),
+    );
+
+    expect(() =>
+      assertUserCareerInvariants({
+        ...userBase,
+        career_level: 1,
+        career_best_level: 1,
+        career_valid_predictions: 0,
+        career_level_state: { ...defaultLevelState(), last_eval_n: 301 },
+      } as User),
+    ).toThrow(expect.objectContaining({ code: "INTERNAL_ERROR" }));
   });
 });

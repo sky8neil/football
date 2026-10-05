@@ -1,5 +1,6 @@
 import { periodEndAt } from "../domain/time.js";
 import { validationError } from "../domain/errors.js";
+import { PeriodType } from "../domain/enums.js";
 import type { RankingEntry } from "../domain/types.js";
 
 export function assertValidServerNow(serverNow: Date): void {
@@ -14,6 +15,11 @@ export function finalizeRankingEntry(
   serverNow: Date,
 ): RankingEntry {
   assertValidServerNow(serverNow);
+  if (entry.period_type !== PeriodType.Week) {
+    throw validationError("period finalize 只支持 week", {
+      period_type: entry.period_type,
+    });
+  }
   const endAt = periodEndAt(entry.period_type, entry.period_key);
   if (entry.is_final || serverNow.getTime() < endAt.getTime()) {
     return entry;
@@ -22,6 +28,5 @@ export function finalizeRankingEntry(
   return {
     ...entry,
     is_final: true,
-    updated_at: serverNow,
   };
 }

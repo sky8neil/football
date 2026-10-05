@@ -189,7 +189,7 @@ describe("rebuildStatsFromLedger - season 分组", () => {
     expect(stats.seasons).toEqual([
       {
         user_id: "u1",
-        season_id: SEASON_A,
+        level_season_id: SEASON_A,
         points: 12,
         valid_predictions: 1,
         wdl_hits: 1,
@@ -197,7 +197,7 @@ describe("rebuildStatsFromLedger - season 分组", () => {
       },
       {
         user_id: "u1",
-        season_id: SEASON_B,
+        level_season_id: SEASON_B,
         points: 6,
         valid_predictions: 2,
         wdl_hits: 2,
@@ -229,7 +229,7 @@ describe("rebuildStatsFromLedger - season 分组", () => {
     expect(stats.seasons).toEqual([
       {
         user_id: "u1",
-        season_id: SEASON_B,
+        level_season_id: SEASON_B,
         points: 3,
         valid_predictions: 1,
         wdl_hits: 1,
