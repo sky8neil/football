@@ -42,6 +42,7 @@ describe("PATCH /v1/profile/me", () => {
       career_level: 1,
       career_best_level: 1,
       season_level: 1,
+      previous_season: null,
     }));
     const serverNow = new Date("2026-08-09T00:00:00.000Z");
 
@@ -65,6 +66,7 @@ describe("PATCH /v1/profile/me", () => {
           career_level: 1,
           career_best_level: 1,
           season_level: 1,
+          previous_season: null,
         },
         request_id: "request-profile-patch-1",
       },
@@ -103,6 +105,7 @@ describe("PATCH /v1/profile/me", () => {
       career_best_level: 1,
       career_level_state: defaultLevelState(),
       season_level: 1,
+      previous_season: null,
     }));
     const rateLimiter = new InMemoryRateLimiter();
     const input = {
@@ -271,6 +274,7 @@ describe("GET /v1/profile/me", () => {
           career_level: 6,
           career_best_level: 6,
           season_level: 1,
+          previous_season: null,
         },
         request_id: "request-profile-me-1",
       },
@@ -298,6 +302,7 @@ describe("GET /v1/profile/me", () => {
       career_level: 1,
       career_best_level: 1,
       season_level: 1,
+      previous_season: null,
     }));
     const input = {
       authenticated_user_id: "00000000-0000-0000-0000-000000000001",

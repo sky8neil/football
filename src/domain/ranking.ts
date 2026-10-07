@@ -16,6 +16,7 @@ import { FIXED_CONFIG_V1 } from "./config.js";
 import { RankingBoard } from "./enums.js";
 import { validationError } from "./errors.js";
 import { compareStrengthIndex } from "./levels.js";
+import type { UserSeasonStats } from "./types.js";
 
 export interface RankingComparable {
   period_score: number;
@@ -41,7 +42,7 @@ export function compareRankingEntry(
   a: RankingComparable | StrengthRankingComparable,
   b: RankingComparable | StrengthRankingComparable,
 ): number {
-  if (board === RankingBoard.Week || board === RankingBoard.Career) {
+  if (board === RankingBoard.Week || board === RankingBoard.Career || board === RankingBoard.Season) {
     return compareWeekCareerEntry(a as RankingComparable, b as RankingComparable);
   }
   if (board === RankingBoard.Strength) {
@@ -134,6 +135,24 @@ export function isStrengthRankEligible(windowN: number): boolean {
     throw validationError("window_n 必须为非负整数", { window_n: windowN });
   }
   return windowN >= FIXED_CONFIG_V1.STRENGTH_BOARD_MIN_WINDOW_N;
+}
+
+/** 赛季榜入榜门槛：当前等级赛季至少 1 场有效预测。 */
+export function isSeasonRankEligible(validPredictions: number): boolean {
+  return validPredictions >= FIXED_CONFIG_V1.SEASON_BOARD_MIN_VALID;
+}
+
+/** 赛季榜入口资格：至少参与过 2 个等级赛季。 */
+export function isSeasonBoardVisible(seasonsParticipated: number): boolean {
+  return seasonsParticipated >= FIXED_CONFIG_V1.SEASON_BOARD_MIN_SEASONS;
+}
+
+export function countSeasonsParticipated(
+  stats: readonly Pick<UserSeasonStats, "valid_predictions">[],
+): number {
+  return stats.filter((season) =>
+    season.valid_predictions >= FIXED_CONFIG_V1.SEASON_BOARD_MIN_VALID
+  ).length;
 }
 
 /**

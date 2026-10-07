@@ -137,6 +137,24 @@ function createTick(options: {
 }
 
 describe("SchedulerTick", () => {
+  it("dispatches season snapshot jobs with their dedicated sync lock", async () => {
+    const runner = vi.fn(async () => ({ entry_count: 3 }));
+    const { tick, locks } = createTick({
+      runners: { [SyncJobType.BoardSnapshotSeason]: runner },
+    });
+
+    await expect(tick.run(SyncJobType.BoardSnapshotSeason, SERVER_NOW)).resolves.toEqual({
+      outcome: "completed",
+      entry_count: 3,
+    });
+    expect(runner).toHaveBeenCalledWith(SERVER_NOW);
+    expect(locks.acquire).toHaveBeenCalledWith(
+      "sync:board_snapshot_season",
+      OWNER_ID,
+      new Date(SERVER_NOW.getTime() + SCHEDULER_LEASE_MS),
+    );
+  });
+
   it("acquire 成功则调用 runner、返回 completed、释放锁，且日志字段齐全", async () => {
     const runner = vi.fn(async (serverNow: Date) => {
       expect(serverNow).toBe(SERVER_NOW);

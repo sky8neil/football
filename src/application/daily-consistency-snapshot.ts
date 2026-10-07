@@ -110,6 +110,7 @@ function zeroSeasonValues(): SeasonStatsCacheValues {
     valid_predictions: 0,
     wdl_hits: 0,
     exact_hits: 0,
+    last_scoring_match_at: null,
     level: 1,
     best_level: 1,
     below_count: 0,
@@ -131,6 +132,7 @@ function seasonValues(stats: UserSeasonStats | undefined): SeasonStatsCacheValue
     valid_predictions: stats.valid_predictions,
     wdl_hits: stats.wdl_hits,
     exact_hits: stats.exact_hits,
+    last_scoring_match_at: stats.last_scoring_match_at ?? null,
     level: stats.level,
     best_level: stats.best_level,
     below_count: state.below_count,
@@ -185,6 +187,10 @@ function boardSnapshotValues(
     career_last_scoring_match_at: snapshot?.career_last_scoring_match_at ?? null,
     window_score_sum: snapshot?.window_score_sum ?? null,
     window_n: snapshot?.window_n ?? null,
+    season_points: snapshot?.season_points ?? null,
+    season_exact_hits: snapshot?.season_exact_hits ?? null,
+    season_valid_predictions: snapshot?.season_valid_predictions ?? null,
+    season_last_scoring_match_at: snapshot?.season_last_scoring_match_at ?? null,
   };
 }
 
@@ -195,22 +201,47 @@ async function loadBoardSnapshotConsistency(
 ): Promise<DailyConsistencyInput["board_snapshots"]> {
   const activeUserIds = new Set(activeSettlements.flatMap((scope) => scope.user_ids));
   const entries: DailyConsistencyInput["board_snapshots"] = [];
-  for (const board of [RankingBoard.Career, RankingBoard.Strength] as const) {
+  for (const board of [RankingBoard.Career, RankingBoard.Strength, RankingBoard.Season] as const) {
     const snapshotVersion = await tx.boardSnapshots.findLatestByBoard(board);
     if (snapshotVersion.length === 0) {
       continue;
     }
     const snapshotAt = snapshotVersion[0]!.snapshot_at;
     const actualSnapshots = snapshotVersion.filter((snapshot) => snapshot.snapshot_kind !== "head");
-    const expectedSnapshots = buildBoardSnapshotEntries(users, board, snapshotAt);
+    const levelSeasonId = board === RankingBoard.Season
+      ? snapshotVersion[0]!.level_season_id
+      : null;
+    if (board === RankingBoard.Season && levelSeasonId === null) {
+      throw internalError("season board snapshot 缺少 level_season_id");
+    }
+    const seasonStats = board === RankingBoard.Season
+      ? await tx.userSeasonStats.findByLevelSeason(levelSeasonId as string)
+      : undefined;
+    const expectedSnapshots = buildBoardSnapshotEntries({
+      users,
+      board,
+      snapshotAt,
+      ...(seasonStats === undefined ? {} : { seasonStats }),
+      ...(levelSeasonId === null ? {} : { levelSeasonId }),
+    });
     const expectedByUser = new Map(expectedSnapshots.map((snapshot) => [snapshot.user_id, snapshot]));
     const actualByUser = new Map(actualSnapshots.map((snapshot) => [snapshot.user_id, snapshot]));
     const hasChangedUsers = users.some((user) => user.updated_at.getTime() > snapshotAt.getTime());
-    const rankCheckSkipped = hasChangedUsers || activeUserIds.size > 0;
+    const changedSeasonStatsByUser = new Set(
+      (seasonStats ?? [])
+        .filter((stats) => stats.updated_at.getTime() > snapshotAt.getTime())
+        .map((stats) => stats.user_id),
+    );
+    const rankCheckSkipped =
+      hasChangedUsers || changedSeasonStatsByUser.size > 0 || activeUserIds.size > 0;
 
     if (rankCheckSkipped) {
       for (const user of users) {
-        if (user.updated_at.getTime() > snapshotAt.getTime() || activeUserIds.has(user.user_id)) {
+        if (
+          user.updated_at.getTime() > snapshotAt.getTime() ||
+          changedSeasonStatsByUser.has(user.user_id) ||
+          activeUserIds.has(user.user_id)
+        ) {
           continue;
         }
         const actual = actualByUser.get(user.user_id);
@@ -259,6 +290,19 @@ function levelSeasonByPrediction(
     seasons.set(fact.item.prediction_id, levelSeasonOf(fact.match.period_anchor_at));
   }
   return seasons;
+}
+
+function periodAnchorByPrediction(
+  facts: readonly AppliedSettlementFact[],
+): Map<string, Date> {
+  const anchors = new Map<string, Date>();
+  for (const fact of facts) {
+    if (fact.match.period_anchor_at === null) {
+      throw invalidLedger(`applied match 缺少 period_anchor_at（match_id=${fact.match.match_id}）`);
+    }
+    anchors.set(fact.item.prediction_id, fact.match.period_anchor_at);
+  }
+  return anchors;
 }
 
 function expectedCareerLastScoringAt(facts: readonly AppliedSettlementFact[]): Date | null {
@@ -379,6 +423,7 @@ function expectedCareerValues(
   const rebuilt = rebuildStatsFromLedger(
     facts.map((fact) => fact.item),
     levelSeasonByPrediction(facts),
+    periodAnchorByPrediction(facts),
   );
   const levelValues = expectedLevelValues({
     level: existingLevel,
@@ -417,6 +462,7 @@ function expectedSeasonValues(
   const rebuilt = rebuildStatsFromLedger(
     facts.map((fact) => fact.item),
     levelSeasonByPrediction(facts),
+    periodAnchorByPrediction(facts),
   );
   const stats = rebuilt.seasons.find((item) => item.level_season_id === seasonId);
   const base = stats ?? {
@@ -424,6 +470,7 @@ function expectedSeasonValues(
     valid_predictions: 0,
     wdl_hits: 0,
     exact_hits: 0,
+    last_scoring_match_at: null,
   };
   const levelValues = expectedLevelValues({
     level: existingLevel,
@@ -439,6 +486,7 @@ function expectedSeasonValues(
     valid_predictions: base.valid_predictions,
     wdl_hits: base.wdl_hits,
     exact_hits: base.exact_hits,
+    last_scoring_match_at: base.last_scoring_match_at,
     level: levelValues.level,
     best_level: levelValues.best_level,
     below_count: levelValues.below_count,

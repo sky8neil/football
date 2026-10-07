@@ -105,7 +105,7 @@ export function validateAdminRebuildRankingsPayload(
   const body = payload as Record<string, unknown>;
   assertUnknownFields(body, ADMIN_REBUILD_RANKINGS_FIELDS);
   if (!Object.values(RankingBoard).includes(body.board as RankingBoard)) {
-    throw validationError("board 必须是 week、career 或 strength", { field: "board" });
+    throw validationError("board 必须是 week、career、strength 或 season", { field: "board" });
   }
   const board = body.board as RankingBoard;
   let periodKey: string | null = null;
@@ -118,7 +118,7 @@ export function validateAdminRebuildRankingsPayload(
     }
     periodKey = body.period_key;
   } else if (Object.prototype.hasOwnProperty.call(body, "period_key")) {
-    throw validationError("career/strength board 禁止携带 period_key", {
+    throw validationError("career/strength/season board 禁止携带 period_key", {
       field: "period_key",
     });
   }

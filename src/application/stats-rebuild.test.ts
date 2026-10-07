@@ -194,6 +194,7 @@ describe("rebuildStatsFromLedger - season 分组", () => {
         valid_predictions: 1,
         wdl_hits: 1,
         exact_hits: 1,
+        last_scoring_match_at: null,
       },
       {
         user_id: "u1",
@@ -202,6 +203,7 @@ describe("rebuildStatsFromLedger - season 分组", () => {
         valid_predictions: 2,
         wdl_hits: 2,
         exact_hits: 0,
+        last_scoring_match_at: null,
       },
     ]);
   });
@@ -234,8 +236,44 @@ describe("rebuildStatsFromLedger - season 分组", () => {
         valid_predictions: 1,
         wdl_hits: 1,
         exact_hits: 0,
+        last_scoring_match_at: null,
       },
     ]);
+  });
+
+  it("修正最新得分场为 0 后回退到该赛季次新的得分场", () => {
+    const earlierAt = new Date("2026-08-01T00:00:00Z");
+    const latestAt = new Date("2026-08-08T00:00:00Z");
+    const earlier = makeItem({
+      prediction_id: "p2",
+      new_score: WdlHit,
+      score_delta: 3,
+      new_wdl_hit: true,
+      new_exact_hit: false,
+      source_result_version: 1,
+    });
+    const latest = makeItem({
+      prediction_id: "p1",
+      source_result_version: 1,
+    });
+    const correction = makeItem({
+      prediction_id: "p1",
+      old_score: ExactHit,
+      new_score: Miss,
+      score_delta: -12,
+      old_wdl_hit: true,
+      new_wdl_hit: false,
+      old_exact_hit: true,
+      new_exact_hit: false,
+      valid_prediction_delta: 0,
+      source_result_version: 2,
+    });
+    const stats = rebuildStatsFromLedger(
+      [earlier, latest, correction],
+      seasonMap([["p1", SEASON_B], ["p2", SEASON_B]]),
+      new Map([["p1", latestAt], ["p2", earlierAt]]),
+    );
+    expect(stats.seasons[0]?.last_scoring_match_at).toEqual(earlierAt);
   });
 });
 

@@ -25,6 +25,7 @@ export const ADMIN_REBUILD_USER_STATS_AUDIT_REASON = "管理员用户统计重�
 
 function userStatsAuditValue(
   user: User,
+  seasonStats: readonly UserSeasonStats[],
   seasonStatsChangedCount: number,
   levelStateChanged?: boolean,
 ): Record<string, unknown> {
@@ -36,6 +37,16 @@ function userStatsAuditValue(
     career_level: user.career_level,
     career_best_level: user.career_best_level,
     season_stats_changed_count: seasonStatsChangedCount,
+    season_stats: [...seasonStats]
+      .sort((a, b) => a.level_season_id.localeCompare(b.level_season_id))
+      .map((stats) => ({
+        level_season_id: stats.level_season_id,
+        points: stats.points,
+        valid_predictions: stats.valid_predictions,
+        wdl_hits: stats.wdl_hits,
+        exact_hits: stats.exact_hits,
+        last_scoring_match_at: stats.last_scoring_match_at?.toISOString() ?? null,
+      })),
     ...(levelStateChanged === undefined ? {} : { level_state_changed: levelStateChanged }),
   };
 }
@@ -49,6 +60,7 @@ function seasonStatsBusinessValuesEqual(
     left.valid_predictions === right.valid_predictions &&
     left.wdl_hits === right.wdl_hits &&
     left.exact_hits === right.exact_hits &&
+    left.last_scoring_match_at?.getTime() === right.last_scoring_match_at?.getTime() &&
     left.level === right.level &&
     left.best_level === right.best_level
   );
@@ -149,9 +161,10 @@ export class AdminRebuildUserStatsService implements AdminRebuildUserStatsComman
           action: ADMIN_REBUILD_USER_STATS_AUDIT_ACTION,
           entity_type: ADMIN_AUDIT_ENTITY_TYPE_BY_ACTION[ADMIN_REBUILD_USER_STATS_AUDIT_ACTION],
           entity_id: userId,
-          old_value: userStatsAuditValue(oldUser, 0),
+          old_value: userStatsAuditValue(oldUser, oldSeasonStats, 0),
           new_value: userStatsAuditValue(
             rebuilt.user,
+            rebuilt.season_stats,
             seasonStatsChangedCount,
             rebuilt.level_state_changed,
           ),

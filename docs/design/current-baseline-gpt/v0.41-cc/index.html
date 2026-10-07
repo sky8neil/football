@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>赛事预言家 · v0.41-cc 三页对照 + 状态预览</title>
+<style>
+*{box-sizing:border-box;letter-spacing:0}
+body{margin:0;background:#e8eee7;color:#163024;font:13px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif}
+header{display:flex;align-items:center;justify-content:space-between;gap:16px;max-width:1240px;padding:24px 16px 18px;margin:auto;flex-wrap:wrap}
+h1{font-size:20px;margin:0}h1 span{font-weight:400;font-size:14px}
+a{color:#1a5c26;text-decoration:none}header a{font-size:12px}
+main{display:grid;grid-template-columns:repeat(3,minmax(0,390px));justify-content:center;align-items:start;gap:24px;padding:0 16px 24px}
+section{min-width:0}
+.top{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;margin-bottom:6px;min-height:32px}
+.top h2{font-size:14px;margin:0 auto 0 0}
+.top a{font-size:12px}
+select{max-width:100%;font:12px inherit;background:#fff;border:1px solid #c5d5c8;border-radius:6px;padding:5px 8px;color:#42564a}
+.desc{min-height:38px;margin:0 0 8px;font-size:11px;line-height:1.5;color:#52665b}
+.desc b{color:#163024}
+iframe{display:block;width:100%;height:812px;border:0;background:#fff}
+footer{text-align:center;padding:0 16px 24px;font-size:11px;color:#52665b}
+a:focus-visible,select:focus-visible{outline:2px solid #2f8a3a;outline-offset:3px}
+@media(max-width:900px){main{grid-template-columns:minmax(0,390px);gap:24px}header{max-width:422px}}
+</style>
+</head>
+<body>
+<header>
+  <h1>赛事预言家 <span>v0.41-cc · 三页对照 + 状态预览（含比赛详情页）</span></h1>
+  <div><a href="gallery.html">单页状态图册 →</a> · <a href="README-cc.md">查看说明</a> · <a href="overview.html">v0.2.2-cc 原对照</a></div>
+</header>
+<main>
+  <section>
+    <div class="top"><h2>比赛</h2><select id="match-sel" aria-label="比赛页及详情页状态"></select><a id="match-link" target="_blank" rel="noopener">打开 ↗</a></div>
+    <p class="desc" id="match-desc"></p>
+    <iframe id="match-frame" title="比赛页"></iframe>
+  </section>
+  <section>
+    <div class="top"><h2>排行榜</h2><select id="rank-sel" aria-label="排行榜状态"></select><a id="rank-link" target="_blank" rel="noopener">打开 ↗</a></div>
+    <p class="desc" id="rank-desc"></p>
+    <iframe id="rank-frame" title="排行榜页"></iframe>
+  </section>
+  <section>
+    <div class="top"><h2>我的</h2><select id="my-sel" aria-label="我的及子页面状态"></select><a id="my-link" target="_blank" rel="noopener">打开 ↗</a></div>
+    <p class="desc" id="my-desc"></p>
+    <iframe id="my-frame" title="我的页"></iframe>
+  </section>
+</main>
+<footer>示例数据 · 默认是 20 人以上的常态页面 · 下拉框切换各状态（均为完整页面）</footer>
+<script src="states-data.js"></script>
+<script>
+/* 排行榜：states 里的 R*；另保留 v0.2.2-cc 的「38 场 · 实力榜未达门槛」原页面 */
+const extraRank=['R19','常态 · 38 场（实力榜未达门槛）','rankings-v1.3-under50.html',['v0.2.2-cc'],'沿用 v0.2.2-cc 的原页面：窗口 38 场，没有实力榜标签，概览卡提示还差 12 场。',['人数 ≥ 20 的常态']];
+function collect(prefixes){
+  const out=[];
+  window.STATE_GROUPS.forEach(([name,items])=>{
+    const picked=items.filter(it=>prefixes.some(p=>it[0].startsWith(p)));
+    if(picked.length)out.push([name,picked]);
+  });
+  return out;
+}
+function urlOf(it){return it[0]==='H01'||it[2].includes('?')?it[2]:it[2]+'?state='+it[0];}
+function setup(prefixes,selId,frameId,linkId,descId,defaultId,extra,extraFirst){
+  const sel=document.getElementById(selId),frame=document.getElementById(frameId),link=document.getElementById(linkId),desc=document.getElementById(descId);
+  const groups=collect(prefixes);const flat=[];
+  if(extraFirst){
+    const og=document.createElement('optgroup');og.label=extraFirst[1];
+    flat.push(extraFirst[0]);const o=document.createElement('option');o.value=extraFirst[0][0];o.textContent=extraFirst[0][0]+' · '+extraFirst[0][1];og.appendChild(o);sel.appendChild(og);
+  }
+  groups.forEach(([name,items])=>{
+    const og=document.createElement('optgroup');og.label=name;
+    items.forEach(it=>{flat.push(it);const o=document.createElement('option');o.value=it[0];o.textContent=it[0]+' · '+it[1];og.appendChild(o);});
+    sel.appendChild(og);
+  });
+  if(extra){
+    const og=document.createElement('optgroup');og.label='沿用 v0.2.2-cc';
+    flat.push(extra);const o=document.createElement('option');o.value=extra[0];o.textContent=extra[0]+' · '+extra[1];og.appendChild(o);sel.appendChild(og);
+  }
+  function show(id){
+    const it=flat.find(x=>x[0]===id)||flat[0];sel.value=it[0];
+    const url=urlOf(it);frame.src=url;link.href=url;
+    desc.innerHTML='<b>'+it[1]+'</b> · '+it[4];
+  }
+  sel.addEventListener('change',()=>show(sel.value));
+  show(defaultId);
+}
+setup(['R'],'rank-sel','rank-frame','rank-link','rank-desc','R06',extraRank);
+const homeItem=['H01','首页 · 比赛列表（常态）','赛事预言家首页-高保真-v8.6-球场背景玻璃版.html',['基线'],'首页沿用 v0.2.2-cc；进行中和完场的比赛卡新增「大家怎么选 ›」小入口，进入比赛详情页。',['未截止的卡片没有该入口']];
+setup(['D'],'match-sel','match-frame','match-link','match-desc','H01',null,[homeItem,'首页']);
+setup(['M','P','G'],'my-sel','my-frame','my-link','my-desc','M01',null);
+</script>
+</body>
+</html>

@@ -1,18 +1,8 @@
 const { getTeamLogo, getLeagueLogo } = require("../../utils/logo-registry.js");
 const { resolveNickname, truncateNickname } = require("../../utils/nickname.js");
-
-const MOCK_MATCHES = [
-  // 英超：与 HTML 设计稿一致，覆盖未开赛、已提交、进行中、完场命中、未开赛五种卡片。
-  { match_id: "mock-pl-001", league_id: "premier_league", league_name: "英超", round_id: "截止前 10 分钟", kickoff_at: "2026-08-18T20:30:00+08:00", match_status: "scheduled", can_predict: true, can_predict_reason: null, regular_home_score: null, regular_away_score: null, home_team: { team_id: "arsenal", name: "阿森纳" }, away_team: { team_id: "chelsea", name: "切尔西" } },
-  { match_id: "mock-pl-002", league_id: "premier_league", league_name: "英超", round_id: "预测已锁定", kickoff_at: "2026-08-18T21:00:00+08:00", match_status: "scheduled", can_predict: false, can_predict_reason: "ALREADY_SUBMITTED", regular_home_score: null, regular_away_score: null, my_prediction: { pred_home_score: 2, pred_away_score: 1 }, home_team: { team_id: "manchester-city", name: "曼城" }, away_team: { team_id: "liverpool", name: "利物浦" } },
-  { match_id: "mock-pl-003", league_id: "premier_league", league_name: "英超", round_id: "下半场", display_time: "63′", kickoff_at: "2026-08-18T21:30:00+08:00", match_status: "live", can_predict: false, can_predict_reason: "CLOSED", regular_home_score: 1, regular_away_score: 0, my_prediction: { pred_home_score: 2, pred_away_score: 1 }, home_team: { team_id: "tottenham", name: "热刺" }, away_team: { team_id: "newcastle", name: "纽卡斯尔" } },
-  { match_id: "mock-pl-004", league_id: "premier_league", league_name: "英超", round_id: "第 1 轮", display_time: "已结束", kickoff_at: "2026-08-18T18:00:00+08:00", match_status: "finished", can_predict: false, can_predict_reason: null, regular_home_score: 2, regular_away_score: 2, result_type: "hit3", my_prediction: { pred_home_score: 2, pred_away_score: 1 }, home_team: { team_id: "manchester-united", name: "曼联" }, away_team: { team_id: "aston-villa", name: "阿斯顿维拉" } },
-  { match_id: "mock-pl-005", league_id: "premier_league", league_name: "英超", round_id: "还可以预测", kickoff_at: "2026-08-18T23:00:00+08:00", match_status: "scheduled", can_predict: true, can_predict_reason: null, regular_home_score: null, regular_away_score: null, home_team: { team_id: "brighton", name: "布莱顿" }, away_team: { team_id: "brentford", name: "布伦特福德" } },
-
-  { match_id: "mock-laliga-001", league_id: "la_liga", league_name: "西甲", round_id: "第1轮", kickoff_at: "2026-08-18T22:00:00+08:00", match_status: "scheduled", can_predict: true, can_predict_reason: null, regular_home_score: null, regular_away_score: null, home_team: { team_id: "real-madrid", name: "皇家马德里" }, away_team: { team_id: "barcelona", name: "巴塞罗那" } },
-  { match_id: "mock-ligue-001", league_id: "ligue_1", league_name: "法甲", round_id: "第1轮", kickoff_at: "2026-08-18T20:00:00+08:00", match_status: "scheduled", can_predict: true, can_predict_reason: null, regular_home_score: null, regular_away_score: null, home_team: { team_id: "paris-saint-germain", name: "巴黎圣日耳曼" }, away_team: { team_id: "marseille", name: "马赛" } },
-  { match_id: "mock-csl-001", league_id: "chinese_super_league", league_name: "中超", round_id: "第1轮", kickoff_at: "2026-08-18T18:00:00+08:00", match_status: "scheduled", can_predict: true, can_predict_reason: null, regular_home_score: null, regular_away_score: null, home_team: { team_id: "beijing-guoan", name: "北京国安" }, away_team: { team_id: "shanghai-shenhua", name: "上海申花" } },
-];
+const { listMatches } = require("../../services/matches.js");
+const { resolveDefaultLeague } = require("../../utils/matches-default-league.js");
+const { createUuidV4, submitPrediction } = require("../../services/predictions.js");
 
 const LEAGUES = [
   { id: "premier_league", name: "英超" },
@@ -57,7 +47,13 @@ function buildDates(anchor) {
   return dates;
 }
 
-function dayBounds(key) { return { from: `${key}T00:00:00+08:00`, to: `${key}T23:59:59+08:00` }; }
+function dayBounds(key) {
+  const start = new Date(`${key}T00:00:00+08:00`);
+  return {
+    from: start.toISOString(),
+    to: new Date(start.getTime() + 24 * 60 * 60 * 1000).toISOString(),
+  };
+}
 function statusView(item) {
   const reason = item.can_predict_reason;
   if (item.match_status === "live") return { cardClass: "is-live", stateClass: "live", stateText: "进行中" };
@@ -87,20 +83,29 @@ function formatPrediction(prediction) {
 Page({
   data: {
     state: "loading", items: [], errorMessage: "", hasMore: false, nextCursor: null, loadingMore: false, nickname: "",
-    leagues: [], selectedLeague: "premier_league", dates: [], selectedDate: "", openCount: 0, doneCount: 0,
-    recentScore: 12, scrollIntoView: "", resultsTransition: "results-enter",
+    leagues: [], selectedLeague: "premier_league", dates: [], selectedDate: "", openCount: 0, doneCount: 0, recentScore: null,
+    scrollIntoView: "", resultsTransition: "results-enter",
   },
   drafts: {}, uiStates: {}, submittedMap: {}, idempotencyKeys: {}, lastPayloads: {}, requestSerial: 0,
 
   onLoad() {
     const dates = buildDates(new Date());
     this.setData({ dates, selectedDate: dates[0].key, leagues: LEAGUES.map((item) => ({ ...item, logo: getLeagueLogo(item.id) })), nickname: truncateNickname(resolveNickname()) });
-    this.loadFirstPage();
+    resolveDefaultLeague(listMatches, new Date()).then((leagueId) => {
+      if (!this.userChangedLeague) this.setData({ selectedLeague: leagueId });
+      this.initialized = true;
+      this.loadFirstPage();
+    });
+  },
+
+  onShow() {
+    if (this.initialized) this.loadFirstPage();
   },
 
   onLeagueTap(event) {
     const league = event.currentTarget.dataset.id;
     if (!league || league === this.data.selectedLeague) return;
+    this.userChangedLeague = true;
     this.closeEditors();
     this.setData({ selectedLeague: league, scrollIntoView: "", state: "loading", items: [], hasMore: false, nextCursor: null, openCount: 0, doneCount: 0, resultsTransition: "results-exit" });
     setTimeout(() => this.loadFirstPage(), 180);
@@ -118,16 +123,18 @@ Page({
 
   loadFirstPage() {
     const serial = ++this.requestSerial;
-    const rawItems = MOCK_MATCHES.filter((item) => item.league_id === this.data.selectedLeague);
-    const items = rawItems.map((item) => this.decorateItem(item));
-    this.setData({ state: items.length ? "list" : "empty", items, hasMore: false, nextCursor: null, errorMessage: "", loadingMore: false, openCount: items.filter((item) => item.showPredict).length, doneCount: items.filter((item) => item.can_predict_reason === "ALREADY_SUBMITTED").length, resultsTransition: "results-enter" });
-    return serial;
+    this.setData({ state: "loading", items: [], hasMore: false, nextCursor: null, errorMessage: "", loadingMore: false, resultsTransition: "results-enter" });
+    return listMatches({ ...dayBounds(this.data.selectedDate), league_id: this.data.selectedLeague, limit: 100 })
+      .then((result) => {
+        if (serial !== this.requestSerial) return;
+        this.applyListResult(result, true);
+      });
   },
 
   applyListResult(result, replace) {
     if (result.statusCode !== 200) { this.setData({ state: "error", errorMessage: result.message || String(result.code || result.statusCode), loadingMore: false }); return; }
     const payload = result.data || {};
-    const rawItems = Array.isArray(payload.items) ? payload.items.filter((item) => item.league_id === this.data.selectedLeague) : [];
+    const rawItems = Array.isArray(payload.items) ? payload.items : [];
     const items = (replace ? rawItems : this.data.items.concat(rawItems)).map((item) => this.decorateItem(item));
     const page = payload.page || {};
     this.setData({ state: items.length ? "list" : "empty", items, hasMore: page.has_more === true, nextCursor: page.next_cursor || null, errorMessage: "", loadingMore: false, openCount: items.filter((item) => item.showPredict).length, doneCount: items.filter((item) => item.can_predict_reason === "ALREADY_SUBMITTED").length });
@@ -150,7 +157,7 @@ Page({
       homeLogo: getTeamLogo(item.league_id || this.data.selectedLeague, homeId),
       awayLogo: getTeamLogo(item.league_id || this.data.selectedLeague, awayId),
       timeText: item.display_time || (kick ? `${pad(kick.hour)}:${pad(kick.minute)}` : "--:--"),
-      metaText: `${item.league_name || "英超"} · ${item.round_id || "本轮"}`,
+      metaText: `${(LEAGUES.find((league) => league.id === item.league_id) || {}).name || "比赛"} · ${item.round_id || "本轮"}`,
       scoreText: hasScore ? `${item.regular_home_score} : ${item.regular_away_score}` : "VS",
       scoreSub: item.can_predict_reason === "ALREADY_SUBMITTED" ? "已锁定" : item.match_status === "live" ? "LIVE" : item.match_status === "finished" ? (hasScore ? "FT" : "待结算") : item.display_time || (kick ? `${pad(kick.hour)}:${pad(kick.minute)}` : ""),
       bugClass: item.match_status === "live" || item.match_status === "finished" ? "dark" : "",
@@ -193,15 +200,59 @@ Page({
     const item = this.data.items.find((entry) => entry.match_id === matchId);
     if (!item || this.uiStates[key] === "submitting") return;
     const draft = this.drafts[key] || { home: 0, away: 0 };
+    const previousPayload = this.lastPayloads[key];
+    if (!previousPayload || previousPayload.home !== draft.home || previousPayload.away !== draft.away) {
+      this.idempotencyKeys[key] = createUuidV4();
+      this.lastPayloads[key] = { ...draft };
+    }
     this.uiStates[key] = "submitting";
     this.refreshItems();
-    setTimeout(() => {
-      this.submittedMap[key] = { ...draft };
-      this.uiStates[key] = "submitted_locked";
-      delete this.drafts[key];
+    submitPrediction({
+      idempotencyKey: this.idempotencyKeys[key],
+      matchId,
+      homeScore: draft.home,
+      awayScore: draft.away,
+    }).then((result) => {
+      if (result.statusCode === 200 || result.statusCode === 201) {
+        this.submittedMap[key] = { ...draft };
+        this.uiStates[key] = "submitted_locked";
+        delete this.drafts[key];
+        delete this.idempotencyKeys[key];
+        delete this.lastPayloads[key];
+        this.refreshItems();
+        this.loadFirstPage();
+        return;
+      }
+      if (result.statusCode === 409 && result.code === "PREDICTION_ALREADY_SUBMITTED") {
+        this.uiStates[key] = "submitted_locked";
+        delete this.drafts[key];
+        this.loadFirstPage();
+        return;
+      }
+      if (result.statusCode === 409 && ["MATCH_NOT_PREDICTABLE", "PREDICTION_LOCKED"].includes(result.code)) {
+        this.uiStates[key] = "collapsed";
+        this.loadFirstPage();
+        return;
+      }
+      this.uiStates[key] = "editing";
+      const errors = { ...(this.data.submitErrors || {}) };
+      errors[key] = result.message || String(result.code || result.statusCode);
+      this.setData({ submitErrors: errors });
       this.refreshItems();
-    }, 900);
+    });
   },
 
-  onMore() {},
+  onMore() {
+    if (this.data.loadingMore || !this.data.hasMore || !this.data.nextCursor) return;
+    const serial = this.requestSerial;
+    this.setData({ loadingMore: true });
+    listMatches({
+      ...dayBounds(this.data.selectedDate),
+      league_id: this.data.selectedLeague,
+      limit: 100,
+      cursor: this.data.nextCursor,
+    }).then((result) => {
+      if (serial === this.requestSerial) this.applyListResult(result, false);
+    });
+  },
 });

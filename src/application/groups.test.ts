@@ -85,6 +85,7 @@ describe("GroupsService", () => {
     const group = await seedOwnedGroup(repo, id(2), 6);
     const item = await new GroupsService(repo, { cursorSecret: CURSOR_SECRET }).getGroup(id(2), group.group_id);
     expect(item.display_name).toBe("已注销用户的预言群");
+    expect(item.invite_code).toBe(group.invite_code);
   });
 
   it("only active owned groups consume the owned limit", async () => {
@@ -180,15 +181,28 @@ describe("GroupsService", () => {
     await repo.groups.update({ ...group, member_count: 2 });
     const service = new GroupsService(repo, { cursorSecret: CURSOR_SECRET });
 
-    expect(await service.listMyGroups(id(2), { limit: 20, cursor: null })).toEqual({
+    const listed = await service.listMyGroups(id(2), { limit: 20, cursor: null });
+    expect(listed).toEqual({
       items: [expect.objectContaining({
         group_id: group.group_id, display_name: "Owner的预言群", role: "member", member_count: 2, joined_at: NOW.toISOString(),
       })],
       has_more: false,
       next_cursor: null,
     });
+    expect(listed.items[0]).not.toHaveProperty("invite_code");
+    await expect(service.getGroup(id(2), group.group_id)).resolves.toMatchObject({
+      group_id: group.group_id,
+      invite_code: group.invite_code,
+    });
     await expect(service.getGroup(id(3), group.group_id)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await repo.groupMembers.update({
+      ...makeMember(group.group_id, id(2), GroupMemberStatus.Left),
+      left_at: NOW,
+    });
+    await expect(service.getGroup(id(2), group.group_id)).rejects.toMatchObject({ code: "FORBIDDEN" });
     await expect(service.getGroup(id(2), id(999))).rejects.toMatchObject({ code: "GROUP_NOT_FOUND" });
+    await repo.groups.update({ ...group, status: GroupStatus.Dissolved, member_count: 0 });
+    await expect(service.getGroup(id(2), group.group_id)).rejects.toMatchObject({ code: "GROUP_NOT_FOUND" });
   });
 
   it("dissolve terminates every active membership and resets member_count", async () => {

@@ -1,0 +1,11 @@
+<view class="page">
+  <view class="page-title">{{title}}</view>
+  <view wx:if="{{state === 'ready'}}" class="ui-placeholder">
+    <view>{{inviteCodeLabel}}</view>
+    <view class="invite-code">{{inviteCode}}</view>
+    <button bindtap="onConfirm" loading="{{loading}}" disabled="{{loading}}">{{confirmText}}</button>
+  </view>
+  <view wx:if="{{state === 'error'}}" class="error">
+    <view>{{errorMessage}}</view>
+  </view>
+</view>

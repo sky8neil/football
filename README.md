@@ -184,6 +184,31 @@
 
 ## 常用命令
 
+### 在微信开发者工具里调试
+
+1. 在项目根目录启动本地网关：
+
+   ```sh
+   npm run gateway:dev
+   ```
+
+   网关使用内存数据，默认场景为 `normal`，本地测试身份为 `local-dev-openid`。
+2. 确认 [miniprogram/config.js](miniprogram/config.js) 中的 `gatewayOrigin` 为 `http://127.0.0.1:8787`，用微信开发者工具打开 `miniprogram/`，并在项目设置中勾选「不校验合法域名」。项目使用游客 appid，不需要云开发。
+3. 切换种子场景时，先停止网关，再用对应变量重新启动，例如：
+
+   ```sh
+   FOOTBALL_SEED_SCENARIO=thin2 npm run gateway:dev
+   ```
+
+   可用值：`normal`、`empty`、`thin1`、`thin2`、`thin5`、`no-group`、`first-season`、`new-season`、`predictions-long`。
+4. 查看游客状态时，清空本地可信身份后启动；排行榜会收到未登录响应并显示游客视图：
+
+   ```sh
+   FOOTBALL_MOCK_TRUSTED_OPENID= FOOTBALL_SEED_SCENARIO=normal npm run gateway:dev
+   ```
+
+   默认身份用于本地功能调试，不对应真实 openid。更换场景或身份后需重启网关。
+
 ```sh
 npm run typecheck   # tsc --noEmit 全量类型检查
 npm test            # vitest run（全量测试）

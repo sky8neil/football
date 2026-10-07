@@ -31,6 +31,12 @@ Page({
         // 写入本地缓存，供首页第一行展示。
         const payload = result.data && typeof result.data === "object" ? result.data : {};
         storeNickname(payload.nickname);
+        const pendingInviteCode = wx.getStorageSync("pending_group_invite_code");
+        if (pendingInviteCode) {
+          wx.removeStorageSync("pending_group_invite_code");
+          wx.reLaunch({ url: `/pages/groups/join?code=${encodeURIComponent(pendingInviteCode)}` });
+          return;
+        }
         wx.switchTab({ url: HOME_URL });
         return;
       }

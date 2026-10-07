@@ -1,6 +1,6 @@
 import { FIXED_CONFIG_V1 } from "../../domain/config.js";
 import { RankingBoard, RankingScope } from "../../domain/enums.js";
-import { validationError } from "../../domain/errors.js";
+import { conflictError, validationError } from "../../domain/errors.js";
 import { isValidUuid } from "../../domain/ids.js";
 import { isValidPeriodKey } from "../../domain/time.js";
 import type {
@@ -16,6 +16,7 @@ const RANKINGS_QUERY_FIELDS = new Set([
   "period_key",
   "scope",
   "group_id",
+  "level_season_id",
   "limit",
   "cursor",
 ]);
@@ -23,8 +24,7 @@ const RANKINGS_QUERY_FIELDS = new Set([
 export type RankingsQuery = Omit<RankingQuery, "server_now" | "authenticated_user_id">;
 
 export interface GetRankingsInput {
-  authenticated_user_id?: string | null;
-  public_source?: string;
+  authenticated_user_id: string | null;
   query: Record<string, unknown>;
   server_now: Date;
   request_id: string;
@@ -39,6 +39,14 @@ export interface GetRankingsSuccessResponse {
       scope: RankingQueryResult["scope"];
       period_key: string | null;
       updated_at: string | null;
+      server_now: string;
+      current_period_key?: string;
+      available_boards: RankingQueryResult["available_boards"];
+      seasons_participated: number;
+      entry_count: number;
+      level_season_id?: string;
+      available_level_seasons?: string[];
+      is_provisional?: boolean;
       items: RankingQueryResult["items"];
       page: {
         next_cursor: string | null;
@@ -65,7 +73,7 @@ function parseLimit(value: unknown): number {
 export function validateRankingsQuery(query: Record<string, unknown>): RankingsQuery {
   assertUnknownFields(query, RANKINGS_QUERY_FIELDS);
   if (!Object.values(RankingBoard).includes(query.board as RankingQuery["board"])) {
-    throw validationError("board 必须是 week、career 或 strength", { field: "board" });
+    throw validationError("board 必须是 week、career、strength 或 season", { field: "board" });
   }
   const board = query.board as RankingQuery["board"];
   const scope = query.scope === undefined ? RankingScope.Global : query.scope;
@@ -80,6 +88,15 @@ export function validateRankingsQuery(query: Record<string, unknown>): RankingsQ
     }
   } else if (query.period_key !== undefined) {
     throw validationError("period_key 仅适用于 week 榜", { field: "period_key" });
+  }
+  const levelSeasonId = query.level_season_id === undefined ? null : query.level_season_id;
+  if (board === RankingBoard.Season) {
+    if (levelSeasonId !== null &&
+      (typeof levelSeasonId !== "string" || !/^\d{4}_\d{4}$/.test(levelSeasonId))) {
+      throw validationError("level_season_id 格式无效", { field: "level_season_id" });
+    }
+  } else if (query.level_season_id !== undefined) {
+    throw validationError("level_season_id 仅适用于 season 榜", { field: "level_season_id" });
   }
   const groupId = query.group_id === undefined ? null : query.group_id;
   if (scope === RankingScope.Group) {
@@ -98,14 +115,15 @@ export function validateRankingsQuery(query: Record<string, unknown>): RankingsQ
     period_key: periodKey as string | null,
     scope: scope as RankingQuery["scope"],
     group_id: groupId as string | null,
+    level_season_id: levelSeasonId as string | null,
     limit: parseLimit(query.limit),
     cursor,
   };
 }
 
-function requirePublicSource(value: unknown): string {
-  if (typeof value !== "string" || value.trim().length === 0) {
-    throw validationError("公开读取需要可信来源标识", { field: "public_source" });
+function requireAuthenticatedUserId(value: unknown): string {
+  if (typeof value !== "string" || value.length === 0) {
+    throw conflictError("UNAUTHORIZED", "需要登录后查看排行榜");
   }
   return value;
 }
@@ -115,13 +133,9 @@ export async function getRankings(
   input: GetRankingsInput,
 ): Promise<GetRankingsSuccessResponse> {
   const query = validateRankingsQuery(input.query);
-  const userId = input.authenticated_user_id ?? null;
+  const userId = requireAuthenticatedUserId(input.authenticated_user_id);
   const limiter = input.rate_limiter ?? defaultApiRateLimiter;
-  if (userId !== null) {
-    await limiter.check("authenticated_reads", userId, input.server_now);
-  } else {
-    await limiter.check("public_reads", requirePublicSource(input.public_source), input.server_now);
-  }
+  await limiter.check("authenticated_reads", userId, input.server_now);
   const result = await service.list({
     ...query,
     server_now: input.server_now,
@@ -135,6 +149,18 @@ export async function getRankings(
         scope: result.scope,
         period_key: result.period_key,
         updated_at: result.updated_at,
+        server_now: input.server_now.toISOString(),
+        ...(result.current_period_key === undefined
+          ? {}
+          : { current_period_key: result.current_period_key }),
+        available_boards: result.available_boards,
+        seasons_participated: result.seasons_participated,
+        entry_count: result.entry_count,
+        ...(result.level_season_id === undefined ? {} : { level_season_id: result.level_season_id }),
+        ...(result.available_level_seasons === undefined
+          ? {}
+          : { available_level_seasons: result.available_level_seasons }),
+        ...(result.is_provisional === undefined ? {} : { is_provisional: result.is_provisional }),
         items: result.items,
         page: { next_cursor: result.next_cursor, has_more: result.has_more },
         ...(result.me === undefined ? {} : { me: result.me }),

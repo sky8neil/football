@@ -36,6 +36,10 @@ export interface GroupListItem {
   joined_at: string;
 }
 
+export interface GroupDetail extends GroupListItem {
+  invite_code: string;
+}
+
 export interface MyGroupsQuery {
   limit: number;
   cursor: string | null;
@@ -489,7 +493,7 @@ export class GroupsService {
     };
   }
 
-  async getGroup(userId: string, groupId: string): Promise<GroupListItem> {
+  async getGroup(userId: string, groupId: string): Promise<GroupDetail> {
     requireUserId(userId);
     requireGroupId(groupId);
     const repos = requireRepositories(this.repo);
@@ -497,10 +501,13 @@ export class GroupsService {
     if (group === null) {
       throw groupError("GROUP_NOT_FOUND", "群不存在");
     }
+    if (group.status === GroupStatus.Dissolved) {
+      throw groupError("GROUP_NOT_FOUND", "群不存在");
+    }
     const member = await repos.groupMembers.findByGroupAndUser(groupId, userId);
     if (member?.status !== GroupMemberStatus.Active) {
       throw conflictError("FORBIDDEN", "仅群成员可查看群信息");
     }
-    return toListItem(repos, group, member);
+    return { ...(await toListItem(repos, group, member)), invite_code: group.invite_code };
   }
 }

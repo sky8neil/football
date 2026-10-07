@@ -1,0 +1,37 @@
+.page {
+  padding: 32rpx;
+}
+
+.page-title {
+  margin-bottom: 24rpx;
+  font-size: 36rpx;
+}
+
+.group-row,
+.join-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16rpx;
+  padding: 24rpx 0;
+  border-bottom: 1rpx solid #e4e6e8;
+}
+
+.join-row input {
+  min-width: 0;
+  flex: 1;
+  padding: 16rpx;
+  border: 1rpx solid #c7cbd0;
+}
+
+.ui-placeholder {
+  padding: 24rpx;
+  margin-bottom: 16rpx;
+  background: #f0f1f2;
+  color: #555;
+}
+
+.loading,
+.error {
+  min-height: 80rpx;
+}

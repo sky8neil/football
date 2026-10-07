@@ -3,7 +3,7 @@ const { request } = require("./api.js");
 function listMatches(query) {
   const nextQuery = {};
   if (query && typeof query === "object") {
-    ["from", "to", "status", "limit", "cursor"].forEach((key) => {
+    ["from", "to", "status", "league_id", "limit", "cursor"].forEach((key) => {
       if (query[key] !== undefined && query[key] !== null) {
         nextQuery[key] = query[key];
       }

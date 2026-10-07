@@ -1,5 +1,5 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { FIXED_CONFIG_V1 } from "../domain/config.js";
+import { FIXED_CONFIG_V1, RANKING_FIRST_PERIOD_KEY } from "../domain/config.js";
 import {
   GroupMemberStatus,
   GroupStatus,
@@ -9,12 +9,28 @@ import {
   type RankingBoard as RankingBoardType,
   type RankingScope as RankingScopeType,
 } from "../domain/enums.js";
-import { conflictError, groupError, internalError, validationError } from "../domain/errors.js";
+import { conflictError, groupError, internalError, notFoundError, validationError } from "../domain/errors.js";
 import { isValidUuid } from "../domain/ids.js";
 import { formatSDisplay } from "../domain/levels.js";
-import { compareRankingEntry } from "../domain/ranking.js";
-import { calculatePeriodKey, isValidPeriodKey, periodEndAt } from "../domain/time.js";
-import type { BoardSnapshot, Group, RankingEntry, User } from "../domain/types.js";
+import {
+  compareRankingEntry,
+  countSeasonsParticipated,
+  isSeasonBoardVisible,
+} from "../domain/ranking.js";
+import {
+  calculatePeriodKey,
+  isValidPeriodKey,
+  levelSeasonOf,
+  periodEndAt,
+  toShanghaiParts,
+} from "../domain/time.js";
+import type {
+  BoardSnapshot,
+  Group,
+  RankingEntry,
+  User,
+  UserSeasonStats,
+} from "../domain/types.js";
 import type { AppRepository, UnitOfWork } from "../infrastructure/repositories.js";
 
 export interface RankingQuery {
@@ -22,6 +38,7 @@ export interface RankingQuery {
   period_key: string | null;
   scope: RankingScopeType;
   group_id: string | null;
+  level_season_id?: string | null;
   limit: number;
   cursor: string | null;
   server_now: Date;
@@ -50,6 +67,12 @@ export type RankingListItem = RankingItemBase & (
       last_scoring_match_at: string | null;
     }
   | {
+      season_points: number;
+      season_valid_predictions: number;
+      exact_hits: number;
+      last_scoring_match_at: string | null;
+    }
+  | {
       strength_index: string;
       window_n: number;
     }
@@ -58,17 +81,54 @@ export type RankingListItem = RankingItemBase & (
 export type RankingMe =
   | { status: "ranked"; rank: number | null; top_percent: number | null }
   | { status: "not_participated" }
-  | { status: "below_threshold"; remaining_valid_predictions: number };
+  | { status: "below_threshold"; remaining_valid_predictions: number }
+  | { status: "not_eligible"; seasons_participated: number };
 
 export interface RankingQueryResult {
   board: RankingBoardType;
   scope: RankingScopeType;
   period_key: string | null;
   updated_at: string | null;
+  current_period_key?: string;
+  available_boards: RankingBoardType[];
+  seasons_participated: number;
+  entry_count: number;
+  level_season_id?: string;
+  is_provisional?: boolean;
+  available_level_seasons?: string[];
   items: RankingListItem[];
   has_more: boolean;
   next_cursor: string | null;
   me?: RankingMe;
+}
+
+export interface AvailableBoardsInput {
+  scope: RankingScopeType;
+  seasons_participated: number;
+  strength_window_n: number;
+  career_entry_count: number;
+  current_season_entry_count: number;
+  previous_season_entry_count: number;
+  selected_season_entry_count?: number;
+}
+
+export function computeAvailableBoards(input: AvailableBoardsInput): RankingBoardType[] {
+  const boards: RankingBoardType[] = [RankingBoard.Week];
+  if (input.career_entry_count > 0) {
+    boards.push(RankingBoard.Career);
+  }
+  if (input.strength_window_n >= FIXED_CONFIG_V1.STRENGTH_BOARD_MIN_WINDOW_N) {
+    boards.push(RankingBoard.Strength);
+  }
+  if (
+    isSeasonBoardVisible(input.seasons_participated) &&
+    (input.current_season_entry_count > 0 ||
+      (input.scope === RankingScope.Global &&
+        (input.previous_season_entry_count > 0 || (input.selected_season_entry_count ?? 0) > 0)))
+  ) {
+    boards.push(RankingBoard.Season);
+  }
+  return boards;
 }
 
 interface RankingCursorPayload {
@@ -77,6 +137,7 @@ interface RankingCursorPayload {
   scope: RankingScopeType;
   group_id: string | null;
   period_key: string | null;
+  level_season_id: string | null;
   offset: number;
 }
 
@@ -88,6 +149,29 @@ interface RankedEntry {
 }
 
 const CURSOR_VERSION = 1 as const;
+const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+
+function shiftWeek(periodKey: string, weeks: number): string {
+  const endAt = periodEndAt("week", periodKey);
+  return calculatePeriodKey("week", new Date(endAt.getTime() - 1 + weeks * WEEK_MS));
+}
+
+function selectableWeekKeys(currentPeriodKey: string, firstPeriodKey: string): string[] {
+  const keys: string[] = [];
+  for (let offset = 0; offset < FIXED_CONFIG_V1.RANKING_WEEK_WINDOW; offset += 1) {
+    const key = shiftWeek(currentPeriodKey, -offset);
+    if (key < firstPeriodKey) break;
+    keys.push(key);
+  }
+  return keys;
+}
+
+function defaultWeekKey(serverNow: Date, currentPeriodKey: string, selectable: readonly string[]): string {
+  const candidate = toShanghaiParts(serverNow).weekday === 0
+    ? shiftWeek(currentPeriodKey, -1)
+    : currentPeriodKey;
+  return selectable.includes(candidate) ? candidate : currentPeriodKey;
+}
 
 function isCursorShape(value: unknown): value is string {
   return typeof value === "string" && value.split(".").length === 2 && value.length > 2;
@@ -100,9 +184,14 @@ function validateQuery(input: RankingQuery): void {
     (input.board === RankingBoard.Week
       ? input.period_key !== null && !isValidPeriodKey("week", input.period_key)
       : input.period_key !== null) ||
+    (input.board === RankingBoard.Season
+      ? input.level_season_id != null && !isValidLevelSeasonId(input.level_season_id)
+      : input.level_season_id != null) ||
     (input.scope === RankingScope.Group
       ? input.group_id === null || !isValidUuid(input.group_id)
       : input.group_id !== null) ||
+    (input.scope === RankingScope.Group && input.level_season_id != null &&
+      input.level_season_id !== levelSeasonOf(input.server_now)) ||
     !Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > FIXED_CONFIG_V1.API_MAX_LIMIT ||
     (input.cursor !== null && !isCursorShape(input.cursor)) ||
     !(input.server_now instanceof Date) || !Number.isFinite(input.server_now.getTime()) ||
@@ -123,6 +212,7 @@ function parseCursor(value: unknown): RankingCursorPayload {
     !Object.values(RankingScope).includes(payload.scope as RankingScopeType) ||
     (payload.group_id !== null && (typeof payload.group_id !== "string" || !isValidUuid(payload.group_id))) ||
     (payload.period_key !== null && typeof payload.period_key !== "string") ||
+    (payload.level_season_id !== null && typeof payload.level_season_id !== "string") ||
     !Number.isSafeInteger(payload.offset) || (payload.offset as number) < 0
   ) {
     throw validationError("cursor 内容无效", { field: "cursor" });
@@ -131,6 +221,14 @@ function parseCursor(value: unknown): RankingCursorPayload {
     payload.board === RankingBoard.Week
       ? typeof payload.period_key !== "string" || !isValidPeriodKey("week", payload.period_key)
       : payload.period_key !== null
+  ) {
+    throw validationError("cursor 内容无效", { field: "cursor" });
+  }
+  if (
+    payload.board === RankingBoard.Season
+      ? payload.level_season_id !== null &&
+        (typeof payload.level_season_id !== "string" || !isValidLevelSeasonId(payload.level_season_id))
+      : payload.level_season_id !== null
   ) {
     throw validationError("cursor 内容无效", { field: "cursor" });
   }
@@ -170,6 +268,7 @@ export class RankingCursorCodec {
       scope: parsed.scope,
       group_id: parsed.group_id,
       period_key: parsed.period_key,
+      level_season_id: parsed.level_season_id,
       offset: parsed.offset,
     };
   }
@@ -239,6 +338,29 @@ function compareSources(board: RankingBoardType, a: RankingSource, b: RankingSou
       user_id: b.user_id,
     });
   }
+  if (board === RankingBoard.Season) {
+    if (
+      !("season_points" in a) || !("season_points" in b) ||
+      a.season_points === null || b.season_points === null ||
+      a.season_exact_hits === null || b.season_exact_hits === null ||
+      a.season_valid_predictions === null || b.season_valid_predictions === null
+    ) {
+      throw internalError("season snapshot 缺少排序字段");
+    }
+    return compareRankingEntry(board, {
+      period_score: a.season_points,
+      exact_hits: a.season_exact_hits,
+      valid_predictions: a.season_valid_predictions,
+      last_scoring_match_at: a.season_last_scoring_match_at,
+      user_id: a.user_id,
+    }, {
+      period_score: b.season_points,
+      exact_hits: b.season_exact_hits,
+      valid_predictions: b.season_valid_predictions,
+      last_scoring_match_at: b.season_last_scoring_match_at,
+      user_id: b.user_id,
+    });
+  }
   if (!("career_points" in a) || !("career_points" in b) || a.career_points === null ||
     b.career_points === null || a.career_exact_hits === null || b.career_exact_hits === null ||
     a.career_valid_predictions === null || b.career_valid_predictions === null) {
@@ -279,6 +401,21 @@ function makeItem(board: RankingBoardType, rank: number, user: User, source: Ran
       last_scoring_match_at: source.career_last_scoring_match_at?.toISOString() ?? null,
     };
   }
+  if (board === RankingBoard.Season) {
+    if (
+      !("season_points" in source) || source.season_points === null ||
+      source.season_valid_predictions === null || source.season_exact_hits === null
+    ) {
+      throw internalError("season snapshot 缺少展示字段");
+    }
+    return {
+      ...base,
+      season_points: source.season_points,
+      season_valid_predictions: source.season_valid_predictions,
+      exact_hits: source.season_exact_hits,
+      last_scoring_match_at: source.season_last_scoring_match_at?.toISOString() ?? null,
+    };
+  }
   if (!("window_score_sum" in source) || source.window_score_sum === null || source.window_n === null) {
     throw internalError("strength snapshot 缺少展示字段");
   }
@@ -294,25 +431,51 @@ function topPercent(rank: number, count: number): number {
   return Math.min(max, Math.max(min, percent));
 }
 
+function previousLevelSeasonId(levelSeasonId: string): string {
+  const startYear = Number(levelSeasonId.slice(0, 4));
+  return `${startYear - 1}_${startYear}`;
+}
+
+function isValidLevelSeasonId(value: string): boolean {
+  const match = /^(\d{4})_(\d{4})$/.exec(value);
+  return match !== null && Number(match[2]) === Number(match[1]) + 1;
+}
+
 export class RankingQueryService {
   private readonly cursorCodec: RankingCursorCodec;
+  private readonly firstPeriodKey: string;
 
   constructor(
-    private readonly repo: Pick<AppRepository, "users" | "rankings" | "boardSnapshots" | "groups" | "groupMembers">,
+    private readonly repo: Pick<
+      AppRepository,
+      "users" | "rankings" | "boardSnapshots" | "userSeasonStats" | "groups" | "groupMembers"
+    >,
     cursorSecret: string,
+    options: { firstPeriodKey?: string } = {},
   ) {
     this.cursorCodec = new RankingCursorCodec(cursorSecret);
+    this.firstPeriodKey = options.firstPeriodKey ?? RANKING_FIRST_PERIOD_KEY;
   }
 
   async list(input: RankingQuery): Promise<RankingQueryResult> {
     validateQuery(input);
     const cursorPosition = input.cursor === null ? null : this.cursorCodec.decode(input.cursor);
-    const periodKey = input.board === RankingBoard.Week
-      ? input.period_key ?? cursorPosition?.period_key ?? calculatePeriodKey("week", input.server_now)
+    const currentPeriodKey = calculatePeriodKey("week", input.server_now);
+    const selectableWeeks = selectableWeekKeys(currentPeriodKey, this.firstPeriodKey);
+    let periodKey = input.board === RankingBoard.Week
+      ? input.period_key ?? cursorPosition?.period_key ?? defaultWeekKey(
+          input.server_now,
+          currentPeriodKey,
+          selectableWeeks,
+        )
       : null;
+    if (input.board === RankingBoard.Week && !selectableWeeks.includes(periodKey!)) {
+      throw validationError("period_key 超出可选周范围", { field: "period_key" });
+    }
     if (cursorPosition !== null && (
       cursorPosition.board !== input.board || cursorPosition.scope !== input.scope ||
-      cursorPosition.group_id !== input.group_id || cursorPosition.period_key !== periodKey
+      cursorPosition.group_id !== input.group_id || cursorPosition.period_key !== periodKey ||
+      (input.level_season_id != null && cursorPosition.level_season_id !== input.level_season_id)
     )) {
       throw validationError("cursor 与当前排行榜查询冲突", { field: "cursor" });
     }
@@ -346,11 +509,138 @@ export class RankingQueryService {
       return user;
     };
 
+    let resolvedDefaultWeekRows: RankingEntry[] | null = null;
+    if (
+      input.board === RankingBoard.Week &&
+      input.period_key === null &&
+      cursorPosition === null
+    ) {
+      if (this.repo.rankings === undefined) throw internalError("rankings repository port 未配置");
+      const candidateKey = periodKey!;
+      const candidateIndex = selectableWeeks.indexOf(candidateKey);
+      for (const weekKey of selectableWeeks.slice(candidateIndex)) {
+        const rows = await this.repo.rankings.findByPeriod("week", weekKey);
+        for (const entry of rows) assertRanking(entry, weekKey);
+        let visibleCount = 0;
+        const historical = periodEndAt("week", weekKey).getTime() <= input.server_now.getTime();
+        for (const entry of rows) {
+          if (entry.global_rank === null || (groupMembers !== null && !groupMembers.has(entry.user_id))) {
+            continue;
+          }
+          const user = await readUser(entry.user_id);
+          if (user.status === UserStatus.Deleted && !historical) continue;
+          if (user.status !== UserStatus.Active && user.status !== UserStatus.Deleted) {
+            throw internalError(`用户状态非法（user_id=${user.user_id}）`);
+          }
+          visibleCount += 1;
+        }
+        if (visibleCount > 0) {
+          periodKey = weekKey;
+          resolvedDefaultWeekRows = rows;
+          break;
+        }
+      }
+      if (resolvedDefaultWeekRows === null) {
+        resolvedDefaultWeekRows = await this.repo.rankings.findByPeriod("week", candidateKey);
+        for (const entry of resolvedDefaultWeekRows) assertRanking(entry, candidateKey);
+      }
+    }
+
+    if (this.repo.boardSnapshots === undefined) {
+      throw internalError("board_snapshots repository port 未配置");
+    }
+    const currentLevelSeasonId = levelSeasonOf(input.server_now);
+    const previousSeasonId = previousLevelSeasonId(currentLevelSeasonId);
+    const [careerVersion, strengthVersion, currentSeasonVersion, previousSeasonRegularVersion,
+      previousSeasonFinalVersion, finalSeasonIds] = await Promise.all([
+        this.repo.boardSnapshots.findLatestByBoard(RankingBoard.Career),
+        this.repo.boardSnapshots.findLatestByBoard(RankingBoard.Strength),
+        this.repo.boardSnapshots.findLatestBySeason(currentLevelSeasonId),
+        this.repo.boardSnapshots.findLatestBySeason(previousSeasonId),
+        this.repo.boardSnapshots.findFinalBySeason(previousSeasonId),
+        this.repo.boardSnapshots.listFinalSeasonIds(),
+      ]);
+
+    const filterSnapshotEntries = async (
+      version: readonly BoardSnapshot[],
+      members: Set<string> | null,
+      keepDeleted = false,
+    ): Promise<RankedEntry[]> => {
+      const filtered: RankedEntry[] = [];
+      for (const snapshot of version) {
+        if (snapshot.snapshot_kind === "head") continue;
+        const user = await readUser(snapshot.user_id);
+        if (user.status === UserStatus.Deleted && !keepDeleted) continue;
+        if (user.status !== UserStatus.Active && user.status !== UserStatus.Deleted) {
+          throw internalError(`用户状态非法（user_id=${user.user_id}）`);
+        }
+        if (members !== null && !members.has(user.user_id)) continue;
+        filtered.push({ source: snapshot, user });
+      }
+      return filtered;
+    };
+
+    const previousSeasonVersion = previousSeasonFinalVersion.length > 0
+      ? previousSeasonFinalVersion
+      : previousSeasonRegularVersion;
+    const [currentSeasonGlobalEntries, careerEntries, currentSeasonEntries, previousSeasonEntries] =
+      await Promise.all([
+        filterSnapshotEntries(currentSeasonVersion, null),
+        filterSnapshotEntries(careerVersion, groupMembers),
+        filterSnapshotEntries(currentSeasonVersion, groupMembers),
+        filterSnapshotEntries(previousSeasonVersion, null, true),
+      ]);
+    const requestedSeasonId = input.level_season_id ?? cursorPosition?.level_season_id ?? null;
+    let selectedSeasonVersion: readonly BoardSnapshot[] = currentSeasonVersion;
+    let selectedSeasonId = requestedSeasonId ?? currentLevelSeasonId;
+    let isProvisional = false;
+    if (
+      input.board === RankingBoard.Season &&
+      requestedSeasonId === null &&
+      input.scope === RankingScope.Global &&
+      currentSeasonGlobalEntries.length === 0 &&
+      previousSeasonEntries.length > 0
+    ) {
+      selectedSeasonVersion = previousSeasonVersion;
+      selectedSeasonId = previousSeasonId;
+      isProvisional = previousSeasonFinalVersion.length === 0;
+    } else if (input.board === RankingBoard.Season && selectedSeasonId !== currentLevelSeasonId) {
+      if (selectedSeasonId === previousSeasonId && previousSeasonFinalVersion.length > 0) {
+        selectedSeasonVersion = previousSeasonFinalVersion;
+      } else {
+        const finalVersion = await this.repo.boardSnapshots.findFinalBySeason(selectedSeasonId);
+        if (finalVersion.length > 0) {
+          selectedSeasonVersion = finalVersion;
+        } else if (selectedSeasonId === previousSeasonId) {
+          selectedSeasonVersion = await this.repo.boardSnapshots.findLatestBySeason(selectedSeasonId);
+          isProvisional = selectedSeasonVersion.some((snapshot) => snapshot.snapshot_kind !== "head");
+        } else {
+          selectedSeasonVersion = [];
+        }
+      }
+      if (!selectedSeasonVersion.some((snapshot) => snapshot.snapshot_kind !== "head")) {
+        throw notFoundError("LEVEL_SEASON");
+      }
+    } else if (
+      input.board === RankingBoard.Season &&
+      requestedSeasonId !== null &&
+      selectedSeasonVersion.every((snapshot) => snapshot.snapshot_kind === "head")
+    ) {
+      throw notFoundError("LEVEL_SEASON");
+    }
+    const selectedSeasonEntries = input.board === RankingBoard.Season
+      ? await filterSnapshotEntries(
+          selectedSeasonVersion,
+          groupMembers,
+          selectedSeasonId !== currentLevelSeasonId,
+        )
+      : [];
+
     let sourceEntries: RankingSource[];
     let updatedAt: string | null;
     if (input.board === RankingBoard.Week) {
       if (this.repo.rankings === undefined) throw internalError("rankings repository port 未配置");
-      const rankings = await this.repo.rankings.findByPeriod("week", periodKey!);
+      const rankings = resolvedDefaultWeekRows ?? await this.repo.rankings.findByPeriod("week", periodKey!);
       for (const entry of rankings) assertRanking(entry, periodKey!);
       const seenRanks = new Set<number>();
       for (const entry of rankings) {
@@ -367,8 +657,11 @@ export class RankingQueryService {
       updatedAt = updated?.toISOString() ?? null;
       sourceEntries = rankings.filter((entry) => entry.global_rank !== null);
     } else {
-      if (this.repo.boardSnapshots === undefined) throw internalError("board_snapshots repository port 未配置");
-      const snapshotVersion = await this.repo.boardSnapshots.findLatestByBoard(input.board);
+      const snapshotVersion = input.board === RankingBoard.Career
+        ? careerVersion
+        : input.board === RankingBoard.Strength
+          ? strengthVersion
+          : selectedSeasonVersion;
       const snapshotAt = snapshotVersion[0]?.snapshot_at ?? null;
       const snapshots = snapshotVersion.filter((snapshot) => snapshot.snapshot_kind !== "head");
       const seenRanks = new Set<number>();
@@ -387,12 +680,30 @@ export class RankingQueryService {
       sourceEntries = snapshots;
     }
 
+    let meUser: User | null = null;
+    let seasonsParticipated = 0;
+    let userParticipatedInSelectedSeason = false;
+    if (input.authenticated_user_id !== undefined && input.authenticated_user_id !== null) {
+      meUser = await readUser(input.authenticated_user_id);
+      if (this.repo.userSeasonStats === undefined) {
+        throw internalError("user_season_stats repository port 未配置");
+      }
+      const seasonStats: UserSeasonStats[] = await this.repo.userSeasonStats.findByUser(
+        input.authenticated_user_id,
+      );
+      seasonsParticipated = countSeasonsParticipated(seasonStats);
+      userParticipatedInSelectedSeason = seasonStats.some(
+        (stats) => stats.level_season_id === selectedSeasonId && stats.valid_predictions >= 1,
+      );
+    }
     const isHistoricalWeek = input.board === RankingBoard.Week &&
       periodEndAt("week", periodKey!).getTime() <= input.server_now.getTime();
+    const isHistoricalSeason = input.board === RankingBoard.Season &&
+      selectedSeasonId !== currentLevelSeasonId;
     const withUsers: RankedEntry[] = [];
     for (const source of sourceEntries) {
       const user = await readUser(sourceUserId(source));
-      if (user.status === UserStatus.Deleted && !isHistoricalWeek) continue;
+      if (user.status === UserStatus.Deleted && !isHistoricalWeek && !isHistoricalSeason) continue;
       if (user.status !== UserStatus.Active && user.status !== UserStatus.Deleted) {
         throw internalError(`用户状态非法（user_id=${user.user_id}）`);
       }
@@ -402,7 +713,8 @@ export class RankingQueryService {
     withUsers.sort((a, b) => compareSources(input.board, a.source, b.source));
 
     const ranked = withUsers.map((entry, index) => {
-      const keepHistoricalRank = isHistoricalWeek && input.scope === RankingScope.Global;
+      const keepHistoricalRank =
+        (isHistoricalWeek || isHistoricalSeason) && input.scope === RankingScope.Global;
       return {
         ...entry,
         rank: keepHistoricalRank ? sourceRank(entry.source) : index + 1,
@@ -410,9 +722,12 @@ export class RankingQueryService {
     });
 
     let me: RankingMe | undefined;
-    if (input.authenticated_user_id !== undefined && input.authenticated_user_id !== null) {
-      const meUser = await readUser(input.authenticated_user_id);
-      if (meUser.status !== UserStatus.Deleted) {
+    if (meUser !== null && meUser.status !== UserStatus.Deleted) {
+      if (input.board === RankingBoard.Season && !isSeasonBoardVisible(seasonsParticipated)) {
+        me = { status: "not_eligible", seasons_participated: seasonsParticipated };
+      } else if (input.board === RankingBoard.Season && !userParticipatedInSelectedSeason) {
+        me = { status: "not_participated" };
+      } else {
         const current = ranked.find((entry) => entry.user.user_id === input.authenticated_user_id);
         if (current !== undefined) {
           me = current.rank <= FIXED_CONFIG_V1.RANKING_ABSOLUTE_RANK_MAX
@@ -434,6 +749,22 @@ export class RankingQueryService {
       }
     }
 
+    const strengthWindowN = meUser?.career_level_state?.last_eval_n ?? 0;
+    const availableBoards = computeAvailableBoards({
+      scope: input.scope,
+      seasons_participated: seasonsParticipated,
+      strength_window_n: strengthWindowN,
+      career_entry_count: careerEntries.length,
+      current_season_entry_count: currentSeasonEntries.length,
+      previous_season_entry_count: previousSeasonEntries.length,
+      selected_season_entry_count: selectedSeasonEntries.length,
+    });
+    const availableLevelSeasons = [...new Set([
+      currentLevelSeasonId,
+      previousSeasonId,
+      ...finalSeasonIds,
+    ])].sort((a, b) => b.localeCompare(a));
+
     const topLimit = FIXED_CONFIG_V1.RANKING_TOP_LIMIT;
     const pageSize = Math.min(FIXED_CONFIG_V1.RANKING_PAGE_SIZE, input.limit);
     const visible = ranked.slice(0, topLimit);
@@ -446,6 +777,7 @@ export class RankingQueryService {
           scope: input.scope,
           group_id: input.group_id,
           period_key: periodKey,
+          level_season_id: input.board === RankingBoard.Season ? selectedSeasonId : null,
           offset: offset + pageEntries.length,
         })
       : null;
@@ -454,6 +786,19 @@ export class RankingQueryService {
       scope: input.scope,
       period_key: periodKey,
       updated_at: updatedAt,
+      ...(input.board === RankingBoard.Week
+        ? { current_period_key: calculatePeriodKey("week", input.server_now) }
+        : {}),
+      available_boards: availableBoards,
+      seasons_participated: seasonsParticipated,
+      entry_count: ranked.length,
+      ...(input.board === RankingBoard.Season
+        ? {
+            level_season_id: selectedSeasonId,
+            available_level_seasons: availableLevelSeasons,
+            is_provisional: isProvisional,
+          }
+        : {}),
       items: pageEntries.map(({ source, user, rank }) => makeItem(input.board, rank, user, source)),
       has_more: hasMore,
       next_cursor: nextCursor,

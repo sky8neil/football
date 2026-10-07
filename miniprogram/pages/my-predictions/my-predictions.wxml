@@ -1,41 +1,52 @@
 <view class="page">
+  <view class="page-title">最近预测</view>
   <view wx:if="{{state === 'loading'}}" class="loading"></view>
-  <view wx:elif="{{state === 'empty'}}" class="empty">暂无预测</view>
-  <view wx:elif="{{state === 'unauthorized'}}" class="error">身份缺失</view>
-  <view wx:elif="{{state === 'userDeleted'}}" class="error">{{errorMessage}}</view>
-  <view wx:elif="{{state === 'userNotFound'}}" class="error">{{errorMessage}}</view>
-  <view wx:elif="{{state === 'rateLimited'}}" class="error">{{errorMessage}}</view>
-  <view wx:elif="{{state === 'error'}}" class="error">
-    <view>{{errorMessage}}</view>
-    <button bindtap="onRetry">retry</button>
+  <view wx:elif="{{state === 'unauthorized'}}" class="state-panel">
+    <text>登录后查看你的预测</text>
+    <button bindtap="onSessionTap">登录</button>
+  </view>
+  <view wx:elif="{{state === 'userDeleted'}}" class="state-panel">{{errorMessage}}</view>
+  <view wx:elif="{{state === 'userNotFound'}}" class="state-panel">{{errorMessage}}</view>
+  <view wx:elif="{{state === 'empty'}}" class="empty-state">
+    <text>还没有预测记录</text>
+    <button bindtap="onMatchesTap">去看比赛</button>
+  </view>
+  <view wx:elif="{{state === 'error'}}" class="state-panel">
+    <text>{{errorMessage}}</text>
+    <button bindtap="onRetry">重试</button>
   </view>
   <view wx:else>
-    <view
-      wx:for="{{items}}"
-      wx:key="prediction_id"
-      class="card"
-      data-match-id="{{item.match_id}}"
-      bindtap="onCardTap"
-    >
-      <view>{{item.round_id}}</view>
-      <view>{{item.home_team_id}}</view>
-      <view>{{item.away_team_id}}</view>
-      <view>{{item.kickoff_at}}</view>
-      <view>{{item.pred_home_score}} - {{item.pred_away_score}}</view>
-      <view>{{item.derived_result}}</view>
-      <view>{{item.match_status}}</view>
-      <view wx:if="{{item.match_status === 'scheduled'}}">未开赛</view>
-      <view wx:elif="{{item.match_status === 'live'}}">进行中</view>
-      <view wx:elif="{{item.match_status === 'finished'}}">已结束</view>
-      <view wx:elif="{{item.match_status === 'postponed'}}">延期</view>
-      <view wx:elif="{{item.match_status === 'cancelled'}}">取消</view>
-      <view wx:elif="{{item.match_status === 'abandoned'}}">废弃/腰斩</view>
-      <view>{{item.regularScoreText}}</view>
-      <view>{{item.matchScoreText}}</view>
-      <view>{{item.wdlHitText}}</view>
-      <view>{{item.exactHitText}}</view>
+    <view wx:for="{{weeks}}" wx:for-item="week" wx:key="key" class="week-group">
+      <view class="week-heading">{{week.label}}</view>
+      <view
+        wx:for="{{week.items}}"
+        wx:for-item="prediction"
+        wx:key="prediction_id"
+        class="prediction-card"
+        data-match-id="{{prediction.match_id}}"
+        bindtap="onCardTap"
+      >
+        <view class="card-head">
+          <view class="league"><image src="{{prediction.leagueLogo}}" mode="aspectFit"></image><text>{{prediction.leagueName}} · {{prediction.round_id}}</text></view>
+          <text class="status">{{prediction.statusText}}</text>
+        </view>
+        <view class="match-row">
+          <view class="team"><image src="{{prediction.homeLogo}}" mode="aspectFit"></image><text>{{prediction.homeName}}</text></view>
+          <view class="scores">
+            <text>{{prediction.predictionText}}</text>
+            <text class="actual">实际 {{prediction.actualText}}</text>
+          </view>
+          <view class="team away"><image src="{{prediction.awayLogo}}" mode="aspectFit"></image><text>{{prediction.awayName}}</text></view>
+        </view>
+        <view class="card-foot">
+          <text>{{prediction.kickoffText}}</text>
+          <text class="result">{{prediction.resultText}} · {{prediction.pointsText}}</text>
+        </view>
+      </view>
     </view>
-    <view wx:if="{{errorMessage}}" class="error">{{errorMessage}}</view>
-    <button wx:if="{{hasMore}}" bindtap="onMore" disabled="{{loadingMore}}">更多</button>
+    <view wx:if="{{errorMessage}}" class="inline-error">{{errorMessage}}</view>
+    <button wx:if="{{hasMore}}" class="more" bindtap="onMore" disabled="{{loadingMore}}">
+      {{loadingMore ? '加载中…' : '加载更多'}}
+    </button>
   </view>
 </view>

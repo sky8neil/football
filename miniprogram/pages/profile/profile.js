@@ -1,12 +1,7 @@
 const { getMyProfile } = require("../../services/profile.js");
 const { getMyLevels } = require("../../services/levels.js");
-
-function displayTeamId(value) {
-  if (value === null || value === undefined) {
-    return "未设置";
-  }
-  return String(value);
-}
+const { listMyGroups } = require("../../services/groups.js");
+const COPY = require("../../utils/rankings-copy.js");
 
 function applyErrorState(page, result) {
   if (result.statusCode === 401 && result.code === "UNAUTHORIZED") {
@@ -52,6 +47,7 @@ Page({
     state: "loading",
     errorMessage: "",
     nickname: "",
+    avatarText: "球",
     favoriteTeamText: "",
     careerPoints: "",
     careerValidPredictions: "",
@@ -65,6 +61,9 @@ Page({
     levelsCareerValidPredictions: "",
     levelsCareerLevel: "",
     levelsCareerBestLevel: "",
+    previousSeasonRecap: "",
+    groups: [],
+    hasGroups: false,
   },
 
   onShow() {
@@ -76,24 +75,34 @@ Page({
       state: "loading",
       errorMessage: "",
     });
-    Promise.all([getMyProfile(), getMyLevels()]).then((results) => {
+    Promise.all([getMyProfile(), getMyLevels(), listMyGroups({ limit: 20 })]).then((results) => {
       const profileResult = results[0];
       const levelsResult = results[1];
+      const groupsResult = results[2];
       if (applyErrorState(this, profileResult)) {
         return;
       }
       if (applyErrorState(this, levelsResult)) {
         return;
       }
+      if (applyErrorState(this, groupsResult)) {
+        return;
+      }
       const profile = profileResult.data || {};
       const levels = levelsResult.data || {};
       const season = levels.season || {};
       const career = levels.career || {};
+      const groups = groupsResult.data && Array.isArray(groupsResult.data.items)
+        ? groupsResult.data.items
+        : [];
       this.setData({
         state: "ready",
         errorMessage: "",
         nickname: profile.nickname,
-        favoriteTeamText: displayTeamId(profile.favorite_team_id),
+        avatarText: Array.from(profile.nickname || "球")[0] || "球",
+        favoriteTeamText: profile.favorite_team_id === null || profile.favorite_team_id === undefined
+          ? "未设置"
+          : "已选择球队",
         careerPoints: String(profile.career_points),
         careerValidPredictions: String(profile.career_valid_predictions),
         careerExactHits: String(profile.career_exact_hits),
@@ -106,8 +115,33 @@ Page({
         levelsCareerValidPredictions: String(career.valid_predictions),
         levelsCareerLevel: String(career.level),
         levelsCareerBestLevel: String(career.best_level),
+        previousSeasonRecap: profile.previous_season
+          ? COPY.recap(profile.previous_season.points, profile.previous_season.best_level)
+          : "",
+        groups: groups.map((group) => ({
+          ...group,
+          memberCountText: COPY.groupMemberCount(group.member_count),
+        })),
+        hasGroups: groups.length > 0,
       });
     });
+  },
+
+  onPredictionsTap() {
+    wx.navigateTo({ url: "/pages/my-predictions/my-predictions" });
+  },
+
+  onGroupsTap() {
+    wx.navigateTo({ url: "/pages/groups/groups" });
+  },
+
+  onGroupTap(event) {
+    const groupId = event.currentTarget.dataset.groupId;
+    if (groupId) wx.navigateTo({ url: `/pages/groups/detail?group_id=${groupId}` });
+  },
+
+  onSessionTap() {
+    wx.navigateTo({ url: "/pages/session/session" });
   },
 
   onUnlocksTap() {

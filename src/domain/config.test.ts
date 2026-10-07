@@ -3,17 +3,20 @@ import {
   FIXED_CONFIG_V1,
   LEVEL_ELIGIBLE_LEAGUES,
   MVP_SEASON,
+  RANKING_FIRST_PERIOD_KEY,
   SUPPORTED_LEAGUES,
 } from "./config.js";
 
 describe("S0 固定配置 v2（规范 §3 / §1.4）", () => {
   it("删除月榜门槛与旧周榜 3 场门槛；新周榜门槛为 1", () => {
+    expect(RANKING_FIRST_PERIOD_KEY).toBe("2026-W31");
     expect("GLOBAL_MONTH_MIN_PREDICTIONS" in FIXED_CONFIG_V1).toBe(false);
     expect("GLOBAL_WEEK_MIN_PREDICTIONS" in FIXED_CONFIG_V1).toBe(false);
     expect(FIXED_CONFIG_V1.WEEK_BOARD_MIN_VALID).toBe(1);
     expect(FIXED_CONFIG_V1.STRENGTH_BOARD_MIN_WINDOW_N).toBe(50);
     expect(FIXED_CONFIG_V1.RANKING_TOP_LIMIT).toBe(20);
     expect(FIXED_CONFIG_V1.RANKING_PAGE_SIZE).toBe(10);
+    expect(FIXED_CONFIG_V1.RANKING_WEEK_WINDOW).toBe(4);
   });
 
   it("登记 level_v3.0 与六级阈值", () => {
@@ -69,7 +72,10 @@ describe("S0 固定配置 v2（规范 §3 / §1.4）", () => {
   });
 
   it("登记排行榜与群冻结常量", () => {
-    expect(FIXED_CONFIG_V1.RANKING_BOARDS).toEqual(["week", "career", "strength"]);
+    expect(FIXED_CONFIG_V1.RANKING_BOARDS).toEqual(["week", "career", "strength", "season"]);
+    expect(FIXED_CONFIG_V1.SEASON_BOARD_MIN_VALID).toBe(1);
+    expect(FIXED_CONFIG_V1.SEASON_BOARD_MIN_SEASONS).toBe(2);
+    expect(FIXED_CONFIG_V1.SEASON_BOARD_SNAPSHOT_MINUTES).toBe(60);
     expect(FIXED_CONFIG_V1.GROUP_MAX_MEMBERS).toBe(500);
     expect(FIXED_CONFIG_V1.USER_MAX_GROUPS_JOINED).toBe(20);
     expect(FIXED_CONFIG_V1.USER_MAX_GROUPS_OWNED).toBe(5);

@@ -51,6 +51,12 @@ describe("validateAdminRebuildRankingsPayload", () => {
         reason: "一致性修复",
       }),
     ).toEqual({ board: "strength", period_key: null, reason: "一致性修复" });
+    expect(
+      validateAdminRebuildRankingsPayload({
+        board: "season",
+        reason: "一致性修复",
+      }),
+    ).toEqual({ board: "season", period_key: null, reason: "一致性修复" });
   });
 
   it("严格拒绝未知字段、周期类型和不匹配的 period_key", () => {
@@ -86,6 +92,13 @@ describe("validateAdminRebuildRankingsPayload", () => {
       validateAdminRebuildRankingsPayload({
         board: "strength",
         period_key: null,
+        reason: "一致性修复",
+      }),
+    ).toThrowError(expect.objectContaining({ code: "VALIDATION_ERROR" }));
+    expect(() =>
+      validateAdminRebuildRankingsPayload({
+        board: "season",
+        period_key: "2026-W32",
         reason: "一致性修复",
       }),
     ).toThrowError(expect.objectContaining({ code: "VALIDATION_ERROR" }));

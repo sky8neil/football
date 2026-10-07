@@ -8,7 +8,7 @@ import {
 } from "../domain/enums.js";
 import { conflictError, internalError, validationError } from "../domain/errors.js";
 import { newUuid } from "../domain/ids.js";
-import { isValidPeriodKey } from "../domain/time.js";
+import { isValidPeriodKey, levelSeasonOf } from "../domain/time.js";
 import type { AdminAuditLog, BoardSnapshot, RankingEntry } from "../domain/types.js";
 import type { AppRepository } from "../infrastructure/repositories.js";
 import { AdminAuthorizationService, type AdminWriteAuthorizer } from "./admin.js";
@@ -57,7 +57,7 @@ function isRankingBoard(board: unknown): board is RankingBoard {
 
 function assertInput(input: AdminRebuildRankingsInput): void {
   if (!isRankingBoard(input.board)) {
-    throw validationError("board 必须是 week、career 或 strength", { field: "board" });
+    throw validationError("board 必须是 week、career、strength 或 season", { field: "board" });
   }
   if (input.board === RankingBoard.Week) {
     if (
@@ -67,7 +67,7 @@ function assertInput(input: AdminRebuildRankingsInput): void {
       throw validationError("week board 必须携带有效 period_key", { field: "period_key" });
     }
   } else if (input.period_key !== null) {
-    throw validationError("career/strength board 禁止携带 period_key", {
+    throw validationError("career/strength/season board 禁止携带 period_key", {
       field: "period_key",
     });
   }
@@ -107,6 +107,16 @@ function snapshotAuditValue(
       entry_count: snapshots.length,
       total_career_points: snapshots.reduce(
         (total, snapshot) => total + (snapshot.career_points ?? 0),
+        0,
+      ),
+    };
+  }
+  if (board === RankingBoard.Season) {
+    return {
+      board,
+      entry_count: snapshots.length,
+      total_season_points: snapshots.reduce(
+        (total, snapshot) => total + (snapshot.season_points ?? 0),
         0,
       ),
     };
@@ -196,7 +206,10 @@ export class AdminRebuildRankingsService implements AdminRebuildRankingsCommand 
           if (tx.boardSnapshots === undefined) {
             throw internalError("board_snapshots repository port 未配置");
           }
-          const oldSnapshots = (await tx.boardSnapshots.findLatestByBoard(board))
+          const oldSnapshotVersion = board === RankingBoard.Season
+            ? await tx.boardSnapshots.findLatestBySeason(levelSeasonOf(serverNow))
+            : await tx.boardSnapshots.findLatestByBoard(board);
+          const oldSnapshots = oldSnapshotVersion
             .filter((snapshot) => snapshot.snapshot_kind !== "head");
           const rebuilt = await this.rebuildService.rebuildBoardSnapshotInTransaction(
             tx,

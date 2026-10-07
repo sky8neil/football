@@ -20,12 +20,18 @@ import type {
   RankingEntry,
   SettlementDoc,
   SettlementItem,
+  User,
+  UserSeasonStats,
 } from "../domain/types.js";
+import { defaultLevelState } from "../domain/types.js";
 import { InMemoryRepository } from "../infrastructure/repositories.js";
 import {
   AdminRebuildRankingsService,
 } from "./admin-rebuild-rankings.js";
-import { periodRankingsRebuildLockKey } from "./ranking-rebuild-service.js";
+import {
+  periodRankingsRebuildLockKey,
+  RebuildPeriodRankingsService,
+} from "./ranking-rebuild-service.js";
 
 const NOW = new Date("2026-08-09T00:00:00.000Z");
 const ANCHOR = new Date("2026-08-05T12:00:00.000Z");
@@ -41,6 +47,52 @@ function makeAdmin(overrides: Partial<Admin> = {}): Admin {
     created_at: NOW,
     updated_at: NOW,
     ...overrides,
+  };
+}
+
+function makeRankUser(userId: string): User {
+  return {
+    schema_version: 1,
+    user_id: userId,
+    openid: `openid-${userId}`,
+    unionid: null,
+    nickname: userId,
+    favorite_team_id: null,
+    status: "active",
+    career_points: 0,
+    career_valid_predictions: 0,
+    career_wdl_hits: 0,
+    career_exact_hits: 0,
+    career_last_scoring_match_at: null,
+    career_level: 1,
+    career_best_level: 1,
+    career_level_state: defaultLevelState(),
+    deleted_at: null,
+    created_at: NOW,
+    updated_at: NOW,
+  };
+}
+
+function makeSeasonStats(
+  userId: string,
+  points: number,
+  levelSeasonId = "2026_2027",
+): UserSeasonStats {
+  return {
+    schema_version: 1,
+    user_id: userId,
+    level_season_id: levelSeasonId,
+    points,
+    valid_predictions: 1,
+    wdl_hits: 1,
+    exact_hits: 1,
+    last_scoring_match_at: ANCHOR,
+    level: 1,
+    best_level: 1,
+    level_state: defaultLevelState(),
+    is_level_frozen: false,
+    created_at: NOW,
+    updated_at: NOW,
   };
 }
 
@@ -467,6 +519,40 @@ describe("AdminRebuildRankingsService", () => {
       },
     });
     await expect(repo.boardSnapshots.findByBoardAndSnapshotAt(RankingBoard.Career, NOW))
+      .resolves.toHaveLength(1);
+  });
+
+  it("season snapshot rebuild audits total_season_points", async () => {
+    const repo = new InMemoryRepository();
+    await seedAdmin(repo);
+    await repo.users.insert(makeRankUser("old-season-user"));
+    await repo.userSeasonStats.insert(makeSeasonStats("old-season-user", 40, "2025_2026"));
+    await new RebuildPeriodRankingsService(repo).rebuildBoardSnapshot(
+      RankingBoard.Season,
+      new Date("2026-06-30T10:00:00.000Z"),
+    );
+    await repo.users.insert(makeRankUser("user-season"));
+    await repo.userSeasonStats.insert(makeSeasonStats("user-season", 36));
+
+    const outcome = await new AdminRebuildRankingsService(repo).rebuild(
+      "admin-openid",
+      RankingBoard.Season,
+      null,
+      "赛季榜回填",
+      NOW,
+    );
+
+    expect(outcome).toMatchObject({
+      board: RankingBoard.Season,
+      period_key: null,
+      rebuilt_entry_count: 1,
+      audit_log: {
+        entity_id: "season-snapshot",
+        old_value: { board: RankingBoard.Season, entry_count: 0, total_season_points: 0 },
+        new_value: { board: RankingBoard.Season, entry_count: 1, total_season_points: 36 },
+      },
+    });
+    await expect(repo.boardSnapshots.findByBoardAndSnapshotAt(RankingBoard.Season, NOW))
       .resolves.toHaveLength(1);
   });
 

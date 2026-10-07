@@ -90,9 +90,9 @@
 
 | ID | 位置 | 现状 | 要求 | 类型 | 影响面 |
 |---|---|---|---|---|---|
-| D01 | `src/infrastructure/repositories.ts:334-339` `UserSeasonStatsRepository` | `findByUserAndSeason` / `findByUser` / `insert` / `update` | 新增 `findByLevelSeason(levelSeasonId): Promise<UserSeasonStats[]>`（快照任务全量读当前赛季；索引已有 `ix_user_season_level`） | 新增 | in-memory 实现与 CloudBase 实现各一份；`UnitOfWork` 事务版也要有 |
+| D01 | `src/infrastructure/repositories.ts:334-339` `UserSeasonStatsRepository` | `findByUserAndSeason` / `findByUser` / `insert` / `update` | 新增 `findByLevelSeason(levelSeasonId): Promise<UserSeasonStats[]>`（快照任务全量读当前赛季；索引已有 `ix_user_season_level`） | 新增 | in-memory 与 CloudBase 均实现；CloudBase 覆盖见 §12 S13 A 段 |
 | D02 | `repositories.ts:341-349` `BoardSnapshotRepository` + `:1776-1800` | `findLatestByBoard(board)` 返回该 board 最新 `snapshot_at` 的所有行 | **接口不变**。season 的「是否属于当前赛季」由调用方判断（见 §3.1）；不要把赛季参数塞进 `findLatestByBoard`，避免三个 board 行为分叉 | 无改动 | 记录决策 |
-| D03 | `src/infrastructure/cloudbase-repository.ts` | 当前仅映射了 users 等；`boardSnapshots` / `userSeasonStats` 的 CloudBase 实现若在此（或后续 B1 接线） | 字段映射增 `last_scoring_match_at`、`level_season_id`、`season_*` | 修改 | 若 B1 CloudBase 接线尚未做，则在该切片落地时一并带上，本文只标记 |
+| D03 | `src/infrastructure/cloudbase-repository.ts` | `boardSnapshots` / `userSeasonStats` 尚未接线 | 按 §12 S13 A 段实现全部 CloudBase 仓储方法；真实 SDK 适配和真环境验证留在 B 段 | 修改 | 覆盖表见 `docs/CLOUDBASE_REPOSITORY_COVERAGE.md` |
 
 ### 2.5 快照服务与调度
 
@@ -155,7 +155,7 @@
 
 1. 快照每行带 `level_season_id`（包括空榜的 `head` 哨兵行）。
 2. 读取当前赛季一律用 `findLatestBySeason(当前赛季)`（F13），不用 `findLatestByBoard`。
-3. 默认赛季：当前赛季在全站已有入榜者 → 当前赛季；否则 → **上赛季榜**（终榜优先，没有则取最后一版常规快照，响应 `is_provisional=true`，界面标「等待最终确认」）。
+3. 默认赛季：当前赛季在全站已有入榜者 → 当前赛季；否则，若上赛季有可展示数据 → **上赛季榜**（终榜优先，没有则取最后一版常规快照，响应 `is_provisional=true`，界面标「等待最终确认」）；首个运营赛季没有上赛季数据时返回当前赛季空榜，不标 provisional。
 4. 数据保留：每个赛季的最后一版常规快照在终榜生成前必须保留（§8.2 第 2 条）。
 5. 取 `server_now` 而非客户端时间；`levelSeasonOf` 内部已按 Asia/Shanghai 切年。
 
@@ -266,7 +266,8 @@ S1–S3 无外部影响，可连续合入；S5、S7、S10 是接口变更，必�
 - 游客：任一 board 请求返回 `401 UNAUTHORIZED`；已注销用户返回 `409 USER_DELETED`。
 - 已注销用户：不在榜。
 - 所有 board（week / career / strength / season）响应都带 `available_boards`，各标签显隐按规范 §19.10.8 逐条断言（含群范围、新建群、上线初期）。
-- 跨赛季：注入 `server_now` 在 07-01 之后、而最新快照属上赛季 → 返回空列表、`updated_at=null`、**不展示上赛季数据**。
+- 首个运营赛季且没有上赛季数据：未带 `level_season_id` 的 `board=season` 返回 200 空列表、`entry_count=0`、`is_provisional=false`，`available_boards` 不含 `season`；显式请求从无数据的赛季才返回 404。
+- 常规赛季交接且有上赛季数据：当前赛季无人入榜时，默认展示上赛季终榜或最后一版常规快照（临时榜 `is_provisional=true`），不错误返回空榜。
 - 群范围：成员过滤后群内重排；请求者非成员 → 403；资格不足者 `not_eligible`。
 - 分页：season 的 cursor 往返；cursor 与 board 不匹配 → 422。
 - `period_key` 对 season 非法 → 422。
@@ -296,7 +297,7 @@ S1–S3 无外部影响，可连续合入；S5、S7、S10 是接口变更，必�
 1. **漏改某个 `Object.values(RankingBoard)` 校验点**：加枚举值后这些点会自动放行 `season`，但快照读取、重建、一致性中有若干 `if career … else strength` 的二分写法，`season` 会落入错误分支。实施时全仓搜索 `RankingBoard.Career` / `RankingBoard.Strength`（共 10 余处，清单见 §2），逐处确认。
 2. **三条并列键写路径漏一条**（§3.2）。
 3. **`not_eligible` 判断顺序**（§3.3）：写错会向首赛季用户泄漏名次。
-4. **CloudBase 接线**（D03）：本仓库的 CloudBase repository 目前仅覆盖部分集合；接线切片落地时必须带上新字段与 `findByLevelSeason`，否则线上与内存实现行为分叉。
+4. **CloudBase 接线**（D03）：本轮只在未实现的 CloudBase 方法处留 TODO；上线前独立接线时再带上新增字段、`findByLevelSeason` 与终榜查询方法。
 5. **规范未提交**：`docs/MVP__v2.0.md` 当前在 git 中为未跟踪文件，改动无历史可回退；建议开工前先提交一次规范基线。
 
 
@@ -359,14 +360,14 @@ S1–S3 无外部影响，可连续合入；S5、S7、S10 是接口变更，必�
 
 - 触发：`scope=global` 且 `N < 20`，或 `scope=group` 且 `N ≤ 1`。
 - 文案：「邀请好友建个群，看看谁更懂球」（全站少人）/「邀请好友加入这个群」（群内只有自己）。
-- 动作：全站场景跳转到群创建/加入页；群内场景使用现有群邀请码分享。
+- 本轮占位：全站与群内入口均显示「群功能即将开放」toast，并留 `TODO(UI-v2)`；创建、加入与邀请码分享另开切片。
 - 用户已加入 20 个群或已创建 5 个群时，隐藏对应的创建/加入按钮，仅保留可用操作。
 
 ### 7.4 X03 无群用户的范围入口
 
 | 用户状态 | 范围入口表现 |
 |---|---|
-| 没有任何 active 群，或所有群均已解散 | 「全站」为选中；「我的群」显示为未解锁行（锁图标 +「创建或加入群后解锁」），**点击不进入群榜**，进入「创建群 / 输入邀请码加入」引导页；引导页说明「每个群独立排名」「最多加入 20 个、创建 5 个」 |
+| 没有任何 active 群，或所有群均已解散 | 「全站」为选中；「我的群」显示为未解锁行（锁图标 +「创建或加入群后解锁」），点击显示「群功能即将开放」toast 并留 `TODO(UI-v2)`；不进入群榜，不发 `scope=group` 请求。引导页另开切片。 |
 | 有 1 个及以上 active 群 | 正常：可选择具体群 |
 | 群内只有自己 | 可进入群榜，按 X01 的 N=1 显示，并出现 X02 的邀请入口 |
 
@@ -440,6 +441,7 @@ S1–S3 无外部影响，可连续合入；S5、S7、S10 是接口变更，必�
 | 位置 | 变更 | 说明 |
 |---|---|---|
 | `GET /v1/rankings` 响应 `data` | 新增 `entry_count: number` | 全部 board；该 board、该范围的入榜总人数 |
+| 同上 | 新增 `server_now: string` | 服务端当前时间，ISO 8601 UTC，与 `updated_at` 同格式；小程序用它计算相对更新时间 |
 | 同上 | 新增 `seasons_participated: number` | 请求者的参与等级赛季数（整数；接口需登录，不再有 `null`） |
 | 同上 | 新增 `available_boards: string[]` | 该请求者在所选范围下可见的榜单标签，规范 §19.10.8；取代早先的 `season_board_visible` |
 | 同上（`board=season`） | 新增 `level_season_id / available_level_seasons / is_provisional` | 赛季选择与上赛季交接，规范 §19.10.10、§19.11 |
@@ -480,17 +482,17 @@ S1–S3 无外部影响，可连续合入；S5、S7、S10 是接口变更，必�
 - 比赛页默认联赛：英超窗口有比赛 → 英超；英超窗口无比赛且中超有 → 中超；两者都无 → 英超。
 - 赛季个人回顾卡与赛季初提示的显示窗口（4 周）边界。
 
-### 7.11 待确认（均有推荐默认值）
+### 7.11 产品决策与后续问题
 
 | # | 问题 | 推荐默认 |
 |---|---|---|
-| Q6 | 赛季个人回顾卡在排行榜页的展示窗口 | 新赛季起 4 周内且用户尚未入赛季榜；「我的」页常驻 |
-| Q8 | 少人阈值 20 由接口下发还是写在小程序配置 | 写在小程序配置，与规范常量保持一致 |
+| Q6 | 赛季个人回顾卡在排行榜页的展示窗口 | **已定：**新赛季起 4 周内且用户尚未入赛季榜；「我的」页常驻 |
+| Q8 | 少人阈值 20 由接口下发还是写在小程序配置 | **已定：**写在小程序配置，与规范常量保持一致 |
 | Q10 | 欧冠等杯赛未来纳入后对 §7.5 / §7.7 的影响 | 默认周规则按入榜人数推导，无需改结构；比赛页联赛标签与休赛期判定需调整 |
 | Q11 | 国际比赛日是否也让比赛页默认中超 | **已定：否**，仍默认英超；只有休赛期默认中超（§7.7 新判定） |
 | Q12 | 周榜可选 / 回溯范围 | **已定：最近 4 周（含本周）**，且不早于上线周（`RANKING_WEEK_WINDOW=4`、`RANKING_FIRST_PERIOD_KEY`）；默认周回溯也只在该窗口内；窗口内全无入榜则返回空榜。注意「最近 4 周」我按**含本周**理解（本周 + 前 3 周） |
 | Q13 | 最近预测按周分组时的排序 | **已定：保持现状**——沿用接口的提交时间排序，仅在界面按 `kickoff_at` 所在周显示分组标题；不新增 `period_key` 过滤 |
-| Q14 | 休赛期判定窗口（过去 7 天 / 未来 21 天）是否合适 | 合适：国际比赛日英超最长间隔约 16 天，未来 21 天窗口内总有下一场，不会误判；休赛期从最后一轮后第 8 天起默认中超，到开幕前 21 天恢复英超 |
+| Q14 | 休赛期判定窗口（过去 7 天 / 未来 21 天）是否合适 | **已定：**采用推荐窗口；国际比赛日英超最长间隔约 16 天，未来 21 天窗口内总有下一场，不会误判；休赛期从最后一轮后第 8 天起默认中超，到开幕前 21 天恢复英超 |
 
 ### 7.12 X12 「我的 · 最近预测」回看至少 8 周
 
@@ -545,7 +547,7 @@ S1–S3 无外部影响，可连续合入；S5、S7、S10 是接口变更，必�
 | 榜上唯一入榜者是已注销用户（被过滤） | 周榜 | 同上，视范围而定 |
 | 快照尚未生成（生涯榜、赛季榜刚有第一个入榜者，最长约 1 小时） | 生涯榜 / 赛季榜 | 标签暂不显示（按 `available_boards`），不是空榜 |
 
-以下**不再是空榜**：实力榜没人满 50 场（标签不显示）；新赛季尚无人入榜（显示上赛季榜）；游客（灰色占位，不是榜单数据）。
+以下**不再是空榜**：实力榜没人满 50 场（标签不显示）；有上赛季数据的新赛季空窗（显示上赛季榜）；游客（灰色占位，不是榜单数据）。首个运营赛季没有上赛季数据时，按 §19.10.10 返回空榜。
 
 ---
 
@@ -559,13 +561,13 @@ S1–S3 无外部影响，可连续合入；S5、S7、S10 是接口变更，必�
 |---|---|---|---|---|---|
 | Z01 | `src/domain/enums.ts:150-163` `SyncJobType`；`src/schema/collections.ts:428` | 无终榜任务 | 增 `BoardSnapshotSeasonFinal: "board_snapshot_season_final"`，schema `job_type` enum 同步 | 新增 | schema 测试 |
 | Z02 | `src/domain/types.ts:286-300` `BoardSnapshot`；`collections.ts:504-522` | 无终榜标记 | 增 `is_final: boolean`（默认 false，仅 `board=season` 可为 true）；终榜行 `level_season_id` 必填 | 修改 | 所有构造 `BoardSnapshot` 的位置；`invariants.ts` 增校验（`is_final=true` ⇒ `board=season` 且 `level_season_id` 非空） |
-| Z03 | `src/infrastructure/repositories.ts:341-349` `BoardSnapshotRepository` | `findLatestByBoard(board)`、`findByBoardAndSnapshotAt`、`insert` | 新增 `findFinalBySeason(levelSeasonId)`、`listFinalSeasonIds()`；**`findLatestByBoard` 必须排除 `is_final=true` 的行**（见 §8.2 第 1 条） | 修改+新增 | in-memory 实现（`:1776-1800`）与 CloudBase 实现各一份 |
-| Z04 | `src/application/board-snapshot.ts`（`BoardSnapshotService`） | 只有 `generate(board, serverNow)` | 新增 `generateSeasonFinal(levelSeasonId, serverNow)`：读该赛季 `user_season_stats` 全量，复用赛季榜的构造函数（E02），写入时 `is_final=true`；锁 `sync:board_snapshot_season_final`；同一赛季已有终榜则直接返回（幂等，用 `findFinalBySeason` 判断，不能靠 `snapshot_at`） | 新增 | 快照测试 |
-| Z05 | `src/application/weekly-level-eval.ts:229,279`（周评估完成后触发 strength 快照） | 仅触发 strength | 周评估完成后，若 `asOf ≥ 该赛季最终评估时刻`（`seasonFinalEvalAsOf`，见 `stats-rebuild-service.ts:140`）且该赛季尚无终榜 → 调用 `generateSeasonFinal`。**补跑**：若错过多周，遍历 `user_season_stats` 中所有早于当前赛季且无终榜的赛季，逐个生成 | 修改 | weekly-level-eval 测试：首次终评生成、重复周评估不重复生成、漏跑补生成 |
+| Z03 | `src/infrastructure/repositories.ts:341-349` `BoardSnapshotRepository` | `findLatestByBoard(board)`、`findByBoardAndSnapshotAt`、`insert` | 新增 `findFinalBySeason(levelSeasonId)`、`listFinalSeasonIds()`；**`findLatestByBoard` 必须排除 `is_final=true` 的行**（见 §8.2 第 1 条） | 修改+新增 | in-memory 实现；CloudBase 方法留明确 TODO，接线在上线前独立切片完成 |
+| Z04 | `src/application/board-snapshot.ts`（`BoardSnapshotService`） | 只有 `generate(board, serverNow)` | 新增 `generateSeasonFinal(levelSeasonId, serverNow)`：读该赛季 `user_season_stats` 全量，复用赛季榜的构造函数（E02），写入时 `is_final=true`、`snapshot_at=seasonFinalEvalAsOf(levelSeasonId)`；`serverNow` 只用于锁租约；锁 `sync:board_snapshot_season_final`；同一赛季已有终榜则直接返回（幂等，用 `findFinalBySeason` 判断，不能靠 `snapshot_at`）；若与常规快照撞 `UNIQUE(board, snapshot_at, user_id)`，抛 `INTERNAL_ERROR` 且不覆盖 | 修改 | 快照测试含同一 `snapshot_at` 撞键 |
+| Z05 | `src/application/weekly-level-eval.ts:229,279`（周评估完成后触发 strength 快照） | 仅触发 strength | 周评估完成后，若 `asOf ≥ 该赛季最终评估时刻`（`seasonFinalEvalAsOf`，见 `domain/time.ts`）且该赛季尚无终榜 → 调用 `generateSeasonFinal`。**补跑**：若错过多周，遍历 `user_season_stats` 中所有早于当前赛季且无终榜的赛季，逐个生成 | 修改 | weekly-level-eval 测试：首次终评生成、重复周评估不重复生成、漏跑补生成 |
 | Z06 | `src/application/ranking-query.ts:20-29,96-113,307-388` | 无 `level_season_id` | `RankingQuery` 增 `level_season_id: string \| null`；校验：仅 `board=season` 可带，格式 `^\d{4}_\d{4}$` 且后一年 = 前一年 + 1；`scope=group` 带历史赛季 → 422；`board=season` 且 `level_season_id` 为历史赛季 → 读 `findFinalBySeason`，**不存在则回退到该赛季最后一版常规快照并带 `is_provisional=true`（仅限上赛季，见 F13）**，该赛季从未有数据 → 404；缺省 → 走 F13 默认赛季规则 | 修改 | 新增 `NOT_FOUND` 映射 |
 | Z07 | 同文件 `:390-410`（`isHistoricalWeek` / `keepHistoricalRank`） | 历史周榜保留快照名次、已注销用户显示「已注销用户」 | 终榜沿用同样处理：保留 `snapshot.rank`，已注销用户**不过滤**、显示「已注销用户」 | 修改 | 查询测试 |
 | Z08 | 同文件 `me` 块 | 当前榜逻辑 | 终榜的 `me`：用终榜名次计算 `rank / top_percent`；资格不足者仍为 `not_eligible`；未参与该赛季为 `not_participated` | 修改 | — |
-| Z09 | 同文件响应 | — | `board=season` 响应增 `available_level_seasons: string[]`（当前赛季、上赛季与 `listFinalSeasonIds()` 中**至少有 1 名入榜者**的赛季，倒序）与 `is_provisional`；终榜的 `updated_at` = 冻结时刻；临时榜的 `updated_at` = 那一版常规快照时刻 | 修改 | api 与 openapi |
+| Z09 | 同文件响应 | — | `board=season` 响应增 `available_level_seasons: string[]`（当前赛季、上赛季与 `listFinalSeasonIds()` 中**至少有 1 名入榜者**的赛季，倒序）与 `is_provisional`；终榜 `updated_at` = 该赛季最终评估时刻 `seasonFinalEvalAsOf`（即终榜 `snapshot_at`），临时榜 `updated_at` = 那一版常规快照时刻 | 修改 | api 与 openapi |
 | Z10 | `src/api/v1/rankings.ts:13-60` | `RANKINGS_QUERY_FIELDS` 无该字段 | 白名单增 `level_season_id`；响应透传 `level_season_id`、`available_level_seasons` | 修改 | api 测试 |
 | Z11 | `src/api/v1/openapi.yaml` | — | 增 `level_season_id` query；`RankingData` 增 `available_level_seasons`；错误表增 `404 NOT_FOUND`、`422`（群榜 + 历史赛季）；与 S5 的 season 字段合并维护 | 修改 | 合同测试 |
 | Z12 | `src/application/ranking-rebuild-service.ts`、`admin-rebuild-rankings.ts`、`daily-consistency-snapshot.ts:198-247` | 重建与对账读 `findLatestByBoard` | 因 Z03 已排除终榜，重建与对账**自然只作用于当前赛季榜**；增测试断言「重建 season 不触碰 `is_final=true` 行」；本版不提供修改终榜的管理接口 | 修改 | 回归测试 |
@@ -574,11 +576,11 @@ S1–S3 无外部影响，可连续合入；S5、S7、S10 是接口变更，必�
 
 ### 8.2 关键设计细节
 
-1. **终榜行不能混进「最新快照」查询。** `findLatestByBoard("season")` 取的是最新 `snapshot_at` 的整批快照。终榜在周一终评后才生成，其 `snapshot_at` 可能晚于当前赛季最近一次小时快照，若不排除，当前榜会错误地读到上赛季终榜。Z03 把 `is_final=true` 排除在所有 `findLatestByBoard` 之外，终榜只通过 `findFinalBySeason` 读取。
+1. **终榜行不能混进「最新快照」查询。** `findLatestByBoard("season")` 取的是最新 `snapshot_at` 的整批快照。终榜虽使用该赛季最终评估时刻作为 `snapshot_at`，仍属于已结束赛季，不能成为当前榜的来源；Z03 把 `is_final=true` 排除在所有 `findLatestByBoard` 之外，终榜只通过 `findFinalBySeason` 读取。
 2. **冻结点**：赛季结束后的第一次周评估完成时（规范 §17.8.4）。在此之前（最长约一周）上赛季榜以**最后一版常规快照**临时展示（`is_provisional=true`，界面标「等待最终确认」），终榜生成后自动替换。因此**数据保留策略必须保证：每个赛季的最后一版常规快照在终榜生成之前不被清理**（按 `(board, level_season_id)` 各保留最新一版，而不是只保留全表最近 N 版——新赛季一周的小时快照可能把上赛季最后一版挤掉）。
 3. **不可变与对账**：赛季统计（积分）冻结后仍随赛果修正更新（规范 §16.2），因此终榜与其后的 `user_season_stats` 可能不一致，这是预期，**不要**让一致性任务或重建「修复」它（Z12）。
 4. **空赛季**：某赛季无人入榜时可写入哨兵 head 行表示「已生成」（沿用现有 head 机制，`is_final=true`），但不进入 `available_level_seasons`。
-5. **幂等**：终榜以 `level_season_id` 为幂等键（`findFinalBySeason` 有行即返回），不要用 `snapshot_at` 判断（重复触发时间不同）。
+5. **幂等与唯一键冲突**：终榜先以 `level_season_id` 查询 `findFinalBySeason`，有行即返回；唯一键仍为 `UNIQUE(board, snapshot_at, user_id)`。终榜 `snapshot_at` 固定为该赛季最终评估时刻；若同一时刻已有常规快照，写入须抛 `INTERNAL_ERROR` 并由事务回滚，不得覆盖既有快照。
 6. **群榜**：不做历史赛季群榜（Z06 返回 422），理由见规范 §19.11。
 
 ### 8.3 测试清单
@@ -586,6 +588,7 @@ S1–S3 无外部影响，可连续合入；S5、S7、S10 是接口变更，必�
 - 终评前：请求上赛季 → 返回最后一版常规快照，`is_provisional=true`；`available_level_seasons` 含上赛季；请求从未有过数据的赛季 → 404。
 - 终评前后保留策略：新赛季连续生成一周的小时快照（含空 head 行）后，上赛季最后一版常规快照仍可读取。
 - 终评后：生成终榜；`findLatestByBoard("season")` **不返回**终榜行（当前榜不受影响）。
+- 终榜与常规赛季快照的 `snapshot_at` 相同时：终榜写入返回 `INTERNAL_ERROR`，常规快照保留且不生成部分终榜。
 - 重复触发周评估：不重复生成；漏跑多周后补生成全部缺失赛季。
 - 冻结后发生赛果修正：终榜不变，`user_season_stats` 更新。
 - 重建 / 一致性：不触碰终榜行。
@@ -641,8 +644,8 @@ S1–S3 无外部影响，可连续合入；S5、S7、S10 是接口变更，必�
 |---|---|---|
 | 空榜（X01，N=0） | 一个 `view.ui-placeholder`：一行文案 + 一个「去预测」`button`（跳转比赛页） | 空状态插画、版式 |
 | 少人（X01，1–2 人 / 3–19 人） | 条件隐藏领奖台；列表标题改文案；1–2 人时第 1 名**不做放大卡片**，仍按普通列表行显示 | 放大卡片版式 |
-| 邀请入口（X02） | 一行文字 + 一个 `button`；目前小程序**没有群页面和群服务**（`miniprogram/pages`、`services` 下均无），点击先 `wx.showToast`「群功能即将开放」，并保留跳转位置的 `TODO` | 群创建/加入页（另行开发） |
-| 无群未解锁入口（X03） | 范围入口里一个普通 `button`「我的群（创建或加入后解锁）」，点击同上 toast；**不发出 `scope=group` 请求** | 锁图标、引导页 |
+| 邀请入口（X02） | S11 已实现：全站进入「我的群」，群内进入群详情并分享邀请码；相关 toast 与 `TODO(UI-v2)` 已移除 | 群详情视觉 |
+| 无群未解锁入口（X03） | S11 已实现：进入「我的群」创建/加入流程；仍**不发出 `scope=group` 请求** | 锁图标、引导页 |
 | 游客占位（X13） | 一个全宽灰色 `view` + 居中一行「请登录查看榜单」；**先不做模糊效果**；不发榜单请求 | 条纹模糊占位 |
 | 标签显隐（X14） | 沿用现有标签按钮，仅按 `available_boards` 条件渲染；不动现有按钮样式 | 标签视觉 |
 | 周选择器（X16） | `picker` 或一排现有样式的 `button`，选项来自 `weekOptions` | 选择器视觉 |
@@ -662,6 +665,7 @@ S1–S3 无外部影响，可连续合入；S5、S7、S10 是接口变更，必�
 - **不得删除或改名现有页面元素**（按钮、数据绑定名、已有 class），只追加。
 - 占位 `wxss` 只允许在 `ui-placeholder` 类下写不超过几行的基础排版（字号、居中、内边距）；不得改全局样式、不得改 `styles/design-tokens.wxss`。
 - 小程序没有的能力（群页面、群服务、游客登录入口）：**不为占位新建完整页面**，用 toast 或不渲染入口，并在代码里留 `TODO(UI-v2)`。
+- S11 已实现的群流程按 §11 覆盖本节原占位规则；未实现的视觉细节继续保留 `TODO(UI-v2)`。
 
 ### 10.5 与后端的边界
 
@@ -676,4 +680,117 @@ S1–S3 无外部影响，可连续合入；S5、S7、S10 是接口变更，必�
 ### 10.6 对切片的影响
 
 - S6（赛季榜小程序）、S8（冷启动小程序）、§8 的 Z14 按本节的「占位清单」实现；验收标准是**功能与逻辑正确 + 常态页面不变**，不要求视觉。
+- **视觉依据**：`docs/design/current-baseline-gpt/v0.3-cc/`（状态图册，`index.html` 可选状态；含空榜、少人、游客、选择器、赛季交接、回顾卡、最近预测、群引导等完整页面）。
 - S9（设计稿）完成后，另起一个切片 **S12：用设计稿替换占位**，只改 `wxml` / `wxss` 与文案文件，不改视图模型层与后端。
+
+
+---
+
+## 11. S11 群功能（创建 / 加入 / 邀请码分享）
+
+> 来源：§7.3–§7.4 要求无群入口进入创建/加入流程、群榜可分享邀请码；§10 的占位（toast「群功能即将开放」）在本切片替换为真实流程。S7/S8 的占位点位以 `TODO(UI-v2)` 标记，本切片逐一替换。
+> 依赖：S5–S8 已合入。**视觉仍按 §10 占位原则**（最简控件、不引入新 token），设计稿定稿后由 S12 统一替换。
+
+### 11.1 现状（已核对代码）
+
+- **后端已具备**：`POST /v1/groups`、`POST /v1/groups/join`、`POST /v1/groups/:id/leave`、`DELETE /v1/groups/:id`、`GET /v1/groups/me`、`GET /v1/groups/:id`（`src/api/v1/groups.ts`、`src/application/groups.ts`），邀请码唯一性靠 `uk_invite_code` 冲突重试，已有。
+- **缺口一**：`GET /v1/groups/me` 与 `GET /v1/groups/:id` 的 item **不含 `invite_code`**（规范 §27.2 只在创建响应里返回一次），所以「分享现有群邀请码」做不到。
+- **缺口二**：小程序只有 `services/groups.js` 的 `listMyGroups`，没有创建、加入、退出、解散、详情，也没有群页面。
+
+### 11.2 决策（已定，Luna 按此执行）
+
+| # | 决策 |
+|---|---|
+| D1 | `GET /v1/groups/:group_id` **对该群 active 成员**额外返回 `invite_code`；`GET /v1/groups/me` 列表**不返回**（减少扩散面）。非成员仍 `403`，已解散 `404 GROUP_NOT_FOUND`。**需同步修改规范 §27.2、openapi、合同测试** |
+| D2 | 不新增接口。创建后用创建响应里的 `invite_code`；之后要再分享就调群详情 |
+| D3 | 不做群名自定义、不做踢人、不做转让群主（规范 §19.4.2 未要求） |
+| D4 | 分享用小程序 `onShareAppMessage`，路径携带邀请码参数（`/pages/groups/join?code=XXXXXXXX`）；**加入必须由用户在页面上点确认**，不在打开链接时自动加入 |
+| D5 | 未登录用户打开分享链接：先走现有登录，登录后回到加入页并保留 `code`（若现有会话页不支持回跳，则先提示登录，不丢码） |
+
+### 11.3 后端条目
+
+| ID | 位置 | 要求 | 测试 |
+|---|---|---|---|
+| K01 | `src/application/groups.ts:492` `getGroup`、`GroupListItem` | 新增 `GroupDetail extends GroupListItem { invite_code: string }`，仅 `getGroup` 返回；`listMyGroups` 保持原类型。成员校验沿用现有逻辑 | 成员拿到 `invite_code`；非成员 403；已离开成员 403；已解散 404；`/me` 不含该字段 |
+| K02 | `src/api/v1/groups.ts` | 响应体透传；不改请求校验 | api 测试 |
+| K03 | `src/api/v1/openapi.yaml` | 群详情 schema 增 `invite_code`（成员可见）；`/me` 保持不变；与 K01 **同提交** | openapi 合同测试 |
+| K04 | `docs/MVP__v2.0.md` §27.2 | `GET /v1/groups/:group_id` 补一句「active 成员额外返回 `invite_code`」 | — |
+
+### 11.4 小程序条目
+
+| ID | 位置 | 要求 |
+|---|---|---|
+| M01 | `miniprogram/services/groups.js` | 增 `createGroup()`、`joinGroup(inviteCode)`、`leaveGroup(id)`、`dissolveGroup(id)`、`getGroup(id)`；沿用 `request`；邀请码在客户端先校验格式（8 位、字符集同 `GROUP_INVITE_CODE_ALPHABET`），**服务端仍是权威** |
+| M02 | 新页面 `pages/groups/groups`（我的群 + 创建 + 输入邀请码加入） | 无群时即 §7.4 的引导页：说明「每个群独立排名」「最多加入 20 个、创建 5 个」；按钮：创建群、输入邀请码加入。有群时列出群，点进群详情（含邀请码、分享、退出/解散）。已满 20 / 5 时隐藏对应按钮（§7.3） |
+| M03 | 新页面 `pages/groups/join`（接收分享参数） | 读 `code`，显示「加入这个群？」+ 确认按钮；成功后跳群榜；各错误码给出文案（`GROUP_NOT_FOUND`、`GROUP_DISSOLVED`、`GROUP_ALREADY_MEMBER`、`GROUP_MEMBER_LIMIT_REACHED`、`GROUP_JOIN_LIMIT_REACHED`）。`GROUP_ALREADY_MEMBER` 视为成功并跳转 |
+| M04 | `app.json` | 注册新页面；**不改 tabBar** |
+| M05 | `pages/rankings/*`、`utils/rankings-view-model.js` | 把 S8 的 toast 占位换成跳转：无群未解锁行 → `pages/groups/groups`；少人邀请入口：全站 → `pages/groups/groups`；群内只有自己 → 群详情分享（取 `invite_code` 走 D1）。删除对应 `TODO(UI-v2)` 中属于本切片的部分，其余保留 |
+| M06 | 页面分享 | 群详情页 `onShareAppMessage` 返回 `title` 与 `path`（D4）；`title` 用固定文案，不含用户昵称 |
+| M07 | 文案 | 全部放入现有文案文件（`rankings-copy.js` 或新增 `groups-copy.js`），页面不写死字符串 |
+
+### 11.5 约束
+
+- 占位样式规则同 §10.4：只用 `ui-placeholder`，不改全局样式与 token，不删除现有元素。
+- 无群用户**仍不得发出 `scope=group` 请求**；创建/加入成功后重新拉 `GET /v1/groups/me` 再允许进入群榜。
+- 创建 / 加入 / 解散是写操作，请求带幂等保护的做法沿用现有 `request` 封装，**不要**在客户端自动重试写请求。
+- 邀请码不写入日志、不上报埋点。
+
+### 11.6 测试
+
+- 后端：K01 的五个用例；创建→加入→详情拿到同一个 `invite_code`；`/me` 无 `invite_code`。
+- 小程序服务层：五个函数的路径、方法、体；邀请码格式前置校验。
+- 视图模型 / 页面逻辑：无群用户进入引导；已加入 20 个群隐藏加入按钮、已创建 5 个隐藏创建按钮；`GROUP_ALREADY_MEMBER` 当成功；分享参数缺失或格式非法时显示错误而不是发请求。
+- 回归：常态（有群、人数 ≥ 20）下排行榜页新增块全部不出现（§10.4）。
+
+### 11.7 验收
+
+`tsc` / 全量 `vitest` / `build` / `git diff --check` 全绿；openapi 与规范同提交；§10.3 占位清单中「邀请入口」「无群未解锁入口」两行改为已实现。
+
+---
+
+## 12. S13 CloudBase 接线（B1）
+
+> 现状（已核对）：`src/infrastructure/cloudbase-repository.ts` 只有 `CloudBaseUserRepository` 与注销映射的骨架，其余仓储全是 `TODO(B1 接线后)`；`package.json` **没有** `@cloudbase/node-sdk`；`src/gateway/http.ts` 只用 `InMemoryRepository`；仓库内没有 CloudBase 环境。
+> 因此本切片分两段：**A 段**可在本地完成并验证；**B 段**依赖真实环境，是**上线门禁**，不是编码任务。
+
+### 12.1 A 段：本地可完成
+
+| ID | 要求 |
+|---|---|
+| B01 | 先列清单：`src/infrastructure/repositories.ts` 里**全部**仓储端口（含本轮新增的 `UserSeasonStatsRepository.findByLevelSeason`、`BoardSnapshotRepository.findLatestBySeason / findFinalBySeason / listFinalSeasonIds`），逐一对照 `cloudbase-repository.ts` 的 TODO 列表，输出覆盖表（端口 / 方法 / 是否已实现）。表放在本文件末尾追加或单独文件，不要只留在对话里 |
+| B02 | 引入一层**薄的数据库端口**（`CloudBaseDb`：按集合 `get / add / update / query / count / transaction`），所有 CloudBase 仓储只依赖它，**不直接 import SDK**，与现有骨架「不改 package.json」的约束一致。真实 SDK 适配器只实现这个端口，放在单独文件 |
+| B03 | 按 B01 的表补齐全部 `CloudBase*Repository`，字段映射以 `src/schema/collections.ts` 为准；`_id` 规则沿用 `CloudBaseUserRepository`。**本轮新增字段必须包含**：`user_season_stats.last_scoring_match_at`、`board_snapshots.level_season_id / season_* / is_final`、`groups` 全字段 |
+| B04 | 唯一约束与冲突：`UniqueConstraintError` 的 `indexName` 要与应用层现有判断一致（如 `uk_invite_code`、`board_snapshots` 的 `(board, snapshot_at, user_id)`）；CloudBase 没有原生唯一约束时，以确定性 `_id`（由唯一键拼成）实现「原子插入失败即冲突」，**不得用先查再插** |
+| B05 | `AppRepository.withTransaction / UnitOfWork`：按 CloudBase 事务能力实现；若某些操作不能在同一事务内完成，列在清单里并写明降级方式，不要默默放宽 |
+| B06 | 用**契约测试**验证：同一套仓储行为用例（对象：`InMemoryRepository` 与 `CloudBase*Repository` + 内存版 `CloudBaseDb` 假实现）两边都跑，结果必须一致。重点用例：唯一冲突、软删除过滤、cursor 分页、`findLatestBySeason` 排除 `is_final`、群成员计数 |
+| B07 | `gateway` 增加仓储选择：由配置决定使用内存还是 CloudBase；缺少 `FOOTBALL_CLOUD_ENVIRONMENT_ID` 等必填项时**启动即失败并给出明确信息**，不得悄悄回退到内存 |
+
+### 12.2 B 段：上线门禁（需要真实环境，不属于本轮编码验收）
+
+- 安装并锁定 `@cloudbase/node-sdk` 版本，实现 B02 的真实适配器，**这一步会改 `package.json`，需要你确认后再做**。
+- 在真实环境逐项验证：唯一性、事务与原子语义、`board_snapshots` 查询在数据量下的性能（A09 提到的 `level_season_id` 前缀索引此时再评估）、索引创建（`src/schema/indexes.ts`）。
+- 跑 §3.7 的回填：`rebuild/user-stats` 与 `rebuild/rankings`（`board=season`）。
+- 上线前把 `RANKING_FIRST_PERIOD_KEY` 从开发占位值改成真实上线周。
+
+### 12.3 验收
+
+- A 段：B01 覆盖表无「未实现」项（或每个未实现项都有明确理由）；B06 契约测试两边一致；B07 缺配置即失败；`tsc` / `vitest` / `build` / `git diff --check` 全绿。
+- **报告里必须写清**：A 段通过只证明代码与假实现一致，**不等于在真实 CloudBase 上验证过**。
+
+---
+
+## 13. 切片追加与顺序
+
+| 切片 | 内容 | 外部可见变化 |
+|---|---|---|
+| **S11 群功能** | §11：群详情返回邀请码、小程序创建/加入/分享、替换 S8 的 toast 占位 | 用户可见；接口变更（群详情），与 openapi 和规范 §27.2 同提交 |
+| **S13 CloudBase 接线** | §12 A 段 | 无 |
+
+顺序建议：**S11 → S13（A 段）→ S12（设计稿到位后）→ 上线门禁（§12.2）**。S11 与 S13 互不依赖，可并行，但 S13 的契约测试要把 S11 新增的 `invite_code` 读取路径包含进去，所以 S13 放在 S11 之后更稳。
+
+**待确认（有默认值，不阻塞）**
+
+| # | 问题 | 默认 |
+|---|---|---|
+| Q15 | 群详情的邀请码对所有 active 成员可见，还是只给群主 | 所有 active 成员（D1），因为「群内只有自己」的邀请入口可能由非群主触发；若只给群主，需在 K01 里按 `owner_user_id` 判断，其余不变 |
+| Q16 | 是否现在引入 `@cloudbase/node-sdk`（会改 `package.json`） | 否，B 段再做，需用户确认 |

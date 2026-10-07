@@ -1,13 +1,25 @@
 const { getMatchDetail } = require("../../services/matches.js");
 const { createUuidV4, submitPrediction } = require("../../services/predictions.js");
+const { getTeamLogo } = require("../../utils/logo-registry.js");
+
+const SHOW_CROWD = false;
 
 const REASON_TEXT = {
-  AUTH_REQUIRED: "需登录态",
+  AUTH_REQUIRED: "登录后可提交预测",
   USER_DELETED: "账号已注销",
   ALREADY_SUBMITTED: "已提交",
   KICKOFF_UNCONFIRMED: "开球未确认",
-  NOT_SCHEDULED: "非可预测赛程态",
+  NOT_SCHEDULED: "当前赛程不可预测",
   CLOSED: "预测已截止",
+};
+
+const STATUS_TEXT = {
+  scheduled: "未开赛",
+  live: "进行中",
+  finished: "完场",
+  postponed: "延期",
+  cancelled: "取消",
+  abandoned: "腰斩",
 };
 
 function parseScore(raw) {
@@ -49,6 +61,26 @@ function reasonText(reason) {
   return REASON_TEXT[reason] || reason;
 }
 
+function formatShanghaiTime(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    month: "numeric",
+    day: "numeric",
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function derivedResult(home, away) {
+  if (Number(home) > Number(away)) return "主胜";
+  if (Number(home) < Number(away)) return "客胜";
+  return "平局";
+}
+
 Page({
   data: {
     matchId: "",
@@ -61,12 +93,20 @@ Page({
     myMatchScoreText: "",
     myWdlHitText: "",
     myExactHitText: "",
+    predictionPointsText: "",
+    predictionResultText: "",
     canSubmit: false,
     submitDisabledReason: "",
     identityMissing: false,
     userDeleted: false,
-    homeScore: "",
-    awayScore: "",
+    homeScore: 0,
+    awayScore: 0,
+    derivedResultText: "平局",
+    kickoffText: "",
+    statusText: "",
+    homeLogo: "",
+    awayLogo: "",
+    showCrowd: SHOW_CROWD,
     submitting: false,
     formError: "",
   },
@@ -134,6 +174,16 @@ Page({
       myMatchScoreText: myPrediction ? settlementText(myPrediction.match_score) : "",
       myWdlHitText: myPrediction ? settlementText(myPrediction.wdl_hit) : "",
       myExactHitText: myPrediction ? settlementText(myPrediction.exact_hit) : "",
+      predictionPointsText: myPrediction && myPrediction.match_score !== null
+        ? `+${myPrediction.match_score}`
+        : "待结算",
+      predictionResultText: myPrediction && myPrediction.exact_hit === true
+        ? "精确命中"
+        : myPrediction && myPrediction.wdl_hit === true
+          ? "赛果命中"
+          : myPrediction && myPrediction.match_score === null
+            ? "等待比赛结算"
+            : myPrediction ? "未命中" : "",
       canSubmit,
       submitDisabledReason: canSubmit ? "" : reasonText(reason),
       identityMissing: reason === "AUTH_REQUIRED",
@@ -141,7 +191,32 @@ Page({
       errorMessage: "",
       formError: "",
       submitting: false,
+      homeLogo: getTeamLogo(match.league_id, match.home_team && match.home_team.team_id),
+      awayLogo: getTeamLogo(match.league_id, match.away_team && match.away_team.team_id),
+      kickoffText: formatShanghaiTime(match.kickoff_at),
+      statusText: STATUS_TEXT[match.match_status] || match.match_status,
+      derivedResultText: derivedResult(this.data.homeScore, this.data.awayScore),
     });
+  },
+
+  onScoreStep(event) {
+    const side = event.currentTarget.dataset.side;
+    const delta = Number(event.currentTarget.dataset.delta);
+    if ((side !== "home" && side !== "away") || !Number.isFinite(delta)) return;
+    const current = Number(this.data[`${side}Score`]) || 0;
+    const score = Math.max(0, Math.min(20, current + delta));
+    const home = side === "home" ? score : this.data.homeScore;
+    const away = side === "away" ? score : this.data.awayScore;
+    this.setData({
+      [`${side}Score`]: score,
+      derivedResultText: derivedResult(home, away),
+      formError: "",
+    });
+    this.ensureIntentKey();
+  },
+
+  onSessionTap() {
+    wx.navigateTo({ url: "/pages/session/session" });
   },
 
   onHomeScoreInput(event) {
@@ -162,8 +237,12 @@ Page({
     if (this.data.submitting || !this.data.canSubmit) {
       return;
     }
-    const homeScore = parseScore(this.data.homeScore);
-    const awayScore = parseScore(this.data.awayScore);
+    const homeScore = typeof this.data.homeScore === "number"
+      ? this.data.homeScore
+      : parseScore(this.data.homeScore);
+    const awayScore = typeof this.data.awayScore === "number"
+      ? this.data.awayScore
+      : parseScore(this.data.awayScore);
     if (homeScore === null || awayScore === null) {
       this.setData({ formError: "比分须为 0..20 整数" });
       return;

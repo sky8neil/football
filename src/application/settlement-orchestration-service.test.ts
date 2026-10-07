@@ -179,6 +179,7 @@ async function seedAppliedV1Caches(repo: InMemoryRepository, userId: string, sea
     valid_predictions: 1,
     wdl_hits: 1,
     exact_hits: 1,
+    last_scoring_match_at: NOW,
     level: 1,
     best_level: 1,
     level_state: defaultLevelState(),

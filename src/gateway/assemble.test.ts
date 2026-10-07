@@ -18,6 +18,8 @@ function makeConfig(overrides: Partial<GatewayRuntimeConfig> = {}): GatewayRunti
     mock_trusted_openid: null,
     match_cursor_secret: TEST_CURSOR_SECRET,
     public_source: LOCAL_PUBLIC_SOURCE,
+    repository_backend: "memory",
+    cloudbase_repository: null,
     ...overrides,
   };
 }
@@ -362,7 +364,7 @@ describe("handleGatewayRequest GET /v1/unlocks/me", () => {
 });
 
 describe("handleGatewayRequest GET /v1/rankings", () => {
-  it("routes to the existing handler instead of unknown-path 422", async () => {
+  it("requires identity at the existing rankings handler", async () => {
     const harness = makeHarness();
     const response = await request(harness, {
       method: "GET",
@@ -370,18 +372,8 @@ describe("handleGatewayRequest GET /v1/rankings", () => {
       query: { board: "week" },
     });
 
-    expect(response.status).toBe(200);
-    expect(response.body).toEqual({
-      data: {
-        board: "week",
-        scope: "global",
-        period_key: "2026-W32",
-        updated_at: null,
-        items: [],
-        page: { next_cursor: null, has_more: false },
-      },
-      request_id: expect.any(String),
-    });
+    expect(response.status).toBe(401);
+    expect(response.body).toEqual(expect.objectContaining({ code: "UNAUTHORIZED" }));
   });
 
   it("returns 422 for the removed month board at the gateway", async () => {

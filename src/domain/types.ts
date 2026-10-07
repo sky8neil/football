@@ -105,6 +105,7 @@ export interface UserSeasonStats extends BaseDoc {
   valid_predictions: number;
   wdl_hits: number;
   exact_hits: number;
+  last_scoring_match_at: Date | null;
   level: number;
   best_level: number;
   level_state: LevelState;
@@ -285,8 +286,10 @@ export const BOARD_SNAPSHOT_HEAD_USER_ID = "00000000-0000-0000-0000-000000000000
 
 export interface BoardSnapshot extends BaseDoc {
   snapshot_id: string;
-  board: typeof RankingBoard.Career | typeof RankingBoard.Strength;
+  board: typeof RankingBoard.Career | typeof RankingBoard.Strength | typeof RankingBoard.Season;
   snapshot_at: Date;
+  level_season_id: string | null;
+  is_final: boolean;
   user_id: string;
   snapshot_kind?: "head";
   rank: number;
@@ -296,6 +299,10 @@ export interface BoardSnapshot extends BaseDoc {
   career_last_scoring_match_at: Date | null;
   window_score_sum: number | null;
   window_n: number | null;
+  season_points: number | null;
+  season_exact_hits: number | null;
+  season_valid_predictions: number | null;
+  season_last_scoring_match_at: Date | null;
   created_at: Date;
 }
 

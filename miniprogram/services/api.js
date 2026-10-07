@@ -32,6 +32,7 @@ function request({ method, path, data, query }) {
           statusCode: res.statusCode,
           code: body.code,
           message: body.message,
+          details: body.details,
         });
       },
       fail() {
@@ -41,6 +42,7 @@ function request({ method, path, data, query }) {
           statusCode: 0,
           code: undefined,
           message: undefined,
+          details: undefined,
         });
       },
     });

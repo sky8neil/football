@@ -39,8 +39,17 @@ describe("S0 Collection schema（规范 §21）", () => {
     expect(def.fields.level_season_id?.type).toBe("string");
     expect(def.fields.level?.max).toBe(6);
     expect(def.fields.best_level?.max).toBe(6);
+    expect(def.fields.last_scoring_match_at).toMatchObject({ type: "date", nullable: true });
     expect(def.fields.level_state?.type).toBe("object");
     expect(def.fields.is_level_frozen?.type).toBe("bool");
+  });
+
+  it("board_snapshots 支持 season 快照与终榜", () => {
+    const fields = collection("board_snapshots").fields;
+    expect(fields.board?.enum).toEqual(["career", "strength", "season"]);
+    expect(fields.level_season_id).toMatchObject({ type: "string", nullable: true });
+    expect(fields.is_final).toMatchObject({ type: "bool", required: true, default: false });
+    expect(fields.season_points).toMatchObject({ type: "int", nullable: true });
   });
 
   it("teams.league_id 与 matches.league_id 为六联赛封闭枚举", () => {
@@ -82,8 +91,12 @@ describe("S0 Collection schema（规范 §21）", () => {
     expect(fields.reason?.enum).toEqual(["weekly_eval", "correction_reeval", "rebuild"]);
   });
 
-  it("新增 board_snapshots / groups / group_members，sync_logs 增加 4 个 job", () => {
-    expect(collection("board_snapshots").fields.board?.enum).toEqual(["career", "strength"]);
+  it("新增 board_snapshots / groups / group_members，sync_logs 包含赛季快照任务", () => {
+    expect(collection("board_snapshots").fields.board?.enum).toEqual([
+      "career",
+      "strength",
+      "season",
+    ]);
     expect(collection("board_snapshots").fields.snapshot_kind?.enum).toEqual(["head"]);
     expect(collection("groups").fields.invite_code?.unique).toBe(true);
     expect(collection("groups").fields.status?.enum).toEqual(["active", "dissolved"]);
@@ -100,6 +113,8 @@ describe("S0 Collection schema（规范 §21）", () => {
       "level_correction_reeval",
       "board_snapshot_career",
       "board_snapshot_strength",
+      "board_snapshot_season",
+      "board_snapshot_season_final",
     ]);
   });
 });

@@ -4,7 +4,10 @@ import { LEVEL_PRIOR_K, LEVEL_PRIOR_P0 } from "./levels.js";
 import {
   compareRankingEntry,
   compareWeekCareerEntry,
+  countSeasonsParticipated,
   isRankEligible,
+  isSeasonBoardVisible,
+  isSeasonRankEligible,
   isStrengthRankEligible,
   lastScoringForPeriodScore,
   rankForPosition,
@@ -51,6 +54,7 @@ describe("K. 排行榜（规范 44-K / 19.5）", () => {
     const lowScore = entry({ user_id: "b", period_score: 3, valid_predictions: 1, wdl_hits: 1, exact_hits: 0 });
     expect(compareRankingEntry(RankingBoard.Week, highScore, lowScore)).toBeLessThan(0);
     expect(compareRankingEntry(RankingBoard.Career, lowScore, highScore)).toBeGreaterThan(0);
+    expect(compareRankingEntry(RankingBoard.Season, lowScore, highScore)).toBeGreaterThan(0);
 
     const moreExact = entry({
       period_score: 12,
@@ -173,6 +177,33 @@ describe("K. 排行榜（规范 44-K / 19.5）", () => {
     expect(isStrengthRankEligible(49)).toBe(false);
     expect(isStrengthRankEligible(50)).toBe(true);
     expect(isStrengthRankEligible(0)).toBe(false);
+  });
+
+  it("season 榜使用周榜比较器与独立参与资格门槛", () => {
+    const early = entry({
+      period_score: 12,
+      exact_hits: 1,
+      wdl_hits: 1,
+      valid_predictions: 2,
+      last_scoring_match_at: t("2026-08-01T00:00:00Z"),
+    });
+    const late = entry({
+      period_score: 12,
+      exact_hits: 1,
+      wdl_hits: 1,
+      valid_predictions: 2,
+      last_scoring_match_at: t("2026-08-02T00:00:00Z"),
+    });
+    expect(compareRankingEntry(RankingBoard.Season, early, late)).toBeLessThan(0);
+    expect(isSeasonRankEligible(0)).toBe(false);
+    expect(isSeasonRankEligible(1)).toBe(true);
+    expect(isSeasonBoardVisible(1)).toBe(false);
+    expect(isSeasonBoardVisible(2)).toBe(true);
+    expect(countSeasonsParticipated([
+      { valid_predictions: 0 },
+      { valid_predictions: 1 },
+      { valid_predictions: 3 },
+    ])).toBe(2);
   });
 
   it("K81 实力榜 s 相同（交叉乘法相等）则窗口 n 多者优先", () => {

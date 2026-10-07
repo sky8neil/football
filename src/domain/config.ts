@@ -6,6 +6,12 @@
  */
 import { ScoringRuleVersion, UnlockConfigVersion } from "./enums.js";
 
+/**
+ * 开发占位周，取当前仓库最早的排行榜开发样例周。
+ * 上线前必须改为真实上线周；上线后只追加，不回改。
+ */
+export const RANKING_FIRST_PERIOD_KEY = "2026-W31";
+
 export const FIXED_CONFIG_V1 = {
   schema_version: 1,
 
@@ -60,14 +66,18 @@ export const FIXED_CONFIG_V1 = {
   LEVEL_PROTECTION_EVALS: 13,
   LEVEL_SEASON_BOUNDARY: "07-01 00:00 Asia/Shanghai",
 
-  RANKING_BOARDS: ["week", "career", "strength"],
+  RANKING_BOARDS: ["week", "career", "strength", "season"],
   WEEK_BOARD_MIN_VALID: 1,
+  SEASON_BOARD_MIN_VALID: 1,
+  SEASON_BOARD_MIN_SEASONS: 2,
   STRENGTH_BOARD_MIN_WINDOW_N: 50,
   RANKING_TOP_LIMIT: 20,
   RANKING_PAGE_SIZE: 10,
+  RANKING_WEEK_WINDOW: 4,
   RANKING_ABSOLUTE_RANK_MAX: 20,
   RANKING_TOP_PERCENT_CLAMP: [1, 99],
   CAREER_BOARD_SNAPSHOT_MINUTES: 60,
+  SEASON_BOARD_SNAPSHOT_MINUTES: 60,
   GROUP_MAX_MEMBERS: 500,
   USER_MAX_GROUPS_JOINED: 20,
   USER_MAX_GROUPS_OWNED: 5,

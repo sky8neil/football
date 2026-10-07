@@ -78,6 +78,7 @@ function makeSeasonStats(
     valid_predictions: 15,
     wdl_hits: 15,
     exact_hits: 15,
+    last_scoring_match_at: WEEKLY_AS_OF,
     level: 4,
     best_level: 4,
     level_state: {
@@ -368,6 +369,9 @@ describe("LevelCorrectionReevalService §17.7 / §32.10", () => {
     const { repo, user, correctionSettlementId } = await seedCorrection(true);
 
     await reeval(repo).runForSettlement(correctionSettlementId, CORRECTION_AS_OF);
+
+    await expect(repo.userSeasonStats.findByUserAndSeason(user.user_id, "2026_2027"))
+      .resolves.toMatchObject({ last_scoring_match_at: WEEKLY_AS_OF });
 
     expect(await repo.users.findById(user.user_id)).toMatchObject({
       career_level: 3,

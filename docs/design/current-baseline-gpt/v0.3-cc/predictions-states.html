@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>最近预测 · 状态图册</title>
+<link rel="stylesheet" href="ui-consistency.css">
+<link rel="stylesheet" href="theme-cc.css">
+<link rel="stylesheet" href="states-cc.css">
+</head>
+<body>
+<div class="phone">
+<div class="status"><span class="num">9:41</span><svg viewBox="0 0 56 12" aria-hidden="true"><path d="M1 10V7h3v3M6 10V5h3v5M11 10V3h3v7M16 10V1h3v9" fill="currentColor"/><path d="M23 4q6-6 12 0m-10 2q4-4 8 0m-6 2q2-2 4 0" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="29" cy="10" r="1"/><rect x="39" y="2" width="14" height="8" rx="2" fill="none" stroke="currentColor"/><rect x="41" y="4" width="10" height="4" rx="1" fill="currentColor"/><path d="M55 4v4" stroke="currentColor"/></svg></div>
+<main class="content pad-bottom" id="page"></main>
+<nav class="ui-nav" aria-label="主导航"><a href="赛事预言家首页-高保真-v8.6-球场背景玻璃版.html"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M12 4v16M3 9h4v6H3m18-6h-4v6h4"/><circle cx="12" cy="12" r="3"/></svg><span>比赛</span></a><a href="rankings-states.html?state=R06"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V10h5v10m0 0V4h6v16m0 0V13h5v7M2 20h20"/></svg><span>排行榜</span></a><a href="my-states.html?state=M01" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="7" r="3.5"/><path d="M5 21v-3a7 7 0 0 1 14 0v3"/></svg><span>我的</span></a></nav>
+</div>
+<script>
+const id=new URLSearchParams(location.search).get('state')||'P01';
+const A='assets/logos/teams/';
+const T={'阿森纳':'premier-league/arsenal.png','切尔西':'premier-league/chelsea.png','利物浦':'premier-league/liverpool.png','热刺':'premier-league/tottenham.png','曼城':'premier-league/manchester-city.png','曼联':'premier-league/manchester-united.png','纽卡斯尔':'premier-league/newcastle.png','埃弗顿':'premier-league/everton.png','维拉':'premier-league/aston-villa.png','布莱顿':'premier-league/brighton.png','富勒姆':'premier-league/fulham.png','布伦特福德':'premier-league/brentford.png','巴塞罗那':'la-liga/barcelona.png','马德里竞技':'la-liga/atletico-madrid.png'};
+const weeks=[
+ ['本周','09.28—10.04',[['阿森纳','切尔西','2:1','2:1','exact'],['利物浦','热刺','1:0','待开赛','wait'],['曼城','曼联','2:0','进行中','live']]],
+ ['上周','09.21—09.27',[['纽卡斯尔','埃弗顿','1:1','2:0','miss'],['维拉','布莱顿','2:1','3:1','wdl'],['富勒姆','布伦特福德','1:2','1:2','exact'],['巴塞罗那','马德里竞技','2:1','1:0','wdl']]],
+ ['第 3 周','09.14—09.20',[['阿森纳','利物浦','1:1','1:1','exact'],['热刺','曼城','0:2','1:3','wdl']]],
+ ['第 4 周','09.07—09.13',[['曼联','切尔西','1:0','0:0','miss'],['埃弗顿','维拉','1:1','2:2','wdl'],['布莱顿','富勒姆','2:0','2:0','exact']]],
+ ['第 5 周','08.31—09.06',[['布伦特福德','纽卡斯尔','1:2','0:1','wdl'],['马德里竞技','巴塞罗那','1:1','0:2','miss']]],
+ ['第 6 周','08.24—08.30',[['切尔西','阿森纳','0:2','0:1','wdl'],['利物浦','曼联','3:1','3:1','exact']]],
+ ['第 7 周','08.17—08.23',[['曼城','热刺','2:1','2:1','exact'],['维拉','纽卡斯尔','1:0','0:1','miss']]],
+ ['第 8 周','08.10—08.16',[['富勒姆','埃弗顿','1:1','1:0','miss'],['布莱顿','布伦特福德','2:2','2:2','exact']]]
+];
+const S={
+ P01:{n:2,foot:'more'},
+ P02:{n:8,foot:'more'},
+ P03:{n:8,foot:'end'},
+ P04:{n:0,foot:'empty'}
+}[id]||{n:2,foot:'more'};
+const meta={exact:['+12','精确命中'],wdl:['+3','胜平负命中'],miss:['+0','未命中'],wait:['—','待开赛'],live:['—','进行中']};
+function crest(n){return '<img class="crest" src="'+A+T[n]+'" alt="'+n+'队徽">';}
+function row(r){
+ const [h,a,pred,act,type]=r; const m=meta[type];
+ const pts=type==='exact'||type==='wdl'||type==='miss'?'<b class="result-points num '+(type==='miss'?'miss':'')+'">'+m[0]+'<small> 分</small></b>':'<b class="result-points num wait">'+m[0]+'</b>';
+ const actual=type==='wait'?'':(type==='live'?'<span class="actual">实时 <b class="num">'+act.replace('进行中','—')+'</b></span>':'<span class="actual">实际 <b class="num">'+act.replace(':',' : ')+'</b></span>');
+ return '<article class="result"><div class="result-top"><span class="fixture">'+crest(h)+crest(a)+'<b>'+h+' · '+a+'</b></span>'+pts+'</div><div class="result-bottom"><span>预测 <b class="num">'+pred.replace(':',' : ')+'</b>'+actual+'</span><span class="result-state '+(type==='exact'?'':type)+'">'+m[1]+'</span></div></article>';
+}
+const back='<a class="back" href="my-states.html?state=M01" aria-label="返回"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 5-7 7 7 7"/></svg></a>';
+let html='<div class="subhead">'+back+'<div class="grow"><h1>最近预测</h1><p>按比赛所在周分组 · 可回看最近 8 周</p></div></div>';
+if(S.n===0){
+ html+='<section class="ccs-card pred-empty"><div class="empty-art"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h12a2 2 0 0 1 2 2v16H6a3 3 0 0 1 0-6h13M5 3v12m4-8h6m-6 4h4"/></svg></div><h2>还没有预测</h2><p>去比赛页选一场，\n写下你的比分</p><a class="ccs-cta" href="赛事预言家首页-高保真-v8.6-球场背景玻璃版.html">去预测</a></section>';
+}else{
+ weeks.slice(0,S.n).forEach(w=>{
+  html+='<div class="week-head"><h2>'+w[0]+'</h2><small>'+w[1]+'</small></div><section class="ccs-card pred-card">'+w[2].map(row).join('')+'</section>';
+ });
+ html+='<div class="list-foot">'+(S.foot==='more'?'<button class="ccs-ghost" type="button" onclick="location.href=\'predictions-states.html?state='+(id==='P01'?'P02':'P03')+'\'">加载更多</button>':'没有更早的预测了')+'</div>';
+}
+document.getElementById('page').innerHTML=html;
+</script>
+</body>
+</html>

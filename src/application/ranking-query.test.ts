@@ -1,10 +1,22 @@
 import { describe, expect, it } from "vitest";
 import { GroupMemberStatus, GroupStatus, PeriodType, RankingBoard, RankingScope, UserStatus } from "../domain/enums.js";
-import type { BoardSnapshot, Group, GroupMember, RankingEntry, User } from "../domain/types.js";
+import type {
+  BoardSnapshot,
+  Group,
+  GroupMember,
+  RankingEntry,
+  User,
+  UserSeasonStats,
+} from "../domain/types.js";
 import { defaultLevelState } from "../domain/types.js";
 import { InMemoryRepository } from "../infrastructure/repositories.js";
-import { RankingCursorCodec, RankingQueryService } from "./ranking-query.js";
+import {
+  computeAvailableBoards,
+  RankingCursorCodec,
+  RankingQueryService,
+} from "./ranking-query.js";
 import { GroupsService } from "./groups.js";
+import { RebuildPeriodRankingsService } from "./ranking-rebuild-service.js";
 
 const NOW = new Date("2026-08-09T12:00:00.000Z");
 const WEEK_KEY = "2026-W32";
@@ -60,6 +72,8 @@ function makeSnapshot(board: "career" | "strength", userId: string, rank: number
     snapshot_id: `${board}-${userId}-${at.toISOString()}`,
     board,
     snapshot_at: at,
+    level_season_id: null,
+    is_final: false,
     user_id: userId,
     rank,
     career_points: board === RankingBoard.Career ? 100 - rank : null,
@@ -68,7 +82,65 @@ function makeSnapshot(board: "career" | "strength", userId: string, rank: number
     career_last_scoring_match_at: board === RankingBoard.Career ? NOW : null,
     window_score_sum: board === RankingBoard.Strength ? 120 : null,
     window_n: board === RankingBoard.Strength ? 50 : null,
+    season_points: null,
+    season_exact_hits: null,
+    season_valid_predictions: null,
+    season_last_scoring_match_at: null,
     created_at: at,
+  };
+}
+
+function makeSeasonSnapshot(
+  userId: string,
+  rank: number,
+  points: number,
+  seasonId = "2026_2027",
+  at = NOW,
+): BoardSnapshot {
+  return {
+    schema_version: 1,
+    snapshot_id: `season-${userId}-${seasonId}-${at.toISOString()}`,
+    board: RankingBoard.Season,
+    snapshot_at: at,
+    level_season_id: seasonId,
+    is_final: false,
+    user_id: userId,
+    rank,
+    career_points: null,
+    career_exact_hits: null,
+    career_valid_predictions: null,
+    career_last_scoring_match_at: null,
+    window_score_sum: null,
+    window_n: null,
+    season_points: points,
+    season_exact_hits: 1,
+    season_valid_predictions: 2,
+    season_last_scoring_match_at: at,
+    created_at: at,
+  };
+}
+
+function makeSeasonStats(
+  userId: string,
+  levelSeasonId: string,
+  overrides: Partial<UserSeasonStats> = {},
+): UserSeasonStats {
+  return {
+    schema_version: 1,
+    user_id: userId,
+    level_season_id: levelSeasonId,
+    points: 12,
+    valid_predictions: 2,
+    wdl_hits: 1,
+    exact_hits: 1,
+    last_scoring_match_at: NOW,
+    level: 1,
+    best_level: 1,
+    level_state: defaultLevelState(),
+    is_level_frozen: false,
+    created_at: NOW,
+    updated_at: NOW,
+    ...overrides,
   };
 }
 
@@ -113,6 +185,38 @@ function query(overrides: Partial<Parameters<RankingQueryService["list"]>[0]> = 
 }
 
 describe("RankingQueryService v2", () => {
+  it("computes available boards from range counts and requester eligibility", () => {
+    expect(computeAvailableBoards({
+      scope: RankingScope.Global,
+      seasons_participated: 1,
+      strength_window_n: 49,
+      career_entry_count: 0,
+      current_season_entry_count: 0,
+      previous_season_entry_count: 10,
+    })).toEqual([RankingBoard.Week]);
+    expect(computeAvailableBoards({
+      scope: RankingScope.Global,
+      seasons_participated: 2,
+      strength_window_n: 50,
+      career_entry_count: 2,
+      current_season_entry_count: 0,
+      previous_season_entry_count: 10,
+    })).toEqual([
+      RankingBoard.Week,
+      RankingBoard.Career,
+      RankingBoard.Strength,
+      RankingBoard.Season,
+    ]);
+    expect(computeAvailableBoards({
+      scope: RankingScope.Group,
+      seasons_participated: 2,
+      strength_window_n: 50,
+      career_entry_count: 0,
+      current_season_entry_count: 0,
+      previous_season_entry_count: 10,
+    })).toEqual([RankingBoard.Week, RankingBoard.Strength]);
+  });
+
   it("K86 周榜不返回准确率字段，并为已入榜用户生成 me", async () => {
     const repo = new InMemoryRepository();
     const user = makeUser(id(1));
@@ -124,6 +228,7 @@ describe("RankingQueryService v2", () => {
     expect(result.items[0]).toMatchObject({ rank: 1, user_id: user.user_id, period_score: 99, valid_predictions: 5, exact_hits: 1 });
     expect(result.items[0]).not.toHaveProperty("wdl_accuracy_percent");
     expect(result).toMatchObject({ updated_at: NOW.toISOString(), me: { status: "ranked", rank: 1, top_percent: null } });
+    expect(result.current_period_key).toBe("2026-W32");
   });
 
   it("K82/K83：top_percent 使用 ceil 并将末位夹到 99", async () => {
@@ -192,6 +297,216 @@ describe("RankingQueryService v2", () => {
     expect(result.items[0]).toMatchObject({ rank: 1, career_points: 99, career_valid_predictions: 5 });
     const strength = await service.list(query({ board: RankingBoard.Strength, period_key: null }));
     expect(strength.items[0]).toMatchObject({ rank: 1, strength_index: "2.08", window_n: 50 });
+  });
+
+  it("season 列表照常包含首赛季用户，但 me 不泄漏名次", async () => {
+    const repo = new InMemoryRepository();
+    const user = makeUser(id(1));
+    await repo.users.insert(user);
+    await repo.userSeasonStats.insert(makeSeasonStats(user.user_id, "2026_2027"));
+    await repo.boardSnapshots.insert(makeSeasonSnapshot(user.user_id, 1, 24));
+
+    const result = await new RankingQueryService(repo, SECRET).list(query({
+      board: RankingBoard.Season,
+      period_key: null,
+      authenticated_user_id: user.user_id,
+    }));
+
+    expect(result).toMatchObject({
+      level_season_id: "2026_2027",
+      is_provisional: false,
+      entry_count: 1,
+      items: [{ rank: 1, user_id: user.user_id, season_points: 24 }],
+      me: { status: "not_eligible", seasons_participated: 1 },
+      available_boards: [RankingBoard.Week],
+    });
+  });
+
+  it("uses the previous season's latest snapshot provisionally during the new-season gap", async () => {
+    const repo = new InMemoryRepository();
+    const user = makeUser(id(1));
+    const previousSnapshotAt = new Date("2026-06-30T10:00:00.000Z");
+    await repo.users.insert(user);
+    await repo.userSeasonStats.insert(makeSeasonStats(user.user_id, "2025_2026"));
+    await repo.boardSnapshots.insert(makeSeasonSnapshot(
+      user.user_id,
+      1,
+      48,
+      "2025_2026",
+      previousSnapshotAt,
+    ));
+
+    const result = await new RankingQueryService(repo, SECRET).list(query({
+      board: RankingBoard.Season,
+      period_key: null,
+      authenticated_user_id: user.user_id,
+    }));
+
+    expect(result).toMatchObject({
+      level_season_id: "2025_2026",
+      is_provisional: true,
+      updated_at: previousSnapshotAt.toISOString(),
+      entry_count: 1,
+      items: [{ rank: 1, user_id: user.user_id, season_points: 48 }],
+    });
+  });
+
+  it("does not treat an empty previous-season sentinel as a provisional board", async () => {
+    const repo = new InMemoryRepository();
+    const previousSnapshotAt = new Date("2026-06-30T10:00:00.000Z");
+    await repo.users.insert(makeUser(id(1)));
+    await new RebuildPeriodRankingsService(repo).rebuildBoardSnapshot(
+      RankingBoard.Season,
+      previousSnapshotAt,
+    );
+
+    const result = await new RankingQueryService(repo, SECRET).list(query({
+      board: RankingBoard.Season,
+      period_key: null,
+      authenticated_user_id: id(1),
+    }));
+
+    expect(result).toMatchObject({
+      level_season_id: "2026_2027",
+      is_provisional: false,
+      updated_at: null,
+      entry_count: 0,
+      items: [],
+    });
+  });
+
+  it("first operational season defaults to an empty non-provisional board", async () => {
+    const repo = new InMemoryRepository();
+    const user = makeUser(id(1));
+    await repo.users.insert(user);
+
+    const result = await new RankingQueryService(repo, SECRET).list(query({
+      board: RankingBoard.Season,
+      period_key: null,
+      authenticated_user_id: user.user_id,
+    }));
+
+    expect(result).toMatchObject({
+      level_season_id: "2026_2027",
+      is_provisional: false,
+      entry_count: 0,
+      items: [],
+      available_boards: [RankingBoard.Week],
+    });
+  });
+
+  it("returns 404 only when an explicitly requested season has no snapshot data", async () => {
+    const repo = new InMemoryRepository();
+    const service = new RankingQueryService(repo, SECRET);
+    await expect(service.list(query({
+      board: RankingBoard.Season,
+      period_key: null,
+      level_season_id: "2024_2025",
+    }))).rejects.toMatchObject({ code: "LEVEL_SEASON_NOT_FOUND" });
+  });
+
+  it("serves explicit historical final snapshots with frozen ranks and deleted users", async () => {
+    const repo = new InMemoryRepository();
+    const deleted = makeUser(id(1), { status: "deleted", deleted_at: NOW });
+    await repo.users.insert(deleted);
+    await repo.userSeasonStats.insert(makeSeasonStats(deleted.user_id, "2025_2026", {
+      valid_predictions: 3,
+    }));
+    const regular = makeSeasonSnapshot(deleted.user_id, 1, 24, "2025_2026", NOW);
+    const final = {
+      ...makeSeasonSnapshot(deleted.user_id, 3, 36, "2025_2026", new Date(NOW.getTime() + 60_000)),
+      is_final: true,
+    };
+    await repo.boardSnapshots.insert(regular);
+    await repo.boardSnapshots.insert(final);
+
+    const result = await new RankingQueryService(repo, SECRET).list(query({
+      board: RankingBoard.Season,
+      period_key: null,
+      level_season_id: "2025_2026",
+    }));
+
+    expect(result).toMatchObject({
+      level_season_id: "2025_2026",
+      is_provisional: false,
+      updated_at: final.snapshot_at.toISOString(),
+      entry_count: 1,
+      items: [{ rank: 3, display_name: "已注销用户", season_points: 36 }],
+      available_level_seasons: ["2026_2027", "2025_2026"],
+    });
+  });
+
+  it("paginates an explicit historical final season snapshot", async () => {
+    const repo = new InMemoryRepository();
+    for (let rank = 1; rank <= 11; rank += 1) {
+      const user = makeUser(id(rank));
+      await repo.users.insert(user);
+      await repo.boardSnapshots.insert({
+        ...makeSeasonSnapshot(user.user_id, rank, 100 - rank, "2025_2026"),
+        is_final: true,
+      });
+    }
+    const service = new RankingQueryService(repo, SECRET);
+    const firstPage = await service.list(query({
+      board: RankingBoard.Season,
+      period_key: null,
+      level_season_id: "2025_2026",
+      limit: 10,
+    }));
+    const secondPage = await service.list(query({
+      board: RankingBoard.Season,
+      period_key: null,
+      level_season_id: "2025_2026",
+      cursor: firstPage.next_cursor,
+      limit: 10,
+    }));
+
+    expect(firstPage).toMatchObject({
+      items: Array.from({ length: 10 }, (_, index) => ({ rank: index + 1 })),
+      has_more: true,
+    });
+    expect(secondPage).toMatchObject({
+      items: [{ rank: 11 }],
+      has_more: false,
+      next_cursor: null,
+    });
+  });
+
+  it("defaults to the previous week on Monday and walks back within the selectable window", async () => {
+    const monday = new Date("2026-08-09T16:00:00.000Z");
+    const repo = new InMemoryRepository();
+    await repo.users.insert(makeUser(id(1)));
+    await repo.rankings.insert(makeRanking(id(1), 1, { period_key: "2026-W31" }));
+
+    const result = await new RankingQueryService(repo, SECRET, { firstPeriodKey: "2026-W31" }).list(query({
+      period_key: null,
+      server_now: monday,
+    }));
+
+    expect(result).toMatchObject({
+      current_period_key: "2026-W33",
+      period_key: "2026-W31",
+      entry_count: 1,
+      items: [{ user_id: id(1) }],
+    });
+  });
+
+  it("does not backtrack beyond four weeks or accept a period before the injected launch week", async () => {
+    const repo = new InMemoryRepository();
+    await repo.users.insert(makeUser(id(1)));
+    await repo.rankings.insert(makeRanking(id(1), 1, { period_key: "2026-W31" }));
+    const service = new RankingQueryService(repo, SECRET, { firstPeriodKey: "2026-W31" });
+
+    const outsideWindow = await service.list(query({
+      period_key: null,
+      server_now: new Date("2026-08-24T12:00:00.000Z"),
+    }));
+    expect(outsideWindow).toMatchObject({ period_key: "2026-W34", entry_count: 0, items: [] });
+    await expect(service.list(query({ period_key: "2026-W30" })))
+      .rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+    await expect(new RankingQueryService(repo, SECRET, { firstPeriodKey: "2026-W32" })
+      .list(query({ period_key: "2026-W31" })))
+      .rejects.toMatchObject({ code: "VALIDATION_ERROR" });
   });
 
   it("按周期结束边界保留历史周榜注销用户及 global_rank", async () => {
@@ -273,6 +588,7 @@ describe("RankingQueryService v2", () => {
       scope: RankingScope.Global,
       group_id: null,
       period_key: WEEK_KEY,
+      level_season_id: null,
       offset: 20,
     });
     const result = await service.list(query({ cursor }));

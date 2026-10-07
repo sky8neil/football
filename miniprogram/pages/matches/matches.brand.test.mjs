@@ -74,6 +74,9 @@ function installWxStub({ stored } = {}) {
   setGlobal("wx", {
     getStorageSync(key) {
       reads.push(key);
+      if (key === "pending_group_invite_code" && stored && typeof stored === "object") {
+        return stored.pending_group_invite_code;
+      }
       return stored;
     },
     setStorageSync(key, value) {
@@ -85,8 +88,14 @@ function installWxStub({ stored } = {}) {
     redirectTo(options) {
       navs.push(["redirectTo", options && options.url]);
     },
+    reLaunch(options) {
+      navs.push(["reLaunch", options && options.url]);
+    },
     navigateTo(options) {
       navs.push(["navigateTo", options && options.url]);
+    },
+    removeStorageSync(key) {
+      writes.push(["remove", key]);
     },
   });
   return { reads, writes, navs };
@@ -124,6 +133,19 @@ function loadHomePage({ stored } = {}) {
       };
     }
     if (id === "../../utils/nickname.js") return loadNicknameUtil();
+    if (id === "../../services/matches.js") {
+      return { listMatches: () => Promise.resolve({ statusCode: 200, data: { items: [] } }) };
+    }
+    if (id === "../../services/predictions.js") {
+      return {
+        createUuidV4: () => "00000000-0000-4000-8000-000000000001",
+        submitPrediction: () => Promise.resolve({ statusCode: 201 }),
+      };
+    }
+    if (id === "../../utils/matches-default-league.js") {
+      const modulePath = join(HERE, "..", "..", "utils", "matches-default-league.js");
+      return loadCommonJs(modulePath, () => { throw new Error("matches-default-league has no dependencies"); });
+    }
     throw new Error(`Unexpected require: ${id}`);
   });
   const page = instantiate(config, { loadFirstPage() {} });
@@ -132,8 +154,8 @@ function loadHomePage({ stored } = {}) {
 }
 
 /** 加载会话页，initSession 固定返回给定结果。 */
-function loadSessionPage({ result } = {}) {
-  const wxStub = installWxStub();
+function loadSessionPage({ result, stored } = {}) {
+  const wxStub = installWxStub({ stored });
   const config = capturePageConfig(SESSION_JS, (id) => {
     if (id === "../../services/session.js") {
       return { initSession: () => Promise.resolve(result) };
@@ -274,6 +296,18 @@ describe("会话页：昵称落库 + 跳首页改用 switchTab", () => {
     await flushMicrotasks();
     expect(navs).toContainEqual(["switchTab", HOME_URL]);
     expect(navs.some(([kind]) => kind === "redirectTo" || kind === "navigateTo")).toBe(false);
+  });
+
+  it("S4b: 登录后带邀请码回到加入确认页，并清除待处理邀请码", async () => {
+    const { page, navs, reads, writes } = loadSessionPage({
+      result: { statusCode: 201, data: { nickname: "Sky" } },
+      stored: { pending_group_invite_code: "ABCDEFGH" },
+    });
+    page.onSubmit();
+    await flushMicrotasks();
+    expect(reads).toContain("pending_group_invite_code");
+    expect(writes).toContainEqual(["remove", "pending_group_invite_code"]);
+    expect(navs).toContainEqual(["reLaunch", "/pages/groups/join?code=ABCDEFGH"]);
   });
 
   it("S5: 跳过登录同样走 switchTab", () => {

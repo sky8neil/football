@@ -120,6 +120,7 @@ function makeSeasonStats(overrides: Partial<UserSeasonStats> = {}): UserSeasonSt
     valid_predictions: 0,
     wdl_hits: 0,
     exact_hits: 0,
+    last_scoring_match_at: null,
     level: 1,
     best_level: 1,
     level_state: defaultLevelState(),
@@ -450,6 +451,8 @@ describe("InMemoryRepository - user_season_stats", () => {
     expect(first).not.toHaveProperty("season_id");
     expect(await repo.userSeasonStats.findByUser("u1")).toEqual([first, second]);
     expect(await repo.userSeasonStats.findByUser("other")).toEqual([]);
+    expect(await repo.userSeasonStats.findByLevelSeason("2025_2026")).toEqual([second]);
+    expect(await repo.userSeasonStats.findByLevelSeason("2024_2025")).toEqual([]);
   });
 
   it("season 聚合负数写入被拒绝且更新不替换原值", async () => {
@@ -1585,6 +1588,8 @@ describe("InMemoryRepository - S0 新集合端口", () => {
       snapshot_id: newUuid(),
       board: "career",
       snapshot_at: at,
+      level_season_id: null,
+      is_final: false,
       user_id: userId,
       rank: 1,
       career_points: 12,
@@ -1593,6 +1598,10 @@ describe("InMemoryRepository - S0 新集合端口", () => {
       career_last_scoring_match_at: at,
       window_score_sum: null,
       window_n: null,
+      season_points: null,
+      season_exact_hits: null,
+      season_valid_predictions: null,
+      season_last_scoring_match_at: null,
       created_at: LOCK_NOW,
     });
     await repo.boardSnapshots.insert(snapshot("u1"));
@@ -1612,6 +1621,8 @@ describe("InMemoryRepository - S0 新集合端口", () => {
       snapshot_id: newUuid(),
       board: "career",
       snapshot_at: at,
+      level_season_id: null,
+      is_final: false,
       user_id: userId,
       rank: 1,
       career_points: 12,
@@ -1620,6 +1631,10 @@ describe("InMemoryRepository - S0 新集合端口", () => {
       career_last_scoring_match_at: at,
       window_score_sum: null,
       window_n: null,
+      season_points: null,
+      season_exact_hits: null,
+      season_valid_predictions: null,
+      season_last_scoring_match_at: null,
       created_at: LOCK_NOW,
     });
     await repo.boardSnapshots.insert(snapshot("old-user", olderAt));
@@ -1628,6 +1643,46 @@ describe("InMemoryRepository - S0 新集合端口", () => {
     await expect(repo.boardSnapshots.findLatestByBoard("career")).resolves.toEqual([
       expect.objectContaining({ user_id: "new-user", snapshot_at: newerAt }),
     ]);
+  });
+
+  it("board_snapshots 可按赛季读取该赛季最新常规快照", async () => {
+    const repo = new InMemoryRepository();
+    const firstAt = new Date("2025-08-01T00:00:00Z");
+    const latestAt = new Date("2026-06-30T10:00:00Z");
+    const currentAt = new Date("2026-07-01T00:00:00Z");
+    const snapshot = (
+      userId: string,
+      levelSeasonId: string,
+      at: Date,
+    ): BoardSnapshot => ({
+      schema_version: 1,
+      snapshot_id: newUuid(),
+      board: "season",
+      snapshot_at: at,
+      level_season_id: levelSeasonId,
+      is_final: false,
+      user_id: userId,
+      rank: 1,
+      career_points: null,
+      career_exact_hits: null,
+      career_valid_predictions: null,
+      career_last_scoring_match_at: null,
+      window_score_sum: null,
+      window_n: null,
+      season_points: 12,
+      season_exact_hits: 1,
+      season_valid_predictions: 2,
+      season_last_scoring_match_at: at,
+      created_at: at,
+    });
+    await repo.boardSnapshots.insert(snapshot("old-user", "2025_2026", firstAt));
+    await repo.boardSnapshots.insert(snapshot("latest-user", "2025_2026", latestAt));
+    await repo.boardSnapshots.insert(snapshot("current-user", "2026_2027", currentAt));
+
+    await expect(repo.boardSnapshots.findLatestBySeason("2025_2026")).resolves.toEqual([
+      expect.objectContaining({ user_id: "latest-user", snapshot_at: latestAt }),
+    ]);
+    await expect(repo.boardSnapshots.findLatestBySeason("2024_2025")).resolves.toEqual([]);
   });
 
   it("groups invite_code 唯一；group_members UNIQUE(group_id, user_id)", async () => {

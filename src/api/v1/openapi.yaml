@@ -436,9 +436,11 @@ paths:
   /rankings:
     get:
       tags: [rankings]
-      summary: 获取周榜、生涯榜或实力榜
+      summary: 获取周榜、生涯榜、实力榜或赛季榜
+      x-requires-trusted-openid: true
       description: |
-        board 固定为 week、career 或 strength；旧 board=month 返回 422。
+        board 固定为 week、career、strength 或 season；旧 board=month 返回 422。
+        该接口要求登录；游客返回 401，已注销账号返回 409。
         成功响应使用 data/request_id envelope，分页字段位于 data 内。
       parameters:
         - name: board
@@ -446,7 +448,7 @@ paths:
           required: true
           schema:
             type: string
-            enum: [week, career, strength]
+            enum: [week, career, strength, season]
         - name: period_key
           in: query
           required: false
@@ -467,6 +469,13 @@ paths:
             type: string
             format: uuid
           description: scope=group 时必填，scope=global 时禁止提供
+        - name: level_season_id
+          in: query
+          required: false
+          schema:
+            type: string
+            pattern: '^[0-9]{4}_[0-9]{4}$'
+          description: 仅 board=season；群榜只允许当前赛季
         - name: limit
           in: query
           required: false
@@ -484,6 +493,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RankingEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/RankingUserDeleted'
         '429':
           $ref: '#/components/responses/RateLimited'
         '422':
@@ -1128,6 +1143,7 @@ components:
       oneOf:
         - $ref: '#/components/schemas/WeekRankingItem'
         - $ref: '#/components/schemas/CareerRankingItem'
+        - $ref: '#/components/schemas/SeasonRankingItem'
         - $ref: '#/components/schemas/StrengthRankingItem'
     WeekRankingItem:
       type: object
@@ -1224,14 +1240,48 @@ components:
         window_n:
           type: integer
           minimum: 50
+    SeasonRankingItem:
+      type: object
+      additionalProperties: false
+      required: [rank, user_id, display_name, favorite_team_id, career_level, season_points, season_valid_predictions, exact_hits, last_scoring_match_at]
+      properties:
+        rank:
+          type: integer
+          minimum: 1
+        user_id:
+          type: string
+          format: uuid
+        display_name:
+          type: string
+        favorite_team_id:
+          type: string
+          format: uuid
+          nullable: true
+        career_level:
+          type: integer
+          minimum: 1
+          maximum: 6
+        season_points:
+          type: integer
+          minimum: 0
+        season_valid_predictions:
+          type: integer
+          minimum: 1
+        exact_hits:
+          type: integer
+          minimum: 0
+        last_scoring_match_at:
+          type: string
+          format: date-time
+          nullable: true
     RankingData:
       type: object
       additionalProperties: false
-      required: [board, scope, period_key, updated_at, items, page]
+      required: [board, scope, period_key, updated_at, server_now, available_boards, seasons_participated, entry_count, items, page, me]
       properties:
         board:
           type: string
-          enum: [week, career, strength]
+          enum: [week, career, strength, season]
         scope:
           type: string
           enum: [global, group]
@@ -1242,6 +1292,34 @@ components:
           type: string
           format: date-time
           nullable: true
+        server_now:
+          type: string
+          format: date-time
+          description: 服务端当前时间，ISO 8601 UTC；与 updated_at 使用相同时间格式
+        current_period_key:
+          type: string
+          description: board=week 时的北京时间当前 ISO 周 key
+        available_boards:
+          type: array
+          items:
+            type: string
+            enum: [week, career, strength, season]
+        seasons_participated:
+          type: integer
+          minimum: 0
+        entry_count:
+          type: integer
+          minimum: 0
+        available_level_seasons:
+          type: array
+          items:
+            type: string
+            pattern: '^[0-9]{4}_[0-9]{4}$'
+        level_season_id:
+          type: string
+          nullable: true
+        is_provisional:
+          type: boolean
         items:
           type: array
           items:
@@ -1282,6 +1360,16 @@ components:
             remaining_valid_predictions:
               type: integer
               minimum: 1
+        - type: object
+          additionalProperties: false
+          required: [status, seasons_participated]
+          properties:
+            status:
+              type: string
+              const: not_eligible
+            seasons_participated:
+              type: integer
+              minimum: 0
     RankingEnvelope:
       type: object
       required: [data, request_id]
@@ -1392,9 +1480,35 @@ components:
       required: [data, request_id]
       properties:
         data:
-          $ref: '#/components/schemas/GroupListItem'
+          $ref: '#/components/schemas/GroupDetail'
         request_id:
           type: string
+    GroupDetail:
+      type: object
+      additionalProperties: false
+      required: [group_id, display_name, owner_user_id, role, member_count, status, joined_at, invite_code]
+      properties:
+        group_id:
+          type: string
+          format: uuid
+        display_name:
+          type: string
+        owner_user_id:
+          type: string
+          format: uuid
+        role:
+          $ref: '#/components/schemas/GroupRole'
+        member_count:
+          type: integer
+          minimum: 1
+        status:
+          $ref: '#/components/schemas/GroupStatus'
+        joined_at:
+          type: string
+          format: date-time
+        invite_code:
+          type: string
+          pattern: '^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}$'
     MyGroupsData:
       type: object
       additionalProperties: false
@@ -1695,7 +1809,7 @@ components:
     MyProfileData:
       type: object
       additionalProperties: false
-      required: [user_id, nickname, favorite_team_id, career_points, career_valid_predictions, career_exact_hits, career_level, career_best_level, season_level]
+      required: [user_id, nickname, favorite_team_id, career_points, career_valid_predictions, career_exact_hits, career_level, career_best_level, season_level, previous_season]
       properties:
         user_id:
           type: string
@@ -1727,6 +1841,27 @@ components:
           type: integer
           minimum: 1
           maximum: 6
+        previous_season:
+          type: object
+          nullable: true
+          additionalProperties: false
+          required: [level_season_id, points, valid_predictions, exact_hits, best_level]
+          properties:
+            level_season_id:
+              type: string
+            points:
+              type: integer
+              minimum: 0
+            valid_predictions:
+              type: integer
+              minimum: 0
+            exact_hits:
+              type: integer
+              minimum: 0
+            best_level:
+              type: integer
+              minimum: 1
+              maximum: 6
     MyProfileEnvelope:
       type: object
       required: [data, request_id]
@@ -2006,7 +2141,7 @@ components:
           properties:
             board:
               type: string
-              enum: [career, strength]
+              enum: [career, strength, season]
             reason:
               type: string
               minLength: 1
@@ -2018,7 +2153,7 @@ components:
       properties:
         board:
           type: string
-          enum: [week, career, strength]
+          enum: [week, career, strength, season]
         period_key:
           type: string
           nullable: true
@@ -2205,6 +2340,12 @@ components:
             $ref: '#/components/schemas/ErrorEnvelope'
     UnlocksUserDeleted:
       description: 409 USER_DELETED
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    RankingUserDeleted:
+      description: 409 USER_DELETED（已注销账号不能查看排行榜）
       content:
         application/json:
           schema:

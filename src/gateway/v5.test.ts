@@ -37,6 +37,11 @@ type RankingPage = {
     scope: string;
     period_key: string | null;
     updated_at: string | null;
+    server_now: string;
+    current_period_key: string;
+    available_boards: string[];
+    seasons_participated: number;
+    entry_count: number;
     items: RankingItem[];
     page: { next_cursor: string | null; has_more: boolean };
   };
@@ -48,6 +53,8 @@ function makeConfig(overrides: Partial<GatewayRuntimeConfig> = {}): GatewayRunti
     mock_trusted_openid: null,
     match_cursor_secret: TEST_CURSOR_SECRET,
     public_source: LOCAL_PUBLIC_SOURCE,
+    repository_backend: "memory",
+    cloudbase_repository: null,
     ...overrides,
   };
 }
@@ -75,6 +82,7 @@ function request(
     body: input.body,
     server_now: input.server_now ?? NOW,
     config: harness.config,
+    ...(input.trusted_openid !== undefined ? { trusted_openid: input.trusted_openid } : {}),
     services: { session: harness.session, matches: harness.matches },
     repo: harness.repo,
     rate_limiter: harness.rateLimiter,
@@ -90,8 +98,9 @@ async function seedRankings(
 
 describe("GET /v1/rankings", () => {
   it("returns 200 with non-empty week items sorted by rank", async () => {
-    const harness = makeHarness();
+    const harness = makeHarness(makeConfig({ environment: "dev", mock_trusted_openid: MOCK_OPENID }));
     await seedRankings(harness);
+    await request(harness, { method: "POST", path: "/v1/session/init", body: { nickname: "Sky" } });
 
     const response = await request(harness, {
       method: "GET",
@@ -113,16 +122,23 @@ describe("GET /v1/rankings", () => {
         scope: "global",
         period_key: "2026-W32",
         updated_at: NOW.toISOString(),
+        server_now: NOW.toISOString(),
+        current_period_key: "2026-W32",
+        available_boards: ["week"],
+        seasons_participated: 0,
+        entry_count: expect.any(Number),
         items: expect.any(Array),
         page: { next_cursor: null, has_more: false },
+        me: { status: "not_participated" },
       },
       request_id: expect.any(String),
     });
   });
 
   it("returns 422 when month board is requested", async () => {
-    const harness = makeHarness();
+    const harness = makeHarness(makeConfig({ environment: "dev", mock_trusted_openid: MOCK_OPENID }));
     await seedRankings(harness);
+    await request(harness, { method: "POST", path: "/v1/session/init", body: { nickname: "Sky" } });
 
     const response = await request(harness, {
       method: "GET",
@@ -164,13 +180,14 @@ describe("GET /v1/rankings", () => {
   });
 
   it("returns 200 with empty items when the period has no ranking data", async () => {
-    const harness = makeHarness();
+    const harness = makeHarness(makeConfig({ environment: "dev", mock_trusted_openid: MOCK_OPENID }));
     await seedRankings(harness);
+    await request(harness, { method: "POST", path: "/v1/session/init", body: { nickname: "Sky" } });
 
     const response = await request(harness, {
       method: "GET",
       path: "/v1/rankings",
-      query: { board: "week", period_key: "2020-W01" },
+      query: { board: "week", period_key: "2026-W31" },
     });
 
     expect(response.status).toBe(200);
@@ -178,17 +195,24 @@ describe("GET /v1/rankings", () => {
       data: {
         board: "week",
         scope: "global",
-        period_key: "2020-W01",
+        period_key: "2026-W31",
         updated_at: null,
+        server_now: NOW.toISOString(),
+        current_period_key: "2026-W32",
+        available_boards: ["week"],
+        seasons_participated: 0,
+        entry_count: 0,
         items: [],
         page: { next_cursor: null, has_more: false },
+        me: { status: "not_participated" },
       },
       request_id: expect.any(String),
     });
   });
 
   it("returns 200 with empty items on an independent empty fixture", async () => {
-    const harness = makeHarness();
+    const harness = makeHarness(makeConfig({ environment: "dev", mock_trusted_openid: MOCK_OPENID }));
+    await request(harness, { method: "POST", path: "/v1/session/init", body: { nickname: "Sky" } });
     const response = await request(harness, {
       method: "GET",
       path: "/v1/rankings",
@@ -202,16 +226,84 @@ describe("GET /v1/rankings", () => {
         scope: "global",
         period_key: "2026-W32",
         updated_at: null,
+        server_now: NOW.toISOString(),
+        current_period_key: "2026-W32",
+        available_boards: ["week"],
+        seasons_participated: 0,
+        entry_count: 0,
         items: [],
         page: { next_cursor: null, has_more: false },
+        me: { status: "not_participated" },
       },
       request_id: expect.any(String),
     });
   });
 
+  it("returns 409 for a deleted signed-in account", async () => {
+    const harness = makeHarness(makeConfig({ environment: "dev", mock_trusted_openid: MOCK_OPENID }));
+    await request(harness, { method: "POST", path: "/v1/session/init", body: { nickname: "Sky" } });
+    const deleted = await request(harness, { method: "DELETE", path: "/v1/profile/me" });
+    expect(deleted.status).toBe(204);
+
+    const response = await request(harness, {
+      method: "GET",
+      path: "/v1/rankings",
+      query: { board: "week" },
+    });
+    expect(response.status).toBe(409);
+    expect(response.body).toEqual(expect.objectContaining({ code: "USER_DELETED" }));
+  });
+
+  it("requires identity for rankings", async () => {
+    const response = await request(makeHarness(), {
+      method: "GET",
+      path: "/v1/rankings",
+      query: { board: "week" },
+    });
+    expect(response.status).toBe(401);
+    expect(response.body).toEqual(expect.objectContaining({ code: "UNAUTHORIZED" }));
+  });
+
+  it("returns 404 when an explicitly requested season has no data", async () => {
+    const harness = makeHarness(makeConfig({ environment: "dev", mock_trusted_openid: MOCK_OPENID }));
+    await request(harness, { method: "POST", path: "/v1/session/init", body: { nickname: "Sky" } });
+
+    const response = await request(harness, {
+      method: "GET",
+      path: "/v1/rankings",
+      query: { board: "season", level_season_id: "2024_2025" },
+    });
+
+    expect(response.status).toBe(404);
+    expect(response.body).toEqual(expect.objectContaining({ code: "LEVEL_SEASON_NOT_FOUND" }));
+  });
+
+  it("returns an empty non-provisional current season when no season data exists", async () => {
+    const harness = makeHarness(makeConfig({ environment: "dev", mock_trusted_openid: MOCK_OPENID }));
+    await request(harness, { method: "POST", path: "/v1/session/init", body: { nickname: "Sky" } });
+
+    const response = await request(harness, {
+      method: "GET",
+      path: "/v1/rankings",
+      query: { board: "season" },
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual(expect.objectContaining({
+      data: expect.objectContaining({
+        level_season_id: "2026_2027",
+        is_provisional: false,
+        entry_count: 0,
+        available_boards: ["week"],
+        items: [],
+      }),
+    }));
+  });
+
   it("honors a smaller page limit and carries the query through its cursor", async () => {
-    const harness = makeHarness();
+    const harness = makeHarness(makeConfig({ environment: "dev", mock_trusted_openid: MOCK_OPENID }));
     await seedRankings(harness);
+    await request(harness, { method: "POST", path: "/v1/session/init", body: { nickname: "Sky" } });
 
     const first = await request(harness, {
       method: "GET",
@@ -243,8 +335,9 @@ describe("GET /v1/rankings", () => {
   });
 
   it("freezes ranking item contract fields and does not add extras", async () => {
-    const harness = makeHarness();
+    const harness = makeHarness(makeConfig({ environment: "dev", mock_trusted_openid: MOCK_OPENID }));
     await seedRankings(harness);
+    await request(harness, { method: "POST", path: "/v1/session/init", body: { nickname: "Sky" } });
 
     const response = await request(harness, {
       method: "GET",

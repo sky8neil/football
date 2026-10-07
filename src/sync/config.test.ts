@@ -53,13 +53,17 @@ describe("SYNC_TASKS_V1（规范 32.1-32.6）", () => {
     });
   });
 
-  it("board snapshots：career 每小时，strength 每日", () => {
+  it("board snapshots：career/season 每小时，strength 每日", () => {
     expect(SYNC_TASKS_V1[SyncJobType.BoardSnapshotCareer]).toMatchObject({
       intervalMinutes: 60,
     });
     expect(SYNC_TASKS_V1[SyncJobType.BoardSnapshotStrength]).toMatchObject({
       intervalHours: 24,
     });
+    expect(SYNC_TASKS_V1[SyncJobType.BoardSnapshotSeason]).toMatchObject({
+      intervalMinutes: 60,
+    });
+    expect(SYNC_TASKS_V1[SyncJobType.BoardSnapshotSeasonFinal]).toEqual({});
     expect(SYNC_TASKS_V1[SyncJobType.WeeklyLevelEval]).toEqual({
       cronExpression: "10 2 * * 1",
     });

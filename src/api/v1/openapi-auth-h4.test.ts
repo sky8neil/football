@@ -66,6 +66,7 @@ describe("H4 trusted runtime openid OpenAPI contract", () => {
       ["/levels/me", "get"],
       ["/unlocks/me", "get"],
       ["/share-card/me", "get"],
+      ["/rankings", "get"],
       ["/admin/anomalies", "get"],
       ["/admin/matches/{match_id}/result-corrections", "post"],
       ["/admin/matches/{match_id}/retry-settlement", "post"],
@@ -86,7 +87,6 @@ describe("H4 trusted runtime openid OpenAPI contract", () => {
       ["/matches", "get"],
       ["/matches/{match_id}", "get"],
       ["/profiles/{user_id}", "get"],
-      ["/rankings", "get"],
     ] as const;
 
     for (const [path, method] of publicReads) {

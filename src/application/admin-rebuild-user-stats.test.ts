@@ -117,6 +117,7 @@ function makeSeasonStats(): UserSeasonStats {
     valid_predictions: 8,
     wdl_hits: 7,
     exact_hits: 6,
+    last_scoring_match_at: NOW,
     level: 1,
     best_level: 4,
     level_state: defaultLevelState(),
@@ -204,6 +205,11 @@ describe("AdminRebuildUserStatsService", () => {
         career_level: 1,
         career_best_level: 2,
         season_stats_changed_count: 0,
+        season_stats: [{
+          level_season_id: "2026_2027",
+          points: 88,
+          last_scoring_match_at: NOW.toISOString(),
+        }],
       },
       new_value: {
         career_points: 0,
@@ -213,6 +219,11 @@ describe("AdminRebuildUserStatsService", () => {
         career_level: 1,
         career_best_level: 2,
         season_stats_changed_count: 1,
+        season_stats: [{
+          level_season_id: "2026_2027",
+          points: 0,
+          last_scoring_match_at: null,
+        }],
         level_state_changed: false,
       },
     });

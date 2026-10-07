@@ -106,6 +106,7 @@ export function assertSeasonStatsInvariants(stats: UserSeasonStats): void {
   assertLevelRange("season level", stats.level);
   assertLevelRange("season best_level", stats.best_level);
   assert(stats.best_level >= stats.level, "season best_level >= level");
+  assert(stats.points > 0 || stats.last_scoring_match_at === null, "season points = 0 requires last_scoring_match_at = null");
   assert(
     stats.level < 2 || stats.valid_predictions >= FIXED_CONFIG_V1.LEVEL_RATED_MIN_VALID,
     "season level >= 2 requires 20 valid_predictions",
@@ -148,8 +149,48 @@ export function assertLevelHistoryInvariants(entry: LevelHistoryEntry): void {
 
 export function assertBoardSnapshotInvariants(snapshot: BoardSnapshot): void {
   assertSchemaVersion(snapshot.schema_version);
-  assert(snapshot.board === "career" || snapshot.board === "strength", "board in {career,strength}");
+  assert(snapshot.board === "career" || snapshot.board === "strength" || snapshot.board === "season", "board in {career,strength,season}");
+  assert(typeof snapshot.is_final === "boolean", "snapshot is_final is boolean");
+  assert(!snapshot.is_final || (snapshot.board === "season" && snapshot.level_season_id !== null), "final snapshot requires season board and level_season_id");
   assert(Number.isInteger(snapshot.rank) && snapshot.rank >= 1, "snapshot rank >= 1");
+  if (snapshot.board === "season") {
+    assert(snapshot.level_season_id !== null, "season snapshot requires level_season_id");
+    assert(
+      snapshot.career_points === null &&
+        snapshot.career_exact_hits === null &&
+        snapshot.career_valid_predictions === null &&
+        snapshot.career_last_scoring_match_at === null &&
+        snapshot.window_score_sum === null &&
+        snapshot.window_n === null,
+      "season snapshot excludes career and strength payload",
+    );
+    if (snapshot.snapshot_kind === "head") {
+      assert(
+        snapshot.season_points === null &&
+          snapshot.season_exact_hits === null &&
+          snapshot.season_valid_predictions === null &&
+          snapshot.season_last_scoring_match_at === null,
+        "season snapshot head payload is empty",
+      );
+    } else {
+      assert(
+        snapshot.season_points !== null &&
+          snapshot.season_exact_hits !== null &&
+          snapshot.season_valid_predictions !== null &&
+          (snapshot.season_points > 0 || snapshot.season_last_scoring_match_at === null),
+        "season snapshot requires season payload",
+      );
+    }
+  } else {
+    assert(
+      snapshot.level_season_id === null &&
+        snapshot.season_points === null &&
+        snapshot.season_exact_hits === null &&
+        snapshot.season_valid_predictions === null &&
+        snapshot.season_last_scoring_match_at === null,
+      "non-season snapshot excludes season payload",
+    );
+  }
   if (snapshot.snapshot_kind === "head") {
     assert(snapshot.user_id === "00000000-0000-0000-0000-000000000000", "snapshot head user id");
     assert(snapshot.rank === 1, "snapshot head rank");
@@ -159,7 +200,11 @@ export function assertBoardSnapshotInvariants(snapshot: BoardSnapshot): void {
         snapshot.career_valid_predictions === null &&
         snapshot.career_last_scoring_match_at === null &&
         snapshot.window_score_sum === null &&
-        snapshot.window_n === null,
+        snapshot.window_n === null &&
+        snapshot.season_points === null &&
+        snapshot.season_exact_hits === null &&
+        snapshot.season_valid_predictions === null &&
+        snapshot.season_last_scoring_match_at === null,
       "snapshot head payload is empty",
     );
   } else {

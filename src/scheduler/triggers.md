@@ -11,7 +11,7 @@
 - **同类任务互斥。** 锁 key 为已冻结的 `jobLockKey(jobType)`，格式 `sync:{job_type}`。同 `job_type` 的不同实例靠该锁互斥；lease 超时可接管。初次 lease = `server_now + FIXED_CONFIG_V1.JOB_LEASE_MINUTES`（当前 10 分钟，与 A3.3 一致）。
 - **调度器只调业务入口。** Provider 五类经 tick 接线时 runner 调无锁入口 `ProviderFixtureSyncJobService.executeHeldByCaller`（P1-2 方案 A，见下文最终接线）；不套 tick 时仍可走 `ProviderSyncDispatcher` / `*Service.run(serverNow)`（自带锁）。`period_finalize` / `daily_consistency` 走已有 Service 公开入口。不得在触发器里重写账本或状态机。
 
-## 11 类任务清单
+## 12 类任务清单
 
 频率列引用 `SYNC_TASKS_V1`；周评估 cron 使用 UTC，业务 `as_of` 固定为北京时间周一 10:00。
 
@@ -28,6 +28,7 @@
 | `level_correction_reeval` | 事件触发；无 interval/cron | correction settlement 进入 `phase=done` 后触发，只处理 `score_delta != 0` 的 applied items；`as_of = settled_at`。 | `sync:level_correction_reeval` |
 | `board_snapshot_career` | `intervalMinutes = FIXED_CONFIG_V1.CAREER_BOARD_SNAPSHOT_MINUTES`（当前 **60**） | 每小时生成 career board snapshot。 | `sync:board_snapshot_career` |
 | `board_snapshot_strength` | `intervalHours = 24`，另由 `weekly_level_eval` 成功完成触发 | 每日生成一次，周评估完成后立即刷新 strength board snapshot。 | `sync:board_snapshot_strength` |
+| `board_snapshot_season` | `intervalMinutes = FIXED_CONFIG_V1.SEASON_BOARD_SNAPSHOT_MINUTES`（当前 **60**） | 每小时生成 season board snapshot。 | `sync:board_snapshot_season` |
 
 建议每个 `job_type` 对应一个云函数定时触发器（或同一入口按事件字段分发），cron/间隔与上表一致。不要在 tick 内 `setInterval` / sleep 等待下一轮。
 
@@ -75,7 +76,7 @@ job_type, outcome, started_at, finished_at, duration_ms, lock_key, owner_id,
   - `daily_consistency`：调用 `DailyConsistencyService.run(serverNow)`。
   - `weekly_level_eval`：调用 `WeeklyLevelEvalService.run(serverNow)`；成功完成后由该服务使用 `sync:board_snapshot_strength` 锁立即生成 strength snapshot，不再重复分发第二个事件。
   - `level_correction_reeval`：correction settlement done 后调用 `LevelCorrectionReevalService.runForSettlement(settlementId, serverNow)`。
-  - `board_snapshot_career` / `board_snapshot_strength`：调用对应 `BoardSnapshotService.generate(board, serverNow)`。
+  - `board_snapshot_career` / `board_snapshot_strength` / `board_snapshot_season`：调用对应 `BoardSnapshotService.generate(board, serverNow)`。
 
 ### 最终接线（P1-2 方案 A）：tick 持锁，runner 走无锁业务入口
 

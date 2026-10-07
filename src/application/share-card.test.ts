@@ -128,6 +128,7 @@ describe("ShareCardQueryService", () => {
       valid_predictions: 20,
       wdl_hits: 0,
       exact_hits: 0,
+      last_scoring_match_at: null,
       level: 5,
       best_level: 5,
       level_state: defaultLevelState(),

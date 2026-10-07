@@ -43,14 +43,31 @@ describe("S7 OpenAPI baseline", () => {
     const shareCard = pathBlock(specification, "/share-card/me");
 
     expect(rankings).toContain("name: board");
-    expect(rankings).toContain("enum: [week, career, strength]");
+    expect(rankings).toContain("name: level_season_id");
+    expect(rankings).toContain("enum: [week, career, strength, season]");
+    expect(rankings).toContain("x-requires-trusted-openid: true");
+    expect(rankings).not.toContain("security:");
+    expect(rankings).toContain("'401':");
+    expect(rankings).toContain("'409':");
+    expect(rankings).toContain("#/components/responses/Unauthorized");
+    expect(rankings).toContain("#/components/responses/RankingUserDeleted");
+    expect(rankings).toContain("#/components/responses/NotFound");
+    expect(rankings).toContain("'404':");
     expect(rankings).not.toContain("enum: [week, month]");
+    expect(specification).toMatch(
+      /RankingData:[\s\S]*?required: \[board, scope, period_key, updated_at, server_now, available_boards, seasons_participated, entry_count, items, page, me\]/,
+    );
+    expect(specification).toMatch(/        server_now:[\s\S]*?format: date-time/);
+    expect(specification).toContain("current_period_key:");
+    expect(specification).toContain("available_level_seasons:");
+    expect(specification).toContain("SeasonRankingItem:");
+    expect(specification).toMatch(/const: not_eligible[\s\S]*?seasons_participated:/);
     expect(shareCard).toContain("name: league_id");
     expect(shareCard).toContain("name: season_id");
     expect(shareCard).toContain("name: round_id");
 
     expect(specification).toMatch(
-      /    MyProfileData:[\s\S]*?required: \[user_id, nickname, favorite_team_id, career_points, career_valid_predictions, career_exact_hits, career_level, career_best_level, season_level\]/,
+      /    MyProfileData:[\s\S]*?required: \[user_id, nickname, favorite_team_id, career_points, career_valid_predictions, career_exact_hits, career_level, career_best_level, season_level, previous_season\]/,
     );
     expect(specification).toMatch(
       /    PublicProfileData:[\s\S]*?required: \[user_id, display_name, favorite_team_id, career_points, career_valid_predictions, career_exact_hits, career_level, career_best_level, season_level\]/,

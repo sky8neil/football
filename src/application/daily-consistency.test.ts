@@ -38,6 +38,7 @@ function baseInput(): DailyConsistencyInput {
           valid_predictions: 1,
           wdl_hits: 1,
           exact_hits: 0,
+          last_scoring_match_at: null,
           level: 1,
           best_level: 1,
         },
@@ -46,6 +47,7 @@ function baseInput(): DailyConsistencyInput {
           valid_predictions: 1,
           wdl_hits: 1,
           exact_hits: 1,
+          last_scoring_match_at: NOW,
           level: 2,
           best_level: 2,
         },
@@ -100,7 +102,7 @@ describe("daily consistency comparison", () => {
       expect.objectContaining({
         scope: "season_stats",
         key: "user-1:2026_2027",
-        fields: ["points", "exact_hits", "level", "best_level"],
+        fields: ["points", "exact_hits", "last_scoring_match_at", "level", "best_level"],
       }),
       expect.objectContaining({
         scope: "ranking",
@@ -208,6 +210,10 @@ describe("daily consistency comparison", () => {
           career_last_scoring_match_at: null,
           window_score_sum: null,
           window_n: null,
+          season_points: null,
+          season_exact_hits: null,
+          season_valid_predictions: null,
+          season_last_scoring_match_at: null,
         },
         expected: {
           rank: 1,
@@ -217,6 +223,10 @@ describe("daily consistency comparison", () => {
           career_last_scoring_match_at: NOW,
           window_score_sum: null,
           window_n: null,
+          season_points: null,
+          season_exact_hits: null,
+          season_valid_predictions: null,
+          season_last_scoring_match_at: null,
         },
       },
       {
@@ -231,6 +241,10 @@ describe("daily consistency comparison", () => {
           career_last_scoring_match_at: null,
           window_score_sum: 250,
           window_n: 50,
+          season_points: null,
+          season_exact_hits: null,
+          season_valid_predictions: null,
+          season_last_scoring_match_at: null,
         },
         expected: {
           rank: 2,
@@ -240,6 +254,10 @@ describe("daily consistency comparison", () => {
           career_last_scoring_match_at: null,
           window_score_sum: 240,
           window_n: 50,
+          season_points: null,
+          season_exact_hits: null,
+          season_valid_predictions: null,
+          season_last_scoring_match_at: null,
         },
       },
     ];
@@ -259,6 +277,54 @@ describe("daily consistency comparison", () => {
     expect(input.board_snapshots[0]?.actual.career_points).toBe(3);
   });
 
+  it("compares season snapshot fields including the scoring-date tie breaker", () => {
+    const input = baseInput();
+    input.board_snapshots = [{
+      board: "season",
+      snapshot_at: NOW,
+      user_id: "user-1",
+      actual: {
+        rank: 2,
+        career_points: null,
+        career_exact_hits: null,
+        career_valid_predictions: null,
+        career_last_scoring_match_at: null,
+        window_score_sum: null,
+        window_n: null,
+        season_points: 3,
+        season_exact_hits: 0,
+        season_valid_predictions: 1,
+        season_last_scoring_match_at: null,
+      },
+      expected: {
+        rank: 1,
+        career_points: null,
+        career_exact_hits: null,
+        career_valid_predictions: null,
+        career_last_scoring_match_at: null,
+        window_score_sum: null,
+        window_n: null,
+        season_points: 12,
+        season_exact_hits: 1,
+        season_valid_predictions: 1,
+        season_last_scoring_match_at: NOW,
+      },
+    }];
+
+    const result = checkDailyConsistency(input);
+
+    expect(result.differences).toContainEqual(expect.objectContaining({
+      scope: "board_snapshot",
+      key: `season:${NOW.toISOString()}:user-1`,
+      fields: expect.arrayContaining([
+        "rank",
+        "season_points",
+        "season_exact_hits",
+        "season_last_scoring_match_at",
+      ]),
+    }));
+  });
+
   it("skips active-settlement users in snapshot comparisons", () => {
     const input = baseInput();
     input.board_snapshots = [{
@@ -273,6 +339,10 @@ describe("daily consistency comparison", () => {
         career_last_scoring_match_at: null,
         window_score_sum: null,
         window_n: null,
+        season_points: null,
+        season_exact_hits: null,
+        season_valid_predictions: null,
+        season_last_scoring_match_at: null,
       },
       expected: {
         rank: 1,
@@ -282,6 +352,10 @@ describe("daily consistency comparison", () => {
         career_last_scoring_match_at: NOW,
         window_score_sum: null,
         window_n: null,
+        season_points: null,
+        season_exact_hits: null,
+        season_valid_predictions: null,
+        season_last_scoring_match_at: null,
       },
     }];
     input.active_settlements = [{

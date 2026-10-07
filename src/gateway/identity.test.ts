@@ -22,6 +22,8 @@ function makeConfig(overrides: Partial<GatewayRuntimeConfig> = {}): GatewayRunti
     mock_trusted_openid: null,
     match_cursor_secret: TEST_CURSOR_SECRET,
     public_source: LOCAL_PUBLIC_SOURCE,
+    repository_backend: "memory",
+    cloudbase_repository: null,
     ...overrides,
   };
 }
@@ -72,6 +74,7 @@ describe("resolveTrustedOpenid", () => {
       loadGatewayRuntimeConfig({
         FOOTBALL_ENVIRONMENT: "dev",
         FOOTBALL_MATCH_CURSOR_SECRET: TEST_CURSOR_SECRET,
+        FOOTBALL_REPOSITORY_BACKEND: "memory",
         FOOTBALL_MOCK_TRUSTED_OPENID: MOCK_OPENID,
       }).mock_trusted_openid,
     ).toBe(MOCK_OPENID);
@@ -79,6 +82,7 @@ describe("resolveTrustedOpenid", () => {
       loadGatewayRuntimeConfig({
         FOOTBALL_ENVIRONMENT: "test",
         FOOTBALL_MATCH_CURSOR_SECRET: TEST_CURSOR_SECRET,
+        FOOTBALL_REPOSITORY_BACKEND: "memory",
         FOOTBALL_MOCK_TRUSTED_OPENID: "",
       }).mock_trusted_openid,
     ).toBeNull();
@@ -86,6 +90,7 @@ describe("resolveTrustedOpenid", () => {
       loadGatewayRuntimeConfig({
         FOOTBALL_ENVIRONMENT: "prod",
         FOOTBALL_MATCH_CURSOR_SECRET: TEST_CURSOR_SECRET,
+        FOOTBALL_REPOSITORY_BACKEND: "memory",
         FOOTBALL_MOCK_TRUSTED_OPENID: MOCK_OPENID,
       }).mock_trusted_openid,
     ).toBeNull();

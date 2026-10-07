@@ -1,56 +1,88 @@
 <view class="page">
   <view wx:if="{{state === 'loading'}}" class="loading"></view>
-  <view wx:elif="{{state === 'error'}}" class="error">
-    <view>{{errorMessage}}</view>
-    <button bindtap="onRetry">retry</button>
+  <view wx:elif="{{state === 'error'}}" class="error-state">
+    <text>{{errorMessage}}</text>
+    <button bindtap="loadDetail">重试</button>
   </view>
-  <view wx:else>
-    <view class="card">
-      <view>{{match.home_team.name}}</view>
-      <view>{{match.away_team.name}}</view>
-      <view>{{match.kickoff_at}}</view>
-      <view>{{match.match_status}}</view>
-      <view wx:if="{{match.match_status === 'scheduled'}}">未开赛</view>
-      <view wx:elif="{{match.match_status === 'live'}}">进行中</view>
-      <view wx:elif="{{match.match_status === 'finished'}}">已结束</view>
-      <view wx:elif="{{match.match_status === 'postponed'}}">延期</view>
-      <view wx:elif="{{match.match_status === 'cancelled'}}">取消</view>
-      <view wx:elif="{{match.match_status === 'abandoned'}}">废弃/腰斩</view>
-      <view wx:if="{{match.prediction_deadline_at}}">{{match.prediction_deadline_at}}</view>
-      <view wx:if="{{match.prediction_closed_at}}">{{match.prediction_closed_at}}</view>
-      <view>{{regularScoreText}}</view>
+  <view wx:else class="detail">
+    <view class="match-head">
+      <view class="match-meta">
+        <text>{{statusText}}</text>
+        <text wx:if="{{match.round_id}}">{{match.round_id}}</text>
+        <text>{{kickoffText}}</text>
+      </view>
+      <view class="scoreline">
+        <view class="team">
+          <image src="{{homeLogo}}" mode="aspectFit"></image>
+          <text>{{match.home_team.name}}</text>
+        </view>
+        <view class="score">
+          <text wx:if="{{match.regular_home_score !== null && match.regular_home_score !== undefined}}">{{match.regular_home_score}} : {{match.regular_away_score}}</text>
+          <text wx:else>VS</text>
+          <text class="score-caption">{{match.match_status === 'live' ? '进行中' : match.match_status === 'finished' ? '全场比分' : '开球时间'}}</text>
+        </view>
+        <view class="team away">
+          <image src="{{awayLogo}}" mode="aspectFit"></image>
+          <text>{{match.away_team.name}}</text>
+        </view>
+      </view>
+      <view wx:if="{{match.prediction_deadline_at && canSubmit}}" class="deadline">
+        预测截止 {{match.prediction_deadline_at}}
+      </view>
     </view>
 
-    <view wx:if="{{myPrediction}}" class="card">
-      <view>{{myPredictionScore}}</view>
-      <view>{{myPrediction.derived_result}}</view>
-      <view>{{myPrediction.submitted_at}}</view>
-      <view>{{myMatchScoreText}}</view>
-      <view>{{myWdlHitText}}</view>
-      <view>{{myExactHitText}}</view>
+    <view wx:if="{{myPrediction}}" class="prediction-result">
+      <view class="section-title">我的预测</view>
+      <view class="prediction-line">
+        <text class="prediction-score">{{myPredictionScore}}</text>
+        <text>{{myPrediction.derived_result === 'HOME' ? '主胜' : myPrediction.derived_result === 'AWAY' ? '客胜' : '平局'}}</text>
+      </view>
+      <view class="result-line">
+        <text>{{predictionResultText}}</text>
+        <text>{{predictionPointsText}}</text>
+      </view>
+      <view wx:if="{{myPrediction.submitted_at}}" class="submitted-at">提交于 {{myPrediction.submitted_at}}</view>
     </view>
 
-    <view wx:if="{{identityMissing}}" class="hint">{{submitDisabledReason}}</view>
-    <view wx:elif="{{userDeleted}}" class="hint">{{submitDisabledReason}}</view>
-    <view wx:elif="{{!canSubmit && submitDisabledReason}}" class="hint">{{submitDisabledReason}}</view>
-
-    <view wx:if="{{canSubmit}}" class="form">
-      <input
-        class="score"
-        type="number"
-        value="{{homeScore}}"
-        bindinput="onHomeScoreInput"
-        disabled="{{submitting}}"
-      />
-      <input
-        class="score"
-        type="number"
-        value="{{awayScore}}"
-        bindinput="onAwayScoreInput"
-        disabled="{{submitting}}"
-      />
-      <button bindtap="onSubmit" disabled="{{submitting}}" loading="{{submitting}}">submit</button>
+    <view wx:if="{{canSubmit}}" class="prediction-form">
+      <view class="section-title">预测比分</view>
+      <view class="steppers">
+        <view class="stepper-group">
+          <view class="stepper-team"><image src="{{homeLogo}}" mode="aspectFit"></image><text>{{match.home_team.name}}</text></view>
+          <view class="stepper">
+            <button data-side="home" data-delta="-1" bindtap="onScoreStep">−</button>
+            <text>{{homeScore}}</text>
+            <button data-side="home" data-delta="1" bindtap="onScoreStep">+</button>
+          </view>
+        </view>
+        <text class="separator">:</text>
+        <view class="stepper-group">
+          <view class="stepper-team"><image src="{{awayLogo}}" mode="aspectFit"></image><text>{{match.away_team.name}}</text></view>
+          <view class="stepper">
+            <button data-side="away" data-delta="-1" bindtap="onScoreStep">−</button>
+            <text>{{awayScore}}</text>
+            <button data-side="away" data-delta="1" bindtap="onScoreStep">+</button>
+          </view>
+        </view>
+      </view>
+      <view class="derived">即时判定：{{derivedResultText}}</view>
+      <view class="scoring-note">赛果命中 +3 分 · 精确比分 +12 分</view>
+      <button class="submit" bindtap="onSubmit" disabled="{{submitting}}" loading="{{submitting}}">
+        {{submitting ? '提交中…' : '提交预测'}}
+      </button>
+      <view class="submit-note">提交后无法修改</view>
     </view>
-    <view wx:if="{{formError}}" class="error">{{formError}}</view>
+
+    <view wx:if="{{identityMissing}}" class="status-panel">
+      <text>{{submitDisabledReason}}</text>
+      <button bindtap="onSessionTap">登录</button>
+    </view>
+    <view wx:elif="{{userDeleted || (!canSubmit && submitDisabledReason)}}" class="status-panel">
+      <text>{{submitDisabledReason}}</text>
+    </view>
+    <view wx:if="{{formError}}" class="error-message">{{formError}}</view>
+
+    <!-- TODO(crowd): crowd data is not part of the current API contract. -->
+    <view wx:if="{{showCrowd}}" class="crowd-placeholder">大家怎么选</view>
   </view>
 </view>

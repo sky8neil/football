@@ -334,6 +334,7 @@ export interface UnlockRepository {
 export interface UserSeasonStatsRepository {
   findByUserAndSeason(userId: string, levelSeasonId: string): Promise<UserSeasonStats | null>;
   findByUser(userId: string): Promise<UserSeasonStats[]>;
+  findByLevelSeason(levelSeasonId: string): Promise<UserSeasonStats[]>;
   insert(stats: UserSeasonStats): Promise<void>;
   update(stats: UserSeasonStats): Promise<void>;
 }
@@ -342,6 +343,9 @@ export interface BoardSnapshotRepository {
   findLatestByBoard(
     board: BoardSnapshot["board"],
   ): Promise<BoardSnapshot[]>;
+  findLatestBySeason(levelSeasonId: string): Promise<BoardSnapshot[]>;
+  findFinalBySeason(levelSeasonId: string): Promise<BoardSnapshot[]>;
+  listFinalSeasonIds(): Promise<string[]>;
   findByBoardAndSnapshotAt(
     board: BoardSnapshot["board"],
     snapshotAt: Date,
@@ -755,6 +759,7 @@ export class InMemoryRepository implements AppRepository {
       findByUserAndSeason: (userId, seasonId) =>
         self.findUserSeasonStatsByKey(userId, seasonId),
       findByUser: (userId) => self.findUserSeasonStats(userId),
+      findByLevelSeason: (levelSeasonId) => self.findUserSeasonStatsByLevelSeason(levelSeasonId),
       insert: (stats) => self.insertUserSeasonStats(stats),
       update: (stats) => self.updateUserSeasonStats(stats),
     };
@@ -785,6 +790,9 @@ export class InMemoryRepository implements AppRepository {
     const self = this;
     return {
       findLatestByBoard: (board) => self.findLatestBoardSnapshots(board),
+      findLatestBySeason: (levelSeasonId) => self.findLatestSeasonSnapshots(levelSeasonId),
+      findFinalBySeason: (levelSeasonId) => self.findFinalBoardSnapshotsBySeason(levelSeasonId),
+      listFinalSeasonIds: () => self.listFinalBoardSnapshotSeasonIds(),
       findByBoardAndSnapshotAt: (board, snapshotAt) =>
         self.findBoardSnapshotsByBoardAndAt(board, snapshotAt),
       insert: (snapshot) => self.insertBoardSnapshot(snapshot),
@@ -1627,6 +1635,11 @@ export class InMemoryRepository implements AppRepository {
       .filter((stats) => stats.user_id === userId);
   }
 
+  private async findUserSeasonStatsByLevelSeason(levelSeasonId: string): Promise<UserSeasonStats[]> {
+    return [...this.store.userSeasonStatsByKey.values()]
+      .filter((stats) => stats.level_season_id === levelSeasonId);
+  }
+
   private async insertUserSeasonStats(stats: UserSeasonStats): Promise<void> {
     assertSeasonStatsInvariants(stats);
     const key = userSeasonStatsKey(stats.user_id, stats.level_season_id);
@@ -1779,7 +1792,8 @@ export class InMemoryRepository implements AppRepository {
   ): Promise<BoardSnapshot[]> {
     return [...this.store.boardSnapshotsByKey.values()].filter(
       (snapshot) =>
-        snapshot.board === board && snapshot.snapshot_at.getTime() === snapshotAt.getTime(),
+        snapshot.board === board && snapshot.snapshot_at.getTime() === snapshotAt.getTime() &&
+        snapshot.is_final !== true,
     );
   }
 
@@ -1787,7 +1801,7 @@ export class InMemoryRepository implements AppRepository {
     board: BoardSnapshot["board"],
   ): Promise<BoardSnapshot[]> {
     const snapshots = [...this.store.boardSnapshotsByKey.values()].filter(
-      (snapshot) => snapshot.board === board,
+      (snapshot) => snapshot.board === board && snapshot.is_final !== true,
     );
     const latestAt = snapshots.reduce<Date | null>(
       (latest, snapshot) => latest === null || snapshot.snapshot_at > latest
@@ -1801,6 +1815,40 @@ export class InMemoryRepository implements AppRepository {
     return snapshots
       .filter((snapshot) => snapshot.snapshot_at.getTime() === latestAt.getTime())
       .sort((a, b) => a.rank - b.rank);
+  }
+
+  private async findLatestSeasonSnapshots(levelSeasonId: string): Promise<BoardSnapshot[]> {
+    const snapshots = [...this.store.boardSnapshotsByKey.values()].filter(
+      (snapshot) =>
+        snapshot.board === "season" && snapshot.level_season_id === levelSeasonId &&
+        snapshot.is_final !== true,
+    );
+    const latestAt = snapshots.reduce<Date | null>(
+      (latest, snapshot) => latest === null || snapshot.snapshot_at > latest
+        ? snapshot.snapshot_at
+        : latest,
+      null,
+    );
+    if (latestAt === null) {
+      return [];
+    }
+    return snapshots
+      .filter((snapshot) => snapshot.snapshot_at.getTime() === latestAt.getTime())
+      .sort((a, b) => a.rank - b.rank);
+  }
+
+  private async findFinalBoardSnapshotsBySeason(levelSeasonId: string): Promise<BoardSnapshot[]> {
+    return [...this.store.boardSnapshotsByKey.values()]
+      .filter((snapshot) => snapshot.board === "season" && snapshot.level_season_id === levelSeasonId && snapshot.is_final)
+      .sort((a, b) => a.rank - b.rank);
+  }
+
+  private async listFinalBoardSnapshotSeasonIds(): Promise<string[]> {
+    return [...new Set([...this.store.boardSnapshotsByKey.values()]
+      .filter((snapshot) => snapshot.board === "season" && snapshot.is_final && snapshot.snapshot_kind !== "head")
+      .map((snapshot) => snapshot.level_season_id)
+      .filter((levelSeasonId): levelSeasonId is string => levelSeasonId !== null))]
+      .sort((a, b) => b.localeCompare(a));
   }
 
   private async insertBoardSnapshot(snapshot: BoardSnapshot): Promise<void> {

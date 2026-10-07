@@ -50,13 +50,31 @@ describe("loadGatewayRuntimeConfig", () => {
     const config = loadGatewayRuntimeConfig({
       FOOTBALL_ENVIRONMENT: "test",
       FOOTBALL_MATCH_CURSOR_SECRET: "test-match-cursor-secret",
+      FOOTBALL_REPOSITORY_BACKEND: "memory",
     });
     expect(config).toEqual({
       environment: "test",
       mock_trusted_openid: null,
       match_cursor_secret: "test-match-cursor-secret",
       public_source: LOCAL_PUBLIC_SOURCE,
+      repository_backend: "memory",
+      cloudbase_repository: null,
     });
     expect(config.public_source).toBe("local_v0");
+  });
+
+  it("requires CloudBase settings when CloudBase is selected", () => {
+    expect(() => loadGatewayRuntimeConfig({
+      FOOTBALL_ENVIRONMENT: "prod",
+      FOOTBALL_MATCH_CURSOR_SECRET: "test-match-cursor-secret",
+      FOOTBALL_REPOSITORY_BACKEND: "cloudbase",
+    })).toThrow("FOOTBALL_CLOUD_ENVIRONMENT_ID is required");
+    expect(loadGatewayRuntimeConfig({
+      FOOTBALL_ENVIRONMENT: "prod",
+      FOOTBALL_MATCH_CURSOR_SECRET: "test-match-cursor-secret",
+      FOOTBALL_REPOSITORY_BACKEND: "cloudbase",
+      FOOTBALL_CLOUD_ENVIRONMENT_ID: "env",
+      FOOTBALL_RESOURCE_NAMESPACE: "football",
+    }).cloudbase_repository).toEqual({ cloud_environment_id: "env", resource_namespace: "football" });
   });
 });

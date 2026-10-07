@@ -41,6 +41,7 @@ function makeSeasonStats(userId: string, overrides: Partial<UserSeasonStats> = {
     valid_predictions: 20,
     wdl_hits: 12,
     exact_hits: 3,
+    last_scoring_match_at: NOW,
     level: 4,
     best_level: 5,
     level_state: defaultLevelState(),
@@ -67,6 +68,7 @@ describe("ProfileQueryService", () => {
       career_level: 6,
       career_best_level: 6,
       season_level: 1,
+      previous_season: null,
     });
   });
 
@@ -78,6 +80,50 @@ describe("ProfileQueryService", () => {
 
     await expect(new ProfileQueryService(repo).getMyProfile(user.user_id, NOW)).resolves.toMatchObject({
       season_level: 4,
+    });
+  });
+
+  it("返回最近一个有有效预测的已结束赛季摘要", async () => {
+    const repo = new InMemoryRepository();
+    const user = makeUser();
+    await repo.users.insert(user);
+    await repo.userSeasonStats.insert(makeSeasonStats(user.user_id, {
+      level_season_id: "2024_2025",
+      points: 20,
+      valid_predictions: 4,
+      wdl_hits: 4,
+      exact_hits: 2,
+      level: 1,
+      best_level: 3,
+    }));
+    await repo.userSeasonStats.insert(makeSeasonStats(user.user_id, {
+      level_season_id: "2025_2026",
+      points: 35,
+      valid_predictions: 8,
+      wdl_hits: 8,
+      exact_hits: 5,
+      level: 1,
+      best_level: 4,
+    }));
+    await repo.userSeasonStats.insert(makeSeasonStats(user.user_id, {
+      level_season_id: "2026_2027",
+      valid_predictions: 0,
+      points: 0,
+      wdl_hits: 0,
+      exact_hits: 0,
+      level: 1,
+      best_level: 1,
+      last_scoring_match_at: null,
+    }));
+
+    await expect(new ProfileQueryService(repo).getMyProfile(user.user_id, NOW)).resolves.toMatchObject({
+      previous_season: {
+        level_season_id: "2025_2026",
+        points: 35,
+        valid_predictions: 8,
+        exact_hits: 5,
+        best_level: 4,
+      },
     });
   });
 

@@ -6,7 +6,10 @@
     "pages/my-predictions/my-predictions",
     "pages/profile/profile",
     "pages/unlocks/unlocks",
-    "pages/rankings/rankings"
+    "pages/rankings/rankings",
+    "pages/groups/groups",
+    "pages/groups/join",
+    "pages/groups/detail"
   ],
   "window": {
     "navigationBarTitleText": "",
@@ -19,10 +22,6 @@
       {
         "pagePath": "pages/matches/matches",
         "text": "比赛"
-      },
-      {
-        "pagePath": "pages/my-predictions/my-predictions",
-        "text": "我的预测"
       },
       {
         "pagePath": "pages/rankings/rankings",

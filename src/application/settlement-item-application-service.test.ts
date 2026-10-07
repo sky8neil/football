@@ -302,6 +302,7 @@ describe("SettlementItemApplicationService", () => {
       valid_predictions: 1,
       wdl_hits: 1,
       exact_hits: 1,
+      last_scoring_match_at: ANCHOR,
       level: 1,
       best_level: 1,
     } satisfies Partial<UserSeasonStats>);
@@ -382,6 +383,7 @@ describe("SettlementItemApplicationService", () => {
       valid_predictions: 1,
       wdl_hits: 1,
       exact_hits: 1,
+      last_scoring_match_at: ANCHOR,
       level: 1,
       best_level: 1,
       level_state: defaultLevelState(),
@@ -435,6 +437,95 @@ describe("SettlementItemApplicationService", () => {
     });
     expect(await repo.settlementItems.findBySettlementAndPrediction("s2", "p1"))
       .toMatchObject({ status: SettlementItemStatus.Applied, attempt_count: 1 });
+  });
+
+  it("零分修正移除赛季最新得分时间后回退到次新场次", async () => {
+    const { repo, user, match } = await setup({
+      user: {
+        career_points: 15,
+        career_valid_predictions: 2,
+        career_wdl_hits: 2,
+        career_exact_hits: 1,
+      },
+      match: {
+        result_version: 2,
+        regular_home_score: 0,
+        regular_away_score: 0,
+        settled_result_version: 1,
+        settlement_status: SettlementStatus.Correcting,
+      },
+      prediction: {
+        match_score: MatchScoreValue.ExactHit,
+        wdl_hit: true,
+        exact_hit: true,
+        applied_result_version: 1,
+      },
+      settlement: { settlement_id: "s2", result_version: 2, is_correction: true },
+      item: {
+        settlement_id: "s2",
+        old_score: MatchScoreValue.ExactHit,
+        new_score: MatchScoreValue.Miss,
+        score_delta: -12,
+        old_wdl_hit: true,
+        new_wdl_hit: false,
+        old_exact_hit: true,
+        new_exact_hit: false,
+        valid_prediction_delta: 0,
+        source_result_version: 2,
+      },
+    });
+    const earlierAt = new Date(ANCHOR.getTime() - 24 * 60 * 60 * 1000);
+    await repo.matches.insert(makeMatch({
+      match_id: "m2",
+      period_anchor_at: earlierAt,
+      settlement_status: SettlementStatus.Settled,
+      settled_result_version: 1,
+    }));
+    await repo.predictions.insert(makePrediction({
+      prediction_id: "p2",
+      match_id: "m2",
+      idempotency_key: newUuid(),
+      match_score: MatchScoreValue.WdlHit,
+      wdl_hit: true,
+      exact_hit: false,
+      applied_result_version: 1,
+    }));
+    await repo.userSeasonStats.insert({
+      schema_version: 1,
+      user_id: user.user_id,
+      level_season_id: levelSeasonOf(match.period_anchor_at as Date),
+      points: 15,
+      valid_predictions: 2,
+      wdl_hits: 2,
+      exact_hits: 1,
+      last_scoring_match_at: ANCHOR,
+      level: 1,
+      best_level: 1,
+      level_state: defaultLevelState(),
+      is_level_frozen: false,
+      created_at: NOW,
+      updated_at: NOW,
+    });
+    await repo.rankings.insert({
+      schema_version: 1,
+      period_type: PeriodType.Week,
+      period_key: "2026-W32",
+      user_id: user.user_id,
+      period_score: 15,
+      valid_predictions: 2,
+      wdl_hits: 2,
+      exact_hits: 1,
+      last_scoring_match_at: ANCHOR,
+      global_rank: null,
+      is_final: false,
+      created_at: NOW,
+      updated_at: NOW,
+    });
+
+    await new SettlementItemApplicationService(repo).apply("s2", "p1", NOW);
+
+    await expect(repo.userSeasonStats.findByUserAndSeason(user.user_id, "2026_2027"))
+      .resolves.toMatchObject({ points: 3, last_scoring_match_at: earlierAt });
   });
 
   it("已 applied 重放不重复改变聚合、历史或解锁", async () => {

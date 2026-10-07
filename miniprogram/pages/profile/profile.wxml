@@ -1,34 +1,73 @@
 <view class="page">
   <view wx:if="{{state === 'loading'}}" class="loading"></view>
-  <view wx:elif="{{state === 'unauthorized'}}" class="error">{{errorMessage}}</view>
-  <view wx:elif="{{state === 'userDeleted'}}" class="error">{{errorMessage}}</view>
-  <view wx:elif="{{state === 'userNotFound'}}" class="error">{{errorMessage}}</view>
-  <view wx:elif="{{state === 'rateLimited'}}" class="error">{{errorMessage}}</view>
-  <view wx:elif="{{state === 'error'}}" class="error">
-    <view>{{errorMessage}}</view>
-    <button bindtap="onRetry">retry</button>
+  <view wx:elif="{{state === 'unauthorized'}}" class="state-panel">
+    <text>登录后查看个人资料</text>
+    <button bindtap="onSessionTap">登录</button>
   </view>
-  <view wx:elif="{{state === 'ready'}}">
-    <view class="card">
-      <view>资料</view>
-      <view>{{nickname}}</view>
-      <view>{{favoriteTeamText}}</view>
-      <view>{{careerPoints}}</view>
-      <view>{{careerValidPredictions}}</view>
-      <view>{{careerExactHits}}</view>
-      <view>{{careerLevel}}</view>
-      <view>{{careerBestLevel}}</view>
+  <view wx:elif="{{state === 'userDeleted' || state === 'userNotFound' || state === 'rateLimited'}}" class="state-panel">
+    {{errorMessage}}
+  </view>
+  <view wx:elif="{{state === 'error'}}" class="state-panel">
+    <text>{{errorMessage}}</text>
+    <button bindtap="onRetry">重试</button>
+  </view>
+  <view wx:else class="profile-content">
+    <view class="profile-heading">
+      <view class="avatar">{{avatarText}}</view>
+      <view class="identity">
+        <text class="nickname">{{nickname}}</text>
+        <text class="favorite">{{favoriteTeamText}}</text>
+      </view>
     </view>
-    <view class="card">
-      <view>等级</view>
-      <view>{{seasonId}}</view>
-      <view>{{seasonValidPredictions}}</view>
-      <view>{{seasonLevel}}</view>
-      <view>{{seasonBestLevel}}</view>
-      <view>{{levelsCareerValidPredictions}}</view>
-      <view>{{levelsCareerLevel}}</view>
-      <view>{{levelsCareerBestLevel}}</view>
+
+    <view wx:if="{{previousSeasonRecap}}" class="recap">{{previousSeasonRecap}}</view>
+
+    <view class="stats-section">
+      <view class="section-title">生涯</view>
+      <view class="stats-grid">
+        <view class="stat"><text class="value">{{careerPoints}}</text><text class="label">积分</text></view>
+        <view class="stat"><text class="value">{{careerValidPredictions}}</text><text class="label">有效预测</text></view>
+        <view class="stat"><text class="value">Lv{{careerLevel}}</text><text class="label">当前等级</text></view>
+        <view class="stat"><text class="value">Lv{{careerBestLevel}}</text><text class="label">最高等级</text></view>
+      </view>
     </view>
-    <button bindtap="onUnlocksTap">解锁</button>
+
+    <view class="stats-section">
+      <view class="section-heading">
+        <text class="section-title">本赛季</text>
+        <text class="season-id">{{seasonId}}</text>
+      </view>
+      <view class="stats-grid">
+        <view class="stat"><text class="value">{{seasonValidPredictions}}</text><text class="label">有效预测</text></view>
+        <view class="stat"><text class="value">Lv{{seasonLevel}}</text><text class="label">当前等级</text></view>
+        <view class="stat"><text class="value">Lv{{seasonBestLevel}}</text><text class="label">最高等级</text></view>
+      </view>
+    </view>
+
+    <view class="actions">
+      <button bindtap="onPredictionsTap">全部预测</button>
+      <button bindtap="onUnlocksTap">我的解锁</button>
+    </view>
+
+    <view class="groups-section">
+      <view class="section-heading">
+        <text class="section-title">我的群</text>
+        <button class="text-action" bindtap="onGroupsTap">全部</button>
+      </view>
+      <view wx:if="{{!hasGroups}}" class="empty-groups">
+        <text>加入群后可查看群内排行榜</text>
+        <button bindtap="onGroupsTap">查看群</button>
+      </view>
+      <view
+        wx:for="{{groups}}"
+        wx:key="group_id"
+        class="group-row"
+        data-group-id="{{item.group_id}}"
+        bindtap="onGroupTap"
+      >
+        <text>{{item.display_name}}</text>
+        <text>{{item.memberCountText}} · {{item.role === 'owner' ? '群主' : '成员'}}</text>
+      </view>
+    </view>
   </view>
 </view>

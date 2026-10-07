@@ -7,7 +7,7 @@
  */
 import { FIXED_CONFIG_V1 } from "./config.js";
 import { PeriodType, type PeriodType as PeriodTypeValue } from "./enums.js";
-import { validationError } from "./errors.js";
+import { DomainError, validationError } from "./errors.js";
 
 const SHANGHAI_OFFSET_MS = 8 * 60 * 60 * 1000;
 
@@ -186,6 +186,16 @@ export function levelSeasonOf(periodAnchorAt: Date): string {
   const p = toShanghaiParts(periodAnchorAt);
   const year = p.month >= 7 ? p.year : p.year - 1;
   return `${year}_${year + 1}`;
+}
+
+/** 该等级赛季结束后第一次周一 10:00（北京时间）的最终评估时刻。 */
+export function seasonFinalEvalAsOf(levelSeasonId: string): Date {
+  const match = /^(\d{4})_(\d{4})$/.exec(levelSeasonId);
+  if (match === null || Number(match[2]) !== Number(match[1]) + 1) {
+    throw new DomainError("INVALID_LEDGER", `level_season_id 非法（level_season_id=${levelSeasonId}）`);
+  }
+  const seasonEnd = new Date(Date.UTC(Number(match[2]), 6, 1) - SHANGHAI_OFFSET_MS);
+  return nextMondayEvalAt(seasonEnd);
 }
 
 function shanghaiWallToUtc(

@@ -131,6 +131,7 @@ function emptySeasonStats(userId: string, seasonId: string, now: Date): UserSeas
     valid_predictions: 0,
     wdl_hits: 0,
     exact_hits: 0,
+    last_scoring_match_at: null,
     level: 1,
     best_level: 1,
     level_state: defaultLevelState(),
@@ -208,6 +209,34 @@ async function careerLastScoringAt(
     const match = await tx.matches.findById(prediction.match_id);
     if (match === null || match.period_anchor_at === null) {
       throw invalidLedger(`计分 prediction 缺少 match 或 period_anchor_at（prediction_id=${prediction.prediction_id}）`);
+    }
+    if (latest === null || match.period_anchor_at.getTime() > latest.getTime()) {
+      latest = match.period_anchor_at;
+    }
+  }
+  return latest;
+}
+
+async function seasonLastScoringAt(
+  tx: UnitOfWork,
+  predictions: Prediction[],
+  seasonId: string,
+  updatedPrediction: Prediction,
+): Promise<Date | null> {
+  let latest: Date | null = null;
+  for (const original of predictions) {
+    const prediction = original.prediction_id === updatedPrediction.prediction_id
+      ? updatedPrediction
+      : original;
+    if (scoreOf(prediction) <= MatchScoreValue.Miss || prediction.applied_result_version < 1) {
+      continue;
+    }
+    const match = await tx.matches.findById(prediction.match_id);
+    if (match === null || match.period_anchor_at === null) {
+      throw invalidLedger(`计分 prediction 缺少 match 或 period_anchor_at（prediction_id=${prediction.prediction_id}）`);
+    }
+    if (levelSeasonOf(match.period_anchor_at) !== seasonId) {
+      continue;
     }
     if (latest === null || match.period_anchor_at.getTime() > latest.getTime()) {
       latest = match.period_anchor_at;
@@ -476,9 +505,27 @@ export class SettlementItemApplicationService {
     }
     const seasonBase = seasonStats ?? emptySeasonStats(user.user_id, levelSeasonId, serverNow);
     const updatedSeasonBase = applyStatsDelta(seasonBase, currentItem);
+    const existingSeasonLastScoringAt = seasonBase.last_scoring_match_at ?? null;
+    const seasonNeedsRebuild =
+      needsZeroCorrectionRebuild &&
+      existingSeasonLastScoringAt?.getTime() === match.period_anchor_at.getTime();
+    const seasonLastScoring = seasonNeedsRebuild
+      ? await seasonLastScoringAt(
+          tx,
+          await getPredictions(),
+          levelSeasonId,
+          updatedPrediction,
+        )
+      : currentItem.new_score > MatchScoreValue.Miss
+        ? maxScoringAt(existingSeasonLastScoringAt, match.period_anchor_at)
+        : existingSeasonLastScoringAt;
     const updatedSeason: UserSeasonStats = {
       ...seasonBase,
       ...updatedSeasonBase,
+      last_scoring_match_at: lastScoringForPeriodScore(
+        updatedSeasonBase.points,
+        seasonLastScoring,
+      ),
       updated_at: serverNow,
     };
     assertSeasonStatsInvariants(updatedSeason);

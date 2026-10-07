@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>预言群 · 状态图册</title>
+<link rel="stylesheet" href="ui-consistency.css">
+<link rel="stylesheet" href="theme-cc.css">
+<link rel="stylesheet" href="states-cc.css">
+</head>
+<body>
+<div class="phone">
+<div class="status"><span class="num">9:41</span><svg viewBox="0 0 56 12" aria-hidden="true"><path d="M1 10V7h3v3M6 10V5h3v5M11 10V3h3v7M16 10V1h3v9" fill="currentColor"/><path d="M23 4q6-6 12 0m-10 2q4-4 8 0m-6 2q2-2 4 0" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="29" cy="10" r="1"/><rect x="39" y="2" width="14" height="8" rx="2" fill="none" stroke="currentColor"/><rect x="41" y="4" width="10" height="4" rx="1" fill="currentColor"/><path d="M55 4v4" stroke="currentColor"/></svg></div>
+<main class="content pad-bottom" id="page"></main>
+<nav class="ui-nav" aria-label="主导航"><a href="赛事预言家首页-高保真-v8.6-球场背景玻璃版.html"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M12 4v16M3 9h4v6H3m18-6h-4v6h4"/><circle cx="12" cy="12" r="3"/></svg><span>比赛</span></a><a href="rankings-states.html?state=R06"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V10h5v10m0 0V4h6v16m0 0V13h5v7M2 20h20"/></svg><span>排行榜</span></a><a href="my-states.html?state=M01" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="7" r="3.5"/><path d="M5 21v-3a7 7 0 0 1 14 0v3"/></svg><span>我的</span></a></nav>
+</div>
+<script>
+const id=new URLSearchParams(location.search).get('state')||'G01';
+const back='<a class="back" href="my-states.html?state=M03" aria-label="返回"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 5-7 7 7 7"/></svg></a>';
+const I={
+ group:'<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3"/><path d="M3 20v-3a6 6 0 0 1 12 0v3m1-15a3 3 0 0 1 0 6m1 3a5 5 0 0 1 4 5"/></svg>',
+ plus:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>',
+ key:'<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="15" r="4"/><path d="m11 12 8-8m-3 3 3 3"/></svg>',
+ chev:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg>',
+ ok:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>'
+};
+function head(t,sub){return '<div class="subhead">'+back+'<div class="grow"><h1>'+t+'</h1><p>'+sub+'</p></div></div>';}
+function boxes(code){const cells=[];for(let i=0;i<8;i++){const ch=code[i]||'';cells.push('<span class="'+(ch?'':'empty')+(i===code.length?' cur':'')+'">'+(ch||'')+'</span>');}return '<div class="code-boxes" aria-label="邀请码">'+cells.join('')+'</div>';}
+let html='';
+if(id==='G01'){
+ html=head('预言群','和熟悉的人，一起看球')+
+ '<section class="ccs-card guide-hero"><div class="empty-art">'+I.group+'</div><h2>你还没有加入任何群</h2><p>每个群独立排名，<br>在群里和朋友比一比谁更懂球</p></section>'+
+ '<div class="guide-actions">'+
+ '<a class="ccs-card guide-action" href="group-states.html?state=G03"><span class="art">'+I.plus+'</span><span class="copy"><b>创建我的预言群</b><small>群名自动为「徐sir的预言群」，最多创建 5 个</small></span>'+I.chev+'</a>'+
+ '<a class="ccs-card guide-action" href="group-states.html?state=G02"><span class="art">'+I.key+'</span><span class="copy"><b>输入邀请码加入</b><small>向群主要一个 8 位邀请码，最多加入 20 个群</small></span>'+I.chev+'</a></div>'+
+ '<ul class="guide-rules"><li>群不依赖微信好友关系，通过邀请码加入</li><li>每个群最多 500 位成员</li><li>群里的排名只和群内成员比较</li></ul>';
+}else if(id==='G02'){
+ html=head('加入预言群','输入群主分享的邀请码')+
+ '<section class="ccs-card code-panel"><h2>邀请码</h2><p>由 8 位大写字母和数字组成</p>'+boxes('K7M2')+'<button class="ccs-cta" type="button" disabled>加入</button><div class="hint">还差 4 位</div></section>';
+}else{
+ html=head('创建成功','把邀请码发给朋友')+
+ '<section class="ccs-card success-panel"><div class="empty-art">'+I.ok+'</div><h2>徐sir的预言群</h2><p>已创建，你是群主</p><div class="invite-code">K7M2 9XQA</div><p>邀请码在群设置里随时可查看</p><div class="row-actions"><button class="ccs-cta" type="button">分享到微信</button><button class="ccs-ghost" type="button">复制邀请码</button></div></section>'+
+ '<section class="ccs-card info-list"><div><span>群成员</span><b>1 / 500</b></div><div><span>群榜单</span><b>成员有预测后出现</b></div><div><span>我创建的群</span><b>1 / 5</b></div></section>';
+}
+document.getElementById('page').innerHTML=html;
+</script>
+</body>
+</html>

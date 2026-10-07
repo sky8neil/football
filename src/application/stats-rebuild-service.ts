@@ -16,7 +16,11 @@ import {
   type LevelPredictionFact,
   type ReplayLevelResult,
 } from "../domain/levels.js";
-import { levelProtectionEndAsOf, levelSeasonOf, nextMondayEvalAt } from "../domain/time.js";
+import {
+  levelProtectionEndAsOf,
+  levelSeasonOf,
+  seasonFinalEvalAsOf,
+} from "../domain/time.js";
 import { rebuildStatsFromLedger, type RebuiltSeasonStats } from "./stats-rebuild.js";
 import { decideUnlockGrants } from "./unlock-decision.js";
 import {
@@ -104,6 +108,7 @@ function statsForSeason(
       valid_predictions: 0,
       wdl_hits: 0,
       exact_hits: 0,
+      last_scoring_match_at: null,
     }
   );
 }
@@ -135,15 +140,6 @@ function buildLevelHistory(
     settlement_id: null,
     changed_at: changedAt,
   };
-}
-
-function seasonFinalEvalAsOf(levelSeasonId: string): Date {
-  const parts = /^(\d{4})_(\d{4})$/.exec(levelSeasonId);
-  if (parts === null || Number(parts[2]) !== Number(parts[1]) + 1) {
-    throw invalidLedger(`level_season_id 非法（level_season_id=${levelSeasonId}）`);
-  }
-  const boundary = new Date(Date.UTC(Number(parts[2]), 6, 1) - 8 * 60 * 60 * 1000);
-  return nextMondayEvalAt(boundary);
 }
 
 function storedLevelState(replay: ReplayLevelResult, existing: LevelState | undefined): LevelState {
@@ -218,6 +214,7 @@ function emptySeasonStats(userId: string, seasonId: string, now: Date): UserSeas
     valid_predictions: 0,
     wdl_hits: 0,
     exact_hits: 0,
+    last_scoring_match_at: null,
     level: 1,
     best_level: 1,
     level_state: defaultLevelState(),
@@ -332,7 +329,14 @@ export class RebuildUserStatsService {
         return [fact.item.prediction_id, levelSeasonOf(fact.match.period_anchor_at)] as const;
       }),
     );
-    const rebuilt = rebuildStatsFromLedger(appliedItems, levelSeasonByPrediction);
+    const periodAnchorByPrediction = new Map(
+      facts.map((fact) => [fact.item.prediction_id, fact.match.period_anchor_at as Date] as const),
+    );
+    const rebuilt = rebuildStatsFromLedger(
+      appliedItems,
+      levelSeasonByPrediction,
+      periodAnchorByPrediction,
+    );
     const replayFacts = buildReplayFacts(facts);
     const career = {
       ...rebuilt.career,
@@ -470,6 +474,7 @@ export class RebuildUserStatsService {
         valid_predictions: target.valid_predictions,
         wdl_hits: target.wdl_hits,
         exact_hits: target.exact_hits,
+        last_scoring_match_at: target.last_scoring_match_at,
         level: level.replay.level,
         best_level: level.bestLevel,
         level_state: level.levelState,

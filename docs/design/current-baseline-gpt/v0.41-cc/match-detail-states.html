@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>比赛详情 · 状态图册</title>
+<link rel="stylesheet" href="ui-consistency.css">
+<link rel="stylesheet" href="theme-cc.css">
+<link rel="stylesheet" href="states-cc.css">
+<link rel="stylesheet" href="detail-cc.css">
+</head>
+<body>
+<div class="phone">
+<div class="status"><span class="num">9:41</span><svg viewBox="0 0 56 12" aria-hidden="true"><path d="M1 10V7h3v3M6 10V5h3v5M11 10V3h3v7M16 10V1h3v9" fill="currentColor"/><path d="M23 4q6-6 12 0m-10 2q4-4 8 0m-6 2q2-2 4 0" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="29" cy="10" r="1"/><rect x="39" y="2" width="14" height="8" rx="2" fill="none" stroke="currentColor"/><rect x="41" y="4" width="10" height="4" rx="1" fill="currentColor"/><path d="M55 4v4" stroke="currentColor"/></svg></div>
+<main class="content pad-bottom" id="page"></main>
+<nav class="ui-nav" aria-label="主导航"><a href="赛事预言家首页-高保真-v8.6-球场背景玻璃版.html" aria-current="page"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M12 4v16M3 9h4v6H3m18-6h-4v6h4"/><circle cx="12" cy="12" r="3"/></svg><span>比赛</span></a><a href="rankings-states.html?state=R06"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V10h5v10m0 0V4h6v16m0 0V13h5v7M2 20h20"/></svg><span>排行榜</span></a><a href="my-states.html?state=M01"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="7" r="3.5"/><path d="M5 21v-3a7 7 0 0 1 14 0v3"/></svg><span>我的</span></a></nav>
+</div>
+<script>
+const id=new URLSearchParams(location.search).get('state')||'D01';
+const A='assets/logos/teams/premier-league/';
+const HOME={name:'阿森纳',img:A+'arsenal.png'},AWAY={name:'切尔西',img:A+'chelsea.png'};
+const LOCK='<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>';
+const PEOPLE='<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3"/><path d="M3 20v-3a6 6 0 0 1 12 0v3m1-15a3 3 0 0 1 0 6m1 3a5 5 0 0 1 4 5"/></svg>';
+const DIST={h:45,d:25,a:30};
+const SC={
+ D01:{status:'open',chip:['可预测',''],kick:'今天 20:30',bug:['VS','20:30'],deadline:'今天 20:20 · 开球前 10 分钟',left:'2 小时 14 分',my:null,crowd:'locked'},
+ D02:{status:'open',chip:['已提交','lock'],kick:'今天 20:30',bug:['VS','20:30'],deadline:'今天 20:20 · 开球前 10 分钟',my:{score:'2 : 1',at:'今天 18:42'},crowd:'locked'},
+ D03:{status:'closed',chip:['预测已截止','lock'],kick:'今天 20:30',bug:['VS','20:30'],deadline:'今天 20:20 · 已截止',my:null,crowd:'available'},
+ D04:{status:'live',chip:['进行中','live'],kick:'今天 20:30',bug:['1 : 0','LIVE'],dark:true,progress:'63′ 下半场',deadline:'已截止',my:{score:'2 : 1',at:'今天 18:42'},crowd:'available',mine:'h'},
+ D05:{status:'done',chip:['完场','done'],kick:'今天 20:30',bug:['2 : 1','完场'],dark:true,deadline:'已截止',my:{score:'2 : 1',at:'今天 18:42'},points:'exact',actual:'h',crowd:'available',mine:'h'},
+ D06:{status:'done',chip:['完场','done'],kick:'今天 20:30',bug:['2 : 0','完场'],dark:true,deadline:'已截止',my:{score:'1 : 0',at:'今天 18:42'},points:'wdl',actual:'h',crowd:'available',mine:'h'},
+ D07:{status:'done',chip:['完场','done'],kick:'今天 20:30',bug:['2 : 1','完场'],dark:true,deadline:'已截止',my:{score:'0 : 1',at:'今天 18:42'},points:'miss',actual:'h',crowd:'available',mine:'a'},
+ D08:{status:'done',chip:['完场','done'],kick:'今天 20:30',bug:['2 : 1','完场'],dark:true,deadline:'已截止',my:null,actual:'h',crowd:'available'},
+ D09:{status:'live',chip:['进行中','live'],kick:'今天 20:30',bug:['0 : 0','LIVE'],dark:true,progress:'12′ 上半场',deadline:'已截止',my:{score:'1 : 1',at:'今天 18:42'},crowd:'insufficient'},
+ D10:{status:'live',chip:['进行中','live'],kick:'今天 20:30',bug:['1 : 0','LIVE'],dark:true,progress:'63′ 下半场',deadline:'已截止',my:null,guest:true,crowd:'guest'},
+ D11:{status:'postponed',chip:['延期','warn'],kick:'时间待定',bug:['VS','待定'],deadline:'新开球时间确认后重新计算',my:{score:'2 : 1',at:'9 月 28 日 18:42'},crowd:'none'},
+ D12:{status:'cancelled',chip:['已取消','cancel'],kick:'原定 今天 20:30',bug:['VS','取消'],muted:true,deadline:'—',my:{score:'2 : 1',at:'今天 18:42'},crowd:'none'}
+};
+const S=SC[id]||SC.D01;
+function derive(s){const [h,a]=s.split(':').map(x=>Number(x.trim()));return h>a?'h':h===a?'d':'a';}
+const WORD={h:HOME.name+'胜',d:'平局',a:AWAY.name+'胜'};
+const RES={h:'主胜',d:'平局',a:'客胜'};
+
+function heroHTML(){
+ const dark=S.dark?' dark':'';const muted=S.muted?' muted':'';
+ const em=S.bug[1]==='LIVE'?'<em class="live">LIVE</em>':'<em>'+S.bug[1]+'</em>';
+ const live=S.chip[1]==='live'?'<i></i>':'';
+ let facts='<div><span>开球时间</span><b>'+S.kick+' · 北京时间</b></div>';
+ if(S.progress)facts+='<div><span>比赛进度</span><b>'+S.progress+'</b></div>';
+ facts+='<div><span>预测截止</span><b>'+S.deadline+'</b></div>';
+ if(S.status==='done')facts+='<div><span>比分口径</span><b>90 分钟（含补时）</b></div>';
+ return '<section class="ccs-card detail-hero"><div class="detail-top"><div class="meta"><b>英超</b>第 7 轮</div><span class="d-state '+S.chip[1]+'">'+live+S.chip[0]+'</span></div>'+
+ '<div class="faceoff-d"><div class="team-d"><img src="'+HOME.img+'" alt="'+HOME.name+'队徽"><div><b>'+HOME.name+'</b><small>主队</small></div></div>'+
+ '<div class="d-bug'+dark+muted+'"><strong>'+S.bug[0]+'</strong>'+em+'</div>'+
+ '<div class="team-d"><img src="'+AWAY.img+'" alt="'+AWAY.name+'队徽"><div><b>'+AWAY.name+'</b><small>客队</small></div></div></div>'+
+ '<div class="fact-list">'+facts+'</div></section>';
+}
+
+function editorHTML(){
+ return '<section class="ccs-card d-card"><h2>写下你的比分</h2><p class="countdown">距预测截止 <b>'+S.left+'</b></p>'+
+ '<div class="editor-d"><div class="grp"><div class="tm"><img src="'+HOME.img+'" alt="">'+HOME.name+'</div><div class="stp"><button type="button" aria-label="主队减分">−</button><span class="v">2</span><button type="button" aria-label="主队加分">+</button></div></div>'+
+ '<div class="sep">:</div>'+
+ '<div class="grp"><div class="tm"><img src="'+AWAY.img+'" alt="">'+AWAY.name+'</div><div class="stp"><button type="button" aria-label="客队减分">−</button><span class="v">1</span><button type="button" aria-label="客队加分">+</button></div></div></div>'+
+ '<div class="derived-d">即时判定 <b>主胜</b></div><div class="hint-d">胜平负命中 +3 · 精确命中 +12</div>'+
+ '<button class="submit-d" type="button">提交预测</button><div class="submit-note">提交后无法修改</div></section>';
+}
+
+function mineCard(extraHTML,sub){
+ return '<section class="ccs-card d-card"><h2>我的预测</h2><div class="my-line"><div class="my-score">'+S.my.score+'<small>判定 '+RES[derive(S.my.score)]+' · 提交于 '+S.my.at+'</small></div>'+extraHTML+'</div>'+(sub?'<p class="note-d">'+sub+'</p>':'')+'</section>';
+}
+
+function predictionHTML(){
+ if(S.guest)return '<section class="ccs-card d-card"><h2>登录后参与预测</h2><p class="note-d" style="margin:0 0 12px">登录后可以提交预测，也可以查看大家怎么选。</p><a class="ccs-cta" href="#">登录</a></section>';
+ switch(S.status){
+  case 'open':
+   return S.my?mineCard('<span class="chip-d lock">已锁定 · 不可修改</span>','比赛开始前预测不可修改；截止后可查看大家怎么选。'):editorHTML();
+  case 'closed':
+   return '<section class="ccs-card d-card"><h2>预测已截止</h2><p class="note-d" style="margin:0">你没有预测这场比赛。预测在开球前 10 分钟截止，现在已不能提交。</p></section>';
+  case 'live':
+   return S.my?mineCard('<span class="chip-d">预测已关闭</span>'):'';
+  case 'done':{
+   if(!S.my)return '<section class="ccs-card d-card"><h2>我的预测</h2><p class="note-d" style="margin:0">你没有预测这场比赛。</p></section>';
+   const p={exact:['exact','+12','精确命中'],wdl:['wdl','+3','胜平负命中'],miss:['miss','+0','未命中']}[S.points];
+   return mineCard('<span class="chip-d '+p[0]+'"><b>'+p[1]+'</b> '+p[2]+'</span>','实际比分 '+S.bug[0]+'，按 90 分钟（含补时）计分。');
+  }
+  case 'postponed':
+   return '<section class="ccs-card d-card"><h2>比赛延期</h2><p class="note-d" style="margin:0 0 12px">新的开球时间确认后，会重新计算预测截止时间。</p>'+(S.my?'<div class="my-line"><div class="my-score">'+S.my.score+'<small>你的预测已保留 · 不可修改</small></div></div>':'')+'</section>';
+  case 'cancelled':
+   return '<section class="ccs-card d-card"><h2>比赛已取消</h2><p class="note-d" style="margin:0 0 12px">取消的比赛不计分，也不计入有效预测。</p>'+(S.my?'<div class="my-line"><div class="my-score">'+S.my.score+'<small>不计分</small></div></div>':'')+'</section>';
+ }
+ return '';
+}
+
+function crowdHTML(){
+ const c=S.crowd;
+ if(c==='none')return '';
+ const state=(ic,b,t,btn)=>'<section class="ccs-card crowd-card is-muted"><div class="crowd-state"><span class="ic">'+ic+'</span><p><b>'+b+'</b>'+t+'</p>'+(btn||'')+'</div></section>';
+ if(c==='locked')return state(LOCK,'大家怎么选','比赛截止后可看，需至少 20 人预测');
+ if(c==='insufficient')return state(PEOPLE,'大家怎么选','参与人数不足，至少 20 人预测后显示');
+ if(c==='guest')return state(LOCK,'大家怎么选','登录后可看','<a class="ccs-ghost" href="#">登录</a>');
+ const seg=[['h',DIST.h,WORD.h],['d',DIST.d,WORD.d],['a',DIST.a,WORD.a]];
+ const bar='<div class="split-bar" role="img" aria-label="'+seg.map(x=>x[2]+x[1]+'%').join('，')+'">'+seg.map(x=>'<span class="'+x[0]+'" style="width:'+x[1]+'%"></span>').join('')+'</div>';
+ const legend='<div class="split-legend">'+seg.map(x=>{
+  const mine=S.mine===x[0],real=S.actual===x[0];
+  const tags=(mine?'<span class="tag mine">你选了</span> ':'')+(real?'<span class="tag real">实际结果</span>':'');
+  return '<div class="it '+x[0]+(mine?' is-mine':'')+(real?' is-real':'')+'"><span class="lb"><i class="dot"></i>'+x[2]+'</span><b>'+x[1]+'%</b>'+tags+'</div>';
+ }).join('')+'</div>';
+ let cmp='';
+ if(S.status==='done'&&S.actual){
+  if(S.mine){
+   cmp=S.mine===S.actual
+    ?'<div class="compare-d">实际是<b>'+WORD[S.actual]+'</b>，你和 <b>'+DIST[S.mine]+'%</b> 的人选择一致。</div>'
+    :'<div class="compare-d">实际是<b>'+WORD[S.actual]+'</b>，你选了'+WORD[S.mine]+'（<b>'+DIST[S.mine]+'%</b> 的人这样选）。</div>';
+  }else cmp='<div class="compare-d">实际是<b>'+WORD[S.actual]+'</b>，<b>'+DIST[S.actual]+'%</b> 的人选对了结果。</div>';
+ }
+ return '<section class="ccs-card crowd-card"><div class="crowd-head"><h2>大家怎么选</h2><span class="ccs-chip">预测已截止</span></div>'+bar+legend+cmp+'<p class="foot-d">按 5% 取整 · 仅展示用户选择分布，不构成任何推荐</p></section>';
+}
+
+const back='<a class="back" href="赛事预言家首页-高保真-v8.6-球场背景玻璃版.html" aria-label="返回"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 5-7 7 7 7"/></svg></a>';
+document.getElementById('page').innerHTML='<div class="subhead">'+back+'<div class="grow"><h1>比赛详情</h1><p>阿森纳 vs 切尔西</p></div></div>'+heroHTML()+predictionHTML()+crowdHTML();
+</script>
+</body>
+</html>

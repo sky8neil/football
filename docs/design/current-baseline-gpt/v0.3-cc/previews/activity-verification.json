@@ -1,0 +1,6 @@
+{
+  "leagueViewports": 5,
+  "rankingStateChecks": 15,
+  "boundary": "10 days visible; 10 days + 1 ms hidden",
+  "errors": []
+}

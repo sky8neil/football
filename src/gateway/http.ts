@@ -6,14 +6,20 @@ import { makeRequestId, mapErrorToHttp } from "../api/v1/validation.js";
 import { SessionService } from "../application/session.js";
 import { MatchQueryService } from "../application/match-query.js";
 import { validationError } from "../domain/errors.js";
+import type { CloudBaseDb } from "../infrastructure/cloudbase-db.js";
 import { InMemoryRepository } from "../infrastructure/repositories.js";
+import { createGatewayRepository } from "./repository-factory.js";
 import { handleGatewayRequest } from "./assemble.js";
 import {
   LOCAL_PUBLIC_SOURCE,
   loadGatewayRuntimeConfig,
   type GatewayRuntimeConfig,
 } from "./config.js";
-import { seedGatewayRepository, seedRankingLeaderboard } from "./seed.js";
+import {
+  getGatewaySeedScenario,
+  seedGatewayRepository,
+  seedRankingLeaderboard,
+} from "./seed.js";
 
 export const GATEWAY_LISTEN_HOST = "127.0.0.1";
 export const GATEWAY_LISTEN_PORT = 8787;
@@ -59,10 +65,13 @@ function writeJson(
   res.end(JSON.stringify(body));
 }
 
-export async function startGatewayServer(): Promise<http.Server> {
+export async function startGatewayServer(options: {
+  env?: Record<string, string | undefined>;
+  cloudbase_db?: CloudBaseDb;
+} = {}): Promise<http.Server> {
   let config: GatewayRuntimeConfig;
   try {
-    config = loadGatewayRuntimeConfig(process.env);
+    config = loadGatewayRuntimeConfig(options.env ?? process.env);
   } catch (err) {
     const message = err instanceof Error ? err.message : "invalid gateway config";
     console.error(message);
@@ -74,9 +83,26 @@ export async function startGatewayServer(): Promise<http.Server> {
     process.exit(1);
   }
 
-  const repo = new InMemoryRepository();
-  await seedGatewayRepository(repo, new Date());
-  await seedRankingLeaderboard(repo, new Date());
+  let repo;
+  try {
+    repo = createGatewayRepository(config, options.cloudbase_db);
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : "repository configuration failed");
+    process.exit(1);
+  }
+  if (repo instanceof InMemoryRepository) {
+    const seedNow = new Date();
+    const seedScenario = getGatewaySeedScenario(
+      (options.env ?? process.env).FOOTBALL_SEED_SCENARIO,
+    );
+    await seedGatewayRepository(repo, seedNow);
+    await seedRankingLeaderboard(
+      repo,
+      seedNow,
+      seedScenario,
+      config.mock_trusted_openid,
+    );
+  }
   const session = new SessionService(repo);
   const matches = new MatchQueryService(repo, config.match_cursor_secret);
   const rateLimiter = new InMemoryRateLimiter();

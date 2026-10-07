@@ -169,7 +169,7 @@ function makeItem(overrides: Partial<SettlementItem> = {}): SettlementItem {
   };
 }
 
-function makeSeasonStats(): UserSeasonStats {
+function makeSeasonStats(overrides: Partial<UserSeasonStats> = {}): UserSeasonStats {
   return {
     schema_version: 1,
     user_id: USER_ID,
@@ -178,12 +178,14 @@ function makeSeasonStats(): UserSeasonStats {
     valid_predictions: 1,
     wdl_hits: 1,
     exact_hits: 0,
+    last_scoring_match_at: new Date("2026-08-08T06:00:00.000Z"),
     level: 1,
     best_level: 1,
     level_state: defaultLevelState(),
     is_level_frozen: false,
     created_at: NOW,
     updated_at: NOW,
+    ...overrides,
   };
 }
 
@@ -599,6 +601,8 @@ describe("RepositoryDailyConsistencySnapshotSource", () => {
       snapshot_id: "career-snapshot-1",
       board: "career",
       snapshot_at: NOW,
+      level_season_id: null,
+      is_final: false,
       user_id: USER_ID,
       rank: 2,
       career_points: 9,
@@ -607,6 +611,10 @@ describe("RepositoryDailyConsistencySnapshotSource", () => {
       career_last_scoring_match_at: null,
       window_score_sum: null,
       window_n: null,
+      season_points: null,
+      season_exact_hits: null,
+      season_valid_predictions: null,
+      season_last_scoring_match_at: null,
       created_at: NOW,
     };
     const strengthSnapshot: BoardSnapshot = {
@@ -614,6 +622,8 @@ describe("RepositoryDailyConsistencySnapshotSource", () => {
       snapshot_id: "strength-snapshot-1",
       board: "strength",
       snapshot_at: NOW,
+      level_season_id: null,
+      is_final: false,
       user_id: USER_ID,
       rank: 1,
       career_points: null,
@@ -622,6 +632,10 @@ describe("RepositoryDailyConsistencySnapshotSource", () => {
       career_last_scoring_match_at: null,
       window_score_sum: 240,
       window_n: 50,
+      season_points: null,
+      season_exact_hits: null,
+      season_valid_predictions: null,
+      season_last_scoring_match_at: null,
       created_at: NOW,
     };
     await repo.boardSnapshots.insert(careerSnapshot);
@@ -652,5 +666,72 @@ describe("RepositoryDailyConsistencySnapshotSource", () => {
     await expect(repo.boardSnapshots.findLatestByBoard("career")).resolves.toEqual([
       careerSnapshot,
     ]);
+  });
+
+  it("season snapshot skips rank checks when season stats changed after the snapshot", async () => {
+    const repo = await setup();
+    const secondUserId = "user-2";
+    const secondUser = makeUser({
+      user_id: secondUserId,
+      openid: "openid-2",
+      nickname: "Second",
+      updated_at: NOW,
+    });
+    await repo.users.insert(secondUser);
+    await repo.userSeasonStats?.insert(makeSeasonStats({
+      user_id: secondUserId,
+      points: 6,
+      valid_predictions: 1,
+      wdl_hits: 1,
+      updated_at: NOW,
+    }));
+
+    const firstStats = await repo.userSeasonStats?.findByUserAndSeason(USER_ID, "2026_2027");
+    if (firstStats === undefined || firstStats === null) {
+      throw new Error("expected seeded season stats");
+    }
+    await repo.userSeasonStats?.update({
+      ...firstStats,
+      points: 12,
+      exact_hits: 1,
+      updated_at: new Date(NOW.getTime() + 60_000),
+    });
+    const seasonSnapshot = (userId: string, rank: number, points: number): BoardSnapshot => ({
+      schema_version: 1,
+      snapshot_id: `season-snapshot-${userId}`,
+      board: "season",
+      snapshot_at: NOW,
+      level_season_id: "2026_2027",
+      is_final: false,
+      user_id: userId,
+      rank,
+      career_points: null,
+      career_exact_hits: null,
+      career_valid_predictions: null,
+      career_last_scoring_match_at: null,
+      window_score_sum: null,
+      window_n: null,
+      season_points: points,
+      season_exact_hits: 0,
+      season_valid_predictions: 1,
+      season_last_scoring_match_at: new Date("2026-08-08T06:00:00.000Z"),
+      created_at: NOW,
+    });
+    await repo.boardSnapshots.insert(seasonSnapshot(USER_ID, 2, 3));
+    await repo.boardSnapshots.insert(seasonSnapshot(secondUserId, 1, 6));
+
+    const snapshot = await new RepositoryDailyConsistencySnapshotSource(repo).load(NOW);
+    const unchangedUser = snapshot.board_snapshots.find(
+      (entry) => entry.board === "season" && entry.user_id === secondUserId,
+    );
+
+    expect(unchangedUser).toMatchObject({
+      rank_check_skipped: true,
+      actual: { rank: 1, season_points: 6 },
+      expected: { rank: 2, season_points: 6 },
+    });
+    expect(checkDailyConsistency(snapshot).differences.filter(
+      (difference) => difference.scope === "board_snapshot",
+    )).toEqual([]);
   });
 });

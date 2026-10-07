@@ -312,8 +312,12 @@ export class RebuildPeriodRankingsService {
     serverNow: Date,
   ): Promise<RebuildBoardSnapshotOutcome> {
     assertValidServerNow(serverNow);
-    if (board !== RankingBoard.Career && board !== RankingBoard.Strength) {
-      throw validationError("board snapshot 只支持 career 或 strength", { board });
+    if (
+      board !== RankingBoard.Career &&
+      board !== RankingBoard.Strength &&
+      board !== RankingBoard.Season
+    ) {
+      throw validationError("board snapshot 只支持 career、strength 或 season", { board });
     }
 
     const lockKey = boardSnapshotRebuildLockKey(board);

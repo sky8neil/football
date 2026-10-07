@@ -20,6 +20,7 @@ import {
   levelProtectionEndAsOf,
   levelSeasonOf,
   nextMondayEvalAt,
+  seasonFinalEvalAsOf,
 } from "../domain/time.js";
 import {
   defaultLevelState,
@@ -66,13 +67,26 @@ function seasonStartAt(levelSeasonId: string): Date {
   return new Date(Date.UTC(Number(match[1]), 6, 1) - 8 * 60 * 60 * 1000);
 }
 
-function seasonFinalEvalAsOf(levelSeasonId: string): Date {
-  const match = /^(\d{4})_(\d{4})$/.exec(levelSeasonId);
-  if (match === null || Number(match[2]) !== Number(match[1]) + 1) {
-    throw new DomainError("INVALID_LEDGER", `level_season_id 非法（level_season_id=${levelSeasonId}）`);
+async function generateDueSeasonFinals(
+  repo: AppRepository,
+  asOf: Date,
+  serverNow: Date,
+): Promise<void> {
+  if (repo.userSeasonStats === undefined || repo.boardSnapshots === undefined) {
+    throw internalError("weekly level eval 缺少赛季统计或快照 repository");
   }
-  const seasonEnd = new Date(Date.UTC(Number(match[2]), 6, 1) - 8 * 60 * 60 * 1000);
-  return nextMondayEvalAt(seasonEnd);
+  const seasonIds = new Set<string>();
+  for (const user of await repo.users.findAll()) {
+    for (const stats of await repo.userSeasonStats.findByUser(user.user_id)) {
+      seasonIds.add(stats.level_season_id);
+    }
+  }
+  const snapshots = new BoardSnapshotService(repo);
+  for (const seasonId of [...seasonIds].sort()) {
+    if (asOf.getTime() < seasonFinalEvalAsOf(seasonId).getTime()) continue;
+    if ((await repo.boardSnapshots.findFinalBySeason(seasonId)).length > 0) continue;
+    await snapshots.generateSeasonFinal(seasonId, serverNow);
+  }
 }
 
 function evalState(level: number, bestLevel: number, belowCount: number): LevelEvalState {
@@ -227,6 +241,7 @@ export class WeeklyLevelEvalService {
         skipped_count: 0,
       };
       await new BoardSnapshotService(this.repo).generate(RankingBoard.Strength, serverNow);
+      await generateDueSeasonFinals(this.repo, asOf, serverNow);
       return outcome;
     }
 
@@ -277,6 +292,7 @@ export class WeeklyLevelEvalService {
       await this.repo.jobLocks.release(WEEKLY_LEVEL_EVAL_LOCK_KEY, ownerId);
     }
     await new BoardSnapshotService(this.repo).generate(RankingBoard.Strength, serverNow);
+    await generateDueSeasonFinals(this.repo, asOf, serverNow);
     return outcome;
   }
 

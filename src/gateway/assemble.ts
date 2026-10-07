@@ -422,8 +422,7 @@ export async function handleGatewayRequest(
         input.services.rankings ??
         new RankingQueryService(input.repo, input.config.match_cursor_secret);
       const result = await getRankings(rankings, {
-        authenticated_user_id: publicReadUserId(identity),
-        public_source: LOCAL_PUBLIC_SOURCE,
+        authenticated_user_id: authenticatedReadUserId(identity),
         query: input.query,
         server_now: input.server_now,
         request_id: requestId,

@@ -28,7 +28,7 @@
     </scroll-view>
   </view>
 
-  <view class="hint"><text>今日可预测 <text class="hint-num">{{openCount}}</text> · 已预测 <text class="hint-num">{{doneCount}}</text></text><text>最近成绩 <text class="hint-plus">+{{recentScore}}</text></text></view>
+  <view class="hint"><text>今日可预测 <text class="hint-num">{{openCount}}</text> · 已预测 <text class="hint-num">{{doneCount}}</text></text><text wx:if="{{recentScore !== null && recentScore !== undefined}}">最近成绩 <text class="hint-plus">+{{recentScore}}</text></text></view>
 
   <view class="results {{resultsTransition}}">
     <view wx:if="{{state === 'loading'}}" class="loading">加载中</view>

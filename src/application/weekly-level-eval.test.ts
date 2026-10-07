@@ -63,6 +63,7 @@ function makeSeasonStats(userId: string, overrides: Partial<UserSeasonStats> = {
     valid_predictions: 0,
     wdl_hits: 0,
     exact_hits: 0,
+    last_scoring_match_at: null,
     level: 1,
     best_level: 1,
     level_state: defaultLevelState(),
@@ -231,6 +232,9 @@ async function seedUser(
       valid_predictions: count,
       wdl_hits: count,
       exact_hits: count,
+      last_scoring_match_at: count > 0
+        ? new Date(Date.UTC(2026, 7, 1, 0, count - 1))
+        : null,
     }));
   }
   return user;
@@ -248,6 +252,51 @@ describe("WeeklyLevelEvalService §17.6 / §32.9", () => {
     await expect(
       repo.boardSnapshots.findByBoardAndSnapshotAt(RankingBoard.Strength, RUN_AT),
     ).resolves.toMatchObject([{ snapshot_kind: "head", snapshot_at: RUN_AT }]);
+  });
+
+  it("generates all due season finals after weekly evaluation and skips them on later runs", async () => {
+    const repo = new InMemoryRepository();
+    const user = makeUser({ user_id: "season-final-user" });
+    await repo.users.insert(user);
+    await repo.userSeasonStats.insert(makeSeasonStats(user.user_id, {
+      level_season_id: "2024_2025",
+      points: 24,
+      valid_predictions: 2,
+      wdl_hits: 2,
+      exact_hits: 1,
+      last_scoring_match_at: new Date("2025-06-28T12:00:00.000Z"),
+      is_level_frozen: true,
+    }));
+    await repo.userSeasonStats.insert(makeSeasonStats(user.user_id, {
+      level_season_id: "2025_2026",
+      points: 36,
+      valid_predictions: 3,
+      wdl_hits: 3,
+      exact_hits: 2,
+      last_scoring_match_at: new Date("2026-06-28T12:00:00.000Z"),
+      is_level_frozen: true,
+    }));
+
+    await weekly(repo).run(RUN_AT);
+
+    await expect(repo.boardSnapshots.findFinalBySeason("2024_2025"))
+      .resolves.toMatchObject([{
+        is_final: true,
+        season_points: 24,
+        snapshot_at: new Date("2025-07-07T02:00:00.000Z"),
+      }]);
+    await expect(repo.boardSnapshots.findFinalBySeason("2025_2026"))
+      .resolves.toMatchObject([{
+        is_final: true,
+        season_points: 36,
+        snapshot_at: new Date("2026-07-06T02:00:00.000Z"),
+      }]);
+
+    await weekly(repo).run(new Date("2026-08-17T02:10:00.000Z"));
+    await expect(repo.boardSnapshots.findFinalBySeason("2024_2025"))
+      .resolves.toHaveLength(1);
+    await expect(repo.boardSnapshots.findFinalBySeason("2025_2026"))
+      .resolves.toHaveLength(1);
   });
 
   it("[L91] 第 20 场于周一 10:05 applied：当周仍 Lv1，下周升 Lv2", async () => {
@@ -350,6 +399,7 @@ describe("WeeklyLevelEvalService §17.6 / §32.9", () => {
       valid_predictions: 1,
       wdl_hits: 1,
       exact_hits: 1,
+      last_scoring_match_at: new Date("2026-06-30T12:00:00.000Z"),
     });
     const user = await seedUser(repo, 0, {
       user: makeUser({ career_points: 12, career_valid_predictions: 1 }),
@@ -368,6 +418,10 @@ describe("WeeklyLevelEvalService §17.6 / §32.9", () => {
     await weekly(repo).run(new Date("2026-07-06T02:10:00.000Z"));
 
     expect(await repo.userSeasonStats.findByUserAndSeason(user.user_id, "2025_2026"))
-      .toMatchObject({ is_level_frozen: true, level_state: { last_eval_as_of: new Date("2026-07-06T02:00:00.000Z") } });
+      .toMatchObject({
+        is_level_frozen: true,
+        last_scoring_match_at: new Date("2026-06-30T12:00:00.000Z"),
+        level_state: { last_eval_as_of: new Date("2026-07-06T02:00:00.000Z") },
+      });
   });
 });

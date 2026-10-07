@@ -21,6 +21,7 @@ export interface SeasonStatsCacheValues {
   valid_predictions: number;
   wdl_hits: number;
   exact_hits: number;
+  last_scoring_match_at: Date | null;
   level: number;
   best_level: number;
   below_count?: number;
@@ -48,6 +49,10 @@ export interface BoardSnapshotCacheValues {
   career_last_scoring_match_at: Date | null;
   window_score_sum: number | null;
   window_n: number | null;
+  season_points: number | null;
+  season_exact_hits: number | null;
+  season_valid_predictions: number | null;
+  season_last_scoring_match_at: Date | null;
 }
 
 export interface CareerConsistencyEntry {
@@ -72,7 +77,7 @@ export interface RankingConsistencyEntry {
 }
 
 export interface BoardSnapshotConsistencyEntry {
-  board: "career" | "strength";
+  board: "career" | "strength" | "season";
   snapshot_at: Date;
   user_id: string;
   rank_check_skipped?: boolean;
@@ -149,6 +154,7 @@ const SEASON_FIELDS: readonly (keyof SeasonStatsCacheValues)[] = [
   "valid_predictions",
   "wdl_hits",
   "exact_hits",
+  "last_scoring_match_at",
   "level",
   "best_level",
   "below_count",
@@ -176,6 +182,10 @@ const BOARD_SNAPSHOT_FIELDS: readonly (keyof BoardSnapshotCacheValues)[] = [
   "career_last_scoring_match_at",
   "window_score_sum",
   "window_n",
+  "season_points",
+  "season_exact_hits",
+  "season_valid_predictions",
+  "season_last_scoring_match_at",
 ];
 
 function sameValue(actual: unknown, expected: unknown): boolean {

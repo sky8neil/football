@@ -1,0 +1,18 @@
+<view class="page">
+  <view class="page-title">{{title}}</view>
+  <view wx:if="{{state === 'loading'}}" class="loading"></view>
+  <view wx:elif="{{state === 'error'}}" class="error">
+    <view>{{errorMessage}}</view>
+    <button bindtap="onRetry">{{retryText}}</button>
+  </view>
+  <view wx:elif="{{state === 'ready'}}" class="ui-placeholder">
+    <view>{{group.display_name}}</view>
+    <view>{{group.memberCountText}}</view>
+    <view>{{group.role === 'owner' ? ownerText : memberText}}</view>
+    <view class="invite-label">{{inviteCodeLabel}}</view>
+    <view class="invite-code">{{group.invite_code}}</view>
+    <button open-type="share">{{shareText}}</button>
+    <button wx:if="{{group.role === 'member'}}" bindtap="onLeaveTap" loading="{{loadingAction}}">{{leaveText}}</button>
+    <button wx:if="{{group.role === 'owner'}}" bindtap="onDissolveTap" loading="{{loadingAction}}">{{dissolveText}}</button>
+  </view>
+</view>

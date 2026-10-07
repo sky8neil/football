@@ -29,6 +29,7 @@ export const SYNC_TASKS_V1: Partial<Record<SyncJobType, SyncTaskConfig>> & {
   daily_consistency: SyncTaskConfig;
   weekly_level_eval: SyncTaskConfig;
   level_correction_reeval: SyncTaskConfig;
+  board_snapshot_season_final: SyncTaskConfig;
 } = {
   future_schedule: {
     lookaheadDays: FIXED_CONFIG_V1.SYNC_FUTURE_DAYS,
@@ -66,6 +67,10 @@ export const SYNC_TASKS_V1: Partial<Record<SyncJobType, SyncTaskConfig>> & {
   board_snapshot_strength: {
     intervalHours: 24,
   },
+  board_snapshot_season: {
+    intervalMinutes: FIXED_CONFIG_V1.SEASON_BOARD_SNAPSHOT_MINUTES,
+  },
+  board_snapshot_season_final: {},
 };
 
 export const SYNC_RETRY_V1 = {

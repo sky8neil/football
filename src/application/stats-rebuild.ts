@@ -43,6 +43,7 @@ export interface RebuiltSeasonStats {
   valid_predictions: number;
   wdl_hits: number;
   exact_hits: number;
+  last_scoring_match_at: Date | null;
 }
 
 export interface RebuiltStats {
@@ -61,10 +62,11 @@ interface Accumulator {
   validPredictions: number;
   wdlHits: number;
   exactHits: number;
+  lastScoringMatchAt: Date | null;
 }
 
 function zeroAccumulator(): Accumulator {
-  return { points: 0, validPredictions: 0, wdlHits: 0, exactHits: 0 };
+  return { points: 0, validPredictions: 0, wdlHits: 0, exactHits: 0, lastScoringMatchAt: null };
 }
 
 function hitDelta(newHit: boolean, oldHit: boolean): number {
@@ -91,11 +93,12 @@ function assertInvariants(scope: string, acc: Accumulator, userId: string): void
 
 /**
  * 从 applied settlement_items 账本重建统计。items 必须属于同一 user；
- * levelSeasonByPrediction 提供 period_anchor_at 对应的 level_season_id。
+ * levelSeasonByPrediction 与可选 periodAnchorByPrediction 提供比赛赛季和并列时间键。
  */
 export function rebuildStatsFromLedger(
   items: readonly SettlementItem[],
   levelSeasonByPrediction: ReadonlyMap<string, string>,
+  periodAnchorByPrediction?: ReadonlyMap<string, Date>,
 ): RebuiltStats {
   if (items.length === 0) {
     return {
@@ -113,6 +116,7 @@ export function rebuildStatsFromLedger(
   const userId = items[0]?.user_id ?? "";
   const career = zeroAccumulator();
   const bySeason = new Map<string, Accumulator>();
+  const latestByPrediction = new Map<string, SettlementItem>();
 
   for (const item of items) {
     if (item.user_id !== userId) {
@@ -166,6 +170,32 @@ export function rebuildStatsFromLedger(
     season.validPredictions += item.valid_prediction_delta;
     season.wdlHits += hitDelta(item.new_wdl_hit, item.old_wdl_hit);
     season.exactHits += hitDelta(item.new_exact_hit, item.old_exact_hit);
+    const latest = latestByPrediction.get(item.prediction_id);
+    if (latest === undefined || item.source_result_version > latest.source_result_version) {
+      latestByPrediction.set(item.prediction_id, item);
+    }
+  }
+
+  if (periodAnchorByPrediction !== undefined) {
+    for (const item of latestByPrediction.values()) {
+      if (item.new_score <= 0) {
+        continue;
+      }
+      const anchorAt = periodAnchorByPrediction.get(item.prediction_id);
+      if (anchorAt === undefined) {
+        throw invalidLedgerError(
+          `缺少 prediction->period_anchor_at 映射（prediction_id=${item.prediction_id}）`,
+        );
+      }
+      const seasonId = levelSeasonByPrediction.get(item.prediction_id);
+      const season = seasonId === undefined ? undefined : bySeason.get(seasonId);
+      if (
+        season !== undefined &&
+        (season.lastScoringMatchAt === null || anchorAt.getTime() > season.lastScoringMatchAt.getTime())
+      ) {
+        season.lastScoringMatchAt = anchorAt;
+      }
+    }
   }
 
   assertInvariants("career", career, userId);
@@ -185,6 +215,7 @@ export function rebuildStatsFromLedger(
       valid_predictions: season.validPredictions,
       wdl_hits: season.wdlHits,
       exact_hits: season.exactHits,
+      last_scoring_match_at: season.points > 0 ? season.lastScoringMatchAt : null,
     }));
 
   return {

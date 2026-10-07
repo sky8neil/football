@@ -1065,6 +1065,8 @@
       <nav class="leagues" aria-label="联赛">
         <button class="league active" data-league="epl"><img class="league-logo" data-league-id="premier_league" src="assets/logos/placeholders/team-placeholder.png" alt="" onerror="this.style.display='none'">英超</button>
         <button class="league" data-league="laliga"><img class="league-logo" data-league-id="la_liga" src="assets/logos/placeholders/team-placeholder.png" alt="" onerror="this.style.display='none'">西甲</button>
+        <button class="league" data-league="seriea"><span class="league-logo" aria-hidden="true"></span>意甲</button>
+        <button class="league" data-league="bundesliga"><span class="league-logo" aria-hidden="true"></span>德甲</button>
         <button class="league" data-league="ligue1"><img class="league-logo" data-league-id="ligue_1" src="assets/logos/placeholders/team-placeholder.png" alt="" onerror="this.style.display='none'">法甲</button>
         <button class="league" data-league="csl"><img class="league-logo" data-league-id="chinese_super_league" src="assets/logos/placeholders/team-placeholder.png" alt="" onerror="this.style.display='none'">中超</button>
       </nav>
@@ -1478,6 +1480,9 @@
       ]
     };
 
+    MATCHES.seriea = [];
+    MATCHES.bundesliga = [];
+
     const feed = document.getElementById("feed");
     const empty = document.getElementById("empty");
     const R = window.FootballLogoRegistry;
@@ -1487,6 +1492,8 @@
     const LEAGUE_ID_BY_TAB = {
       epl: "premier_league",
       laliga: "la_liga",
+      seriea: "serie_a",
+      bundesliga: "bundesliga",
       ligue1: "ligue_1",
       csl: "chinese_super_league",
     };
@@ -1732,11 +1739,12 @@
       const token = ++renderToken;
       const apply = () => {
         if (token !== renderToken) return;
-        const has = day === "17";
+        const list = MATCHES[league] || [];
+        const has = day === "17" && list.length > 0;
         feed.classList.toggle("hide", !has);
         empty.classList.toggle("show", !has);
+        document.querySelector('.hint').style.display = has ? '' : 'none';
         if (!has) return;
-        const list = MATCHES[league] || MATCHES.epl;
         feed.innerHTML = list.map(card).join("");
         // 初始化当前联赛/日期的 UI 状态
         list.forEach((m) => {

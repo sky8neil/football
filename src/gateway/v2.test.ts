@@ -49,6 +49,8 @@ function makeConfig(overrides: Partial<GatewayRuntimeConfig> = {}): GatewayRunti
     mock_trusted_openid: MOCK_OPENID,
     match_cursor_secret: TEST_CURSOR_SECRET,
     public_source: LOCAL_PUBLIC_SOURCE,
+    repository_backend: "memory",
+    cloudbase_repository: null,
     ...overrides,
   };
 }

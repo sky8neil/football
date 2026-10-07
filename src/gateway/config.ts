@@ -2,6 +2,10 @@ import {
   ENVIRONMENT_NAMES,
   type EnvironmentName,
 } from "../infrastructure/environment-config.js";
+import {
+  loadCloudBaseRepositoryConfig,
+  type CloudBaseRepositoryConfig,
+} from "../infrastructure/cloudbase-db.js";
 
 export const LOCAL_PUBLIC_SOURCE = "local_v0" as const;
 
@@ -10,6 +14,8 @@ export interface GatewayRuntimeConfig {
   mock_trusted_openid: string | null;
   match_cursor_secret: string;
   public_source: typeof LOCAL_PUBLIC_SOURCE;
+  repository_backend: "memory" | "cloudbase";
+  cloudbase_repository: CloudBaseRepositoryConfig | null;
 }
 
 function isEnvironmentName(value: unknown): value is EnvironmentName {
@@ -34,6 +40,14 @@ export function loadGatewayRuntimeConfig(
     throw new Error("FOOTBALL_MATCH_CURSOR_SECRET is required");
   }
 
+  const repositoryBackend = env.FOOTBALL_REPOSITORY_BACKEND;
+  if (repositoryBackend !== "memory" && repositoryBackend !== "cloudbase") {
+    throw new Error("FOOTBALL_REPOSITORY_BACKEND must be memory or cloudbase");
+  }
+  const cloudbaseRepository = repositoryBackend === "cloudbase"
+    ? loadCloudBaseRepositoryConfig(env)
+    : null;
+
   let mockTrustedOpenid: string | null = null;
   if (rawEnvironment === "dev" || rawEnvironment === "test") {
     const rawMock = env.FOOTBALL_MOCK_TRUSTED_OPENID;
@@ -48,5 +62,7 @@ export function loadGatewayRuntimeConfig(
     mock_trusted_openid: mockTrustedOpenid,
     match_cursor_secret: rawSecret,
     public_source: LOCAL_PUBLIC_SOURCE,
+    repository_backend: repositoryBackend,
+    cloudbase_repository: cloudbaseRepository,
   };
 }

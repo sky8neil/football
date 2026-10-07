@@ -213,6 +213,7 @@ function makeSeasonStats(
     valid_predictions: 20,
     wdl_hits: 10,
     exact_hits: 5,
+    last_scoring_match_at: NOW,
     level: 3,
     best_level: 4,
     level_state: defaultLevelState(),
@@ -409,6 +410,7 @@ describe("RebuildUserStatsService", () => {
           valid_predictions: 2,
           wdl_hits: 1,
           exact_hits: 0,
+          last_scoring_match_at: WEEK_ANCHOR,
           level: 1,
           best_level: 4,
         }),
@@ -418,6 +420,7 @@ describe("RebuildUserStatsService", () => {
           valid_predictions: 0,
           wdl_hits: 0,
           exact_hits: 0,
+          last_scoring_match_at: null,
           level: 1,
           best_level: 4,
         }),
@@ -808,6 +811,28 @@ describe("RebuildPeriodRankingsService", () => {
       expect.objectContaining({ board: RankingBoard.Career, user_id: "u1", rank: 1 }),
     ]);
     await expect(repo.boardSnapshots.findByBoardAndSnapshotAt(RankingBoard.Career, NOW))
+      .resolves.toHaveLength(1);
+  });
+
+  it("rebuildBoardSnapshot writes a new season snapshot version", async () => {
+    const repo = new InMemoryRepository();
+    await repo.users.insert(makeUser("u1"));
+    await repo.userSeasonStats.insert(makeSeasonStats("u1", "2026_2027"));
+
+    const outcome = await new RebuildPeriodRankingsService(repo).rebuildBoardSnapshot(
+      RankingBoard.Season,
+      NOW,
+    );
+
+    expect(outcome.snapshots).toEqual([
+      expect.objectContaining({
+        board: RankingBoard.Season,
+        level_season_id: "2026_2027",
+        user_id: "u1",
+        rank: 1,
+      }),
+    ]);
+    await expect(repo.boardSnapshots.findByBoardAndSnapshotAt(RankingBoard.Season, NOW))
       .resolves.toHaveLength(1);
   });
 });

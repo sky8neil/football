@@ -40,6 +40,7 @@ function makeSeasonStats(overrides: Partial<UserSeasonStats> = {}): UserSeasonSt
     valid_predictions: 20,
     wdl_hits: 12,
     exact_hits: 3,
+    last_scoring_match_at: NOW,
     level: 4,
     best_level: 5,
     level_state: defaultLevelState(),

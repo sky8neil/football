@@ -56,6 +56,7 @@ export const RankingBoard = {
   Week: "week",
   Career: "career",
   Strength: "strength",
+  Season: "season",
 } as const;
 export type RankingBoard = (typeof RankingBoard)[keyof typeof RankingBoard];
 
@@ -159,6 +160,8 @@ export const SyncJobType = {
   LevelCorrectionReeval: "level_correction_reeval",
   BoardSnapshotCareer: "board_snapshot_career",
   BoardSnapshotStrength: "board_snapshot_strength",
+  BoardSnapshotSeason: "board_snapshot_season",
+  BoardSnapshotSeasonFinal: "board_snapshot_season_final",
 } as const;
 export type SyncJobType = (typeof SyncJobType)[keyof typeof SyncJobType];
 

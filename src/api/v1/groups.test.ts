@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { GroupStatus } from "../../domain/enums.js";
 import { conflictError, groupError, validationError } from "../../domain/errors.js";
-import type { GroupListItem, GroupMutationResult, MyGroupsResult } from "../../application/groups.js";
+import type { GroupDetail, GroupListItem, GroupMutationResult, MyGroupsResult } from "../../application/groups.js";
 import {
   createGroup,
   dissolveGroup,
@@ -66,16 +66,19 @@ describe("/v1/groups API", () => {
       leaveGroup: vi.fn(async () => undefined),
       dissolveGroup: vi.fn(async () => undefined),
       listMyGroups: vi.fn(async (): Promise<MyGroupsResult> => ({ items: [], has_more: false, next_cursor: null })),
-      getGroup: vi.fn(async (): Promise<GroupListItem> => ({
+      getGroup: vi.fn(async (): Promise<GroupDetail> => ({
         group_id: GROUP_ID, display_name: "Sky的预言群", owner_user_id: USER_ID, role: "owner",
-        member_count: 1, status: GroupStatus.Active, joined_at: NOW.toISOString(),
+        member_count: 1, status: GroupStatus.Active, joined_at: NOW.toISOString(), invite_code: "ABCDEFGH",
       })),
     };
     const common = { authenticated_user_id: USER_ID, server_now: NOW, request_id: "r", rate_limiter: new InMemoryRateLimiter() };
     await expect(leaveGroup(service, { ...common, group_id: GROUP_ID })).resolves.toEqual({ status: 204 });
     await expect(dissolveGroup(service, { ...common, group_id: GROUP_ID })).resolves.toEqual({ status: 204 });
     await expect(getMyGroups(service, common)).resolves.toMatchObject({ status: 200, body: { data: { items: [], page: { next_cursor: null, has_more: false } } } });
-    await expect(getGroup(service, { ...common, group_id: GROUP_ID })).resolves.toMatchObject({ status: 200, body: { data: { group_id: GROUP_ID } } });
+    await expect(getGroup(service, { ...common, group_id: GROUP_ID })).resolves.toMatchObject({
+      status: 200,
+      body: { data: { group_id: GROUP_ID, invite_code: "ABCDEFGH" } },
+    });
   });
 
   it("passes limit and cursor through and returns the real page envelope", async () => {
@@ -123,9 +126,9 @@ describe("/v1/groups API", () => {
 
   it("routes group detail reads through the authenticated-read bucket", async () => {
     const service = {
-      getGroup: vi.fn(async (): Promise<GroupListItem> => ({
+      getGroup: vi.fn(async (): Promise<GroupDetail> => ({
         group_id: GROUP_ID, display_name: "Sky的预言群", owner_user_id: USER_ID, role: "owner",
-        member_count: 1, status: GroupStatus.Active, joined_at: NOW.toISOString(),
+        member_count: 1, status: GroupStatus.Active, joined_at: NOW.toISOString(), invite_code: "ABCDEFGH",
       })),
     };
     const limiter = { check: vi.fn() };

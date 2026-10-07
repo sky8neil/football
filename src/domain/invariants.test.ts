@@ -5,6 +5,7 @@ import {
   assertMatchResultVersionInvariants,
   assertPredictionInvariants,
   assertRankingInvariants,
+  assertBoardSnapshotInvariants,
   assertSchemaVersion,
   assertSeasonStatsInvariants,
   assertSettlementDocumentInvariant,
@@ -22,6 +23,7 @@ import type {
   SettlementItem,
   User,
   UserSeasonStats,
+  BoardSnapshot,
 } from "./types.js";
 
 describe("LevelHistoryReason", () => {
@@ -85,6 +87,7 @@ describe("核心 invariant 入口强制 schema_version", () => {
       valid_predictions: 0,
       wdl_hits: 0,
       exact_hits: 0,
+      last_scoring_match_at: null,
       level_state: defaultLevelState(),
       is_level_frozen: false,
       updated_at: new Date("2026-08-01T00:00:00Z"),
@@ -120,6 +123,61 @@ describe("核心 invariant 入口强制 schema_version", () => {
         valid_predictions: 19,
       } as UserSeasonStats),
     ).toThrow(expect.objectContaining({ code: "INTERNAL_ERROR" }));
+  });
+
+  it("season stats 的零积分并列键必须为空", () => {
+    const stats: UserSeasonStats = {
+      schema_version: SCHEMA_VERSION,
+      user_id: newUuid(),
+      level_season_id: "2026_2027",
+      points: 0,
+      valid_predictions: 1,
+      wdl_hits: 0,
+      exact_hits: 0,
+      last_scoring_match_at: new Date("2026-08-01T00:00:00Z"),
+      level: 1,
+      best_level: 1,
+      level_state: defaultLevelState(),
+      is_level_frozen: false,
+      created_at: new Date("2026-08-01T00:00:00Z"),
+      updated_at: new Date("2026-08-01T00:00:00Z"),
+    };
+    expect(() => assertSeasonStatsInvariants(stats)).toThrow(
+      expect.objectContaining({ code: "INTERNAL_ERROR" }),
+    );
+  });
+
+  it("season 快照必须带完整 season 字段且不携带其它榜字段", () => {
+    const snapshot: BoardSnapshot = {
+      schema_version: SCHEMA_VERSION,
+      snapshot_id: newUuid(),
+      board: "season",
+      snapshot_at: new Date("2026-08-01T00:00:00Z"),
+      level_season_id: "2026_2027",
+      is_final: false,
+      user_id: newUuid(),
+      rank: 1,
+      career_points: null,
+      career_exact_hits: null,
+      career_valid_predictions: null,
+      career_last_scoring_match_at: null,
+      window_score_sum: null,
+      window_n: null,
+      season_points: 0,
+      season_exact_hits: 0,
+      season_valid_predictions: 1,
+      season_last_scoring_match_at: null,
+      created_at: new Date("2026-08-01T00:00:00Z"),
+    };
+    expect(() => assertBoardSnapshotInvariants(snapshot)).not.toThrow();
+    expect(() => assertBoardSnapshotInvariants({
+      ...snapshot,
+      level_season_id: null,
+    })).toThrow(expect.objectContaining({ code: "INTERNAL_ERROR" }));
+    expect(() => assertBoardSnapshotInvariants({
+      ...snapshot,
+      career_points: 1,
+    })).toThrow(expect.objectContaining({ code: "INTERNAL_ERROR" }));
   });
 
   it("§40 仅 rebuild 允许 level_history 跨级", () => {
@@ -331,6 +389,7 @@ describe("核心 invariant 入口强制 schema_version", () => {
       valid_predictions: 0,
       wdl_hits: 0,
       exact_hits: 0,
+      last_scoring_match_at: null,
       level: 8,
       best_level: 8,
       level_state: defaultLevelState(),
