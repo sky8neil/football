@@ -55,8 +55,12 @@
         <button class="text-action" bindtap="onGroupsTap">全部</button>
       </view>
       <view wx:if="{{!hasGroups}}" class="empty-groups">
-        <text>加入群后可查看群内排行榜</text>
-        <button bindtap="onGroupsTap">查看群</button>
+        <text>{{emptyGroupsText}}</text>
+        <view class="actions">
+          <button bindtap="onJoinGroupTap">{{joinGroupText}}</button>
+          <button bindtap="onCreateGroupTap" loading="{{groupCreating}}" disabled="{{groupCreating}}">{{createGroupText}}</button>
+        </view>
+        <view wx:if="{{errorMessage}}">{{errorMessage}}</view>
       </view>
       <view
         wx:for="{{groups}}"

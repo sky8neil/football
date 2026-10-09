@@ -1391,6 +1391,7 @@ components:
           minimum: 0
         available_level_seasons:
           type: array
+          description: 仅列出至少有 1 名入榜者的当前赛季、上赛季及历史终榜赛季，按赛季倒序；空赛季和仅含 head 的赛季不列出
           items:
             type: string
             pattern: '^[0-9]{4}_[0-9]{4}$'

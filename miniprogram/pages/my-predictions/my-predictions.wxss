@@ -137,3 +137,10 @@
   margin-top: var(--space-4);
   color: var(--text-danger);
 }
+
+.history-end {
+  margin-top: var(--space-5);
+  color: var(--text-muted);
+  font-size: var(--font-22);
+  text-align: center;
+}

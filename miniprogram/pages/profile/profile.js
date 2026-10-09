@@ -1,6 +1,6 @@
 const { getMyProfile } = require("../../services/profile.js");
 const { getMyLevels } = require("../../services/levels.js");
-const { listMyGroups } = require("../../services/groups.js");
+const { listMyGroups, createGroup } = require("../../services/groups.js");
 const COPY = require("../../utils/rankings-copy.js");
 
 function applyErrorState(page, result) {
@@ -64,6 +64,10 @@ Page({
     previousSeasonRecap: "",
     groups: [],
     hasGroups: false,
+    groupCreating: false,
+    emptyGroupsText: COPY.profileEmptyGroups,
+    joinGroupText: COPY.joinGroup,
+    createGroupText: COPY.createGroup,
   },
 
   onShow() {
@@ -116,7 +120,8 @@ Page({
         levelsCareerLevel: String(career.level),
         levelsCareerBestLevel: String(career.best_level),
         previousSeasonRecap: profile.previous_season
-          ? COPY.recap(profile.previous_season.points, profile.previous_season.best_level)
+          ? COPY.recapDetails(profile.previous_season.points, profile.previous_season.best_level,
+            profile.previous_season.valid_predictions)
           : "",
         groups: groups.map((group) => ({
           ...group,
@@ -133,6 +138,22 @@ Page({
 
   onGroupsTap() {
     wx.navigateTo({ url: "/pages/groups/groups" });
+  },
+
+  onJoinGroupTap() {
+    wx.navigateTo({ url: "/pages/groups/join" });
+  },
+
+  onCreateGroupTap() {
+    this.setData({ groupCreating: true, errorMessage: "" });
+    return createGroup().then((result) => {
+      this.setData({ groupCreating: false });
+      if (result.statusCode !== 201) {
+        this.setData({ errorMessage: result.message || COPY.groupActionFailed });
+        return;
+      }
+      wx.navigateTo({ url: `/pages/groups/detail?group_id=${result.data.group_id}&created=1&owned_count=1` });
+    });
   },
 
   onGroupTap(event) {

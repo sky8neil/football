@@ -15,16 +15,16 @@
       <view class="group-role">{{group.role === 'owner' ? ownerText : memberText}} · {{group.memberCountText}}</view>
       <view class="invite-label">{{inviteCodeLabel}}</view>
       <view class="invite-code">{{group.formattedInviteCode}}</view>
-      <view wx:if="{{isCreationSuccess}}" class="share-hint">邀请码在群设置里随时可查看</view>
+      <view wx:if="{{isCreationSuccess}}" class="share-hint">{{inviteHintText}}</view>
       <view class="share-actions">
         <button class="share-button" open-type="share">{{shareText}}</button>
         <button class="copy-button" bindtap="onCopyInviteTap">{{copyText}}</button>
       </view>
     </view>
     <view class="group-facts">
-      <view class="fact-row"><text>群成员</text><text>{{group.memberCapacityText}}</text></view>
-      <view class="fact-row"><text>群榜单</text><text>成员有预测后出现</text></view>
-      <view wx:if="{{isCreationSuccess}}" class="fact-row"><text>我创建的群</text><text>{{ownedCountText}}</text></view>
+      <view class="fact-row"><text>{{membersLabel}}</text><text>{{group.memberCapacityText}}</text></view>
+      <view class="fact-row"><text>{{rankingLabel}}</text><text>{{rankingHintText}}</text></view>
+      <view wx:if="{{isCreationSuccess}}" class="fact-row"><text>{{ownedLabel}}</text><text>{{ownedCountText}}</text></view>
     </view>
     <view wx:if="{{errorMessage}}" class="inline-error">{{errorMessage}}</view>
     <view class="management-actions">

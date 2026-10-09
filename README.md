@@ -4,9 +4,9 @@
 
 ## 项目现状
 
-- **后端核心（业务规范 v2.0）已完成**：等级 v3.0（周评估 / 赛季冻结 / 修正重评）、三榜（周榜 / 生涯榜 / 实力榜）、等级赛季、群组与群榜、分享卡、结算账本、统计与榜单重建、每日一致性对账、Provider 同步与调度、管理端接口。
-- **验证基线**：130 个测试文件、1303 项用例全绿；`typecheck` / 全量测试 / `build` / `git diff --check` 均通过。
-- **小程序**：7 个页面 + 4 个 tabBar 栏目；视觉系统已 token 化（Design System V1）；服务层按 OpenAPI 契约经网关访问。
+- **后端核心（业务规范 v2.0）已完成**：等级 v3.0（周评估 / 赛季冻结 / 修正重评）、四榜（周榜 / 生涯榜 / 实力榜 / 赛季榜）与赛季终榜、等级赛季、群组与群榜、分享卡、结算账本、统计与榜单重建、每日一致性对账、Provider 同步与调度、管理端接口。
+- **验证基线（2026-10-09）**：142 个测试文件、1413 项用例全绿；`typecheck` / 全量测试 / `build` / `git diff --check` 均通过。逐项修复和未实测范围见 [review 修复交付记录](docs/MVP2.0__COMPLIANCE_FIX_DELIVERY__v1.0.md)。
+- **小程序**：10 个页面 + 3 个 tabBar 栏目（比赛 / 排行榜 / 我的）；最近预测是「我的」中的子页面；视觉系统已 token 化（Design System V1）；服务层按 OpenAPI 契约经网关访问。
 - **现状边界**：真实 CloudBase、微信运行时与 Provider 生产 key 的接线与验证不在本地实现范围内；当前验证由内存参照仓储 + 单元/契约测试完成。
 
 ## 文档入口
@@ -72,9 +72,9 @@
 
 ### 小程序（微信）
 
-- 页面：`session`、`matches`（视觉母版页）、`match-detail`、`my-predictions`、`profile`、`unlocks`、`rankings`；tabBar：比赛、我的预测、排行榜、我的。
-- 服务层 `miniprogram/services/` 按 OpenAPI 契约经网关访问（`config.gatewayOrigin`）；比赛页当前以本地夹具驱动 UI 开发。
-- 排行榜页支持三榜切换并展示「我的排行」块（ranked / not_participated / below_threshold）。
+- 页面：`session`、`matches`（视觉母版页）、`match-detail`、`my-predictions`、`profile`、`unlocks`、`rankings`、`groups/groups`、`groups/join`、`groups/detail`；tabBar：比赛、排行榜、我的。
+- 服务层 `miniprogram/services/` 按 OpenAPI 契约经网关访问（`config.gatewayOrigin`）；比赛页读取网关接口，本地调试数据由网关种子提供。
+- 排行榜页支持四榜切换（周榜 / 生涯榜 / 实力榜 / 赛季榜），按 `available_boards` 显隐，并展示「我的排行」块（ranked / not_participated / below_threshold / not_eligible）。
 - Logo 资源经 `logo-registry.js` 查询：`getTeamLogo(leagueId, teamId)` / `getLeagueLogo(leagueId)`；资源规格见下文。
 
 ## 前端开发规范
@@ -200,7 +200,7 @@
    FOOTBALL_SEED_SCENARIO=thin2 npm run gateway:dev
    ```
 
-   可用值：`normal`、`empty`、`thin1`、`thin2`、`thin5`、`no-group`、`first-season`、`new-season`、`predictions-long`。
+   可用值：`normal`、`empty`、`thin1`、`thin2`、`thin5`、`no-group`、`first-season`、`new-season`、`new-season-final`、`predictions-long`。其中 `new-season` 演示上赛季临时榜（R11），`new-season-final` 演示上赛季终榜（R10）。
 4. 查看游客状态时，清空本地可信身份后启动；排行榜会收到未登录响应并显示游客视图：
 
    ```sh

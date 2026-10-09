@@ -1,7 +1,7 @@
 <view class="page">
   <view class="page-header">
     <view class="page-title">{{title}}</view>
-    <view class="page-subtitle">和熟悉的人，一起看球</view>
+    <view class="page-subtitle">{{subtitleText}}</view>
   </view>
   <view wx:if="{{state === 'loading'}}" class="loading"></view>
   <view wx:elif="{{state === 'error'}}" class="error">
@@ -10,11 +10,10 @@
   </view>
   <view wx:elif="{{state === 'ready'}}">
     <view wx:if="{{groups.length === 0}}" class="empty-hero">
-      <view class="group-mark">群</view>
+      <view class="group-mark">{{groupMarkText}}</view>
       <view class="hero-title">{{emptyText}}</view>
       <view class="hero-copy">
-        <view>每个群独立排名，</view>
-        <view>在群里和朋友比一比谁更懂球</view>
+        <view>{{descriptionText}}</view>
       </view>
     </view>
     <view wx:if="{{groups.length > 0}}" class="group-list">
@@ -32,26 +31,24 @@
         <view class="action-mark create-mark">+</view>
         <view class="action-copy">
           <view class="action-title">{{createText}}</view>
-          <view class="action-subtitle">群名自动使用你的昵称 · 最多创建 5 个</view>
+          <view class="action-subtitle">{{createHintText}}</view>
         </view>
         <view class="action-arrow">›</view>
       </button>
       <button wx:if="{{canJoin}}" class="action-card" bindtap="onJoinTap">
-        <view class="action-mark join-mark">码</view>
+        <view class="action-mark join-mark">{{codeMarkText}}</view>
         <view class="action-copy">
           <view class="action-title">{{joinText}}</view>
-          <view class="action-subtitle">向群主要一个 8 位邀请码 · 最多加入 20 个群</view>
+          <view class="action-subtitle">{{joinHintText}}</view>
         </view>
         <view class="action-arrow">›</view>
       </button>
     </view>
 
     <view class="group-rules">
-      <view>群不依赖微信好友关系，通过邀请码加入</view>
-      <view>每个群最多 500 位成员</view>
-      <view>群里的排名只和群内成员比较</view>
+      <view wx:for="{{rules}}" wx:key="*this">{{item}}</view>
     </view>
     <view wx:if="{{errorMessage}}" class="inline-error">{{errorMessage}}</view>
-    <view class="group-limits">已加入 {{joinedCountText}} 个 · 已创建 {{ownedCountText}} 个</view>
+    <view class="group-limits">{{usageText}}</view>
   </view>
 </view>

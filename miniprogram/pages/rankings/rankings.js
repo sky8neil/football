@@ -71,6 +71,7 @@ Page({
     selectedWeekIndex: 0,
     availableLevelSeasons: [],
     selectedLevelSeasonId: null,
+    currentLevelSeasonId: null,
     selectedSeasonIndex: 0,
     entryCount: 0,
     view: {},
@@ -83,6 +84,7 @@ Page({
     inviteButtonText: COPY.scopeGroup,
     inviteActionText: COPY.inviteAction,
     goPredictText: COPY.goPredict,
+    weekWindowHint: COPY.weekWindowHint,
     items: [],
     listItems: [],
     me: null,
@@ -195,7 +197,7 @@ Page({
     if (scope !== "group") return;
     if (
       this.data.board === "season" &&
-      this.data.selectedLevelSeasonId !== this.data.availableLevelSeasons[0]
+      this.data.selectedLevelSeasonId !== this.data.currentLevelSeasonId
     ) return;
     if (this.data.groups.length === 0) {
       wx.navigateTo({ url: "/pages/groups/groups" });
@@ -222,7 +224,7 @@ Page({
     const seasonId = this.data.availableLevelSeasons[Number(event.detail.value)];
     if (!seasonId || seasonId === this.data.selectedLevelSeasonId) return;
     const selectedIndex = this.data.availableLevelSeasons.indexOf(seasonId);
-    const scope = selectedIndex > 0 ? "global" : this.data.scope;
+    const scope = seasonId !== this.data.currentLevelSeasonId ? "global" : this.data.scope;
     this.setData({
       selectedLevelSeasonId: seasonId,
       selectedSeasonIndex: selectedIndex,
@@ -339,9 +341,10 @@ Page({
       selectedPeriodKey: payload.period_key,
       availableLevelSeasons,
       selectedLevelSeasonId,
+      currentLevelSeasonId: view.currentLevelSeasonId,
       selectedSeasonIndex,
       showGroupScope: this.data.board !== "season" ||
-        selectedLevelSeasonId === availableLevelSeasons[0],
+        selectedLevelSeasonId === view.currentLevelSeasonId,
       hasMore: page.has_more === true,
       nextCursor: page.next_cursor === undefined ? null : page.next_cursor,
       availableBoards,

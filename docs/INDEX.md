@@ -23,6 +23,8 @@
 
 ## Review、迁移与复核
 
+- [MVP2.0__COMPLIANCE_REVIEW__v1.0.md](MVP2.0__COMPLIANCE_REVIEW__v1.0.md)：赛季榜与 Luna 更新第三方静态核对报告。
+- [MVP2.0__COMPLIANCE_FIX_DELIVERY__v1.0.md](MVP2.0__COMPLIANCE_FIX_DELIVERY__v1.0.md)：逐项复核、功能修复、自动化验证与开发者工具未实测记录。
 - `REVERSE_REVIEW__v1.0.md`：反向 Review 结论与产品裁决记录。
 - `SEC49_DIFF_REVIEW__v1.0.md`、`SEC49_FIX_RECHECK__v1.0.md`：第 49 节差异 Review 与复核。
 - `MIGRATION__D-P1__deleted_openid_mappings__v1.0.md`：注销身份映射迁移、回滚与验证边界。

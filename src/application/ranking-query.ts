@@ -16,6 +16,7 @@ import {
   compareRankingEntry,
   countSeasonsParticipated,
   isSeasonBoardVisible,
+  isSeasonRankEligible,
 } from "../domain/ranking.js";
 import {
   calculatePeriodKey,
@@ -693,7 +694,7 @@ export class RankingQueryService {
       );
       seasonsParticipated = countSeasonsParticipated(seasonStats);
       userParticipatedInSelectedSeason = seasonStats.some(
-        (stats) => stats.level_season_id === selectedSeasonId && stats.valid_predictions >= 1,
+        (stats) => stats.level_season_id === selectedSeasonId && isSeasonRankEligible(stats.valid_predictions),
       );
     }
     const isHistoricalWeek = input.board === RankingBoard.Week &&
@@ -759,11 +760,17 @@ export class RankingQueryService {
       previous_season_entry_count: previousSeasonEntries.length,
       selected_season_entry_count: selectedSeasonEntries.length,
     });
-    const availableLevelSeasons = [...new Set([
-      currentLevelSeasonId,
-      previousSeasonId,
-      ...finalSeasonIds,
-    ])].sort((a, b) => b.localeCompare(a));
+    const historicalFinalSeasons = await Promise.all(finalSeasonIds
+      .filter((seasonId) => seasonId !== currentLevelSeasonId && seasonId !== previousSeasonId)
+      .map(async (seasonId) => {
+        const snapshots = await this.repo.boardSnapshots!.findFinalBySeason(seasonId);
+        return snapshots.some((snapshot) => snapshot.snapshot_kind !== "head") ? seasonId : null;
+      }));
+    const availableLevelSeasons = [
+      ...(currentSeasonGlobalEntries.length > 0 ? [currentLevelSeasonId] : []),
+      ...(previousSeasonEntries.length > 0 ? [previousSeasonId] : []),
+      ...historicalFinalSeasons.filter((seasonId) => seasonId !== null),
+    ].sort((a, b) => b.localeCompare(a));
 
     const topLimit = FIXED_CONFIG_V1.RANKING_TOP_LIMIT;
     const pageSize = Math.min(FIXED_CONFIG_V1.RANKING_PAGE_SIZE, input.limit);

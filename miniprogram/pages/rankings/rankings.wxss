@@ -120,6 +120,13 @@
   font-size: var(--font-22);
 }
 
+.week-hint {
+  margin-top: var(--space-5);
+  color: var(--text-muted);
+  font-size: var(--font-22);
+  text-align: center;
+}
+
 .updated {
   margin: var(--space-2) 0 var(--space-5);
   text-align: right;

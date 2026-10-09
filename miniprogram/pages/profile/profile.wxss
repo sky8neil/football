@@ -131,12 +131,17 @@
 
 .empty-groups {
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-4);
   padding: var(--space-5) 0;
   color: var(--text-secondary);
   font-size: var(--font-22);
+}
+
+.empty-groups .actions {
+  width: 100%;
 }
 
 .empty-groups button {

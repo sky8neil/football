@@ -121,6 +121,7 @@ function buildRankingViewModel(input = {}) {
     ? "top20"
     : count > 0 ? "all_n" : "none";
   return {
+    currentLevelSeasonId: currentSeasonId(input.serverNow),
     tabs: availableBoards,
     weekOptions: buildWeekOptions(payload.current_period_key),
     showPodium: count >= 3,

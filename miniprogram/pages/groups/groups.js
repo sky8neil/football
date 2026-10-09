@@ -19,6 +19,13 @@ Page({
     joinText: COPY.joinGroup,
     loadFailedText: COPY.groupLoadFailed,
     retryText: COPY.groupRetry,
+    subtitleText: COPY.groupSubtitle,
+    groupMarkText: COPY.groupMark,
+    codeMarkText: COPY.groupCodeMark,
+    descriptionText: COPY.groupDescription,
+    createHintText: COPY.groupCreateHint,
+    joinHintText: COPY.groupJoinHint,
+    rules: COPY.groupRules,
   },
 
   onShow() {
@@ -46,6 +53,7 @@ Page({
         ownedCount,
         joinedCountText: `${groups.length} / ${MAX_JOINED_GROUPS}`,
         ownedCountText: `${ownedCount} / ${MAX_OWNED_GROUPS}`,
+        usageText: COPY.groupUsage(`${groups.length} / ${MAX_JOINED_GROUPS}`, `${ownedCount} / ${MAX_OWNED_GROUPS}`),
         errorMessage: "",
       });
     });

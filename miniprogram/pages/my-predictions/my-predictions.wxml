@@ -8,8 +8,8 @@
   <view wx:elif="{{state === 'userDeleted'}}" class="state-panel">{{errorMessage}}</view>
   <view wx:elif="{{state === 'userNotFound'}}" class="state-panel">{{errorMessage}}</view>
   <view wx:elif="{{state === 'empty'}}" class="empty-state">
-    <text>还没有预测记录</text>
-    <button bindtap="onMatchesTap">去看比赛</button>
+    <text>{{emptyText}}</text>
+    <button bindtap="onMatchesTap">{{goPredictText}}</button>
   </view>
   <view wx:elif="{{state === 'error'}}" class="state-panel">
     <text>{{errorMessage}}</text>
@@ -48,5 +48,6 @@
     <button wx:if="{{hasMore}}" class="more" bindtap="onMore" disabled="{{loadingMore}}">
       {{loadingMore ? '加载中…' : '加载更多'}}
     </button>
+    <view wx:if="{{!hasMore && !errorMessage}}" class="history-end">{{endText}}</view>
   </view>
 </view>

@@ -1,5 +1,6 @@
 const { listMatches } = require("../../services/matches.js");
 const { listMyPredictions } = require("../../services/predictions.js");
+const COPY = require("../../utils/rankings-copy.js");
 const { getTeamLogo, getLeagueLogo } = require("../../utils/logo-registry.js");
 const {
   formatShanghaiKickoff,
@@ -87,6 +88,9 @@ Page({
     hasMore: false,
     nextCursor: null,
     loadingMore: false,
+    emptyText: COPY.predictionsEmpty,
+    goPredictText: COPY.goPredict,
+    endText: COPY.predictionsEnd,
   },
 
   requestSerial: 0,

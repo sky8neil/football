@@ -62,7 +62,7 @@
       <view class="me-title">我的排行</view>
       <view class="me-status">{{me.statusText}}</view>
       <view wx:if="{{me.status === 'not_eligible'}}" class="me-detail">已参与等级赛季 {{me.seasons_participated}} 个</view>
-      <view wx:if="{{me.status === 'ranked' && me.rank !== null}}" class="me-detail">第 {{me.rank}} 名</view>
+      <view wx:if="{{me.status === 'ranked' && me.rank !== null}}" class="me-detail">第 {{me.rank}} 名<text wx:if="{{board === 'strength'}}"> · 共 {{entryCount}} 人</text></view>
       <view wx:if="{{me.status === 'ranked' && me.top_percent !== null}}" class="me-detail">全站前 {{me.top_percent}}%</view>
       <view wx:if="{{me.status === 'below_threshold'}}" class="me-detail">还需有效预测 {{me.remaining_valid_predictions}} 场</view>
     </view>
@@ -99,5 +99,6 @@
     <button wx:if="{{hasMore}}" class="more" bindtap="onMore" disabled="{{loadingMore}}">
       {{loadingMore ? '加载中…' : '加载更多'}}
     </button>
+    <view wx:if="{{board === 'week'}}" class="week-hint">{{weekWindowHint}}</view>
   </view>
 </view>

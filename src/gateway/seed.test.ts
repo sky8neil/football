@@ -101,6 +101,18 @@ describe("local gateway seed scenarios", () => {
     });
   });
 
+  it("new-season-final exposes the previous season final without an empty current-season option", async () => {
+    const { repo, user } = await seeded("new-season-final");
+    const result = await query(repo, user!.user_id);
+    expect(result).toMatchObject({
+      level_season_id: "2025_2026",
+      is_provisional: false,
+      entry_count: 24,
+      available_level_seasons: ["2025_2026"],
+    });
+    expect(await repo.boardSnapshots.findFinalBySeason("2025_2026")).toHaveLength(24);
+  });
+
   it("predictions-long seeds history across at least eight weeks", async () => {
     const { repo, user } = await seeded("predictions-long");
     const predictions = await repo.predictions.findByUser(user!.user_id);

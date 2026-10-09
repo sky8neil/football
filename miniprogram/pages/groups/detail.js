@@ -19,6 +19,11 @@ Page({
     inviteCodeLabel: COPY.groupInviteCodeLabel,
     copyText: COPY.copyInviteCode,
     retryText: COPY.groupRetry,
+    inviteHintText: COPY.groupInviteHint,
+    membersLabel: COPY.groupMembersLabel,
+    rankingLabel: COPY.groupRankingLabel,
+    rankingHintText: COPY.groupRankingHint,
+    ownedLabel: COPY.groupOwnedLabel,
   },
 
   onLoad(options) {

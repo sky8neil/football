@@ -82,7 +82,7 @@
     </view>
     <view wx:if="{{formError}}" class="error-message">{{formError}}</view>
 
-    <!-- TODO(crowd): crowd data is not part of the current API contract. -->
+    <!-- TODO(crowd): S14 backend is ready; mini program integration is a separate slice. -->
     <view wx:if="{{showCrowd}}" class="crowd-placeholder">大家怎么选</view>
   </view>
 </view>

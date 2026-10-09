@@ -33,6 +33,7 @@ export const GATEWAY_SEED_SCENARIOS = [
   "no-group",
   "first-season",
   "new-season",
+  "new-season-final",
   "predictions-long",
 ] as const;
 
@@ -304,7 +305,7 @@ export async function seedRankingLeaderboard(
       const previousStats = makeUserSeasonStats(userId, previousSeasonId, previousSeasonFinalAt, careerPoints);
       if (scenario === "first-season") {
         await repo.userSeasonStats.insert(currentStats);
-      } else if (scenario === "new-season") {
+      } else if (scenario === "new-season" || scenario === "new-season-final") {
         await repo.userSeasonStats.insert(makeUserSeasonStats(
           userId,
           secondPreviousSeasonId,
@@ -317,7 +318,13 @@ export async function seedRankingLeaderboard(
           userId,
           row.globalRank,
           previousSeasonFinalAt,
-          { levelSeasonId: previousSeasonId, seasonPoints: careerPoints, validPredictions: 30, exactHits: 6 },
+          {
+            levelSeasonId: previousSeasonId,
+            seasonPoints: careerPoints,
+            validPredictions: 30,
+            exactHits: 6,
+            isFinal: scenario === "new-season-final",
+          },
         ));
       } else {
         await repo.userSeasonStats.insert(previousStats);

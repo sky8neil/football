@@ -17,6 +17,7 @@ import {
 } from "./ranking-query.js";
 import { GroupsService } from "./groups.js";
 import { RebuildPeriodRankingsService } from "./ranking-rebuild-service.js";
+import { BoardSnapshotService } from "./board-snapshot.js";
 
 const NOW = new Date("2026-08-09T12:00:00.000Z");
 const WEEK_KEY = "2026-W32";
@@ -372,6 +373,7 @@ describe("RankingQueryService v2", () => {
       updated_at: null,
       entry_count: 0,
       items: [],
+      available_level_seasons: [],
     });
   });
 
@@ -392,6 +394,7 @@ describe("RankingQueryService v2", () => {
       entry_count: 0,
       items: [],
       available_boards: [RankingBoard.Week],
+      available_level_seasons: [],
     });
   });
 
@@ -432,8 +435,37 @@ describe("RankingQueryService v2", () => {
       updated_at: final.snapshot_at.toISOString(),
       entry_count: 1,
       items: [{ rank: 3, display_name: "已注销用户", season_points: 36 }],
-      available_level_seasons: ["2026_2027", "2025_2026"],
+      available_level_seasons: ["2025_2026"],
     });
+  });
+
+  it("lists only nonempty current, previous and final seasons, retaining deleted historical entrants", async () => {
+    const repo = new InMemoryRepository();
+    await repo.users.insert(makeUser(id(1)));
+    await repo.users.insert(makeUser(id(2), { status: UserStatus.Deleted, deleted_at: NOW }));
+    await repo.boardSnapshots.insert(makeSeasonSnapshot(id(1), 1, 24));
+    await repo.boardSnapshots.insert(makeSeasonSnapshot(id(1), 1, 24, "2025_2026", new Date("2026-06-30T00:00:00Z")));
+    await repo.boardSnapshots.insert({
+      ...makeSeasonSnapshot(id(2), 1, 24, "2024_2025"),
+      is_final: true,
+    });
+    await new BoardSnapshotService(repo).generateSeasonFinal("2023_2024", NOW);
+    const result = await new RankingQueryService(repo, SECRET).list(query({
+      board: RankingBoard.Season,
+      period_key: null,
+    }));
+    expect(result.available_level_seasons).toEqual(["2026_2027", "2025_2026", "2024_2025"]);
+  });
+
+  it("omits a current season whose only entrant has been deleted", async () => {
+    const repo = new InMemoryRepository();
+    await repo.users.insert(makeUser(id(1), { status: UserStatus.Deleted, deleted_at: NOW }));
+    await repo.boardSnapshots.insert(makeSeasonSnapshot(id(1), 1, 24));
+    const result = await new RankingQueryService(repo, SECRET).list(query({
+      board: RankingBoard.Season,
+      period_key: null,
+    }));
+    expect(result.available_level_seasons).toEqual([]);
   });
 
   it("paginates an explicit historical final season snapshot", async () => {

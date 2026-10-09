@@ -27,6 +27,7 @@ import {
   userStatsRebuildLockKey,
 } from "./stats-rebuild-service.js";
 import { defaultLevelState } from "../domain/types.js";
+import { BoardSnapshotService } from "./board-snapshot.js";
 import { buildLevelInputs } from "../domain/levels.js";
 import {
   RebuildPeriodRankingsService,
@@ -834,5 +835,22 @@ describe("RebuildPeriodRankingsService", () => {
     ]);
     await expect(repo.boardSnapshots.findByBoardAndSnapshotAt(RankingBoard.Season, NOW))
       .resolves.toHaveLength(1);
+  });
+
+  it("rebuilding season snapshots preserves frozen final rows after season stats change", async () => {
+    const repo = new InMemoryRepository();
+    await repo.users.insert(makeUser("u1"));
+    const previousStats = makeSeasonStats("u1", "2025_2026");
+    await repo.userSeasonStats.insert(previousStats);
+    await new BoardSnapshotService(repo).generateSeasonFinal("2025_2026", NOW);
+    const frozen = structuredClone(await repo.boardSnapshots.findFinalBySeason("2025_2026"));
+    expect(frozen).toHaveLength(1);
+    await repo.userSeasonStats.update({ ...previousStats, points: previousStats.points + 12 });
+    await repo.userSeasonStats.insert(makeSeasonStats("u1", "2026_2027"));
+
+    const rebuilt = await new RebuildPeriodRankingsService(repo).rebuildBoardSnapshot(RankingBoard.Season, NOW);
+
+    expect(rebuilt.snapshots[0]).toMatchObject({ level_season_id: "2026_2027", is_final: false });
+    expect(await repo.boardSnapshots.findFinalBySeason("2025_2026")).toEqual(frozen);
   });
 });
