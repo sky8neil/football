@@ -1,23 +1,84 @@
 .page {
-  padding: 32rpx;
+  min-height: 100vh;
+  padding: var(--space-8) var(--page-padding-inline) var(--page-padding-bottom);
+  color: var(--text-primary);
+  background: var(--surface-page);
 }
 
-.page-title {
-  margin-bottom: 24rpx;
+.page-header { margin-bottom: var(--space-8); }
+.page-title { font-size: var(--font-36); font-weight: var(--weight-bold); }
+.page-subtitle { margin-top: var(--space-2); color: var(--text-secondary); font-size: var(--font-22); }
+
+.code-panel,
+.error-panel {
+  padding: var(--space-8) var(--space-6);
+  border: var(--border-hairline) solid var(--border-glass-strong);
+  border-radius: var(--radius-lg);
+  background: var(--white);
+  box-shadow: var(--shadow-bug);
 }
 
-.ui-placeholder {
-  padding: 24rpx;
+.panel-title { font-size: var(--font-26); font-weight: var(--weight-semibold); }
+.panel-copy { margin-top: var(--space-2); color: var(--text-secondary); font-size: var(--font-22); }
+
+.code-entry {
+  position: relative;
+  margin-top: var(--space-8);
+}
+
+.code-cells {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.code-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  height: var(--ghost-button-height);
+  flex: 1;
+  min-width: 0;
+  border: var(--border-hairline) solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--mint-50);
+  color: var(--text-primary);
+  font-size: var(--font-26);
+  font-weight: var(--weight-bold);
+}
+
+.code-cell.active { border-color: var(--green-500); }
+
+.code-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0.01;
+}
+
+.remaining {
+  min-height: var(--ghost-button-height);
+  padding-top: var(--space-4);
+  color: var(--text-secondary);
+  font-size: var(--font-22);
   text-align: center;
-  background: #f0f1f2;
 }
 
-.invite-code {
-  padding: 24rpx 0;
-  font-size: 40rpx;
+.join-button {
+  width: 100%;
+  margin: 0;
+  height: var(--cta-height);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: var(--cta-background);
+  color: var(--text-on-brand);
+  font-size: var(--font-26);
+  font-weight: var(--weight-bold);
+  line-height: var(--cta-height);
 }
 
-.error {
-  padding: 24rpx;
-  color: #9e2525;
-}
+.join-button::after { border: 0; }
+.join-button[disabled] { opacity: 0.5; }
+.inline-error { margin: var(--space-4) 0; color: var(--text-danger); font-size: var(--font-22); text-align: center; }
+.error-panel { color: var(--text-danger); font-size: var(--font-24); }

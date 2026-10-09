@@ -116,6 +116,24 @@ describe("GET /v1/matches/{match_id}", () => {
   });
 });
 
+describe("GET /v1/matches/{match_id}/crowd", () => {
+  it("registers the authenticated crowd route", async () => {
+    const harness = makeHarness();
+    const matchId = await firstSeededScheduledMatchId(harness);
+
+    const response = await request(harness, {
+      method: "GET",
+      path: `/v1/matches/${matchId}/crowd`,
+    });
+
+    expect(response.status).toBe(401);
+    expect(response.body).toEqual(expect.objectContaining({
+      code: "UNAUTHORIZED",
+      request_id: expect.any(String),
+    }));
+  });
+});
+
 describe("POST /v1/predictions", () => {
   it("returns 401 UNAUTHORIZED without identity", async () => {
     const harness = makeHarness();

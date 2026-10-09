@@ -255,6 +255,12 @@ describe("CloudBaseAppRepository", () => {
     ].sort());
   });
 
+  it("marks grouped crowd counts for the pre-launch CloudBase wiring slice", async () => {
+    const repo = createCloudBaseRepository();
+    await expect(repo.predictions.countByMatchGroupedByResult("match-id"))
+      .rejects.toThrow("尚未实现；待上线前接线切片");
+  });
+
   it("retains soft-deleted users so identity resolution sees the tombstone", async () => {
     const memory = new InMemoryRepository();
     const cloudbase = createCloudBaseRepository();

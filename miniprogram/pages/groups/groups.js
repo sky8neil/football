@@ -1,4 +1,4 @@
-const { listMyGroups, createGroup, isValidInviteCode } = require("../../services/groups.js");
+const { listMyGroups, createGroup } = require("../../services/groups.js");
 const COPY = require("../../utils/rankings-copy.js");
 
 const MAX_JOINED_GROUPS = 20;
@@ -8,18 +8,15 @@ Page({
   data: {
     state: "loading",
     groups: [],
-    inviteCode: "",
+    ownedCount: 0,
     canJoin: false,
     canCreate: false,
     loadingAction: false,
     errorMessage: "",
     title: COPY.groupsTitle,
     emptyText: COPY.groupsEmpty,
-    description: COPY.groupDescription,
-    limitsText: COPY.groupLimits(MAX_JOINED_GROUPS, MAX_OWNED_GROUPS),
     createText: COPY.createGroup,
     joinText: COPY.joinGroup,
-    inviteCodePlaceholder: COPY.inviteCodePlaceholder,
     loadFailedText: COPY.groupLoadFailed,
     retryText: COPY.groupRetry,
   },
@@ -46,22 +43,20 @@ Page({
         })),
         canJoin: groups.length < MAX_JOINED_GROUPS,
         canCreate: ownedCount < MAX_OWNED_GROUPS,
+        ownedCount,
+        joinedCountText: `${groups.length} / ${MAX_JOINED_GROUPS}`,
+        ownedCountText: `${ownedCount} / ${MAX_OWNED_GROUPS}`,
         errorMessage: "",
       });
     });
   },
 
-  onInviteInput(event) {
-    this.setData({ inviteCode: String(event.detail.value || "").toUpperCase(), errorMessage: "" });
-  },
-
   onJoinTap() {
-    const inviteCode = this.data.inviteCode;
-    if (!this.data.canJoin || !isValidInviteCode(inviteCode)) {
-      this.setData({ errorMessage: COPY.groupJoinErrors.INVALID_INVITE_CODE });
+    if (!this.data.canJoin) {
+      this.setData({ errorMessage: COPY.groupJoinErrors.GROUP_JOIN_LIMIT_REACHED });
       return;
     }
-    wx.navigateTo({ url: `/pages/groups/join?code=${encodeURIComponent(inviteCode)}` });
+    wx.navigateTo({ url: "/pages/groups/join" });
   },
 
   onCreateTap() {
@@ -77,7 +72,7 @@ Page({
         });
         return;
       }
-      wx.navigateTo({ url: `/pages/groups/detail?group_id=${result.data.group_id}` });
+      wx.navigateTo({ url: `/pages/groups/detail?group_id=${result.data.group_id}&created=1&owned_count=${this.data.ownedCount + 1}` });
     });
   },
 

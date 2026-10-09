@@ -520,10 +520,12 @@ export async function seedGatewayRepository(
 
   const otherLeagueTeams = {
     la_liga: ["Real Madrid", "Barcelona"],
+    serie_a: ["Inter", "Milan"],
+    bundesliga: ["Bayern Munich", "Borussia Dortmund"],
     ligue_1: ["Paris Saint-Germain", "Marseille"],
     chinese_super_league: ["Beijing Guoan", "Shanghai Shenhua"],
   } as const;
-  for (const leagueId of ["la_liga", "ligue_1", "chinese_super_league"] as const) {
+  for (const leagueId of ["la_liga", "serie_a", "bundesliga", "ligue_1", "chinese_super_league"] as const) {
     const league = SUPPORTED_LEAGUES.find((item) => item.league_id === leagueId)!;
     const [homeName, awayName] = otherLeagueTeams[leagueId];
     const leagueHomeId = newUuid();

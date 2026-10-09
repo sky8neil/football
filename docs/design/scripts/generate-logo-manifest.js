@@ -33,13 +33,13 @@ const OUT_ROOT = path.resolve(__dirname, "../assets/logos");
 const LEAGUES = [
   { leagueId: "premier_league",      dir: "01_英超_Premier_League",           teamSize: "128x128", leagueSize: "256x256" },
   { leagueId: "la_liga",             dir: "02_西甲_La_Liga",                  teamSize: "128x128", leagueSize: "256x256" },
+  { leagueId: "bundesliga",          dir: "04_德甲_Bundesliga",               teamSize: "128x128", leagueSize: "256x256" },
+  { leagueId: "serie_a",             dir: "05_意甲_Serie_A",                  teamSize: "128x128", leagueSize: "256x256" },
   { leagueId: "ligue_1",             dir: "03_法甲_Ligue_1",                  teamSize: "128x128", leagueSize: "256x256" },
   { leagueId: "chinese_super_league", dir: "07_中超_Chinese_Super_League",    teamSize: "512x512", leagueSize: "512x512" },
 ];
 
-// 未来启用时只需在此追加（德甲/意甲/欧冠），无需改页面
-// { leagueId: "bundesliga", dir: "04_德甲_Bundesliga", teamSize: "128x128", leagueSize: "256x256" },
-// { leagueId: "serie_a",    dir: "05_意甲_Serie_A",    teamSize: "128x128", leagueSize: "256x256" },
+// 欧冠仅为素材，不作为首页联赛筛选项。
 // { leagueId: "champions_league", dir: "06_欧冠_Champions_League", teamSize: "128x128", leagueSize: "256x256" },
 
 // 联赛官方 Logo 子目录名（源目录内）

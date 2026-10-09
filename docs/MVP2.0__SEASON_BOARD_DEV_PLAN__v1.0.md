@@ -644,7 +644,7 @@ S1–S3 无外部影响，可连续合入；S5、S7、S10 是接口变更，必�
 |---|---|---|
 | 空榜（X01，N=0） | 一个 `view.ui-placeholder`：一行文案 + 一个「去预测」`button`（跳转比赛页） | 空状态插画、版式 |
 | 少人（X01，1–2 人 / 3–19 人） | 条件隐藏领奖台；列表标题改文案；1–2 人时第 1 名**不做放大卡片**，仍按普通列表行显示 | 放大卡片版式 |
-| 邀请入口（X02） | S11 已实现：全站进入「我的群」，群内进入群详情并分享邀请码；相关 toast 与 `TODO(UI-v2)` 已移除 | 群详情视觉 |
+| 邀请入口（X02） | 全站进入「我的群」；群范围跳转当前群详情，由群详情页分享邀请码 | 群详情视觉 |
 | 无群未解锁入口（X03） | S11 已实现：进入「我的群」创建/加入流程；仍**不发出 `scope=group` 请求** | 锁图标、引导页 |
 | 游客占位（X13） | 一个全宽灰色 `view` + 居中一行「请登录查看榜单」；**先不做模糊效果**；不发榜单请求 | 条纹模糊占位 |
 | 标签显隐（X14） | 沿用现有标签按钮，仅按 `available_boards` 条件渲染；不动现有按钮样式 | 标签视觉 |
@@ -794,3 +794,129 @@ S1–S3 无外部影响，可连续合入；S5、S7、S10 是接口变更，必�
 |---|---|---|
 | Q15 | 群详情的邀请码对所有 active 成员可见，还是只给群主 | 所有 active 成员（D1），因为「群内只有自己」的邀请入口可能由非群主触发；若只给群主，需在 K01 里按 `owner_user_id` 判断，其余不变 |
 | Q16 | 是否现在引入 `@cloudbase/node-sdk`（会改 `package.json`） | 否，B 段再做，需用户确认 |
+
+
+---
+
+## 14. S14 后端：「大家怎么选」（截止后档）
+
+> 来源：设计稿 `docs/design/current-baseline-gpt/v0.41-cc/`（`match-detail-states.html` 的 D03–D12，`README-cc.md`）；规范 `docs/MVP__v2.0.md` §48.1 已写明「本期只做截止后档」，赛前档**不在本切片**。
+> 范围：**只含后端**（接口、规范、openapi、测试）。比赛详情页与首页卡片入口的小程序实现是 S14 的前端部分，在设计稿到位的 S12 之后单独写，不在本节。
+> 依赖：S1–S11 已合入；与 S12、S13 互不依赖。
+> 状态：**截止后档已实现（含规范、OpenAPI、内存仓储与测试）；CloudBase 聚合计数留待上线前接线切片。**
+
+### 14.1 规则（设计稿 + 规范 §48.1 已定）
+
+| 项 | 规则 |
+|---|---|
+| 可见时机 | **仅截止后**：比赛已截止（`prediction_closed_at` 非空，或已过 `prediction_deadline_at`）且未延期 / 取消 / 中止。截止前不返回分布，只返回「未截止」状态 |
+| 展示项 | 只有主胜 / 平局 / 客胜三项（按 `derived_result` 汇总）。**不做热门比分** |
+| 粒度 | 百分比按 **5%** 取整，三项合计必须为 100（见 14.3 的取整规则） |
+| 门槛 | 单场预测数 `< CROWD_MIN_PREDICTIONS(=20)` 时不返回分布，状态 `insufficient` |
+| 登录 | **需登录**。游客 `401 UNAUTHORIZED`；已注销 `409 USER_DELETED` |
+| 异常比赛 | 延期（`postponed`）、取消（`cancelled`）、中止（`abandoned`）→ 状态 `unavailable`，不返回分布 |
+| 不暴露 | 门槛以下**不返回真实预测人数**（防止小号探测）；门槛以上也只返回百分比，不返回人数 |
+| 页脚文案 | 「仅展示用户选择分布，不构成任何推荐」属于前端文案，后端不返回 |
+
+### 14.2 接口
+
+新增 `GET /v1/matches/:match_id/crowd`。**不放进** `GET /v1/matches/:match_id`，因为后者是公开读，而本接口需登录；分开后比赛详情的缓存与鉴权不受影响。
+
+- Auth required；`match_id` 必须是 UUID v4（同 `GET /v1/matches/:match_id` 的校验）；比赛不存在 → `404`（沿用现有比赛未找到的错误码）。
+- 无查询参数；带未知查询字段 → `422`（沿用 `assertUnknownFields`）。
+- 限流用 `authenticated_reads`。
+
+响应 `200`：
+
+```json
+{
+  "data": {
+    "match_id": "uuid",
+    "status": "available",
+    "distribution": { "home": 45, "draw": 25, "away": 30 },
+    "granularity": 5,
+    "min_predictions": 20
+  },
+  "request_id": "trace-request-id"
+}
+```
+
+`status` 枚举与字段取值：
+
+| status | 含义 | `distribution` | 对应设计稿 |
+|---|---|---|---|
+| `not_closed` | 比赛未截止（含开球时间未确认） | `null` | D01 / D02 |
+| `insufficient` | 已截止，但预测数不足门槛 | `null` | D09 |
+| `available` | 可展示 | 三项整数，和为 100，均为 5 的倍数 | D03–D08 |
+| `unavailable` | 延期 / 取消 / 中止 | `null` | D11 / D12 |
+
+`granularity`、`min_predictions` 每次都返回（取自常量），让前端不写死数字。游客（D10）由前端根据未登录状态展示登录引导，**不请求本接口**；服务端兜底为 401。
+
+**不返回**：预测人数、热门比分、任何用户标识、`my_choice`（前端已有 `my_prediction`，不重复）。
+
+### 14.3 取整规则（必须写成纯函数并单测）
+
+目标：三项都是 5 的倍数，合计恰为 100，结果可重复。
+
+1. 把 `n_home / n_draw / n_away` 换算成「以 5% 为一格」的份额：`exact_i = n_i / total * 20`（共 20 格）。
+2. 每项先取 `floor(exact_i)`。
+3. 剩余格数（`20 - sum(floor)`，只会是 0、1、2）按**小数部分从大到小**依次各分一格；小数部分相同时按固定顺序 `home > draw > away`。
+4. 每格 5%，输出 `格数 * 5`。
+
+例 1：`45 / 25 / 30` 人（共 100）→ 精确 `9 / 5 / 6` 格 → `45% / 25% / 30%`。
+例 2：`21 / 21 / 21` 人（共 63）→ 精确各 `6.67` 格，先各取 6 格（共 18），剩 2 格，小数部分相同，按 `home > draw > away` 各补一格 → `7 / 7 / 6` 格 → `35% / 35% / 30%`。
+例 3：`1 / 1 / 18` 人（共 20）→ 精确 `1 / 1 / 18` 格 → `5% / 5% / 90%`。
+
+测试里除上面几组固定用例外，再加一条属性式断言：对任意合法输入（总数 ≥ 20），输出恒为 5 的倍数且合计 100。
+
+### 14.4 差异清单
+
+| ID | 位置 | 现状 | 要求 | 类型 | 影响面 |
+|---|---|---|---|---|---|
+| C01 | `docs/MVP__v2.0.md` | §25 没有该接口；§48.1 只写「计划完成」 | 新增 §25.4 `GET /v1/matches/:match_id/crowd`（14.2 的内容），§48.1 该行改为「截止后档已实现」；常量表增 `CROWD_MIN_PREDICTIONS=20`、`CROWD_GRANULARITY_PERCENT=5` | 修改 | **先写规范再写代码** |
+| C02 | `src/domain/config.ts` | 无 | 增 `CROWD_MIN_PREDICTIONS=20`、`CROWD_GRANULARITY_PERCENT=5` | 新增 | config 测试 |
+| C03 | `src/domain/`（新文件 `crowd-distribution.ts`） | 无 | 纯函数 `roundDistribution(counts): {home,draw,away}`（14.3）；纯函数 `crowdStatus({ match, predictionCount, serverNow })` 返回 `not_closed / insufficient / available / unavailable`。**截止判定与 `predictRejectReason` 的 CLOSED 分支同源**：`prediction_closed_at !== null \|\| !isDeadlineOpen(...)`，不要另写一份阈值逻辑；开球时间未确认视为 `not_closed` | 新增 | 见 14.6 |
+| C04 | `src/infrastructure/repositories.ts:255-266` `PredictionRepository` | 有 `findByMatch`（会把整场预测全读出来） | 新增 `countByMatchGroupedByResult(matchId): Promise<{HOME:number;DRAW:number;AWAY:number}>`。理由：线上 CloudBase 用 count 查询比拉全部文档便宜且有单次条数上限；内存实现直接遍历。**CloudBase 实现并入 S13 的 B01 覆盖表** | 新增 | in-memory 实现；契约测试（S13 B06）加该方法 |
+| C05 | `src/application/match-query.ts` 或新文件 `crowd-query.ts` | 无 | `CrowdQueryService.get({ authenticated_user_id, match_id, server_now })`：读比赛 → 读请求者（校验 active）→ `crowdStatus` → 仅在可能 `available / insufficient` 时才调用 C04 → 返回 14.2 响应。比赛不存在抛未找到；用户已注销抛 `USER_DELETED`。**未截止和不可用状态不读预测表** | 新增 | 应用层测试 |
+| C06 | `src/api/v1/matches.ts`（或新 `crowd.ts`） | 无 | 路由 handler：鉴权（无可信身份 → 401）、`match_id` 校验、未知查询字段 422、限流（`authenticated_reads`）、响应包装；`x-requires-trusted-openid: true` | 新增 | api 测试 |
+| C07 | `src/gateway/assemble.ts` | 无该路由 | 注册路由并注入 `CrowdQueryService` | 修改 | gateway 测试 |
+| C08 | `src/api/v1/openapi.yaml` | 无 | 新路径、`CrowdData` schema（`status` 枚举、`distribution` 可空）、`security`、错误表（401 / 404 / 409 `USER_DELETED` / 422 / 429） | 新增 | openapi 合同测试，**与 C01、C06 同提交** |
+| C09 | `src/schema/indexes.ts:139` | `ix_predictions_match` 已存在 | 无需新索引；若 C04 的 count 需要 `(match_id, derived_result)`，在 S13 的真实环境验证里评估，本切片不加 | 无改动 | 记录决策 |
+
+### 14.5 关键设计细节
+
+1. **为什么截止后才能看。** 截止后预测不可新增、不可修改，分布是**不可变**的，所以不存在「看了别人的再改」的跟风问题，缓存也安全。赛前档（规范 §48.1 另一行）需要单独评审，不在此做。
+2. **延期 / 重新开赛。** 比赛延期后重新确认开球时间，会重新计算截止（规范 §6.3 / 设计稿 D11）。状态完全由「当前比赛状态 + 当前时间」推出，不缓存「曾经可见」，所以延期后再回到未截止就会返回 `not_closed`。
+3. **不返回人数。** 5% 取整是为了降低从分布反推个体的可能；若再返回人数，门槛附近的人数变化会泄露「刚有一个人预测了什么」。因此人数只在服务端用于判门槛和计算，不出站。
+4. **已注销用户的预测是否计入。** 默认**计入**（只做匿名汇总，不涉及身份）；若规范 §4.5 对注销用户的预测有删除要求，以规范为准，并把该决定写进 C01。**开工前 grep 一次注销流程，确认是否物理删除预测。**
+5. **完场比赛被修正比分。** 分布只按 `derived_result`（用户当时的预测）汇总，与赛果无关，所以赛果修正不影响本接口。
+6. **读取成本。** 每次请求最多一次比赛读取、一次用户读取、一次 count 聚合；不引入快照表。若线上压测显示压力，再加缓存或快照，**本切片不做**。
+
+### 14.6 测试清单
+
+**domain**
+- `roundDistribution`：`45/25/30` 人 → `45/25/30`；构造会产生 95 与 105 的输入，断言输出恒合计 100 且均为 5 的倍数；小数部分相同时按 `home > draw > away` 分配；某一项为 0 时仍合计 100。
+- `crowdStatus`：未确认开球 → `not_closed`；截止前一刻 → `not_closed`；截止时刻 → 进入已截止；`live / finished` → 按人数判；`postponed / cancelled / abandoned` → `unavailable`；人数 19 → `insufficient`、20 → `available`。
+
+**应用 / API**
+- 游客 → 401；已注销 → 409 `USER_DELETED`；比赛不存在 → 404；`match_id` 非 UUID → 422；未知查询字段 → 422。
+- `not_closed`、`unavailable` 状态下**不调用** `countByMatchGroupedByResult`（用 spy 断言）。
+- `available`：返回的 `distribution` 与手算一致；响应**不含**人数、用户标识、`my_choice`。
+- 门槛以下：响应里没有任何能推出人数的字段。
+- 限流：超过 `authenticated_reads` 额度 → 429。
+- 与现有接口互不影响：`GET /v1/matches/:match_id` 响应不变，仍可匿名访问。
+
+**openapi / 规范**
+- 合同测试覆盖新路径与 `status` 枚举；规范 §25.4 与 openapi 字段逐项一致。
+
+### 14.7 验收
+
+`tsc` / 全量 `vitest` / `build` / `git diff --check` 全绿；规范、openapi、实现同提交；S13 的覆盖表里已列入 `countByMatchGroupedByResult`。
+
+### 14.8 待确认（有默认值，不阻塞）
+
+| # | 问题 | 默认 |
+|---|---|---|
+| Q17 | 已注销用户的预测是否计入分布 | 计入（匿名汇总）；开工前核对规范 §4.5 的注销流程，若预测会被物理删除则自然不计入 |
+| Q18 | 是否返回「参与人数」供界面显示「N 人参与」 | 不返回（14.5 第 3 条）；设计稿也没有这一项 |
+| Q19 | 首页比赛卡的次入口「大家怎么选 ›」是否需要后端字段 | 不需要：前端用比赛列表里已有的 `match_status` 判断（进行中 / 完场才出现），不额外增加字段 |

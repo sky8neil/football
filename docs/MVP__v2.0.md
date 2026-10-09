@@ -341,6 +341,9 @@ EXACT_HIT_SCORE = 12
 API_DEFAULT_LIMIT = 20
 API_MAX_LIMIT = 100
 
+CROWD_MIN_PREDICTIONS = 20
+CROWD_GRANULARITY_PERCENT = 5
+
 SYNC_FUTURE_DAYS = 30
 SYNC_NORMAL_INTERVAL_HOURS = 6
 SYNC_NEAR_24H_TO_2H_INTERVAL_MINUTES = 30
@@ -3608,6 +3611,36 @@ false / AUTH_REQUIRED
 }
 ```
 
+## 25.4 GET /v1/matches/:match_id/crowd
+
+Auth required；仅在预测截止后返回「大家怎么选」分布。游客返回 `401 UNAUTHORIZED`，已注销用户返回 `409 USER_DELETED`。`match_id` 必须是 UUID v4；比赛不存在返回 `404 MATCH_NOT_FOUND`。本接口不接受 query 参数，未知字段返回 `422 VALIDATION_ERROR`，使用 `authenticated_reads` 限流，超额返回 `429 RATE_LIMITED`。
+
+成功响应始终包含 `granularity` 与 `min_predictions`，取值分别为固定配置 `CROWD_GRANULARITY_PERCENT=5` 与 `CROWD_MIN_PREDICTIONS=20`：
+
+```json
+{
+  "data": {
+    "match_id": "uuid",
+    "status": "available",
+    "distribution": { "home": 45, "draw": 25, "away": 30 },
+    "granularity": 5,
+    "min_predictions": 20
+  },
+  "request_id": "trace-request-id"
+}
+```
+
+`status` 与 `distribution`：
+
+| status | 语义 | distribution |
+|---|---|---|
+| `not_closed` | 预测未截止；开球时间未确认也属于此状态 | `null` |
+| `insufficient` | 已截止，但预测数少于 20 | `null` |
+| `available` | 已截止且预测数不少于 20 | 主胜、平局、客胜百分比；每项为 5 的倍数且合计为 100 |
+| `unavailable` | 比赛延期、取消或中止 | `null` |
+
+分布按 prediction 的 `derived_result` 统计。百分比换算为 20 格：各项先向下取整，剩余格按小数部分从大到小分配；相同时固定按 `home > draw > away`。任何状态均不返回预测人数、热门比分、用户标识或 `my_choice`。注销用户的历史预测保留并计入统计。
+
 ---
 
 # 26. 预测 API
@@ -5533,7 +5566,7 @@ Provider ID：只做 mapping，不做内部主键
 | 已完成比赛的自动作废 / 取消重算 | 本期不做；若未来需要必须升级规范版本 | 第 1.3 节 | 定义对账本、等级、排行榜的重算与回放影响 |
 | 幂等记录等数据的物理清理 | 本期不做任何清理任务 | 第 4.5.1 节「保留期」 | 先定义清理对幂等重放与 409 语义的影响，另版冻结 |
 | 若引入不计等级的赛事（杯赛、友谊赛） | 本期无 | 第 17.4 节 | 新规则版本，并新增独立的等级积分口径 |
-| 「大家怎么选」赛前档（截止前，已提交预测的用户可看赛前的胜平负分布） | **计划完成**；本期只做截止后档 | 本章 | 先上线截止后档并观察：同场比赛预测分布的集中度是否升高（是否出现跟风）；赛前只给胜平负大类比例；沿用「单场至少 20 个预测」门槛与 5% 粒度；防小号偷看与缓存策略需单独评审；需登录 |
+| 「大家怎么选」赛前档（截止前，已提交预测的用户可看赛前的胜平负分布）；截止后档已实现 | 后续版本；本期只做截止后档 | 本章 | 先观察截止后档：同场比赛预测分布的集中度是否升高（是否出现跟风）；赛前只给胜平负大类比例；沿用「单场至少 20 个预测」门槛与 5% 粒度；需登录 |
 
 ## 48.2 本期不做（OUT_OF_SCOPE，未承诺未来）
 

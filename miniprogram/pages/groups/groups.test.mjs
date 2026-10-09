@@ -72,6 +72,7 @@ function installWx() {
     removeStorageSync: (key) => storage.delete(key),
     showModal: (options) => { modals.push(options); options.success({ confirm: true }); },
     showToast: (options) => toasts.push(options),
+    setClipboardData: (options) => options.success(),
   });
   return { navs, storage, modals, toasts };
 }
@@ -168,16 +169,13 @@ describe("group pages", () => {
     expect(page.data.canJoin).toBe(true);
   });
 
-  it("requires a valid code and then navigates to the explicit confirmation page", () => {
+  it("opens the invite entry page from the no-group guide", () => {
     const { navs } = installWx();
     const { config } = loadPage("groups");
     const page = instantiate(config);
-    page.setData({ canJoin: true, inviteCode: "bad" });
+    page.setData({ canJoin: true });
     page.onJoinTap();
-    expect(page.data.errorMessage).toContain("邀请码");
-    page.setData({ inviteCode: "ABCDEFGH" });
-    page.onJoinTap();
-    expect(navs).toEqual([["navigateTo", "/pages/groups/join?code=ABCDEFGH"]]);
+    expect(navs).toEqual([["navigateTo", "/pages/groups/join"]]);
   });
 
   it("opens the created group detail page", async () => {
@@ -188,7 +186,20 @@ describe("group pages", () => {
     page.onCreateTap();
     await flush();
     expect(services.createGroup).toHaveBeenCalledOnce();
-    expect(wxStub.navs).toEqual([["navigateTo", "/pages/groups/detail?group_id=group-1"]]);
+    expect(wxStub.navs).toEqual([["navigateTo", "/pages/groups/detail?group_id=group-1&created=1&owned_count=1"]]);
+  });
+
+  it("shows remaining invite digits and enables join only for a valid eight-character code", () => {
+    installWx();
+    const { config } = loadPage("join");
+    const page = instantiate(config);
+    page.onLoad({});
+    expect(page.data.remainingDigits).toBe(8);
+    expect(page.data.canConfirm).toBe(false);
+    page.onInviteInput({ detail: { value: "ab23cd45" } });
+    expect(page.data.inviteCode).toBe("AB23CD45");
+    expect(page.data.remainingDigits).toBe(0);
+    expect(page.data.canConfirm).toBe(true);
   });
 
   it("keeps an invite code across login and returns to the confirmation page", async () => {
@@ -267,7 +278,8 @@ describe("group pages", () => {
     const page = instantiate(config);
     page.onLoad({ code: "invalid" });
     page.onConfirm();
-    expect(page.data.state).toBe("error");
+    expect(page.data.state).toBe("ready");
+    expect(page.data.errorMessage).toContain("邀请码");
     expect(services.joinGroup).not.toHaveBeenCalled();
   });
 
@@ -283,14 +295,39 @@ describe("group pages", () => {
     });
   });
 
-  it("opens the groups page and keeps group invite sharing as a TODO toast", () => {
+  it("marks a newly created group and copies its invite code", async () => {
+    const wxStub = installWx();
+    let copied;
+    globalThis.wx.setClipboardData = (options) => { copied = options.data; options.success(); };
+    const { config } = loadPage("detail");
+    const page = instantiate(config);
+    page.onLoad({ group_id: "group-1", created: "1", owned_count: "1" });
+    await flush();
+    expect(page.data.title).toBe("创建成功");
+    expect(page.data.ownedCountText).toBe("1 / 5");
+    expect(page.data.group.formattedInviteCode).toBe("ABCD EFGH");
+    page.onCopyInviteTap();
+    expect(copied).toBe("ABCDEFGH");
+    expect(wxStub.toasts).toEqual([{ title: "邀请码已复制", icon: "none" }]);
+  });
+
+  it("opens the groups page for the global invite entry", () => {
     const wxStub = installWx();
     const page = instantiate(loadRankingsPage());
     page.onInviteTap();
+    expect(wxStub.navs).toEqual([["navigateTo", "/pages/groups/groups"]]);
+    expect(wxStub.toasts).toEqual([]);
+  });
+
+  it("opens the current group detail for group invite sharing without a toast", () => {
+    const wxStub = installWx();
+    const page = instantiate(loadRankingsPage());
     page.setData({ scope: "group", groupId: "group-1" });
     page.onInviteTap();
-    expect(wxStub.navs).toEqual([["navigateTo", "/pages/groups/groups"]]);
-    expect(wxStub.toasts).toEqual([{ title: "邀请功能待开放", icon: "none" }]);
+    expect(wxStub.navs).toEqual([
+      ["navigateTo", "/pages/groups/detail?group_id=group-1"],
+    ]);
+    expect(wxStub.toasts).toEqual([]);
   });
 
   it("leaves a member group after confirmation", async () => {

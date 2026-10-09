@@ -58,6 +58,8 @@ describe("local gateway seed scenarios", () => {
     const appLeagues = [
       ["premier_league", "2026_2027"],
       ["la_liga", "2026_2027"],
+      ["bundesliga", "2026_2027"],
+      ["serie_a", "2026_2027"],
       ["ligue_1", "2026_2027"],
       ["chinese_super_league", "2026"],
     ] as const;

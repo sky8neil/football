@@ -1,5 +1,6 @@
 import { postSessionInit } from "../api/v1/session.js";
 import { getMatch, getMatches } from "../api/v1/matches.js";
+import { getMatchCrowd } from "../api/v1/crowd.js";
 import { getMyPrediction, getMyPredictions, postPrediction } from "../api/v1/predictions.js";
 import {
   deleteMyProfile,
@@ -30,6 +31,7 @@ import { makeRequestId, mapErrorToHttp } from "../api/v1/validation.js";
 import type { RateLimiter } from "../api/v1/rate-limit.js";
 import type { SessionService } from "../application/session.js";
 import type { MatchQueryService } from "../application/match-query.js";
+import { CrowdQueryService } from "../application/crowd-query.js";
 import { PredictionHistoryQueryService } from "../application/prediction-query.js";
 import { PredictionQueryService } from "../application/prediction-query.js";
 import { PredictionService } from "../application/predictions.js";
@@ -65,6 +67,7 @@ export interface GatewayRequestInput {
   services: {
     session: Pick<SessionService, "init">;
     matches: Pick<MatchQueryService, "list" | "get">;
+    crowd?: Pick<CrowdQueryService, "get">;
     predictions?: Pick<PredictionService, "submit"> &
       Partial<Pick<PredictionHistoryQueryService, "listMyPredictions">> &
       Partial<Pick<PredictionQueryService, "getMyPrediction">>;
@@ -191,6 +194,16 @@ function matchIdFromPath(path: string): string | null {
   return matchId;
 }
 
+function matchCrowdIdFromPath(path: string): string | null {
+  const prefix = "/v1/matches/";
+  const suffix = "/crowd";
+  if (!path.startsWith(prefix) || !path.endsWith(suffix)) {
+    return null;
+  }
+  const matchId = path.slice(prefix.length, -suffix.length);
+  return matchId.length === 0 || matchId.includes("/") ? null : matchId;
+}
+
 function singlePathParameter(path: string, prefix: string): string | null {
   if (!path.startsWith(prefix)) {
     return null;
@@ -250,6 +263,22 @@ export async function handleGatewayRequest(
       const result = await getMatches(input.services.matches, {
         authenticated_user_id: publicReadUserId(identity),
         public_source: input.config.public_source,
+        query: input.query,
+        server_now: input.server_now,
+        request_id: requestId,
+        rate_limiter: input.rate_limiter,
+      });
+      logGateway(requestId, path, result.status, undefined);
+      return result;
+    }
+
+    const crowdMatchId = matchCrowdIdFromPath(path);
+    if (method === "GET" && crowdMatchId !== null) {
+      const identity = await resolveIdentity(trustedOpenid, input.repo);
+      const crowd = input.services.crowd ?? new CrowdQueryService(input.repo);
+      const result = await getMatchCrowd(crowd, {
+        authenticated_user_id: authenticatedReadUserId(identity),
+        match_id: crowdMatchId,
         query: input.query,
         server_now: input.server_now,
         request_id: requestId,

@@ -5,6 +5,8 @@
   "league_logos": {
     "premier_league": "assets/logos/leagues/premier_league.png",
     "la_liga": "assets/logos/leagues/la_liga.png",
+    "bundesliga": "assets/logos/leagues/bundesliga.png",
+    "serie_a": "assets/logos/leagues/serie_a.png",
     "ligue_1": "assets/logos/leagues/ligue_1.png",
     "chinese_super_league": "assets/logos/leagues/chinese_super_league.png"
   },
@@ -53,6 +55,8 @@
       "valencia": "assets/logos/teams/la-liga/valencia.png",
       "villarreal": "assets/logos/teams/la-liga/villarreal.png"
     },
+    "bundesliga": {},
+    "serie_a": {},
     "ligue_1": {
       "angers": "assets/logos/teams/ligue-1/angers.png",
       "as-monaco": "assets/logos/teams/ligue-1/as-monaco.png",
@@ -139,6 +143,8 @@
       "valencia": "valencia.football-logos.cc.png",
       "villarreal": "villarreal.football-logos.cc.png"
     },
+    "bundesliga": {},
+    "serie_a": {},
     "ligue_1": {
       "angers": "angers.football-logos.cc.png",
       "as-monaco": "as-monaco.football-logos.cc.png",

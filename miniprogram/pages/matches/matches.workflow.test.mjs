@@ -74,6 +74,20 @@ afterEach(() => {
 });
 
 describe("matches page gateway workflows", () => {
+  it("renders supported league tabs with their registered logos", () => {
+    const { page } = loadPage();
+    page.onLoad();
+
+    expect(page.data.leagues.map(({ id, name, logo }) => [id, name, logo])).toEqual([
+      ["premier_league", "英超", "league.png"],
+      ["la_liga", "西甲", "league.png"],
+      ["bundesliga", "德甲", "league.png"],
+      ["serie_a", "意甲", "league.png"],
+      ["ligue_1", "法甲", "league.png"],
+      ["chinese_super_league", "中超", "league.png"],
+    ]);
+  });
+
   it("loads matches for the selected league and Beijing calendar date", async () => {
     const { page, listMatches } = loadPage({
       matchesResult: { statusCode: 200, data: { items: [match("match-1")] } },

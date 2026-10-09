@@ -50,6 +50,14 @@ const MANIFEST = {
       "villarreal": "../../assets/logos/teams/la-liga/villarreal.png"
     },
   },
+  bundesliga: {
+    logo: "../../assets/logos/leagues/bundesliga.png",
+    teams: {},
+  },
+  serie_a: {
+    logo: "../../assets/logos/leagues/serie_a.png",
+    teams: {},
+  },
   ligue_1: {
     logo: "../../assets/logos/leagues/ligue_1.png",
     teams: {

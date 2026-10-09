@@ -1,6 +1,13 @@
 const { joinGroup, listMyGroups, getGroup, isValidInviteCode } = require("../../services/groups.js");
 const COPY = require("../../utils/rankings-copy.js");
 
+function inviteCells(code) {
+  return Array.from({ length: 8 }, (_, index) => ({
+    value: code[index] || "",
+    active: index === Math.min(code.length, 7),
+  }));
+}
+
 function groupJoinError(code, fallback) {
   return COPY.groupJoinErrors[code] || fallback || COPY.groupActionFailed;
 }
@@ -9,31 +16,50 @@ Page({
   data: {
     state: "ready",
     inviteCode: "",
+    inviteCells: inviteCells(""),
+    remainingDigits: 8,
+    remainingText: COPY.groupInviteRemaining(8),
+    canConfirm: false,
     loading: false,
     title: COPY.joinConfirm,
+    subtitle: COPY.groupJoinSubtitle,
     confirmText: COPY.confirmJoin,
     errorMessage: "",
     inviteCodeLabel: COPY.groupInviteCodeLabel,
+    inviteFormatText: COPY.groupInviteFormat,
   },
 
   onLoad(options) {
     const inviteCode = options && typeof options.code === "string" ? options.code : "";
-    if (!isValidInviteCode(inviteCode)) {
-      this.setData({ state: "error", errorMessage: COPY.groupInvalidInvite });
-      return;
-    }
-    this.setData({ inviteCode, state: "ready", errorMessage: "" });
+    this.setInviteCode(inviteCode, inviteCode && !isValidInviteCode(inviteCode) ? COPY.groupInvalidInvite : "");
+  },
+
+  onInviteInput(event) {
+    this.setInviteCode(String(event.detail.value || "").toUpperCase(), "");
+  },
+
+  setInviteCode(inviteCode, errorMessage) {
+    this.setData({
+      inviteCode,
+      inviteCells: inviteCells(inviteCode),
+      remainingDigits: Math.max(0, 8 - inviteCode.length),
+      remainingText: COPY.groupInviteRemaining(Math.max(0, 8 - inviteCode.length)),
+      canConfirm: isValidInviteCode(inviteCode) && !this.data.loading,
+      state: "ready",
+      errorMessage: errorMessage || "",
+    });
   },
 
   onConfirm() {
     const inviteCode = this.data.inviteCode;
-    if (!isValidInviteCode(inviteCode) || this.data.loading) {
-      if (!isValidInviteCode(inviteCode)) {
-        this.setData({ state: "error", errorMessage: COPY.groupInvalidInvite });
-      }
+    if (!isValidInviteCode(inviteCode)) {
+      this.setData({ errorMessage: COPY.groupInvalidInvite });
       return;
     }
-    this.setData({ loading: true, errorMessage: "" });
+    if (this.data.loading) {
+      return;
+    }
+    this.setData({ loading: true, canConfirm: false, errorMessage: "" });
     joinGroup(inviteCode).then((result) => {
       if (result.statusCode === 200 && result.data && result.data.group_id) {
         this.openGroup(result.data.group_id);
@@ -54,8 +80,9 @@ Page({
         return;
       }
       this.setData({
-        state: "error",
+        state: "ready",
         loading: false,
+        canConfirm: true,
         errorMessage: groupJoinError(result.code, result.message),
       });
     });
@@ -69,6 +96,7 @@ Page({
         this.setData({
           state: "error",
           loading: false,
+          canConfirm: true,
           errorMessage: result.message || COPY.groupLoadFailed,
         });
         return;
@@ -82,7 +110,7 @@ Page({
     listMyGroups({ limit: 20 }).then((result) => {
       const groups = result.data && Array.isArray(result.data.items) ? result.data.items : [];
       if (result.statusCode !== 200) {
-        this.setData({ state: "error", loading: false, errorMessage: result.message || COPY.groupLoadFailed });
+        this.setData({ state: "ready", loading: false, canConfirm: true, errorMessage: result.message || COPY.groupLoadFailed });
         return;
       }
       Promise.all(groups.map((group) => getGroup(group.group_id))).then((details) => {
@@ -90,7 +118,7 @@ Page({
           detail.statusCode === 200 && detail.data && detail.data.invite_code === inviteCode
         );
         if (!match) {
-          this.setData({ state: "error", loading: false, errorMessage: groupJoinError("GROUP_ALREADY_MEMBER") });
+          this.setData({ state: "ready", loading: false, canConfirm: true, errorMessage: groupJoinError("GROUP_ALREADY_MEMBER") });
           return;
         }
         this.openGroup(match.data.group_id);

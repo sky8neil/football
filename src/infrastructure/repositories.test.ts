@@ -389,6 +389,36 @@ describe("InMemoryRepository - predictions", () => {
     expect(await repo.predictions.findByMatch(matchId)).toEqual([first, second]);
   });
 
+  it("按比赛和 derived_result 计数，包含注销用户保留的历史 prediction", async () => {
+    const repo = new InMemoryRepository();
+    const matchId = newUuid();
+    const deletedUserId = newUuid();
+    const deletedUser = makeUser({
+      user_id: deletedUserId,
+      openid: `deleted:${deletedUserId}`,
+      nickname: null,
+      status: "deleted",
+      deleted_at: LOCK_NOW,
+    });
+    await repo.users.insert(deletedUser);
+    const predictions = [
+      makePrediction({ user_id: deletedUser.user_id, match_id: matchId, derived_result: "HOME" }),
+      makePrediction({ match_id: matchId, derived_result: "HOME" }),
+      makePrediction({ match_id: matchId, derived_result: "DRAW" }),
+      makePrediction({ match_id: matchId, derived_result: "AWAY" }),
+      makePrediction({ match_id: newUuid(), derived_result: "AWAY" }),
+    ];
+    for (const prediction of predictions) {
+      await repo.predictions.insert(prediction);
+    }
+
+    await expect(repo.predictions.countByMatchGroupedByResult(matchId)).resolves.toEqual({
+      HOME: 2,
+      DRAW: 1,
+      AWAY: 1,
+    });
+  });
+
   it("更新 prediction 时拒绝改写提交事实字段", async () => {
     const repo = new InMemoryRepository();
     const prediction = makePrediction({

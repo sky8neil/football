@@ -84,4 +84,9 @@ describe("S0 固定配置 v2（规范 §3 / §1.4）", () => {
       "ABCDEFGHJKLMNPQRSTUVWXYZ23456789",
     );
   });
+
+  it("登记大家怎么选的门槛与百分比粒度", () => {
+    expect(FIXED_CONFIG_V1.CROWD_MIN_PREDICTIONS).toBe(20);
+    expect(FIXED_CONFIG_V1.CROWD_GRANULARITY_PERCENT).toBe(5);
+  });
 });

@@ -233,8 +233,7 @@ Page({
 
   onInviteTap() {
     if (this.data.scope === "group" && this.data.groupId) {
-      // TODO(UI-v2): group invite sharing is a separate slice.
-      wx.showToast({ title: "邀请功能待开放", icon: "none" });
+      wx.navigateTo({ url: `/pages/groups/detail?group_id=${this.data.groupId}` });
       return;
     }
     wx.navigateTo({ url: "/pages/groups/groups" });

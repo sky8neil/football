@@ -136,7 +136,7 @@
 
   /**
    * 获取球队 Logo 路径。
-   * @param {string} leagueId - 联赛稳定 ID（premier_league / la_liga / ligue_1 / chinese_super_league）
+   * @param {string} leagueId - 联赛稳定 ID（六大支持联赛之一）
    * @param {string} teamId   - 球队稳定 key / 任意别名
    * @returns {string} logo 相对路径；找不到 → 占位图
    */
@@ -150,7 +150,7 @@
 
   /**
    * 获取联赛 Logo 路径。
-   * @param {string} leagueId - premier_league / la_liga / ligue_1 / chinese_super_league
+   * @param {string} leagueId - 六大支持联赛之一
    * @returns {string} logo 相对路径；找不到 → null（调用方回退联赛名）
    */
   function getLeagueLogo(leagueId) {

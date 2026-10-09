@@ -5,6 +5,8 @@ Page({
   data: {
     state: "loading",
     group: null,
+    subtitle: "",
+    isCreationSuccess: false,
     loadingAction: false,
     errorMessage: "",
     title: COPY.groupDetailTitle,
@@ -15,12 +17,21 @@ Page({
     ownerText: COPY.groupOwnerRole,
     memberText: COPY.groupMemberRole,
     inviteCodeLabel: COPY.groupInviteCodeLabel,
+    copyText: COPY.copyInviteCode,
     retryText: COPY.groupRetry,
   },
 
   onLoad(options) {
     const groupId = options && typeof options.group_id === "string" ? options.group_id : "";
+    const isCreationSuccess = options && options.created === "1";
+    const ownedCount = Number(options && options.owned_count) || 1;
     this.groupId = groupId;
+    this.setData({
+      isCreationSuccess,
+      title: isCreationSuccess ? COPY.groupCreateSuccess : COPY.groupDetailTitle,
+      subtitle: isCreationSuccess ? COPY.groupCreateSubtitle : "",
+      ownedCountText: `${ownedCount} / 5`,
+    });
     this.loadGroup();
   },
 
@@ -40,6 +51,8 @@ Page({
         group: {
           ...result.data,
           memberCountText: COPY.groupMemberCount(result.data.member_count),
+          formattedInviteCode: `${result.data.invite_code.slice(0, 4)} ${result.data.invite_code.slice(4)}`,
+          memberCapacityText: `${result.data.member_count} / 500`,
         },
         errorMessage: "",
       });
@@ -52,6 +65,15 @@ Page({
       title: COPY.groupSharedTitle,
       path: `/pages/groups/join?code=${encodeURIComponent(group.invite_code)}`,
     };
+  },
+
+  onCopyInviteTap() {
+    const inviteCode = this.data.group && this.data.group.invite_code;
+    if (!inviteCode) return;
+    wx.setClipboardData({
+      data: inviteCode,
+      success: () => wx.showToast({ title: COPY.inviteCodeCopied, icon: "none" }),
+    });
   },
 
   onLeaveTap() {

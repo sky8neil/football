@@ -261,6 +261,11 @@ export interface PredictionRepository {
   ): Promise<Prediction | null>;
   findByUser(userId: string): Promise<Prediction[]>;
   findByMatch(matchId: string): Promise<Prediction[]>;
+  countByMatchGroupedByResult(matchId: string): Promise<{
+    HOME: number;
+    DRAW: number;
+    AWAY: number;
+  }>;
   insert(prediction: Prediction): Promise<void>;
   update(prediction: Prediction): Promise<void>;
 }
@@ -699,6 +704,8 @@ export class InMemoryRepository implements AppRepository {
         self.findPredictionByUserAndIdempotencyKey(userId, key),
       findByUser: (userId) => self.findPredictionsByUser(userId),
       findByMatch: (matchId) => self.findPredictionsByMatch(matchId),
+      countByMatchGroupedByResult: (matchId) =>
+        self.countPredictionsByMatchGroupedByResult(matchId),
       insert: (prediction) => self.insertPrediction(prediction),
       update: (prediction) => self.updatePrediction(prediction),
     };
@@ -1251,6 +1258,18 @@ export class InMemoryRepository implements AppRepository {
       }
     }
     return result;
+  }
+
+  private async countPredictionsByMatchGroupedByResult(
+    matchId: string,
+  ): Promise<{ HOME: number; DRAW: number; AWAY: number }> {
+    const counts = { HOME: 0, DRAW: 0, AWAY: 0 };
+    for (const prediction of this.store.predictionsByUserMatch.values()) {
+      if (prediction.match_id === matchId) {
+        counts[prediction.derived_result] += 1;
+      }
+    }
+    return counts;
   }
 
   private async insertPrediction(prediction: Prediction): Promise<void> {

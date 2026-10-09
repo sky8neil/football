@@ -138,6 +138,35 @@ paths:
           $ref: '#/components/responses/RateLimited'
         '422':
           $ref: '#/components/responses/ValidationError'
+  /matches/{match_id}/crowd:
+    get:
+      tags: [matches]
+      summary: 获取截止后的大家怎么选分布
+      x-requires-trusted-openid: true
+      parameters:
+        - name: match_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: 比赛预测结果分布
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CrowdEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/MatchCrowdUserDeleted'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
   /predictions:
     post:
       tags: [predictions]
@@ -1083,6 +1112,56 @@ components:
       properties:
         data:
           $ref: '#/components/schemas/MatchDetailData'
+        request_id:
+          type: string
+    CrowdDistribution:
+      type: object
+      additionalProperties: false
+      required: [home, draw, away]
+      properties:
+        home:
+          type: integer
+          minimum: 0
+          maximum: 100
+          multipleOf: 5
+        draw:
+          type: integer
+          minimum: 0
+          maximum: 100
+          multipleOf: 5
+        away:
+          type: integer
+          minimum: 0
+          maximum: 100
+          multipleOf: 5
+    CrowdData:
+      type: object
+      additionalProperties: false
+      required: [match_id, status, distribution, granularity, min_predictions]
+      properties:
+        match_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [not_closed, insufficient, available, unavailable]
+        distribution:
+          allOf:
+            - $ref: '#/components/schemas/CrowdDistribution'
+          nullable: true
+        granularity:
+          type: integer
+          const: 5
+        min_predictions:
+          type: integer
+          const: 20
+    CrowdEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data, request_id]
+      properties:
+        data:
+          $ref: '#/components/schemas/CrowdData'
         request_id:
           type: string
     SuccessEnvelope:
@@ -2346,6 +2425,12 @@ components:
             $ref: '#/components/schemas/ErrorEnvelope'
     RankingUserDeleted:
       description: 409 USER_DELETED（已注销账号不能查看排行榜）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    MatchCrowdUserDeleted:
+      description: 409 USER_DELETED（已注销账号不能查看大家怎么选）
       content:
         application/json:
           schema:

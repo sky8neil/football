@@ -7,6 +7,8 @@ const { createUuidV4, submitPrediction } = require("../../services/predictions.j
 const LEAGUES = [
   { id: "premier_league", name: "英超" },
   { id: "la_liga", name: "西甲" },
+  { id: "bundesliga", name: "德甲" },
+  { id: "serie_a", name: "意甲" },
   { id: "ligue_1", name: "法甲" },
   { id: "chinese_super_league", name: "中超" },
 ];

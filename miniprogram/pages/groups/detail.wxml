@@ -1,18 +1,35 @@
 <view class="page">
-  <view class="page-title">{{title}}</view>
+  <view class="page-header">
+    <view class="page-title">{{title}}</view>
+    <view wx:if="{{subtitle}}" class="page-subtitle">{{subtitle}}</view>
+  </view>
   <view wx:if="{{state === 'loading'}}" class="loading"></view>
   <view wx:elif="{{state === 'error'}}" class="error">
     <view>{{errorMessage}}</view>
     <button bindtap="onRetry">{{retryText}}</button>
   </view>
-  <view wx:elif="{{state === 'ready'}}" class="ui-placeholder">
-    <view>{{group.display_name}}</view>
-    <view>{{group.memberCountText}}</view>
-    <view>{{group.role === 'owner' ? ownerText : memberText}}</view>
-    <view class="invite-label">{{inviteCodeLabel}}</view>
-    <view class="invite-code">{{group.invite_code}}</view>
-    <button open-type="share">{{shareText}}</button>
-    <button wx:if="{{group.role === 'member'}}" bindtap="onLeaveTap" loading="{{loadingAction}}">{{leaveText}}</button>
-    <button wx:if="{{group.role === 'owner'}}" bindtap="onDissolveTap" loading="{{loadingAction}}">{{dissolveText}}</button>
+  <view wx:elif="{{state === 'ready'}}">
+    <view class="group-summary">
+      <view wx:if="{{isCreationSuccess}}" class="success-mark">✓</view>
+      <view class="group-name">{{group.display_name}}</view>
+      <view class="group-role">{{group.role === 'owner' ? ownerText : memberText}} · {{group.memberCountText}}</view>
+      <view class="invite-label">{{inviteCodeLabel}}</view>
+      <view class="invite-code">{{group.formattedInviteCode}}</view>
+      <view wx:if="{{isCreationSuccess}}" class="share-hint">邀请码在群设置里随时可查看</view>
+      <view class="share-actions">
+        <button class="share-button" open-type="share">{{shareText}}</button>
+        <button class="copy-button" bindtap="onCopyInviteTap">{{copyText}}</button>
+      </view>
+    </view>
+    <view class="group-facts">
+      <view class="fact-row"><text>群成员</text><text>{{group.memberCapacityText}}</text></view>
+      <view class="fact-row"><text>群榜单</text><text>成员有预测后出现</text></view>
+      <view wx:if="{{isCreationSuccess}}" class="fact-row"><text>我创建的群</text><text>{{ownedCountText}}</text></view>
+    </view>
+    <view wx:if="{{errorMessage}}" class="inline-error">{{errorMessage}}</view>
+    <view class="management-actions">
+      <button wx:if="{{group.role === 'member'}}" class="manage-button" bindtap="onLeaveTap" loading="{{loadingAction}}">{{leaveText}}</button>
+      <button wx:if="{{group.role === 'owner'}}" class="manage-button danger" bindtap="onDissolveTap" loading="{{loadingAction}}">{{dissolveText}}</button>
+    </view>
   </view>
 </view>

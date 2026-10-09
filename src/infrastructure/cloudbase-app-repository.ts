@@ -281,6 +281,9 @@ export class CloudBaseAppRepository implements AppRepository {
       findByUserAndIdempotencyKey: async (userId, key) => this.one<Prediction>("predictions", { user_id: userId, idempotency_key: key }),
       findByUser: async (userId) => this.where<Prediction>("predictions", { user_id: userId }),
       findByMatch: async (matchId) => this.where<Prediction>("predictions", { match_id: matchId }),
+      countByMatchGroupedByResult: async () => {
+        throw internalError("CloudBase predictions.countByMatchGroupedByResult 尚未实现；待上线前接线切片");
+      },
       insert: async (prediction) => {
         assertPredictionInvariants(prediction);
         await this.add("predictions", prediction.prediction_id, prediction);

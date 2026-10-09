@@ -1,6 +1,6 @@
 # CloudBase 仓储端口覆盖表（S13 A 段）
 
-src/infrastructure/cloudbase-app-repository.ts 实现全部 AppRepository / UnitOfWork 仓储端口；字段使用 src/schema/collections.ts 定义的 snake_case，文档 _id 规则在下表备注。仓储只依赖 CloudBaseDb，端口定义位于 src/infrastructure/cloudbase-db.ts。
+src/infrastructure/cloudbase-app-repository.ts 实现现有 AppRepository / UnitOfWork 仓储端口；`PredictionRepository.countByMatchGroupedByResult` 留给上线前 CloudBase 接线切片，当前保留明确未实现标记。字段使用 src/schema/collections.ts 定义的 snake_case，文档 _id 规则在下表备注。仓储只依赖 CloudBaseDb，端口定义位于 src/infrastructure/cloudbase-db.ts。
 
 | 仓储端口 | 方法 | 状态 |
 |---|---|---|
@@ -15,7 +15,7 @@ src/infrastructure/cloudbase-app-repository.ts 实现全部 AppRepository / Unit
 | AnomalyRepository | findByKey, findOpenBlockingByMatch, findPage, insert, update | 已实现；_id = anomaly_id |
 | SyncLogRepository | insert, update | 已实现；_id = sync_job_id |
 | MatchRepository | findById, findBySeason, findByLeagueSeasonRound, findLive, insert, update, updateSettlementStatus | 已实现；_id = match_id |
-| PredictionRepository | findById, findByUserAndMatch, findByUserAndIdempotencyKey, findByUser, findByMatch, insert, update | 已实现；_id = prediction_id，两项业务唯一键由索引约束 |
+| PredictionRepository | findById, findByUserAndMatch, findByUserAndIdempotencyKey, findByUser, findByMatch, countByMatchGroupedByResult, insert, update | 其余方法已实现；`countByMatchGroupedByResult` 留有明确未实现标记，待上线前 CloudBase 接线切片；_id = prediction_id，两项业务唯一键由索引约束 |
 | JobLockRepository | acquire, isHeld, renew, release | 已实现；_id = lock_key，操作经事务执行 |
 | MatchResultRepository | findByMatchAndVersion, findLatestByMatch, insert | 已实现；_id = (match_id, result_version) |
 | SettlementRepository | findById, findByMatch, findByMatchAndVersionAndRule, findByStatus, insert, update | 已实现；_id = settlement_id |
