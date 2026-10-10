@@ -1,5 +1,9 @@
 <view class="page">
+  <image class="stadium-background" src="/assets/images/home-pitch-bg.webp" mode="aspectFill" />
+  <view class="stadium-overlay"></view>
+  <view class="secondary-content">
   <view class="page-title">最近预测</view>
+  <view class="page-subtitle">回顾最近 8 周的预测记录</view>
   <view wx:if="{{state === 'loading'}}" class="loading"></view>
   <view wx:elif="{{state === 'unauthorized'}}" class="state-panel">
     <text>登录后查看你的预测</text>
@@ -16,7 +20,7 @@
     <button bindtap="onRetry">重试</button>
   </view>
   <view wx:else>
-    <view wx:for="{{weeks}}" wx:for-item="week" wx:key="key" class="week-group">
+    <view wx:for="{{weeks}}" wx:for-item="week" wx:key="key" class="week-group glass-card">
       <view class="week-heading">{{week.label}}</view>
       <view
         wx:for="{{week.items}}"
@@ -31,17 +35,21 @@
           <text class="status">{{prediction.statusText}}</text>
         </view>
         <view class="match-row">
-          <view class="team"><image src="{{prediction.homeLogo}}" mode="aspectFit"></image><text>{{prediction.homeName}}</text></view>
+          <view class="teams-inline">
+            <view class="team"><image src="{{prediction.homeLogo}}" mode="aspectFit"></image><text>{{prediction.homeName}}</text></view>
+            <text class="versus">vs</text>
+            <view class="team away"><image src="{{prediction.awayLogo}}" mode="aspectFit"></image><text>{{prediction.awayName}}</text></view>
+          </view>
+          <text class="prediction-points">{{prediction.pointsText}}</text>
+        </view>
+        <view class="prediction-detail">
           <view class="scores">
-            <text>{{prediction.predictionText}}</text>
+            <text>预测 {{prediction.predictionText}}</text>
             <text class="actual">实际 {{prediction.actualText}}</text>
           </view>
-          <view class="team away"><image src="{{prediction.awayLogo}}" mode="aspectFit"></image><text>{{prediction.awayName}}</text></view>
+          <text class="result {{prediction.exact_hit ? 'exact' : prediction.wdl_hit ? 'hit' : prediction.match_score === null ? 'pending' : 'miss'}}">{{prediction.resultText}}</text>
         </view>
-        <view class="card-foot">
-          <text>{{prediction.kickoffText}}</text>
-          <text class="result">{{prediction.resultText}} · {{prediction.pointsText}}</text>
-        </view>
+        <view class="card-foot"><text>{{prediction.kickoffText}}</text></view>
       </view>
     </view>
     <view wx:if="{{errorMessage}}" class="inline-error">{{errorMessage}}</view>
@@ -49,5 +57,6 @@
       {{loadingMore ? '加载中…' : '加载更多'}}
     </button>
     <view wx:if="{{!hasMore && !errorMessage}}" class="history-end">{{endText}}</view>
+  </view>
   </view>
 </view>

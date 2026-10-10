@@ -1,3 +1,4 @@
+@import "../../styles/secondary-pages.wxss";
 .page {
   min-height: 100vh;
   padding: var(--space-8) var(--page-padding-inline) var(--page-padding-bottom);
@@ -49,8 +50,8 @@
 }
 
 .league image {
-  width: 40rpx;
-  height: 40rpx;
+  width: var(--secondary-league-logo);
+  height: var(--secondary-league-logo);
   flex: none;
 }
 
@@ -76,8 +77,8 @@
 }
 
 .team image {
-  width: 76rpx;
-  height: 76rpx;
+  width: var(--secondary-crest);
+  height: var(--secondary-crest);
   flex: none;
 }
 
@@ -127,7 +128,7 @@
 .state-panel,
 .empty-state,
 .loading {
-  min-height: 160rpx;
+  min-height: var(--secondary-loading-height);
   padding: var(--space-8);
   text-align: center;
   color: var(--text-secondary);
@@ -144,3 +145,25 @@
   font-size: var(--font-22);
   text-align: center;
 }
+
+.page { background: var(--surface-canvas); }
+.page-title { font-size: var(--font-40); margin-bottom: var(--space-2); }
+.week-group { overflow: hidden; padding: var(--space-6); }
+.week-heading { font-size: var(--font-26); padding-bottom: var(--space-4); border-bottom: var(--border-hairline) solid var(--border-subtle); }
+.prediction-card { padding: var(--space-5) 0; margin: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+.prediction-card + .prediction-card { border-top: var(--border-hairline) solid var(--border-subtle); }
+.card-head { gap: var(--space-3); }
+.status { flex: none; font-size: var(--font-20); background: var(--color-state-done-soft); padding: var(--space-1) var(--space-2); border-radius: var(--radius-xs); }
+.match-row { padding: var(--space-4) 0; }
+.teams-inline { display: flex; min-width: 0; flex: 1; align-items: center; gap: var(--space-2); }
+.team { width: auto; min-width: 0; flex: 1; flex-direction: row; justify-content: flex-start; text-align: left; font-size: var(--font-26); }
+.team image { width: var(--secondary-crest); height: var(--secondary-crest); }
+.versus { color: var(--text-muted); font-size: var(--font-22); }
+.prediction-points { flex: none; font-size: var(--font-36); color: var(--text-positive); font-family: var(--font-family-number); font-weight: var(--weight-bold); }
+.prediction-detail { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
+.scores { flex-direction: row; flex-wrap: wrap; justify-content: flex-start; font-family: var(--font-family-cn); font-size: var(--font-22); font-weight: var(--weight-regular); gap: var(--space-3); }
+.actual, .card-foot { font-size: var(--font-22); }
+.card-foot { border-top: 0; padding-top: var(--space-2); }
+.result { font-size: var(--font-20); flex: none; padding: var(--space-1) var(--space-2); border-radius: var(--radius-xs); background: var(--color-brand-soft); }
+.result.exact { color: var(--color-state-locked); background: var(--color-state-hit-soft); }
+.result.pending, .result.miss { color: var(--text-muted); background: var(--color-state-done-soft); }

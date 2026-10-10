@@ -380,3 +380,5 @@
 .leader-tag { font-size: var(--font-20); color: var(--text-positive); }
 .leader-name { font-size: var(--font-30); font-weight: var(--weight-bold); }
 .leader-score { font-size: var(--font-56); font-family: var(--font-family-number); font-weight: var(--weight-bold); }
+
+.guest-state { background: var(--secondary-glass); }
