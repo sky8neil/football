@@ -82,7 +82,23 @@
     </view>
     <view wx:if="{{formError}}" class="error-message">{{formError}}</view>
 
-    <!-- TODO(crowd): S14 backend is ready; mini program integration is a separate slice. -->
-    <view wx:if="{{showCrowd}}" class="crowd-placeholder">大家怎么选</view>
+    <view wx:if="{{crowdKind !== 'hidden' && crowdState !== 'idle'}}" class="crowd-card">
+      <view class="section-title">{{crowdTitle}}</view>
+      <view wx:if="{{crowdState === 'loading'}}" class="crowd-message">{{crowdLoadingText}}</view>
+      <view wx:elif="{{crowdKind === 'guest'}}" class="crowd-message crowd-action"><text>{{crowdMessage}}</text><button bindtap="onSessionTap">{{crowdLoginText}}</button></view>
+      <view wx:elif="{{crowdKind === 'locked' || crowdKind === 'insufficient'}}" class="crowd-message">{{crowdMessage}}</view>
+      <view wx:elif="{{crowdState === 'error'}}" class="crowd-message crowd-action"><text>{{crowdMessage}}</text><button bindtap="onCrowdRetry">{{crowdRetryText}}</button></view>
+      <view wx:elif="{{crowdKind === 'available'}}">
+        <view class="crowd-legend">
+          <view wx:for="{{crowdSegments}}" wx:key="key" class="crowd-item {{item.selected ? 'selected' : ''}} {{item.actual ? 'actual' : ''}}">
+            <view class="crowd-item-name"><text>{{item.name}}</text><text wx:if="{{item.selected}}" class="crowd-tag">{{crowdYourChoice}}</text><text wx:if="{{item.actual}}" class="crowd-tag actual-tag">{{crowdActualLabel}}</text></view>
+            <text class="crowd-percent">{{item.percent}}%</text>
+          </view>
+        </view>
+        <view class="crowd-bar"><view wx:for="{{crowdSegments}}" wx:key="key" class="crowd-segment crowd-{{item.key}} {{item.selected ? 'selected' : ''}} {{item.actual ? 'actual' : ''}}" style="width: {{item.width}}"></view></view>
+        <view wx:if="{{crowdComparisonText}}" class="crowd-comparison">{{crowdComparisonText}}</view>
+        <view class="crowd-footer">{{crowdFooter}}</view>
+      </view>
+    </view>
   </view>
 </view>

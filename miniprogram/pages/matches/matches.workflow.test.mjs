@@ -57,6 +57,7 @@ function loadPage({ matchesResult, submitResult } = {}) {
     if (id === "../../services/predictions.js") {
       return { createUuidV4: () => "00000000-0000-4000-8000-000000000001", submitPrediction };
     }
+    if (id === "../../utils/crowd-copy.js") return { COPY: { homeLink: "大家怎么选 ›" } };
     throw new Error(`Unexpected require: ${id}`);
   });
   const page = Object.assign({}, pageConfig, {

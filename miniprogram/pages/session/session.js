@@ -13,6 +13,11 @@ Page({
     errorMessage: "",
     canSkip: false,
     canRetry: false,
+    returnTo: "",
+  },
+
+  onLoad(query) {
+    this.setData({ returnTo: query && query.return_to === "match-detail" ? "match-detail" : "" });
   },
 
   onNicknameInput(event) {
@@ -35,6 +40,10 @@ Page({
         if (pendingInviteCode) {
           wx.removeStorageSync("pending_group_invite_code");
           wx.reLaunch({ url: `/pages/groups/join?code=${encodeURIComponent(pendingInviteCode)}` });
+          return;
+        }
+        if (this.data.returnTo === "match-detail") {
+          wx.navigateBack({ delta: 1 });
           return;
         }
         wx.switchTab({ url: HOME_URL });

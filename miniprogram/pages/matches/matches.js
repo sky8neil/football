@@ -3,6 +3,7 @@ const { resolveNickname, truncateNickname } = require("../../utils/nickname.js")
 const { listMatches } = require("../../services/matches.js");
 const { resolveDefaultLeague } = require("../../utils/matches-default-league.js");
 const { createUuidV4, submitPrediction } = require("../../services/predictions.js");
+const { COPY: CROWD_COPY } = require("../../utils/crowd-copy.js");
 
 const LEAGUES = [
   { id: "premier_league", name: "英超" },
@@ -155,6 +156,7 @@ Page({
     const uiState = submitted ? "submitted_locked" : (this.uiStates[key] || "collapsed");
     return Object.assign({}, item, view, chip, {
       key, uiState, editorVisible: uiState !== "collapsed", draft,
+      crowdLinkText: CROWD_COPY.homeLink,
       showPredict: item.can_predict === true && item.can_predict_reason === null && !submitted,
       homeLogo: getTeamLogo(item.league_id || this.data.selectedLeague, homeId),
       awayLogo: getTeamLogo(item.league_id || this.data.selectedLeague, awayId),

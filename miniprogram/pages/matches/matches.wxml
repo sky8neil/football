@@ -37,7 +37,7 @@
     <view wx:elif="{{state === 'error'}}" class="error"><text>{{errorMessage}}</text><button class="retry" bindtap="onRetry">重试</button></view>
     <scroll-view wx:else class="feed" scroll-y scroll-with-animation scroll-into-view="{{scrollIntoView}}" bindtap="onFeedTap">
     <view wx:for="{{items}}" wx:key="match_id" id="match-{{item.match_id}}" class="match {{item.cardClass}} {{item.uiState}}" data-match-id="{{item.match_id}}" bindtap="onCardTap">
-      <view class="match-top"><view class="kick"><text class="kick-time">{{item.timeText}}</text><text class="kick-meta">{{item.metaText}}</text></view><view class="state {{item.stateClass}}">{{item.stateText}}</view></view>
+      <view class="match-top"><view class="kick"><text class="kick-time">{{item.timeText}}</text><text class="kick-meta">{{item.metaText}}</text></view><text wx:if="{{item.cardClass === 'is-live' || item.cardClass === 'is-done'}}" class="crowd-link" data-match-id="{{item.match_id}}" catchtap="onCardTap">{{item.crowdLinkText}}</text><view class="state {{item.stateClass}}">{{item.stateText}}</view></view>
       <view class="faceoff">
         <view class="team"><image class="crest" src="{{item.homeLogo}}" mode="aspectFit"></image><view class="team-copy"><text class="team-name">{{item.home_team.name}}</text><text class="team-role">主队</text></view></view>
         <view class="bug {{item.bugClass}}"><text class="bug-score">{{item.scoreText}}</text><text class="bug-sub">{{item.scoreSub}}</text></view>

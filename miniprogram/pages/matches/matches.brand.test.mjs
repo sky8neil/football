@@ -94,6 +94,9 @@ function installWxStub({ stored } = {}) {
     navigateTo(options) {
       navs.push(["navigateTo", options && options.url]);
     },
+    navigateBack(options) {
+      navs.push(["navigateBack", options && options.delta]);
+    },
     removeStorageSync(key) {
       writes.push(["remove", key]);
     },
@@ -133,6 +136,7 @@ function loadHomePage({ stored } = {}) {
       };
     }
     if (id === "../../utils/nickname.js") return loadNicknameUtil();
+    if (id === "../../utils/crowd-copy.js") return { COPY: { homeLink: "大家怎么选 ›" } };
     if (id === "../../services/matches.js") {
       return { listMatches: () => Promise.resolve({ statusCode: 200, data: { items: [] } }) };
     }
@@ -296,6 +300,17 @@ describe("会话页：昵称落库 + 跳首页改用 switchTab", () => {
     await flushMicrotasks();
     expect(navs).toContainEqual(["switchTab", HOME_URL]);
     expect(navs.some(([kind]) => kind === "redirectTo" || kind === "navigateTo")).toBe(false);
+  });
+
+  it("S4c: 从比赛详情发起登录后回到详情页", async () => {
+    const { page, navs } = loadSessionPage({
+      result: { statusCode: 201, data: { nickname: "Sky" } },
+    });
+    page.onLoad({ return_to: "match-detail" });
+    page.onSubmit();
+    await flushMicrotasks();
+    expect(navs).toContainEqual(["navigateBack", 1]);
+    expect(navs).not.toContainEqual(["switchTab", HOME_URL]);
   });
 
   it("S4b: 登录后带邀请码回到加入确认页，并清除待处理邀请码", async () => {

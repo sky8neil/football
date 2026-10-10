@@ -920,3 +920,130 @@ S1–S3 无外部影响，可连续合入；S5、S7、S10 是接口变更，必�
 | Q17 | 已注销用户的预测是否计入分布 | 计入（匿名汇总）；开工前核对规范 §4.5 的注销流程，若预测会被物理删除则自然不计入 |
 | Q18 | 是否返回「参与人数」供界面显示「N 人参与」 | 不返回（14.5 第 3 条）；设计稿也没有这一项 |
 | Q19 | 首页比赛卡的次入口「大家怎么选 ›」是否需要后端字段 | 不需要：前端用比赛列表里已有的 `match_status` 判断（进行中 / 完场才出现），不额外增加字段 |
+
+
+---
+
+## 15. S15 前端：「大家怎么选」（S14 的小程序部分）
+
+> 来源：设计稿 `docs/design/current-baseline-gpt/v0.41-cc/`（`match-detail-states.html` 的 D01–D12、`home-crowd-cc.js`、`detail-cc.css`）。
+> 依赖：S14 后端已就绪（`GET /v1/matches/:match_id/crowd` 与 `CrowdData` 已在 `openapi.yaml`）。
+> 范围：**只在现有页面上加一块卡片和一个首页入口**。比赛详情页整体的视觉改版（头部、倒计时等）不在本切片，归 S12 的收尾；本切片不改预测表单、不改「我的预测」块。
+> 视觉按设计稿的玻璃卡与既有 token；不引入新 token（沿用 `miniprogram/styles/design-tokens.wxss`）。
+
+### 15.1 现状（已核对代码）
+
+- `miniprogram/pages/match-detail/match-detail.js:5` 有关闭的开关 `const SHOW_CROWD = false;`，`match-detail.wxml:85-86` 有 `TODO(crowd)` 注释与 `crowd-placeholder` 占位；`data.showCrowd` 绑定它。
+- `miniprogram/services/matches.js` 只有 `listMatches`、`getMatchDetail`，**没有** crowd 请求函数。
+- 首页卡片 `miniprogram/pages/matches/matches.wxml` 的 `.match-top` 里有 `.kick` 与 `.state`，卡片类名由 `cardClass` 给出：进行中 `is-live`、完场 `is-done`（`matches.js:61-62`）；整张卡片 `bindtap="onCardTap"` 已会跳详情页（`matches.js:175`）。
+- 详情页已有 `identityMissing`（`can_predict_reason = AUTH_REQUIRED`）可判断游客；`match.my_prediction`、`match.match_status`、`match.regular_home_score / regular_away_score` 都在详情响应里。
+- 规范 / 接口 / 后端状态枚举见 §14.2：`not_closed / insufficient / available / unavailable`。
+
+### 15.2 决策（Luna 按此执行）
+
+| # | 决策 |
+|---|---|
+| E1 | 卡片是详情页里**独立加载、独立失败**的一块：它的请求失败不得影响页面其余部分 |
+| E2 | **何时请求**：见 15.3 的表。未截止、游客、延期 / 取消 / 中止**都不发请求** |
+| E3 | 每次进入页面请求一次，**不轮询**（截止后分布不会再变，§14.5 第 1 条） |
+| E4 | 对照句、状态映射、三段条宽度全部做成**纯函数视图模型**，放 `miniprogram/utils/crowd-view-model.js`；页面只渲染 |
+| E5 | 全部文案放 `miniprogram/utils/crowd-copy.js`（或并入现有 `rankings-copy.js` 同风格的新文件），页面不写死字符串 |
+| E6 | 不显示预测人数（后端本就不返回），也不自行估算 |
+| E7 | 去掉 `SHOW_CROWD` 开关与 `TODO(crowd)`；`crowd-placeholder` 类整体替换 |
+
+### 15.3 状态矩阵（先判断本地条件，再决定是否请求）
+
+判断顺序（命中即停）：
+
+| 优先级 | 本地条件 | 是否请求 | 展示 | 设计稿 |
+|---|---|---|---|---|
+| 1 | `match_status ∈ {postponed, cancelled, abandoned}` | 否 | **整块不渲染** | D11 / D12 |
+| 2 | 游客（`identityMissing`，或之后请求得 401） | 否 | 锁定行「登录后可看」+ 登录按钮（走现有 `onSessionTap`） | D10 |
+| 3 | `match_status = scheduled` 且 `can_predict_reason` 为 `null` 或 `ALREADY_SUBMITTED`（尚未截止） | 否 | 锁定行「比赛截止后可看，达到最低参与人数后显示」；不写人数，客户端不请求接口且不写死 `20` | D01 / D02 |
+| 4 | 其余（`CLOSED`、进行中、完场） | **是** | 按后端 `status` 映射（下表） | D03–D09 |
+
+后端 `status` 的映射：
+
+| `status` | 展示 |
+|---|---|
+| `available` | 三段条 + 对照句（15.4） |
+| `insufficient` | 提示行「参与人数不足，至少 `min_predictions` 人预测后显示」（D09；数字取接口响应） |
+| `not_closed` | 同优先级 3 的锁定行（本地判断与服务端不一致时以服务端为准） |
+| `unavailable` | 整块不渲染 |
+| 请求失败 / 超时 / 429 | 卡片内显示「暂时无法加载」+「重试」按钮，**不影响页面其它部分**；401 按游客处理，不显示错误 |
+
+`insufficient` 文案中的 `min_predictions`、分布粒度 `granularity` 以接口返回值为准；未截止锁定行不显示人数，因此客户端不写死 `20`。客户端不写死 `5`。
+
+### 15.4 三段条与对照句
+
+**三段条**
+- 三项 `home / draw / away`，宽度按后端百分比（合计 100）。某项为 0 时**不渲染该段**。
+- 颜色：主胜品牌绿、平局灰、客胜深青（不用红绿对冲）；每段旁必须有**文字标签与百分比**，不能只靠颜色区分。
+- 标出「你选了」：用 `my_prediction.derived_result`（`HOME / DRAW / AWAY`）高亮对应一段。D03、D08（没预测）不显示该标记。
+- 页脚固定文案「仅展示用户选择分布，不构成任何推荐」，来自文案文件。
+
+**赛后对照句**（仅 `match_status = finished`；进行中不显示）。实际结果由 `regular_home_score / regular_away_score` 推出：
+
+| 情况 | 句子（示意，文案以文案文件为准） |
+|---|---|
+| 有预测，且与实际一致 | 「实际结果：主胜。约 45% 的人和你一样选对了」 |
+| 有预测，但与实际不一致 | 「实际结果：主胜。约 30% 的人和你选了一样的」 |
+| 没预测 | 「实际结果：主胜。约 45% 的人选对了结果」 |
+
+- 百分比是 5% 取整后的值，句子必须带「约」。
+- 「和你一样」的百分比取**你所选那一项**的占比；「选对了」取**实际结果那一项**的占比。
+- 实际比分缺失（`null`）时不显示对照句，只显示分布。
+
+### 15.5 首页卡片入口
+
+- 在 `.match-top` 里、`.state` 之前追加「大家怎么选 ›」小链接（设计稿 `home-crowd-cc.js` 的做法）。
+- **只在** `cardClass` 为 `is-live` 或 `is-done` 的卡片出现；未截止、延期等卡片不出现。
+- 点击直接进入该比赛详情页，**必须用 `catchtap`**，避免与整张卡片的 `bindtap="onCardTap"` 重复触发导致跳两次。
+- 只追加一个条件渲染的元素，**不改动已有结构、class 和绑定名**；首页 `matches.js / matches.wxml / matches.wxss` 近期有改动，改之前先确认工作区状态。
+- 不需要后端字段（§14.8 Q19）。
+
+### 15.6 条目
+
+| ID | 位置 | 要求 |
+|---|---|---|
+| N01 | `miniprogram/services/matches.js` | 新增 `getMatchCrowd(matchId)`：`GET /v1/matches/{id}/crowd`，沿用 `request`；不要在服务层吞错，状态码原样交给页面 |
+| N02 | `miniprogram/utils/crowd-view-model.js` | 纯函数：`crowdPlan({ match, identityMissing })`（15.3 的本地判断，返回 `hidden / guest / locked / fetch`）；`crowdCard({ response, match, myPrediction })`（15.3 映射与 15.4 三段条数据）；`crowdComparison({ distribution, myChoice, actualResult })`（对照句数据） |
+| N03 | `miniprogram/utils/crowd-copy.js` | 全部文案：锁定行、人数不足、游客、失败重试、页脚、对照句模板、三项名称（主胜 / 平局 / 客胜） |
+| N04 | `pages/match-detail/match-detail.js` | 比赛详情加载成功后，按 `crowdPlan` 决定是否请求；独立的 `crowdState`（`idle / loading / ready / error`）与 `onCrowdRetry`；**请求带请求序号**，页面已切换比赛或重复进入时丢弃过期响应；移除 `SHOW_CROWD` |
+| N05 | `pages/match-detail/match-detail.wxml / .wxss` | 用卡片替换 `crowd-placeholder`；样式用现有 token，三段条用 flex 比例；移除 `TODO(crowd)` |
+| N06 | `pages/matches/matches.wxml / .wxss` | 追加首页入口（15.5） |
+| N07 | 测试 | 见 15.7 |
+
+### 15.7 测试
+
+**视图模型（必须）**
+- `crowdPlan`：延期 / 取消 / 中止 → `hidden`；游客 → `guest`；未截止（含已提交）→ `locked`；`CLOSED` / 进行中 / 完场 → `fetch`；以上优先级顺序不被打乱（例如游客且比赛延期 → `hidden`）。
+- `crowdCard`：四种后端 `status` 各一例；`distribution` 含 0 的一项 → 该段不渲染；三段宽度合计 100；`min_predictions` 取自响应。
+- `crowdComparison`：有预测且命中 / 有预测未命中 / 没预测三种句子；`my_prediction` 为空；实际比分为 `null` → 无句子；进行中 → 无句子。
+- 文案：页脚、锁定行、重试按钮文案存在于文案文件。
+
+**页面逻辑**
+- 未截止 / 游客 / 不可用时**不发出 crowd 请求**（spy 断言）。
+- 请求失败时预测表单与「我的预测」块仍然渲染。
+- 快速切换比赛时过期响应被丢弃。
+- 401 → 当游客处理，不显示错误态。
+
+**首页**
+- 仅 `is-live`、`is-done` 卡片出现入口；`is-open`、`is-closed` 不出现。
+- 入口使用 `catchtap`，点击不触发 `onCardTap` 第二次跳转。
+- 回归：既有 `matches.brand.test.mjs`、`matches.workflow.test.mjs` 全部通过，常态卡片无其它变化。
+
+### 15.8 验收
+
+- 小程序相关测试全部通过，`git diff --check` 通过；后端 `tsc` / `vitest` / `build` 不受影响仍全绿。
+- 在微信开发者工具里对照设计稿逐项走查 **D01–D12**（共 12 个状态）；本机无开发者工具时，必须在报告里写明「未在开发者工具实测」，不要写成已验收。
+- 与设计稿不一致：D01、D02 的设计稿锁定行文案为「比赛截止后可看，需至少 20 人预测」；本实现按产品决策改为「比赛截止后可看，达到最低参与人数后显示」，不展示数字。截止后的 `insufficient` 状态仍使用接口返回的 `min_predictions`。
+- 报告里继续列出其他与设计稿不一致的地方，让产品决定，不自行改后端或接口字段。
+
+### 15.9 待确认（有默认值，不阻塞）
+
+| # | 问题 | 默认 |
+|---|---|---|
+| Q20 | 对照句里的「约」是否保留 | 保留（百分比是 5% 粒度） |
+| Q21 | 完场比赛是否需要显示「实际结果」的单独标签 | 沿用设计稿 D05–D08：实际结果那一段高亮并带「实际结果」小标签 |
+| Q22 | 游客点「登录」后回到详情页是否自动刷新卡片 | 是：登录回跳后重新走 `crowdPlan`；若现有会话页不支持回跳，则先只提示登录，不丢当前比赛 id |

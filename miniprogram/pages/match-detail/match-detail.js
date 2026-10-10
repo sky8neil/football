@@ -1,8 +1,8 @@
-const { getMatchDetail } = require("../../services/matches.js");
+const { getMatchDetail, getMatchCrowd } = require("../../services/matches.js");
 const { createUuidV4, submitPrediction } = require("../../services/predictions.js");
 const { getTeamLogo } = require("../../utils/logo-registry.js");
-
-const SHOW_CROWD = false;
+const { crowdPlan, crowdCard } = require("../../utils/crowd-view-model.js");
+const { COPY } = require("../../utils/crowd-copy.js");
 
 const REASON_TEXT = {
   AUTH_REQUIRED: "登录后可提交预测",
@@ -106,18 +106,38 @@ Page({
     statusText: "",
     homeLogo: "",
     awayLogo: "",
-    showCrowd: SHOW_CROWD,
+    crowdState: "idle",
+    crowdKind: "hidden",
+    crowdTitle: COPY.title,
+    crowdMessage: "",
+    crowdRetryText: COPY.retry,
+    crowdLoginText: COPY.login,
+    crowdYourChoice: COPY.yourChoice,
+    crowdActualLabel: COPY.actualTag,
+    crowdLoadingText: COPY.loading,
+    crowdFooter: "",
+    crowdSegments: [],
+    crowdComparisonText: "",
     submitting: false,
     formError: "",
   },
 
   idempotencyKey: null,
   lastPayload: null,
+  crowdRequestSerial: 0,
+  refreshAfterSession: false,
 
   onLoad(query) {
     const matchId = query && query.id ? String(query.id) : "";
     this.setData({ matchId });
     this.loadDetail();
+  },
+
+  onShow() {
+    if (this.refreshAfterSession) {
+      this.refreshAfterSession = false;
+      this.loadDetail();
+    }
   },
 
   ensureIntentKey() {
@@ -197,6 +217,49 @@ Page({
       statusText: STATUS_TEXT[match.match_status] || match.match_status,
       derivedResultText: derivedResult(this.data.homeScore, this.data.awayScore),
     });
+    this.loadCrowd(match);
+  },
+
+  loadCrowd(match) {
+    const serial = ++this.crowdRequestSerial;
+    const plan = crowdPlan({ match, identityMissing: this.data.identityMissing });
+    if (plan === "hidden") {
+      this.setData({ crowdState: "ready", crowdKind: "hidden", crowdSegments: [], crowdComparisonText: "" });
+      return;
+    }
+    if (plan === "guest") {
+      this.setData({ crowdState: "ready", crowdKind: "guest", crowdMessage: COPY.guest, crowdSegments: [], crowdComparisonText: "" });
+      return;
+    }
+    if (plan === "locked") {
+      this.setData({ crowdState: "ready", crowdKind: "locked", crowdMessage: COPY.locked, crowdSegments: [], crowdComparisonText: "" });
+      return;
+    }
+    this.setData({ crowdState: "loading", crowdKind: "loading", crowdSegments: [], crowdComparisonText: "" });
+    getMatchCrowd(this.data.matchId).then((response) => {
+      if (serial !== this.crowdRequestSerial || this.data.matchId !== match.match_id) return;
+      if (response.statusCode === 401 && response.code === "UNAUTHORIZED") {
+        this.setData({ identityMissing: true, crowdState: "ready", crowdKind: "guest", crowdMessage: COPY.guest, crowdSegments: [], crowdComparisonText: "" });
+        return;
+      }
+      if (response.statusCode !== 200) {
+        this.setData({ crowdState: "error", crowdKind: "error", crowdMessage: COPY.failed, crowdSegments: [], crowdComparisonText: "" });
+        return;
+      }
+      const card = crowdCard({ response, match, myPrediction: match.my_prediction });
+      this.setData({
+        crowdState: "ready",
+        crowdKind: card.kind,
+        crowdMessage: card.message || "",
+        crowdSegments: card.segments || [],
+        crowdComparisonText: card.comparisonText || "",
+        crowdFooter: card.footer || "",
+      });
+    });
+  },
+
+  onCrowdRetry() {
+    if (this.data.match) this.loadCrowd(this.data.match);
   },
 
   onScoreStep(event) {
@@ -216,7 +279,8 @@ Page({
   },
 
   onSessionTap() {
-    wx.navigateTo({ url: "/pages/session/session" });
+    this.refreshAfterSession = true;
+    wx.navigateTo({ url: "/pages/session/session?return_to=match-detail" });
   },
 
   onHomeScoreInput(event) {

@@ -23,7 +23,15 @@ function getMatchDetail(matchId) {
   });
 }
 
+function getMatchCrowd(matchId) {
+  return request({
+    method: "GET",
+    path: "/v1/matches/" + matchId + "/crowd",
+  });
+}
+
 module.exports = {
   listMatches,
   getMatchDetail,
+  getMatchCrowd,
 };

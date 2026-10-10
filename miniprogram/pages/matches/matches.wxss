@@ -90,6 +90,7 @@ page { background: var(--surface-canvas); color: var(--text-primary); font-famil
 .kick { display: flex; align-items: center; gap: var(--space-3); flex: 1; min-width: 0; color: var(--text-secondary); font-size: var(--font-22); }
 .kick-time { color: var(--text-primary); font-family: var(--font-family-number); font-size: var(--font-24); font-weight: var(--weight-semibold); }
 .state,.chip { min-height: var(--status-chip-height); padding: 0 var(--space-4); border-radius: var(--radius-xs); display: flex; align-items: center; font-size: var(--font-20); font-weight: var(--weight-semibold); }
+.crowd-link { flex: none; margin-right: var(--space-2); color: var(--color-brand-primary-pressed); font-size: var(--font-20); }
 .state { background: var(--color-brand-soft); color: var(--color-brand-primary-pressed); }
 .state.live { background: var(--color-state-live-soft); color: var(--color-state-live); }
 .state.done,.state.closed { background: var(--color-state-done-soft); color: var(--text-secondary); }
