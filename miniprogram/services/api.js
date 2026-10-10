@@ -1,16 +1,36 @@
 const { gatewayOrigin } = require("../config.js");
 
 function buildUrl(path, query) {
-  const url = new URL(path, gatewayOrigin);
+  // 小程序逻辑层不保证提供 URL / URLSearchParams，使用 JS 字符串拼接。
+  const joined = /^https?:\/\//i.test(path)
+    ? path
+    : gatewayOrigin.replace(/\/+$/, "") + "/" + path.replace(/^\/+/, "");
+  // 保留路径里已有的百分号编码，同时编码空格与非 ASCII 字符。
+  const encoded = encodeURI(joined).replace(/%25([0-9a-f]{2})/gi, "%$1");
+  const hashIndex = encoded.indexOf("#");
+  const fragment = hashIndex === -1 ? "" : encoded.slice(hashIndex);
+  let url = hashIndex === -1 ? encoded : encoded.slice(0, hashIndex);
+  const params = [];
   if (query && typeof query === "object") {
     Object.keys(query).forEach((key) => {
       const value = query[key];
       if (value !== undefined && value !== null) {
-        url.searchParams.append(key, String(value));
+        params.push(encodeQueryComponent(key) + "=" + encodeQueryComponent(String(value)));
       }
     });
   }
-  return url.toString();
+  if (params.length) {
+    const separator = url.indexOf("?") === -1 ? "?" : /[?&]$/.test(url) ? "" : "&";
+    url += separator + params.join("&");
+  }
+  return url + fragment;
+}
+
+function encodeQueryComponent(value) {
+  // 沿用 URLSearchParams 的表单编码口径：空格为 +，字面 + 为 %2B。
+  return encodeURIComponent(value)
+    .replace(/[!'()~]/g, (character) => "%" + character.charCodeAt(0).toString(16).toUpperCase())
+    .replace(/%20/g, "+");
 }
 
 /**
