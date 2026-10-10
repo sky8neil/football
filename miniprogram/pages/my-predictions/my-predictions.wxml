@@ -60,3 +60,4 @@
   </view>
   </view>
 </view>
+<app-tab-bar active-index="2" />

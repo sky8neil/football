@@ -1,0 +1,10 @@
+<view class="tab-bar">
+  <button wx:for="{{tabs}}" wx:key="path" class="tab-item {{selected === index ? 'selected' : ''}}" data-index="{{index}}" bindtap="onTabTap" aria-label="{{item.label}}" aria-role="button">
+    <view class="tab-icon icon-{{item.icon}}" aria-hidden="true">
+      <view wx:if="{{item.icon === 'pitch'}}" class="pitch-outline"><view class="pitch-half"></view><view class="pitch-circle"></view><view class="pitch-box left"></view><view class="pitch-box right"></view></view>
+      <view wx:elif="{{item.icon === 'ranking'}}" class="ranking-outline"><view class="rank-column low"></view><view class="rank-column high"></view><view class="rank-column middle"></view></view>
+      <block wx:else><view class="person-head"></view><view class="person-body"></view></block>
+    </view>
+    <text>{{item.label}}</text>
+  </button>
+</view>

@@ -191,7 +191,7 @@ page {
 
   /* 3.1 页面骨架 */
   --page-padding-inline: var(--space-8);                                     /* 32rpx */
-  --page-padding-bottom: calc(68rpx + env(safe-area-inset-bottom));          /* 让开 tabBar */
+  --page-padding-bottom: calc(160rpx + env(safe-area-inset-bottom));          /* 让开 tabBar */
   --topbar-offset: 40px;                                                     /* 顶栏距安全区顶 */
   --topbar-height: 44px;
   --home-spacer-top: 76px;                                                   /* 顶栏占位（含 8px 叠压余量） */
@@ -286,4 +286,33 @@ page {
   --secondary-league-logo: 28rpx;
   --secondary-bottom-height: 128rpx;
   --secondary-bottom-icon: 44rpx;
+}
+
+/* Shared custom bottom navigation, matching v0.41 ui-nav. */
+page {
+  --tab-background: rgba(255,255,255,.96);
+  --tab-border-color: #dce6df;
+  --tab-muted: #42564a;
+  --tab-selected: #1a5c26;
+  --tab-blur: 32rpx;
+  --tab-stroke: 3.4rpx;
+  --tab-stroke-selected: 4rpx;
+  --tab-line-height: 1.4;
+  --tab-z-index: 20;
+  --tab-pitch-width: 33rpx;
+  --tab-pitch-height: 29rpx;
+  --tab-pitch-radius: 6rpx;
+  --tab-pitch-circle: 11rpx;
+  --tab-pitch-box-width: 7rpx;
+  --tab-pitch-box-height: 12rpx;
+  --tab-rank-width: 35rpx;
+  --tab-rank-height: 32rpx;
+  --tab-rank-column-width: 9rpx;
+  --tab-rank-low: 17rpx;
+  --tab-rank-middle: 23rpx;
+  --tab-person-head: 13rpx;
+  --tab-person-body-width: 26rpx;
+  --tab-person-body-height: 20rpx;
+  --tab-person-head-top: 5rpx;
+  --tab-person-body-bottom: 3rpx;
 }

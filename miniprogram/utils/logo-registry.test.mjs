@@ -40,7 +40,10 @@ describe("mini program league logos", () => {
     for (const manifest of manifests) {
       for (const leagueId of LEAGUE_IDS) {
         expect(manifest.league_logos[leagueId]).toBe(`assets/logos/leagues/${leagueId}.png`);
-        expect(manifest.team_logos[leagueId]).toEqual({});
+        expect(manifest.team_logos[leagueId]).toEqual(manifests[0].team_logos[leagueId]);
+        const registered = loadLogoRegistry().MANIFEST[leagueId].teams;
+        expect(Object.keys(registered).length).toBe(leagueId === "bundesliga" ? 18 : 20);
+        expect(Object.fromEntries(Object.entries(registered).map(([slug, path]) => [slug, path.replace("../../", "")]))).toEqual(manifest.team_logos[leagueId]);
       }
     }
   });
@@ -70,11 +73,34 @@ describe("team display-name lookup", () => {
   it.each([
     ["premier_league", "Arsenal", "arsenal"], ["la_liga", "Real Madrid", "real-madrid"],
     ["ligue_1", "PSG", "paris-saint-germain"], ["chinese_super_league", "Beijing Guoan", "beijing-guoan"],
-    ["bundesliga", "Bayern München", null], ["serie_a", "Juventus", null],
+    ["bundesliga", "Bayern München", "bayern-munchen"], ["serie_a", "Juventus", "juventus"],
   ])("covers %s with packaged asset or explicit missing-asset fallback", (league, name, slug) => {
     const r = loadLogoRegistry();
     const expected = slug ? r.MANIFEST[league].teams[slug] : r.PLACEHOLDER;
     expect(r.getTeamLogo(league, { team_id: "uuid", name })).toBe(expected);
     expect(existsSync(join(ROOT, "pages", "matches", expected))).toBe(true);
+  });
+});
+
+
+describe("new Bundesliga and Serie A team assets", () => {
+  it.each(["bundesliga", "serie_a"])("resolves every registered %s crest to a packaged file", (league) => {
+    const r = loadLogoRegistry();
+    for (const [slug, path] of Object.entries(r.MANIFEST[league].teams)) {
+      expect(r.getTeamLogo(league, { team_id: "uuid", name: slug })).toBe(path);
+      expect(existsSync(join(ROOT, "pages", "matches", path))).toBe(true);
+      expect(readFileSync(join(ROOT, "pages", "matches", path)).subarray(0, 8).toString("hex")).toBe("89504e470d0a1a0a");
+    }
+  });
+  it.each([
+    ["bundesliga", "Bayern Munich", "bayern-munchen"],
+    ["bundesliga", "FC Bayern München", "bayern-munchen"],
+    ["bundesliga", "Borussia Mönchengladbach", "borussia-monchengladbach"],
+    ["serie_a", "AC Milan", "milan"],
+    ["serie_a", "Inter Milan", "inter"],
+    ["serie_a", "Como", "como-1907"],
+  ])("matches %s API name %s", (league, name, slug) => {
+    const r = loadLogoRegistry();
+    expect(r.getTeamLogo(league, { team_id: "uuid", name })).toBe(r.MANIFEST[league].teams[slug]);
   });
 });
