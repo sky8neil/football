@@ -151,15 +151,13 @@ Page({
     const submitted = this.submittedMap[key];
     const chip = submitted ? { reasonChip: "已锁定 · 不可修改", chipClass: "lock" } : reasonChip(item);
     const hasScore = item.regular_home_score !== null && item.regular_home_score !== undefined && item.regular_away_score !== null && item.regular_away_score !== undefined;
-    const homeId = item.home_team && item.home_team.team_id;
-    const awayId = item.away_team && item.away_team.team_id;
     const uiState = submitted ? "submitted_locked" : (this.uiStates[key] || "collapsed");
     return Object.assign({}, item, view, chip, {
       key, uiState, editorVisible: uiState !== "collapsed", draft,
       crowdLinkText: CROWD_COPY.homeLink,
       showPredict: item.can_predict === true && item.can_predict_reason === null && !submitted,
-      homeLogo: getTeamLogo(item.league_id || this.data.selectedLeague, homeId),
-      awayLogo: getTeamLogo(item.league_id || this.data.selectedLeague, awayId),
+      homeLogo: getTeamLogo(item.league_id || this.data.selectedLeague, item.home_team),
+      awayLogo: getTeamLogo(item.league_id || this.data.selectedLeague, item.away_team),
       timeText: item.display_time || (kick ? `${pad(kick.hour)}:${pad(kick.minute)}` : "--:--"),
       metaText: `${(LEAGUES.find((league) => league.id === item.league_id) || {}).name || "比赛"} · ${item.round_id || "本轮"}`,
       scoreText: hasScore ? `${item.regular_home_score} : ${item.regular_away_score}` : "VS",

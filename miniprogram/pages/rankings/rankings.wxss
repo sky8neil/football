@@ -1,3 +1,4 @@
+@import "../../styles/secondary-pages.wxss";
 .page {
   min-height: 100vh;
   padding: var(--space-8) var(--page-padding-inline) var(--page-padding-bottom);
@@ -20,8 +21,8 @@
 
 .board-tab {
   display: inline-flex;
-  min-width: 128rpx;
-  height: 72rpx;
+  min-width: var(--secondary-tab-min);
+  height: var(--cta-height);
   align-items: center;
   justify-content: center;
   flex: none;
@@ -66,7 +67,7 @@
 }
 
 .scope-option {
-  min-width: 148rpx;
+  min-width: var(--secondary-scope-min);
   margin: 0;
   padding: var(--space-4) var(--space-5);
   border: var(--border-hairline) solid var(--border-subtle);
@@ -100,7 +101,7 @@
 }
 
 .filter-control {
-  min-height: 64rpx;
+  min-height: var(--ghost-button-height);
   align-items: center;
   justify-content: center;
   gap: var(--space-3);
@@ -133,7 +134,7 @@
 }
 
 .notice {
-  min-height: 72rpx;
+  min-height: var(--cta-height);
   align-items: center;
   justify-content: space-between;
   gap: var(--space-4);
@@ -158,7 +159,7 @@
 }
 
 .me-panel {
-  min-height: 100rpx;
+  min-height: var(--secondary-row-height);
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-3) var(--space-5);
@@ -181,7 +182,7 @@
 .empty-state,
 .state-panel,
 .guest-state {
-  min-height: 220rpx;
+  min-height: var(--secondary-empty-height);
   flex-direction: column;
   align-items: center;
   justify-content: center;
@@ -207,7 +208,7 @@
 
 .podium-place {
   min-width: 0;
-  min-height: 168rpx;
+  min-height: var(--secondary-podium-height);
   flex: 1;
   flex-direction: column;
   align-items: center;
@@ -220,7 +221,7 @@
 }
 
 .place-1 {
-  min-height: 204rpx;
+  min-height: var(--secondary-podium-first-height);
   background: var(--color-brand-soft);
 }
 
@@ -246,7 +247,7 @@
 }
 
 .ranking-row {
-  min-height: 104rpx;
+  min-height: var(--secondary-row-height);
   align-items: center;
   gap: var(--space-4);
   padding: var(--space-4) 0;
@@ -254,7 +255,7 @@
 }
 
 .rank-number {
-  width: 52rpx;
+  width: var(--secondary-rank-width);
   flex: none;
   color: var(--text-muted);
   text-align: center;
@@ -325,7 +326,7 @@
 
 .guest-row {
   display: flex;
-  height: 58rpx;
+  height: var(--secondary-avatar);
   align-items: center;
   gap: var(--space-4);
   border-top: var(--border-hairline) solid var(--border-subtle);
@@ -334,13 +335,13 @@
 .guest-number,
 .guest-name,
 .guest-value {
-  height: 20rpx;
+  height: var(--space-5);
   border-radius: var(--radius-pill);
   background: var(--slate-200);
 }
 
 .guest-number {
-  width: 42rpx;
+  width: var(--secondary-rank-width);
 }
 
 .guest-name {
@@ -353,5 +354,29 @@
 }
 
 .loading {
-  min-height: 160rpx;
+  min-height: var(--secondary-loading-height);
 }
+
+.page { background: var(--surface-canvas); }
+.page-heading { font-size: var(--font-40); }
+.board-tab { font-size: var(--font-26); }
+.me-panel { padding: var(--space-6); margin-bottom: var(--space-4); border-bottom: 0; }
+.me-title, .list-title { font-size: var(--font-30); }
+.notice { border-radius: var(--radius-card); background: var(--secondary-glass); }
+.podium { gap: var(--space-4); }
+.podium-place { justify-content: flex-start; border-radius: var(--radius-card); background: var(--secondary-glass); padding-top: var(--space-6); border: var(--border-hairline) solid var(--border-glass-strong); }
+.place-1 { order: 2; min-height: var(--secondary-podium-first-height); background: var(--color-brand-soft); }
+.place-2 { order: 1; }
+.place-3 { order: 3; }
+.place-label { font-size: var(--font-20); }
+.podium-name { font-size: var(--font-26); font-weight: var(--weight-bold); }
+.podium-score { font-size: var(--font-44); }
+.ranking-row { box-sizing: border-box; padding: var(--space-5) var(--space-4); margin-bottom: var(--space-3); }
+.person-name { font-size: var(--font-26); }
+.person-meta, .metric-label { font-size: var(--font-22); }
+.metric-value { font-size: var(--font-44); }
+.leader-card { display: flex; align-items: center; gap: var(--space-6); padding: var(--space-8); margin: var(--space-4) 0 var(--space-7); }
+.leader-avatar { width: var(--secondary-avatar-large); height: var(--secondary-avatar-large); border: var(--border-hairline) solid var(--white); }
+.leader-tag { font-size: var(--font-20); color: var(--text-positive); }
+.leader-name { font-size: var(--font-30); font-weight: var(--weight-bold); }
+.leader-score { font-size: var(--font-56); font-family: var(--font-family-number); font-weight: var(--weight-bold); }

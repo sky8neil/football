@@ -1,5 +1,9 @@
 <view class="page">
+  <image class="stadium-background" src="/assets/images/home-pitch-bg.webp" mode="aspectFill" />
+  <view class="stadium-overlay"></view>
+  <view class="welcome-header"><view class="welcome-avatar">榜</view><view><view class="welcome-title">一起见证每次进步</view><view class="welcome-note">与球友一起，记录预测成绩</view></view></view>
   <view class="page-heading">排行榜</view>
+  <view class="page-subtitle">每一次预测，都是成长的积累</view>
 
   <scroll-view class="board-tabs" scroll-x enable-flex>
     <button class="board-tab {{board === 'week' ? 'active' : ''}}" data-board="week" bindtap="onBoardTap">周榜</button>
@@ -22,6 +26,7 @@
   </view>
   <view wx:elif="{{state === 'rateLimited'}}" class="state-panel">{{errorMessage}}</view>
   <view wx:elif="{{state === 'list'}}" class="ranking-content">
+    <view class="dark-overview"><view class="overview-title">{{board === 'week' ? '本周排行' : board === 'season' ? '赛季排行' : board === 'strength' ? '实力排行' : '生涯排行'}}</view><view class="overview-number">{{entryCount}} <text class="overview-note">位入榜</text></view><view class="overview-note">{{scope === 'group' ? scopeGroupText : scopeGlobalText}}</view></view>
     <view class="scope-row">
       <button class="scope-option {{scope === 'global' ? 'selected' : ''}}" data-scope="global" bindtap="onScopeTap">{{scopeGlobalText}}</button>
       <picker
@@ -58,7 +63,7 @@
       <button wx:if="{{item.kind === 'invite'}}" class="notice-action" bindtap="onInviteTap">{{inviteActionText}}</button>
     </view>
 
-    <view wx:if="{{me}}" class="me-panel">
+    <view wx:if="{{me}}" class="me-panel glass-card">
       <view class="me-title">我的排行</view>
       <view class="me-status">{{me.statusText}}</view>
       <view wx:if="{{me.status === 'not_eligible'}}" class="me-detail">已参与等级赛季 {{me.seasons_participated}} 个</view>
@@ -74,8 +79,14 @@
       <button wx:if="{{view.emptyKind === 'week_global' || view.emptyKind === 'week_group'}}" bindtap="onGoPredict">{{goPredictText}}</button>
     </view>
 
+    <view wx:if="{{entryCount > 0 && entryCount < 3 && podiumItems.length > 0}}" class="leader-card glass-card">
+      <view class="ranking-avatar leader-avatar">{{podiumItems[0].display_name[0]}}</view>
+      <view class="person"><text class="leader-tag">第 1 名</text><text class="leader-name">{{podiumItems[0].display_name}}</text><text class="person-meta">{{podiumItems[0].favoriteTeamText}} · Lv{{podiumItems[0].career_level}}</text></view>
+      <view class="metric"><text class="leader-score">{{podiumItems[0].mainValue}}</text><text class="metric-label">{{podiumItems[0].mainLabel}}</text></view>
+    </view>
     <view wx:if="{{view.showPodium && podiumItems.length > 0}}" class="podium">
       <view wx:for="{{podiumItems}}" wx:key="user_id" class="podium-place place-{{item.rank}}">
+        <view class="ranking-avatar">{{item.display_name[0]}}</view>
         <text class="place-label">{{item.placeText}}</text>
         <text class="podium-name">{{item.display_name}}</text>
         <text class="podium-score">{{item.mainValue}}</text>
@@ -83,8 +94,9 @@
     </view>
 
     <view wx:if="{{view.listTitle && entryCount > 0}}" class="list-title">{{view.listTitle}}</view>
-    <view wx:for="{{listItems}}" wx:key="user_id" class="ranking-row">
+    <view wx:for="{{listItems}}" wx:key="user_id" class="ranking-row glass-card" wx:if="{{entryCount >= 3 || item.rank !== 1}}">
       <text class="rank-number">{{item.rank}}</text>
+      <view class="ranking-avatar">{{item.display_name[0]}}</view>
       <view class="person">
         <text class="person-name">{{item.display_name}}</text>
         <text class="person-meta">{{item.favoriteTeamText}} · Lv{{item.career_level}}</text>

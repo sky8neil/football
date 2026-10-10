@@ -45,3 +45,36 @@ describe("mini program league logos", () => {
     }
   });
 });
+
+
+describe("team display-name lookup", () => {
+  it("normalizes accents, case, spaces and repeated punctuation", () => {
+    const r = loadLogoRegistry();
+    expect(r.normalizeTeamName("  Atlético -- Madrid! ")).toBe("atletico-madrid");
+    expect(r.getTeamLogo("la_liga", "Atlético Madrid")).toBe(r.MANIFEST.la_liga.teams["atletico-madrid"]);
+  });
+  it("uses API names even when team_id is a UUID", () => {
+    const r = loadLogoRegistry();
+    expect(r.getTeamLogo("premier_league", { team_id: "uuid", name: "Arsenal" })).toBe(r.MANIFEST.premier_league.teams.arsenal);
+  });
+  it("resolves common aliases and preserves missing-asset fallback", () => {
+    const r = loadLogoRegistry();
+    for (const [name, slug] of [["Manchester United", "manchester-united"], ["Man United", "manchester-united"], ["Tottenham Hotspur", "tottenham"], ["Tottenham", "tottenham"], ["Brighton & Hove Albion", "brighton"]]) {
+      expect(r.getTeamLogo("premier_league", name)).toBe(r.MANIFEST.premier_league.teams[slug]);
+    }
+    expect(r.TEAM_ALIASES.premier_league["wolverhampton-wanderers"]).toBe("wolves");
+    expect(r.getTeamLogo("premier_league", "Wolverhampton Wanderers")).toBe(r.getTeamLogo("premier_league", "Wolves"));
+    expect(r.getTeamLogo("premier_league", "Unknown Club")).toBe(r.PLACEHOLDER);
+    expect(r.getTeamLogo("unknown", "Arsenal")).toBe(r.PLACEHOLDER);
+  });
+  it.each([
+    ["premier_league", "Arsenal", "arsenal"], ["la_liga", "Real Madrid", "real-madrid"],
+    ["ligue_1", "PSG", "paris-saint-germain"], ["chinese_super_league", "Beijing Guoan", "beijing-guoan"],
+    ["bundesliga", "Bayern München", null], ["serie_a", "Juventus", null],
+  ])("covers %s with packaged asset or explicit missing-asset fallback", (league, name, slug) => {
+    const r = loadLogoRegistry();
+    const expected = slug ? r.MANIFEST[league].teams[slug] : r.PLACEHOLDER;
+    expect(r.getTeamLogo(league, { team_id: "uuid", name })).toBe(expected);
+    expect(existsSync(join(ROOT, "pages", "matches", expected))).toBe(true);
+  });
+});

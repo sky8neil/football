@@ -253,3 +253,37 @@ page {
          微信 tabBar 由 app.json 配置、原生渲染，当前项目未做任何样式配置，
          因此 V1 没有可提炼的 tabBar token（见文档 "tabBar" 一节）。 */
 }
+
+/* v0.41 secondary pages: additive tokens; frozen home values stay intact. */
+page {
+  --font-28: 28rpx;
+  --font-40: 40rpx;
+  --font-44: 44rpx;
+  --font-48: 48rpx;
+  --font-56: 56rpx;
+  --secondary-avatar: 68rpx;
+  --secondary-header-gap: 18rpx;
+  --secondary-avatar-large: 112rpx;
+  --secondary-row-height: 156rpx;
+  --secondary-rank-width: 44rpx;
+  --secondary-podium-height: 208rpx;
+  --secondary-podium-first-height: 256rpx;
+  --secondary-tab-min: 128rpx;
+  --secondary-scope-min: 148rpx;
+  --secondary-empty-height: 220rpx;
+  --secondary-loading-height: 160rpx;
+  --secondary-glass: rgba(255,255,255,.88);
+  --secondary-glass-blurred: rgba(255,255,255,.68);
+  --secondary-overlay: linear-gradient(180deg,rgba(255,255,255,.16),rgba(244,248,244,.50));
+  --secondary-shadow: 0 16rpx 48rpx rgba(23,60,35,.08);
+  --secondary-blur: 24rpx;
+  --secondary-dark: radial-gradient(ellipse at top right,rgba(185,240,143,.20),transparent),linear-gradient(135deg,#1f4d36,#0e2d20);
+  --secondary-dark-border: rgba(185,240,143,.22);
+  --secondary-dark-shadow: 0 20rpx 56rpx rgba(14,45,32,.28),inset 0 2rpx 0 rgba(255,255,255,.10);
+  --secondary-on-dark: rgba(255,255,255,.76);
+  --secondary-accent: #b9f08f;
+  --secondary-crest: 48rpx;
+  --secondary-league-logo: 28rpx;
+  --secondary-bottom-height: 128rpx;
+  --secondary-bottom-icon: 44rpx;
+}

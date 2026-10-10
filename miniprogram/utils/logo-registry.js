@@ -108,13 +108,45 @@ const MANIFEST = {
 
 const PLACEHOLDER = "../../assets/logos/placeholders/team-placeholder.png";
 
-function getTeamLogo(leagueId, teamId) {
+// API display names differ from the packaged asset slugs. Keep those naming
+// aliases here, scoped by league; an alias never supplies a missing asset.
+const TEAM_ALIASES = {
+  premier_league: {
+    "man-united": "manchester-united", "man-utd": "manchester-united",
+    "man-city": "manchester-city", "tottenham-hotspur": "tottenham",
+    "wolverhampton-wanderers": "wolves", "wolverhampton": "wolves",
+    "newcastle-united": "newcastle", "brighton-hove-albion": "brighton",
+    "brighton-and-hove-albion": "brighton", "ipswich-town": "ipswich",
+  },
+  la_liga: {
+    "athletic-bilbao": "athletic-club", "atletico-de-madrid": "atletico-madrid",
+    "celta-vigo": "celta", "rc-celta-de-vigo": "celta", "fc-barcelona": "barcelona",
+  },
+  ligue_1: {
+    "psg": "paris-saint-germain", "olympique-lyonnais": "lyon",
+    "olympique-de-marseille": "marseille", "monaco": "as-monaco",
+    "lens": "rc-lens", "strasbourg": "rc-strasbourg-alsace", "le-havre": "le-havre-ac",
+  },
+  chinese_super_league: {
+    "shanghai-sipg": "shanghai-port", "zhejiang": "zhejiang-professional",
+    "henan": "henan-songshan-longmen", "tianjin-jinmen-hu": "tianjin-jinmen-tiger",
+  },
+};
+
+function normalizeTeamName(name) {
+  return String(name || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
+function getTeamLogo(leagueId, team) {
   const league = MANIFEST[leagueId];
-  return (league && league.teams[String(teamId || "")]) || PLACEHOLDER;
+  const key = normalizeTeamName(team && typeof team === "object" ? team.name : team);
+  const slug = (TEAM_ALIASES[leagueId] && TEAM_ALIASES[leagueId][key]) || key;
+  return (league && league.teams[slug]) || PLACEHOLDER;
 }
 
 function getLeagueLogo(leagueId) {
   return MANIFEST[leagueId] ? MANIFEST[leagueId].logo : PLACEHOLDER;
 }
 
-module.exports = { getTeamLogo, getLeagueLogo, PLACEHOLDER, MANIFEST };
+module.exports = { getTeamLogo, getLeagueLogo, PLACEHOLDER, MANIFEST, normalizeTeamName, TEAM_ALIASES };
