@@ -1,6 +1,7 @@
 <view class="page">
   <image class="stadium-background" src="/assets/images/home-pitch-bg.webp" mode="aspectFill" />
   <view class="stadium-overlay"></view>
+  <view class="secondary-content">
   <view class="welcome-header"><view class="welcome-avatar">榜</view><view><view class="welcome-title">一起见证每次进步</view><view class="welcome-note">与球友一起，记录预测成绩</view></view></view>
   <view class="page-heading">排行榜</view>
   <view class="page-subtitle">每一次预测，都是成长的积累</view>
@@ -112,5 +113,6 @@
       {{loadingMore ? '加载中…' : '加载更多'}}
     </button>
     <view wx:if="{{board === 'week'}}" class="week-hint">{{weekWindowHint}}</view>
+  </view>
   </view>
 </view>

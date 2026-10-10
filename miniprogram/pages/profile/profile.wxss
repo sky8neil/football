@@ -1,3 +1,4 @@
+@import "../../styles/secondary-pages.wxss";
 .page {
   min-height: 100vh;
   padding: var(--space-8) var(--page-padding-inline) var(--page-padding-bottom);
@@ -27,8 +28,8 @@
 
 .avatar {
   display: flex;
-  width: 112rpx;
-  height: 112rpx;
+  width: var(--secondary-avatar);
+  height: var(--secondary-avatar);
   align-items: center;
   justify-content: center;
   flex: none;
@@ -59,7 +60,7 @@
 
 .recap {
   padding: var(--space-6);
-  border-left: 6rpx solid var(--color-brand-primary);
+  border-left: var(--border-hairline) solid var(--color-brand-primary);
   border-radius: var(--radius-sm);
   background: var(--surface-card-strong);
   color: var(--text-positive);
@@ -89,7 +90,7 @@
 .stat {
   display: flex;
   min-width: 30%;
-  min-height: 112rpx;
+  min-height: var(--secondary-avatar);
   flex: 1;
   flex-direction: column;
   justify-content: center;
@@ -153,7 +154,7 @@
 
 .group-row {
   gap: var(--space-4);
-  min-height: 88rpx;
+  min-height: var(--secondary-row-height);
   border-bottom: var(--border-hairline) solid var(--border-subtle);
   font-size: var(--font-22);
 }
@@ -164,7 +165,7 @@
 
 .state-panel,
 .loading {
-  min-height: 160rpx;
+  min-height: var(--secondary-loading-height);
   padding: var(--space-8);
   color: var(--text-secondary);
   text-align: center;
@@ -175,3 +176,21 @@
   color: var(--text-primary);
   background: var(--surface-ghost);
 }
+
+.page { background: var(--surface-canvas); }
+.profile-heading { gap: var(--secondary-header-gap); }
+.avatar { font-size: var(--font-28); }
+.nickname { font-size: var(--font-28); }
+.stats-section, .groups-section { padding: var(--space-8); border-top: var(--border-hairline) solid var(--border-glass-strong); }
+.stats-section.dark-overview { margin-bottom: 0; border-color: var(--secondary-dark-border); }
+.section-title { font-size: var(--font-30); }
+.stats-grid { margin-top: var(--space-4); }
+.stat { background: transparent; min-width: 35%; padding: var(--space-4) 0; }
+.value { font-size: var(--font-48); }
+.dark-overview .value { color: var(--secondary-accent); }
+.dark-overview .label { color: var(--secondary-on-dark); }
+.actions button { border: var(--border-hairline) solid var(--border-glass-strong); border-radius: var(--radius-card); background: var(--secondary-glass); font-size: var(--font-26); }
+.group-row { font-size: var(--font-26); }
+.group-trailing { display: flex; align-items: center; gap: var(--space-4); color: var(--text-muted); font-size: var(--font-22); }
+.group-chevron { font-size: var(--font-36); }
+.recap { font-size: var(--font-22); border-radius: var(--radius-card); }

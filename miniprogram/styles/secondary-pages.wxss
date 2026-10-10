@@ -1,11 +1,11 @@
 /* Shared v0.41 stadium and glass surfaces; opaque fallback needs no blur. */
-.page { position: relative; isolation: isolate; box-sizing: border-box; min-height: 100vh; padding: var(--space-8) var(--page-padding-inline) var(--page-padding-bottom); color: var(--text-primary); background: var(--surface-canvas); font-size: var(--font-26); }
-.stadium-background, .stadium-overlay { position: fixed; inset: 0; width: 100%; height: 100vh; pointer-events: none; }
-.stadium-background { z-index: -2; }
-.stadium-overlay { z-index: -1; background: var(--secondary-overlay); }
+.page { position: relative; box-sizing: border-box; min-height: 100vh; padding: var(--space-8) var(--page-padding-inline) var(--page-padding-bottom); color: var(--text-primary); background: var(--surface-canvas); font-size: var(--font-26); }
+.stadium-background, .stadium-overlay { position: fixed; left: 0; top: 0; width: 100%; height: 100vh; pointer-events: none; }
+.stadium-background { z-index: 0; }
+.stadium-overlay { z-index: 0; background: var(--secondary-overlay); }
 .glass-card, .state-panel, .empty-state, .guest-state { border: var(--border-hairline) solid var(--border-glass-strong); border-radius: var(--radius-card); background: var(--secondary-glass); box-shadow: var(--secondary-shadow); }
-@supports (backdrop-filter: blur(var(--secondary-blur))) {
-  .glass-card, .state-panel, .empty-state, .guest-state { background: var(--secondary-glass-blurred); backdrop-filter: blur(var(--secondary-blur)); }
+@supports (backdrop-filter: blur(0)) {
+  .glass-card, .state-panel, .empty-state, .guest-state { background: var(--secondary-glass-blurred); backdrop-filter: blur(var(--secondary-blur)); -webkit-backdrop-filter: blur(var(--secondary-blur)); }
 }
 .welcome-header { display: flex; align-items: center; gap: var(--secondary-header-gap); margin-bottom: var(--space-8); }
 .welcome-avatar, .ranking-avatar { display: flex; flex: none; align-items: center; justify-content: center; width: var(--secondary-avatar); height: var(--secondary-avatar); border-radius: 50%; color: var(--text-positive); background: var(--color-brand-soft); font-size: var(--font-28); font-weight: var(--weight-bold); }
@@ -23,3 +23,5 @@ button::after { border: 0; }
 .more { margin: var(--space-6) 0; background: var(--secondary-glass); border-radius: var(--radius-card); color: var(--text-primary); }
 .inline-error { margin-top: var(--space-4); color: var(--text-danger); }
 .loading { min-height: var(--secondary-loading-height); }
+
+.secondary-content { position: relative; z-index: 1; }

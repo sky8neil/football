@@ -1,4 +1,7 @@
 <view class="page">
+  <image class="stadium-background" src="/assets/images/home-pitch-bg.webp" mode="aspectFill" />
+  <view class="stadium-overlay"></view>
+  <view class="secondary-content">
   <view wx:if="{{state === 'loading'}}" class="loading"></view>
   <view wx:elif="{{state === 'unauthorized'}}" class="state-panel">
     <text>登录后查看个人资料</text>
@@ -20,9 +23,9 @@
       </view>
     </view>
 
-    <view wx:if="{{previousSeasonRecap}}" class="recap">{{previousSeasonRecap}}</view>
+    <view wx:if="{{previousSeasonRecap}}" class="recap glass-card">{{previousSeasonRecap}}</view>
 
-    <view class="stats-section">
+    <view class="stats-section dark-overview">
       <view class="section-title">生涯</view>
       <view class="stats-grid">
         <view class="stat"><text class="value">{{careerPoints}}</text><text class="label">积分</text></view>
@@ -32,7 +35,7 @@
       </view>
     </view>
 
-    <view class="stats-section">
+    <view class="stats-section glass-card">
       <view class="section-heading">
         <text class="section-title">本赛季</text>
         <text class="season-id">{{seasonId}}</text>
@@ -49,7 +52,7 @@
       <button bindtap="onUnlocksTap">我的解锁</button>
     </view>
 
-    <view class="groups-section">
+    <view class="groups-section glass-card">
       <view class="section-heading">
         <text class="section-title">我的群</text>
         <button class="text-action" bindtap="onGroupsTap">全部</button>
@@ -70,8 +73,9 @@
         bindtap="onGroupTap"
       >
         <text>{{item.display_name}}</text>
-        <text>{{item.memberCountText}} · {{item.role === 'owner' ? '群主' : '成员'}}</text>
+        <view class="group-trailing"><text>{{item.memberCountText}} · {{item.role === 'owner' ? '群主' : '成员'}}</text><text class="group-chevron">›</text></view>
       </view>
     </view>
+  </view>
   </view>
 </view>
