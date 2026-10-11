@@ -1047,3 +1047,303 @@ S1–S3 无外部影响，可连续合入；S5、S7、S10 是接口变更，必�
 | Q20 | 对照句里的「约」是否保留 | 保留（百分比是 5% 粒度） |
 | Q21 | 完场比赛是否需要显示「实际结果」的单独标签 | 沿用设计稿 D05–D08：实际结果那一段高亮并带「实际结果」小标签 |
 | Q22 | 游客点「登录」后回到详情页是否自动刷新卡片 | 是：登录回跳后重新走 `crowdPlan`；若现有会话页不支持回跳，则先只提示登录，不丢当前比赛 id |
+
+
+---
+
+## 16. S16 小程序接入微信身份（云开发免登录）
+
+> 来源：用户提出「小程序还没有调用微信登录的业务代码」；参考微信官方《小程序登录》文档（`wx.login` → `code` → 服务端 `auth.code2Session`）。
+> 本节先核对现状，再说明**为什么本项目不走 `wx.login`**，最后给出开发条目。
+> 注意：此前口头建议里曾把「`wx.login` + `code2Session`」列为上线前缺口，**该说法与本项目已冻结的身份模型不符，以本节为准。**
+
+### 16.1 现状（已核对代码与规范）
+
+| 项 | 事实 |
+|---|---|
+| 规范 §4.6 | 身份来自「网关 / 运行环境注入的可信 `openid`」；后端**不签发** JWT / Cookie / session token；客户端不得提交 `openid`、`user_id` |
+| `openapi.yaml` 根级 | `x-trusted-runtime-openid`：`injection: gateway_or_runtime`、`client_supply_forbidden: true` |
+| 云函数入口 `src/cloud-function/index.ts` | 已写好：身份只来自运行时 `context.OPENID`（对应 `cloud.getWXContext().OPENID`），`prod` 不认 mock；`DEPLOY.md` 已写明小程序用 `wx.cloud.callFunction({ name, data: { method, path, query, body } })` 调用 |
+| 后端身份四态 | `src/gateway/assemble.ts` `resolveIdentity`：`anonymous / unregistered / deleted / active`；`unregistered`（有 openid 但还没有用户记录）在需登录接口上由 handler 返回 `401` |
+| 小程序 `services/api.js` | 只有 `wx.request` 直连 `config.gatewayOrigin`（本地 HTTP 网关）；**没有** `wx.cloud.init`，**没有** `wx.cloud.callFunction`，**没有** `wx.login` |
+| 小程序会话页 | `pages/session/session` 只收昵称并调用 `POST /v1/session/init`，本地靠网关注入的 `local-dev-openid` 才有身份 |
+| `project.config.json` | `appid` 仍是 `touristappid`；游客 AppID **不能使用云开发** |
+
+### 16.2 方案选择
+
+| | 方案 A：云开发免登录（**采用**） | 方案 B：`wx.login` + `code2Session` |
+|---|---|---|
+| 谁拿到 openid | 云函数运行时由平台注入，**服务端直接可信** | 小程序 `wx.login` 取 `code` → 自建服务端调微信接口换取 |
+| 需要 AppSecret | 否 | **是**，必须保管在服务端 |
+| 需要自签登录态 | 否 | **是**（官方文档称「自定义登录态」），需签发并校验 token |
+| 与已冻结规范 | **完全一致**（§4.6 无 token） | **冲突**：需要新增 token 机制，须升级规范、openapi 与网关 |
+| `session_key` | 不涉及 | 必须只留在服务端，不得下发小程序 |
+| 前提 | 真实 AppID + 云开发环境（该 AppID 下开通） | 自有服务器 + 已备案 HTTPS 域名 + 合法域名配置 |
+
+**决定：采用方案 A。** 只有在以后放弃云开发、改用自有服务器时才需要方案 B，那属于规范变更，不在本切片。
+
+### 16.3 方案 A 的登录流程
+
+1. 小程序启动：`wx.cloud.init({ env, traceUser: true })`。
+2. 所有业务请求经 `wx.cloud.callFunction`；平台把**当前微信用户的 openid** 放进云函数运行时上下文，客户端无法伪造也无需传递。
+3. 用户状态由服务端按 openid 解析：
+   - `unregistered`：需登录接口返回 `401`，前端显示**游客**界面（灰色占位 +「请登录查看榜单」）。**在云环境里，「游客」就等价于「已有 openid 但还没完成 `session/init`」**，不会出现「完全没有 openid」。
+   - 用户点「登录」→ 会话页填昵称 → `POST /v1/session/init` → 创建用户（`201`），此后同一 openid 视为 `active`。
+   - `deleted`：`409 USER_DELETED`，沿用现有界面。
+4. **不增加**自动 `session/init`：保留现有「游客可浏览比赛、登录后才能看榜单和预测」的流程，避免未经用户同意创建账号。
+
+### 16.4 条目
+
+#### 小程序端
+
+| ID | 位置 | 要求 |
+|---|---|---|
+| L01 | `miniprogram/config.js` | 增 `transport: "http" \| "cloud"`、`cloudEnvId`、`cloudFunctionName`；按小程序版本选择：开发版可用 `http`（本地网关），**体验版、正式版只能 `cloud`**。版本用 `wx.getAccountInfoSync().miniProgram.envVersion`（`develop / trial / release`）判断 |
+| L02 | `miniprogram/app.js` | `transport = cloud` 时调用 `wx.cloud.init`；缺少 `cloudEnvId` 时**明确报错**，不要静默回退到 `http` |
+| L03 | `miniprogram/services/api.js` | 保持 `request({ method, path, data, query })` 的**签名与返回结构不变**（`{ data, request_id, statusCode, code, message, details }`），所有现有 service 不改。内部按 `transport` 分发：`http` 保持现状；`cloud` 调 `wx.cloud.callFunction({ name, data: { method, path, query, body } })`，把 `res.result.status / res.result.body` 映射成同样的返回结构 |
+| L04 | 错误映射 | `callFunction` 自身失败（网络、超时、函数不存在、调用频率）→ 与现有 `fail` 分支一致的返回结构（`statusCode: 0` 之类的约定沿用现状），页面现有的重试逻辑继续有效；业务错误（401 / 409 / 422 / 429）仍走 `res.result.status` |
+| L05 | 安全护栏 | 正式版（`release`）下若配置成 `http` 或带有本地网关地址 → **拒绝发请求并报错**；任何请求不得携带 `openid`、`user_id`、token 字段（`data` 里出现这些键直接抛错，测试覆盖） |
+| L06 | `pages/session/session.*` | 流程不变；仅把错误文案「身份缺失」改成面向用户的说法（例如「请在微信中打开」）。**不新增** `wx.login` |
+| L07 | 登录回跳 | 现有会话页已支持 `return_to=match-detail` 和待加入邀请码；保持并补测试：登录成功后回到原页面，不丢当前比赛 id 与邀请码 |
+| L08 | `project.config.json` | 增 `cloudfunctionRoot`（如需在开发者工具里直接上传云函数）；`appid` **由用户本地替换为真实 AppID，不提交仓库** |
+
+#### 云函数 / 服务端
+
+| ID | 位置 | 要求 |
+|---|---|---|
+| L09 | 新建云函数包（如 `cloudfunctions/api/`）：`index.js`、`package.json` | 引入 `wx-server-sdk`；`cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV })`；入口里取 `cloud.getWXContext().OPENID`，按 `DEPLOY.md` 的方式调用 `createCloudFunctionHandler`。**不要在入口之外读取 openid** |
+| L10 | 云函数构建 | 把 `dist/` 里的网关与业务代码打进云函数包；明确构建命令与产物位置（新增 `npm` 脚本，例如 `cloudfunction:build`）；包内不得含 `.env`、密钥、本地种子数据 |
+| L11 | 仓储与限流装配 | 部署侧用 S13 的 CloudBase 仓储替换内存实现（依赖 S13 B 段的真实 `CloudBaseDb`）；**共享限流**：当前 `InMemoryRateLimiter` 在多个云函数实例间不共享，等于限流失效；至少在文档里记录，并评估使用 `cloudbase-rate-limit-store.ts` 的存储版实现 |
+| L12 | 启动自检 | `prod` 环境下：`FOOTBALL_MOCK_TRUSTED_OPENID` 必须为空，否则**启动即失败**（`DEPLOY.md` 目前只说「忽略」，这里加强为显式失败）；日志只允许 `request_id / method / path / status / code`，**不得打印完整 openid** |
+| L13 | 云函数超时与冷启动 | 云函数默认超时较短，需在控制台调大；在文档里记录冷启动对首屏的影响，前端首屏请求设置合理的加载态与重试 |
+
+### 16.5 测试
+
+**小程序（用假的 `wx` 对象）**
+- `transport = http`：行为与现状完全一致（回归既有测试）。
+- `transport = cloud`：`callFunction` 被调用且参数为 `{ name, data: { method, path, query, body } }`；`res.result.status = 200 / 201 / 401 / 409 / 422 / 429` 都能映射为现有返回结构；`callFunction` 失败 → 走失败分支。
+- `release` 版本配置为 `http` → 抛错且不发请求。
+- 请求数据里含 `openid / user_id / token` 键 → 抛错。
+- 缺 `cloudEnvId` → 明确报错。
+- 会话页回跳：带 `return_to` 与待加入邀请码两种场景。
+
+**云函数 / 服务端**
+- 假 `getWXContext` 返回 openid：公开读 `200`；无 openid → 需登录接口 `401`；`session/init` 在 `unregistered` 时 `201`、再次 `200`；`deleted` 时按规范 §4.6。
+- body / query 里带 `openid` 或 `user_id` 不得冒充身份。
+- `prod` 且 mock 变量非空 → 启动失败。
+- 日志不含完整 openid。
+
+### 16.6 需要用户本人完成的事（代码做不了）
+
+1. 注册并获得**真实 AppID**，在开发者工具本地替换 `touristappid`（不要提交）。
+2. 在该 AppID 下**开通云开发**，创建 `test` 与 `prod` 两个环境（环境 ID 互不相同），在控制台绑定 `FOOTBALL_*` 环境变量。
+3. 创建云函数并上传；调大超时；把 CloudBase 数据库集合与索引按 `src/schema/` 建好（依赖 S13 B 段）。
+4. 在微信开发者工具里选择云开发环境，用**真机调试 / 体验版**验证真实登录；`openid` 不要出现在截图或日志里。
+5. 在小程序后台配置「用户隐私保护指引」，如实说明会收集 openid 与昵称。
+
+### 16.7 验收
+
+- 代码侧：`tsc` / `vitest` / `build` / `git diff --check` 全绿，小程序相关测试全绿；`transport = http` 的本地调试流程**不受影响**（README 的 `gateway:dev` 步骤仍可用）。
+- 真环境侧（用户操作后）：体验版里完成「首次进入 → 游客浏览比赛 → 登录 → 看到榜单 → 提交预测 → 退出重进仍是同一用户」整条链路。
+- 报告里必须写清：**未在真实云开发环境验证**，除非确实验证过；不要把「单元测试通过」写成「登录已打通」。
+
+### 16.8 待确认（有默认值，不阻塞）
+
+| # | 问题 | 默认 |
+|---|---|---|
+| Q23 | 调用方式用 `wx.cloud.callFunction` 还是云托管 `wx.cloud.callContainer` | `callFunction`（与现有 `DEPLOY.md` 和入口代码一致）；若改云托管，网关需改为读取平台注入的 openid 头，属于另一个切片 |
+| Q24 | 是否需要用户头像、手机号等更多微信资料 | 不需要；本期只用 openid 与昵称（`type="nickname"` 输入框，已实现） |
+| Q25 | 将来是否会有自有服务器 / H5 / 其他端 | 若会，需要另起「自建登录态」切片（方案 B），并升级规范 §4.6 |
+
+### 16.9 云开发环境登记
+
+> 环境 ID 不是密钥（它会出现在小程序客户端代码里），可以写进文档；**AppID、云函数环境变量里的密钥值、Provider key 仍然只存部署平台，不写入仓库**（沿用 `src/cloud-function/DEPLOY.md`）。
+> 三套环境的 `cloud_environment_id` 与 `resource_namespace` 必须互不相同（`assertEnvironmentIsolation`）。只追加、不覆盖：新增环境时在表里加一行。
+
+| 环境 | 控制台名称 | `FOOTBALL_CLOUD_ENVIRONMENT_ID` | `FOOTBALL_RESOURCE_NAMESPACE` | 用途 | 状态 |
+|---|---|---|---|---|---|
+| `test` | cloud1 | `cloud1-d4ga6fvm0c6d4ec01` | `football_test`（**建议值，待用户确认**；集合名按 `cloudBaseCollectionName` 拼成 `football_test_users` 等） | 开发者工具真机调试、体验版、联调 | 已创建 |
+| `dev` | — | 待登记 | 待登记 | 如需单独的开发环境再开通；本地调试继续用内存网关，可不开通 | 未创建 |
+| `prod` | — | 待登记 | 待登记（不得与 `test` 相同） | 正式上线，独立全新环境，**不复用 `test` 的数据** | 未创建 |
+
+使用约定：
+
+1. **`test` 环境用于**：开发版与体验版的小程序；`FOOTBALL_ENVIRONMENT=test`；允许使用测试身份注入（仅限云函数本地单元测试，真环境身份仍来自 `getWXContext().OPENID`）。
+2. 小程序 `config.js` 的 `cloudEnvId` 按版本选择：`develop / trial` 用 `test` 环境 ID；`release` 在 `prod` 登记前**必须为空并拒绝发请求**（L05 的护栏）。
+3. 上线时 `prod` 使用全新环境，不清空、不迁移 `test` 数据（见上线流程）。
+4. `test` 环境里的种子 / 测试数据，用固定前缀标记（如昵称或 openid 前缀 `test-`），便于筛选和对账。
+5. 需要用户本人完成：在 `cloud1` 内创建数据库集合与索引（依赖 S13 B 段）；上传云函数并绑定 `FOOTBALL_ENVIRONMENT=test`、`FOOTBALL_REPOSITORY_BACKEND=cloudbase`、`FOOTBALL_CLOUD_ENVIRONMENT_ID`、`FOOTBALL_RESOURCE_NAMESPACE`、`FOOTBALL_MATCH_CURSOR_SECRET`（值在控制台填写）。
+
+待确认：
+
+| # | 问题 | 默认 |
+|---|---|---|
+| Q26 | `test` 环境的 `resource_namespace` 用什么 | `football_test`；若 `cloud1` 里还会放别的项目的集合，必须保留命名空间前缀以免混用 |
+| Q27 | 小程序真实 AppID 是否已与 `cloud1` 绑定 | 需确认：云开发环境必须属于该 AppID 才能被 `wx.cloud.init` 使用 |
+
+
+---
+
+## 17. S17 数据库接入（仅经云函数）与排错诊断
+
+> 决定（用户已确认）：**所有数据库访问都通过云函数**。小程序不直连云数据库，开发机也不直连（不使用 `@cloudbase/node-sdk`、不申请或保存 API 密钥）。
+> 已确认事实：真实 AppID 已与云开发环境 `cloud1`（`cloud1-d4ga6fvm0c6d4ec01`，登记见 §16.9）绑定；控制台已建一个名为 `test` 的集合（见 17.3，它只用作连通性探针）。
+> 用户第一次做小程序，AppID、绑定、权限、环境变量都可能配错。**本节把「出了问题能在日志里一眼看出是哪个微信 / 云开发参数不对」作为硬性要求**（17.5–17.7）。
+> 依赖：S13 A 段（仓储适配器 + `CloudBaseDb` 端口）已完成；本节补上真实适配器。与 §16（S16 登录与调用方式）配套：S16 解决「小程序怎么调云函数、身份从哪来」，S17 解决「云函数怎么连库、出错怎么查」。
+
+### 17.1 访问通道
+
+```text
+小程序 → wx.cloud.callFunction → 云函数 api → 业务 handler → CloudBaseDb 适配器(wx-server-sdk) → 云数据库
+```
+
+- 云函数内用 `wx-server-sdk` 访问数据库，运行时由平台授予权限，**不需要任何密钥**。
+- 集合权限保持默认（客户端不可读写）。客户端直连数据库在规范 §36.1 里本来就被禁止，这样配置能让「绕过云函数直接写库」从权限层面做不到。
+- 开发机不直连云数据库。本地开发继续使用内存网关（`npm run gateway:dev`）；要看云上数据，用云开发控制台的数据库页面或下面的诊断动作。
+
+### 17.2 条目
+
+| ID | 位置 | 要求 |
+|---|---|---|
+| D01 | 云函数包（§16 L09 的 `cloudfunctions/api/`） | `package.json` 依赖 `wx-server-sdk`；**这是新增依赖，已由用户确认引入**。锁定版本号，写进 `package-lock` |
+| D02 | `src/infrastructure/cloudbase-wx-db.ts`（新文件） | 实现 `CloudBaseDb`（`get / add / update / query / count / transaction`）。**只依赖注入进来的 `db` 对象**，不直接 `require('wx-server-sdk')`，SDK 的装配放在云函数入口，这样适配器可以用假 `db` 单测 |
+| D03 | 集合命名 | 所有读写经 `cloudBaseCollectionName(namespace, collection)`，例如 `football_test_users`；`namespace` 取自 `FOOTBALL_RESOURCE_NAMESPACE`。**不得**在业务代码里写死集合名 |
+| D04 | 原子新增 | `add` 用确定性 `_id` 实现「已存在即冲突」，把 SDK 的重复键错误转成 `CloudBaseDuplicateKeyError`（沿用 §12 B04 的约定），**不得先查再插** |
+| D05 | 事务 | `transaction` 对应云数据库事务。**必须在 `cloud1` 真环境实测事务内能做什么**：据我所知事务内主要支持按 `_id` 的读写，条件查询受限（未在真环境验证，以实测为准）。结果写入「事务能力表」（17.8），不能支持的仓储方法要改写或移到事务外，并写明降级后的并发风险 |
+| D06 | 分页与上限 | 云函数单次 `get` 有条数上限；适配器的 `query` 必须分批读取，调用方传 `limit/offset` 时遵守上限；`count` 使用 SDK 的计数而不是拉全量 |
+| D07 | `PredictionRepository.countByMatchGroupedByResult` | 用 `count` 聚合实现（S14 的「大家怎么选」依赖），替换覆盖表里的「明确未实现」标记 |
+| D08 | 集合与索引清单 | 新增脚本 `npm run cloudbase:schema`：读取 `src/schema/collections.ts` 与 `src/schema/indexes.ts`，**打印**需要在控制台创建的「集合清单」和「索引清单」（含是否唯一、字段、顺序），并带当前命名空间前缀。只输出，不连库，不需要密钥 |
+| D09 | 云函数入口装配 | 入口里按 `FOOTBALL_REPOSITORY_BACKEND=cloudbase` 装配 D02 的适配器；缺少任何必填环境变量 → 启动失败并给出 17.6 的诊断信息，**不得静默回退内存** |
+| D10 | 并发与幂等 | 依赖唯一索引的地方（`users.openid`、群邀请码、`job_locks.lock_key`、预测幂等键等），在 17.3 的核对步骤里**逐条确认索引已创建**；适配器额外对关键写入做「确定性 `_id`」兜底 |
+
+### 17.3 云开发控制台配置清单（给第一次做小程序的你）
+
+按顺序做，每一步后面有**怎么验证**。任何一步配错，17.5–17.7 的诊断会指出对应项。
+
+| # | 做什么 | 怎么验证 |
+|---|---|---|
+| 1 | 小程序后台（mp.weixin.qq.com）→ 开发管理 → 开发设置，记下 **AppID**（`wx` 开头）；把它填进开发者工具的项目 AppID（本地替换，**不提交仓库**） | 开发者工具右上角详情里显示的是你的 AppID，不是 `touristappid` |
+| 2 | 在开发者工具点「云开发」，选择环境 `cloud1`（环境 ID `cloud1-d4ga6fvm0c6d4ec01`） | 云开发控制台能打开，左上角环境名对应 |
+| 3 | 确认环境属于该 AppID：控制台「设置 → 环境设置」中的关联小程序是你的 AppID（你已说明绑定完成，仍建议核对一次） | 环境设置页能看到该 AppID |
+| 4 | 数据库 → 新建集合。按 D08 脚本输出的清单逐个创建，名称必须是 **`football_test_` + 集合名**（命名空间为 `football_test` 时）；你已建的 `test` 集合只是连通性探针，**业务代码不会使用它**，可以保留或删除 | 数据库页面能看到全部 `football_test_*` 集合 |
+| 5 | 为每个集合按清单创建索引，**唯一索引必须勾选「唯一」** | 抽查 `football_test_users` 有 `openid` 唯一索引 |
+| 6 | 集合权限保持默认（仅创建者可读写 / 客户端不可访问）。云函数访问不受此权限限制 | 在小程序里直接 `wx.cloud.database()` 读该集合应被拒绝（只用于验证权限，不写进业务代码） |
+| 7 | 云函数 → 新建云函数 `api`（名称必须与小程序 `config.js` 里的 `cloudFunctionName` 一致），运行环境选 Node.js 16 或以上，**超时时间调大**（建议 20 秒以上） | 云函数列表能看到 `api` |
+| 8 | 云函数 → `api` → 配置 → 环境变量：`FOOTBALL_ENVIRONMENT=test`、`FOOTBALL_REPOSITORY_BACKEND=cloudbase`、`FOOTBALL_CLOUD_ENVIRONMENT_ID=cloud1-d4ga6fvm0c6d4ec01`、`FOOTBALL_RESOURCE_NAMESPACE=football_test`、`FOOTBALL_MATCH_CURSOR_SECRET=<自己生成的长随机串>` | 控制台环境变量页能看到全部 5 项；密钥值不要发给任何人、不要写进仓库 |
+| 9 | 上传部署云函数（开发者工具里右键云函数目录 → 上传并部署：云端安装依赖） | 部署状态为成功；云函数日志里无 `Cannot find module` |
+| 10 | 云函数 → `api` → 云端测试，输入 `{ "action": "diag" }` 运行 | 返回 17.7 的自检报告，所有项为通过；有失败项时按「提示」处理 |
+| 11 | 小程序 `miniprogram/config.js`：`transport: "cloud"`、`cloudEnvId: "cloud1-d4ga6fvm0c6d4ec01"`、`cloudFunctionName: "api"`（§16 L01） | 开发者工具控制台没有 `[diag]` 错误提示 |
+
+### 17.4 云函数版本与环境对不上的常见情形（先知道有这些坑）
+
+- 开发版、体验版用 `test` 环境，正式版用 `prod`；**不要在体验版里指向 `prod`**。
+- 云函数代码更新后必须重新「上传并部署」，只保存本地文件不会生效。
+- 环境变量改完之后要重新部署或至少触发一次冷启动才可靠，改完用 17.3 第 10 步确认。
+- 同一个 AppID 可以有多个云环境，`wx.cloud.init` 的 `env` 填错了不会报「AppID 错」，而是连到另一个环境，表现为「数据全空」。
+
+### 17.5 日志与错误分类（硬性要求）
+
+**目标：任何一次失败，日志里至少给出三样东西：发生在哪一层、最可能是哪个参数不对、原始错误是什么。**
+
+| ID | 要求 |
+|---|---|
+| G01 | 新增纯函数 `classifyCloudError(error): { diag_code, layer, hint, sdk_code, sdk_message }`（放 `src/infrastructure/cloud-diagnostics.ts`）。`diag_code` 是**本项目自己的稳定编码**（形如 `DIAG_ENV_MISMATCH`），`hint` 是中文排错提示，`sdk_code / sdk_message` 保留原始错误码与文本（截断到 300 字符、去除可能含 openid 或密钥的片段） |
+| G02 | 云函数入口在**任何未预期异常**与**数据库层异常**处调用 G01，并输出一条结构化日志：`request_id / method / path / status / code / diag_code / layer / hint / sdk_code`。**不得**包含完整 openid、请求体、环境变量值、密钥 |
+| G03 | 冷启动时输出一条 `startup` 日志：环境名、`cloud_environment_id`、命名空间、存储后端、**必填环境变量是否齐全（只记键名与是/否，不记值）**、`wx-server-sdk` 版本、Node 版本。每个实例只输出一次 |
+| G04 | 小程序端 `api.js` 在 `develop / trial` 版本下，`callFunction` 失败时向开发者工具控制台输出 `[diag]` 行：`diag_code`（若是云函数返回的）或本地分类（见 17.6 客户端表）、`hint`、原始 `errCode / errMsg`。`release` 版只显示面向用户的友好文案，不展示技术细节 |
+| G05 | 面向用户的错误提示统一带 `request_id` 后四位（例如「出错了，请稍后重试 · 编号 a3f9」），便于你按编号去云函数日志里搜 |
+| G06 | `classifyCloudError` 必须用**真实错误样例**做单测。未知错误归为 `DIAG_UNKNOWN`，**仍然输出原始错误码与文本**，不得吞掉 |
+
+### 17.6 症状 → 可能原因 → 提示（分类器的初始规则）
+
+> 说明：下表依据我对微信云开发常见报错的了解整理，**具体错误码与措辞需在 `cloud1` 真环境里逐条复现并校正**（规则写成「错误文本包含某关键词」，不要只依赖数字码）。校正后更新本表。
+
+**小程序端（`wx.cloud.callFunction` 返回失败时）**
+
+| 现象 / 错误文本关键词 | `diag_code` | 提示 |
+|---|---|---|
+| 提示需要先调用 `wx.cloud.init` | `DIAG_CLIENT_CLOUD_NOT_INIT` | 小程序启动时没有调用 `wx.cloud.init`，检查 `app.js`（§16 L02） |
+| 当前 AppID 是 `touristappid`，或提示云能力不可用 | `DIAG_CLIENT_TOURIST_APPID` | 游客 AppID 不能用云开发，请在开发者工具里换成真实 AppID |
+| 提示环境不存在 / 环境无效 / `env` 相关字样 | `DIAG_CLIENT_ENV_INVALID` | `cloudEnvId` 写错，或该环境不属于当前 AppID。核对 `config.js` 与控制台环境 ID（17.3 第 2、3 步） |
+| 提示找不到云函数 / 函数不存在 | `DIAG_CLIENT_FUNCTION_NOT_FOUND` | `cloudFunctionName` 与控制台云函数名不一致，或云函数没有部署到该环境（17.3 第 7、9 步） |
+| 超时 | `DIAG_CLIENT_TIMEOUT` | 云函数超时时间太短或冷启动慢，调大超时（17.3 第 7 步）；也可能是数据库查询过慢 |
+| 基础库版本过低 | `DIAG_CLIENT_LIB_VERSION` | 开发者工具详情里调高「调试基础库」 |
+| 网络失败且 `errCode` 缺失 | `DIAG_CLIENT_NETWORK` | 网络不通或开发者工具离线 |
+
+**云函数端（数据库与启动）**
+
+| 现象 / 错误文本关键词 | `diag_code` | 提示 |
+|---|---|---|
+| `Cannot find module 'wx-server-sdk'` | `DIAG_FN_DEPENDENCY_MISSING` | 部署时没有「云端安装依赖」，重新上传并部署（17.3 第 9 步） |
+| 启动时缺少必填环境变量 | `DIAG_FN_ENV_VAR_MISSING` | 日志里列出缺哪些**键名**，到控制台云函数环境变量补齐（17.3 第 8 步） |
+| `FOOTBALL_CLOUD_ENVIRONMENT_ID` 与运行时实际环境不一致 | `DIAG_ENV_MISMATCH` | 环境变量里的环境 ID 和函数实际所在环境不是同一个，核对 17.3 第 2、8 步 |
+| `FOOTBALL_ENVIRONMENT=prod` 却配置了测试身份变量 | `DIAG_PROD_MOCK_IDENTITY` | 生产环境禁止测试身份，删掉 `FOOTBALL_MOCK_TRUSTED_OPENID` |
+| 集合不存在 | `DIAG_DB_COLLECTION_MISSING` | 日志里给出**集合全名**；到数据库页面创建（17.3 第 4 步）。同时提示检查命名空间前缀是否写对 |
+| 数据库权限被拒绝 | `DIAG_DB_PERMISSION` | 确认走的是云函数而不是客户端直连；检查云函数所属环境 |
+| 重复键 / 唯一冲突出现在**不该**冲突的地方，或本该冲突却没冲突 | `DIAG_DB_INDEX_MISSING` | 提示核对对应唯一索引是否已创建（17.3 第 5 步） |
+| 事务失败 / 事务冲突 | `DIAG_DB_TRANSACTION` | 记录事务名与重试次数；如果是不支持的操作，对照事务能力表（17.8） |
+| 请求没有 `OPENID`（云函数上下文里没有） | `DIAG_FN_NO_OPENID` | 请求不是通过小程序 `callFunction` 到达的（例如在控制台直接测试），或函数没有开启对应能力；需要登录的接口会返回 401 属正常 |
+| 其他未识别错误 | `DIAG_UNKNOWN` | 原样输出原始错误码与文本，便于搜索 |
+
+### 17.7 自检动作 `{ "action": "diag" }`
+
+- 在云函数入口处理：`event.action === "diag"` 时**不走业务 handler**，直接返回自检报告。
+- **只在 `FOOTBALL_ENVIRONMENT ∈ { dev, test }` 时可用**；`prod` 一律返回 404 风格的拒绝，不泄露任何信息。
+- 报告内容（**不包含任何密钥值、环境变量值、完整 openid**）：
+
+| 检查项 | 通过条件 |
+|---|---|
+| 必填环境变量 | 5 项都存在（只显示键名与是 / 否） |
+| 环境一致性 | `FOOTBALL_CLOUD_ENVIRONMENT_ID` 与运行时实际环境一致 |
+| 命名空间 | `FOOTBALL_RESOURCE_NAMESPACE` 非空且与环境名匹配 |
+| 集合存在性 | 对 D08 清单里每个集合做一次轻量读取（如 `count`），逐个列出存在 / 缺失的**全名** |
+| 读写探针 | 在一个专用探针集合（命名空间前缀 + `_diag`）里写一条文档再读回再删除，验证数据库读写与事务基本可用；失败则给出 `diag_code` |
+| 身份可用性 | 当前调用上下文是否带有 OPENID（只显示是 / 否） |
+| 版本信息 | `wx-server-sdk` 版本、Node 版本、云函数构建时间 |
+
+- 每项失败都附上 17.6 对应的 `diag_code` 与中文 `hint`，让你**照着报告改控制台**，而不是猜。
+- **索引存在与否目前无法通过 SDK 可靠检测**，报告里明确写「索引请按 17.3 第 5 步人工核对」，不得谎称已检测。
+
+### 17.8 事务能力表（实测后填写）
+
+| 操作 | 事务内是否可用 | 说明 / 降级方式 |
+|---|---|---|
+| 按 `_id` 读取 | 待实测 | |
+| 按 `_id` 新增 / 更新 | 待实测 | |
+| 条件查询（`where`） | 待实测（据我所知受限） | 如受限，列出受影响的仓储方法与改写方案 |
+| 计数 | 待实测 | |
+| 嵌套（`savepoint`） | 待实测 | CloudBase 无原生保存点时的替代方案 |
+
+### 17.9 测试
+
+- **适配器单测（假 `db`）**：`get / add / update / query / count`；重复 `_id` 转成 `CloudBaseDuplicateKeyError`；分批读取遵守上限；命名空间前缀拼接。
+- **契约测试**：沿用 S13 的内存 vs CloudBase(假 db) 两边一致，补上 `countByMatchGroupedByResult`。
+- **分类器单测**：17.6 每一行至少一个样例，含 `DIAG_UNKNOWN`；日志输出中**不含 openid、请求体、环境变量值**（对输出做断言）。
+- **入口单测**：缺环境变量 → 启动失败并输出 `DIAG_FN_ENV_VAR_MISSING`（只含键名）；`prod` + 测试身份 → 启动失败；`action=diag` 在 `prod` 被拒绝，在 `test` 返回报告。
+- **小程序单测**：各类 `callFunction` 失败样例映射成正确的 `[diag]` 输出；`release` 版不输出技术细节。
+- 全部门禁：`tsc` / `vitest` / `build` / `git diff --check`。
+
+### 17.10 用户与 Luna 的分工
+
+| 步骤 | 谁 | 内容 |
+|---|---|---|
+| 1 | Luna | D01–D10、G01–G06、17.7 自检动作，产出 `npm run cloudbase:schema` |
+| 2 | 你 | 运行 `npm run cloudbase:schema`，按输出在 `cloud1` 建集合和索引（17.3 第 4、5 步） |
+| 3 | 你 | 17.3 第 7、8、9 步：建云函数、配环境变量、上传部署 |
+| 4 | 你 | 第 10 步运行 `{ "action": "diag" }`，把报告（已不含密钥）发给 Luna |
+| 5 | Luna | 按报告修正；用真环境实测事务能力，填 17.8；校正 17.6 的错误文本规则 |
+| 6 | 你 | 第 11 步改 `config.js`，体验版真机走完整链路 |
+
+### 17.11 验收
+
+- 代码门禁全绿；日志与诊断相关的测试全部通过。
+- **真环境验收**：`{ "action": "diag" }` 在 `cloud1` 全部通过；体验版真机完成「游客浏览 → 登录 → 提交预测 → 退出重进仍是同一用户」。
+- 报告里如实写明：**事务能力是否已在真环境实测**、**索引是否人工核对**；未做就写未做。
+
+### 17.12 待确认（有默认值，不阻塞）
+
+| # | 问题 | 默认 |
+|---|---|---|
+| Q28 | 云函数运行环境版本 | Node.js 16 或更高（以控制台可选为准） |
+| Q29 | 诊断动作是否要加访问口令 | 不加；已限制为仅 `dev / test` 可用且不含敏感值。若担心体验版用户误调用，可加一个仅存于环境变量的口令 |
+| Q30 | `test` 控制台里已有的 `test` 集合 | 保留作探针也可，或删除；业务不使用它 |
