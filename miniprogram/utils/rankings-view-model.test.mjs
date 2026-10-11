@@ -112,6 +112,13 @@ describe("rankings view model", () => {
     expect(provisional.recapText).toContain("28 分");
   });
 
+  it("shows readable dates for past weeks, including month and year boundaries", () => {
+    expect(model.buildWeekOptions("2026-W41", "2026-W40").map(item => item.label))
+      .toEqual(["本周", "9.28-10.4"]);
+    expect(model.buildWeekOptions("2026-W02", "2025-W52").map(item => item.label))
+      .toEqual(["本周", "12.29-1.4", "12.22-12.28"]);
+  });
+
   it("formats age from the supplied server time and respects the registered first week", () => {
     expect(model.formatUpdatedAt("2026-08-09T11:59:30.000Z", "2026-08-09T12:00:00.000Z"))
       .toBe("刚刚更新");

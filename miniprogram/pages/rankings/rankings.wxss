@@ -19,7 +19,7 @@ button {cursor:pointer;border:0;background:none}
 .board-tabs {display:flex;gap:6px;align-items:center;margin:16px 0 14px;border-bottom:1px solid var(--border-glass-strong)}
 .board-tabs button {flex:1;min-height:43px;font-size:13px;color:var(--text-secondary);position:relative;white-space:nowrap}
 .board-tabs button[aria-selected=true] {color:var(--text-primary);font-weight:800}
-.board-tabs button[aria-selected=true]:after {content:"";position:absolute;height:3px;left:20%;right:20%;bottom:0;background:var(--color-brand-primary);border-radius:3px}
+
 .board-tabs button .html-small {display:block;font-size:8px;color:var(--text-secondary);line-height:1}
 .board-meta {display:flex;justify-content:space-between;align-items:center;margin:11px 1px;font-size:10px;color:var(--text-secondary)}
 .board-meta select {border:0;border-radius:6px;padding:5px;background:var(--surface-ghost);font-size:10px;max-width:175px}
@@ -244,7 +244,8 @@ button::after { border:0; }
 .hero-metrics .html-b { overflow:hidden;text-overflow:ellipsis; }
 
 .board-tabs button.active { color:var(--ui-positive);font-weight:700; }
-.board-tabs button.active::after { content:"";position:absolute;height:3px;left:20%;right:20%;bottom:0;background:var(--color-brand-primary);border-radius:3px; }
+.board-tabs button::after { display:none; }
+.board-tabs .tab-underline { position:absolute;left:20%;right:20%;bottom:0;height:3px;background:var(--color-brand-primary);border-radius:3px; }
 .rank-columns text:first-child { width:31px;flex:none; }
 .rank-columns text:nth-child(2) { flex:1; }
 .welcome-id { max-width:95px;overflow:hidden;text-overflow:ellipsis; }

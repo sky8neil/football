@@ -78,6 +78,13 @@ describe("mini program request URL compatibility", () => {
     expect(wxRequest.mock.calls[0][0].url).toBe("http://127.0.0.1:8787" + expected);
   });
 
+  it("sends profile PATCH changes as a JSON body", () => {
+    const { api, wxRequest } = loadApi();
+    const data = { nickname: "新昵称", favorite_team_id: null };
+    api.request({ method: "PATCH", path: "/v1/profile/me", data });
+    expect(wxRequest.mock.calls[0][0]).toMatchObject({ method: "PATCH", data, header: { "content-type": "application/json" } });
+  });
+
   it.each([401, 409, 422, 429])("keeps HTTP %s as an unchanged error envelope", async (statusCode) => {
     const { api, wxRequest } = loadApi();
     const pending = api.request({ method: "GET", path: "/v1/profile/me" });

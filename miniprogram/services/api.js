@@ -42,8 +42,8 @@ function request({ method, path, data, query }) {
     wx.request({
       url: buildUrl(path, query),
       method,
-      data: method === "POST" ? data : undefined,
-      header: method === "POST" ? { "content-type": "application/json" } : {},
+      data: ["POST", "PATCH", "PUT"].includes(method) ? data : undefined,
+      header: ["POST", "PATCH", "PUT"].includes(method) ? { "content-type": "application/json" } : {},
       success(res) {
         const body = res.data && typeof res.data === "object" ? res.data : {};
         resolve({

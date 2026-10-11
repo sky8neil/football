@@ -395,6 +395,7 @@ describe("handleGatewayRequest GET /v1/rankings", () => {
 describe("handleGatewayRequest S7 routes", () => {
   it.each([
     ["PATCH", "/v1/profile/me", { nickname: "Sky" }, 401],
+    ["POST", "/v1/profile/me", { nickname: "Sky" }, 401],
     ["DELETE", "/v1/profile/me", undefined, 401],
     ["GET", "/v1/profiles/00000000-0000-4000-8000-000000000001", undefined, 404],
     ["GET", "/v1/predictions/me/00000000-0000-4000-8000-000000000001", undefined, 401],

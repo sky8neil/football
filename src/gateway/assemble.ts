@@ -372,7 +372,8 @@ export async function handleGatewayRequest(
       return result;
     }
 
-    if (method === "PATCH" && path === "/v1/profile/me") {
+    // POST is the WeChat-compatible alias; both methods use the same validation and auth.
+    if ((method === "PATCH" || method === "POST") && path === "/v1/profile/me") {
       const identity = await resolveIdentity(trustedOpenid, input.repo);
       const body = resolveJsonObjectBody(input.body);
       const profileMutation =

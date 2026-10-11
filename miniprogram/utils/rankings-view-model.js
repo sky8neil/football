@@ -25,6 +25,12 @@ function isoWeekKeyForMonday(mondayMs) {
   return `${isoYear}-W${String(week).padStart(2, "0")}`;
 }
 
+function formatWeekRange(mondayMs) {
+  const start = new Date(mondayMs);
+  const end = new Date(mondayMs + 6 * DAY_MS);
+  return `${start.getUTCMonth() + 1}.${start.getUTCDate()}-${end.getUTCMonth() + 1}.${end.getUTCDate()}`;
+}
+
 function buildWeekOptions(currentPeriodKey, firstPeriodKey = rankingFirstPeriodKey) {
   const monday = mondayOfIsoWeek(currentPeriodKey);
   const firstMonday = mondayOfIsoWeek(firstPeriodKey);
@@ -35,7 +41,7 @@ function buildWeekOptions(currentPeriodKey, firstPeriodKey = rankingFirstPeriodK
     if (mondayOfIsoWeek(key) < firstMonday) break;
     options.push({
       key,
-      label: key === currentPeriodKey ? `${COPY.currentWeek} (${key})` : key,
+      label: key === currentPeriodKey ? COPY.currentWeek : formatWeekRange(monday - offset * WEEK_MS),
       current: key === currentPeriodKey,
     });
   }

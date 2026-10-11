@@ -8,8 +8,8 @@
     <view wx:else class="content">
       <view class="card strong emblem-head">
         <view class="hero-top"><text class="eyebrow">个人成长档案</text><button class="edit" bindtap="onSessionTap" aria-label="编辑个人资料"><image class="icon" src="/assets/icons/ui-settings.png" /></button></view>
-        <view class="hero-core"><view class="ring"><view class="ring-track"></view><view class="ring-fill" style="background:conic-gradient(#3aa37a 0deg {{progressDegrees}}deg,transparent {{progressDegrees}}deg 360deg)"></view><view class="ring-center"><text>{{avatarText}}</text></view></view>
-          <view class="identity"><view class="html-h1">{{nickname}} <text class="level-badge">Lv.{{careerLevel}}</text></view><view class="title-name">{{levelName}}</view><button class="team" bindtap="onSessionTap">主队 · {{favoriteTeamText}} <text>›</text></button></view>
+        <view class="hero-core"><view class="ring"><view class="ring-track"></view><view class="ring-fill" style="background:conic-gradient(#3aa37a 0deg {{progressDegrees}}deg,transparent {{progressDegrees}}deg 360deg)"></view><view class="ring-center"><image class="favorite-team-logo" src="{{favoriteTeamLogo}}" mode="aspectFit" binderror="onTeamLogoError" aria-label="主队 {{favoriteTeamText}}" /></view></view>
+          <view class="identity"><view class="html-h1">{{nickname}} <text class="level-badge">Lv.{{careerLevel}}</text></view><view class="title-name">{{levelName}}</view><button class="team" bindtap="onFavoriteTeamTap">主队 · {{favoriteTeamText}} <text>›</text></button></view>
         </view>
       </view>
       <view class="card next-level-panel">

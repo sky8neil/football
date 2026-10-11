@@ -1,0 +1,23 @@
+<view class="settings-page">
+  <image class="pitch" src="/assets/images/baseline-pitch.webp" mode="aspectFill" />
+  <view class="content">
+    <view class="title">个人资料设置</view><view class="subtitle">让球友认识你，也为你的主队助威。</view>
+    <view wx:if="{{loading}}" class="card">正在加载个人资料…</view>
+    <view wx:elif="{{errorMessage}}" class="card"><text>{{errorMessage}}</text><button bindtap="loadProfile">重新加载</button></view>
+    <block wx:else>
+      <view class="card"><text class="label">昵称</text><input type="text" value="{{nickname}}" bindinput="onNicknameInput" disabled="{{saving}}" placeholder="请输入昵称" /></view>
+      <view class="card"><button class="team-toggle" bindtap="onTeamToggle"><text class="label">我的主队</text><text>{{favoriteTeamName}} {{showTeams ? '⌃' : '⌄'}}</text></button>
+        <view wx:if="{{showTeams}}" class="team-picker"><input value="{{search}}" bindinput="onSearch" placeholder="搜索球队名称" />
+          <button class="team-row {{!favoriteTeamId ? 'selected' : ''}}" bindtap="onTeamPick"><text>暂不设置主队</text><text wx:if="{{!favoriteTeamId}}">✓</text></button>
+          <button wx:for="{{visibleTeams}}" wx:key="team_id" class="team-row {{favoriteTeamId === item.team_id ? 'selected' : ''}}" data-id="{{item.team_id}}" bindtap="onTeamPick"><image src="{{item.logo}}" mode="aspectFit" /><text class="team-name">{{item.name}}</text><text wx:if="{{favoriteTeamId === item.team_id}}">✓</text></button>
+          <text wx:if="{{!teamsLoading && !visibleTeams.length && !teamsError}}" class="hint">暂未找到球队</text>
+          <text wx:if="{{teamsLoading}}" class="hint">正在加载球队…</text>
+          <button wx:if="{{teamsError}}" class="more" bindtap="loadTeams">{{teamsError}} · 重试</button><button wx:elif="{{hasMore}}" class="more" bindtap="loadTeams" disabled="{{teamsLoading}}">加载更多球队</button>
+          <text class="hint">球队来自当前赛事，选择后点击保存生效。</text>
+        </view>
+      </view>
+      <view wx:if="{{saveErrorMessage}}" class="save-error">{{saveErrorMessage}}</view>
+      <button class="save" bindtap="onSave" loading="{{saving}}" disabled="{{saving}}">保存</button>
+    </block>
+  </view>
+</view>

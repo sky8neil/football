@@ -105,6 +105,10 @@ Page({
   },
 
   onShow() {
+    if (this.initialized) {
+      const nickname = truncateNickname(resolveNickname());
+      this.setData({ nickname, avatarText: Array.from(nickname)[0] || "球" });
+    }
     const tabBar = this.getTabBar && this.getTabBar();
     if (tabBar) tabBar.setData({ selected: 0 });
     if (this.initialized) this.loadFirstPage();

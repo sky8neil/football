@@ -164,6 +164,17 @@ describe("resolveCloudFunctionOpenid", () => {
 });
 
 describe("createCloudFunctionHandler identity", () => {
+  it("allows prod users to edit nicknames through the WeChat POST alias using trusted identity", async () => {
+    const { handler, services } = realAssemble({ config: makeConfig({ environment: "prod", mock_trusted_openid: MOCK_OPENID }) });
+    await handler({ method: "POST", path: "/v1/session/init", body: { nickname: "原昵称" } }, { OPENID: CONTEXT_OPENID });
+    const saved = await handler({ method: "POST", path: "/v1/profile/me", body: { nickname: "新的昵称" } }, { OPENID: CONTEXT_OPENID });
+    expect(saved.result.status).toBe(200);
+    expect((await services.repo.users.findByOpenid(CONTEXT_OPENID))?.nickname).toBe("新的昵称");
+    const denied = await handler({ method: "POST", path: "/v1/profile/me", body: { nickname: "其他人" } }, {});
+    expect(denied.result.status).toBe(401);
+    expect((await services.repo.users.findByOpenid(CONTEXT_OPENID))?.nickname).toBe("新的昵称");
+  });
+
   it("forwards prod context.OPENID so the Auth path is reachable", async () => {
     const { handler, calls, services } = realAssemble({
       config: makeConfig({ environment: "prod", mock_trusted_openid: MOCK_OPENID }),

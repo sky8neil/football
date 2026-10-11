@@ -2,8 +2,14 @@
   "description": "",
   "packOptions": {
     "ignore": [
-      { "type": "suffix", "value": ".test.mjs" },
-      { "type": "suffix", "value": ".test.ts" }
+      {
+        "type": "suffix",
+        "value": ".test.mjs"
+      },
+      {
+        "type": "suffix",
+        "value": ".test.ts"
+      }
     ],
     "include": []
   },
@@ -15,8 +21,9 @@
     "enhance": true
   },
   "compileType": "miniprogram",
-  "appid": "touristappid",
+  "appid": "wx58c61999e9b3f3d5",
   "projectname": "football-v0",
   "miniprogramRoot": "./",
-  "condition": {}
+  "condition": {},
+  "isGameTourist": false
 }

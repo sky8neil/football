@@ -188,7 +188,7 @@ export async function seedRankingLeaderboard(
   }> = [
     {
       nickname: "RankAlice",
-      favoriteTeamId: newUuid(),
+      favoriteTeamId: null,
       globalRank: 1,
       periodScore: 36,
       validPredictions: 3,

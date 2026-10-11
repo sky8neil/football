@@ -1,8 +1,8 @@
 const { getMyProfile } = require("../../services/profile.js");
 const { getMyLevels } = require("../../services/levels.js");
 const { listMyGroups, createGroup } = require("../../services/groups.js");
-const { getMatchDetail } = require("../../services/matches.js");
-const { getTeamLogo } = require("../../utils/logo-registry.js");
+const { getMatchDetail, listMatches } = require("../../services/matches.js");
+const { getTeamLogo, PLACEHOLDER } = require("../../utils/logo-registry.js");
 const { listMyPredictions } = require("../../services/predictions.js");
 const { formatShanghaiKickoff } = require("../../utils/prediction-history.js");
 const { headerHeight } = require("../../utils/ui-layout.js");
@@ -59,6 +59,8 @@ Page({
     nickname: "",
     avatarText: "球",
     favoriteTeamText: "",
+    favoriteTeamId: null,
+    favoriteTeamLogo: PLACEHOLDER,
     careerPoints: "",
     careerValidPredictions: "",
     careerExactHits: "",
@@ -119,6 +121,8 @@ Page({
       const startLevel = Math.min(4, Math.max(1, level - 1));
       this.setData({
         userId: profile.user_id,
+        favoriteTeamId: profile.favorite_team_id || null,
+        favoriteTeamLogo: profile.favorite_team_id && wx.getStorageSync("team_logo:" + profile.favorite_team_id) || PLACEHOLDER,
         maxLevel: level === 6,
         levelName: LEVEL_NAMES[level],
         seasonLevelName: LEVEL_NAMES[Number(profile.season_level) || 1],
@@ -132,7 +136,7 @@ Page({
         avatarText: Array.from(profile.nickname || "球")[0] || "球",
         favoriteTeamText: profile.favorite_team_id === null || profile.favorite_team_id === undefined
           ? "未设置"
-          : "已选择球队",
+          : (wx.getStorageSync("team_name:" + profile.favorite_team_id) || "已选择球队"),
         careerPoints: String(profile.career_points),
         careerValidPredictions: String(profile.career_valid_predictions),
         careerExactHits: String(profile.career_exact_hits),
@@ -155,8 +159,41 @@ Page({
         })),
         hasGroups: groups.length > 0,
       });
+      this.loadFavoriteTeam(profile.favorite_team_id || null);
     });
   },
+
+  async loadFavoriteTeam(teamId) {
+    const requestId = (this.favoriteTeamRequestId || 0) + 1;
+    this.favoriteTeamRequestId = requestId;
+    if (!teamId) { this.setData({ favoriteTeamLogo: PLACEHOLDER, favoriteTeamText: "未设置" }); return; }
+    const logo = wx.getStorageSync("team_logo:" + teamId);
+    if (logo && logo !== PLACEHOLDER) { this.setData({ favoriteTeamLogo: logo }); return; }
+    // Resolve the server's team ID after a fresh login or cleared cache.
+    let cursor = null;
+    const seen = new Set();
+    try {
+      do {
+        const result = await listMatches({ limit: 100, cursor });
+        if (this.favoriteTeamRequestId !== requestId || result.statusCode !== 200) return;
+        const payload = result.data || {};
+        for (const match of payload.items || []) {
+          const team = [match.home_team, match.away_team].find(item => item && item.team_id === teamId);
+          if (!team) continue;
+          const teamLogo = getTeamLogo(match.league_id, team);
+          wx.setStorageSync("team_name:" + teamId, team.name);
+          wx.setStorageSync("team_logo:" + teamId, teamLogo);
+          this.setData({ favoriteTeamText: team.name, favoriteTeamLogo: teamLogo });
+          return;
+        }
+        cursor = payload.next_cursor || null;
+        if (seen.has(cursor)) return;
+        seen.add(cursor);
+      } while (cursor);
+    } catch (_) { /* Team lookup must not hide the growth profile. */ }
+  },
+
+  onTeamLogoError() { this.setData({ favoriteTeamLogo: PLACEHOLDER }); },
 
   onStatScope(event) {
     this.setData({ statScope: event.currentTarget.dataset.scope });
@@ -224,7 +261,11 @@ Page({
   },
 
   onSessionTap() {
-    wx.navigateTo({ url: "/pages/session/session" });
+    wx.navigateTo({ url: "/pages/settings/settings" });
+  },
+
+  onFavoriteTeamTap() {
+    wx.navigateTo({ url: "/pages/settings/settings?section=team" });
   },
 
   onUnlocksTap() {

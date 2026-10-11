@@ -68,6 +68,7 @@ function writeJson(
 export async function startGatewayServer(options: {
   env?: Record<string, string | undefined>;
   cloudbase_db?: CloudBaseDb;
+  port?: number;
 } = {}): Promise<http.Server> {
   let config: GatewayRuntimeConfig;
   try {
@@ -113,7 +114,7 @@ export async function startGatewayServer(options: {
       const query = parseQuery(requestUrl.searchParams);
       try {
         let body: unknown = {};
-        if ((req.method ?? "").toUpperCase() === "POST") {
+        if (["POST", "PATCH", "PUT"].includes((req.method ?? "").toUpperCase())) {
           body = await readJsonBody(req);
         }
         const result = await handleGatewayRequest({
@@ -137,9 +138,10 @@ export async function startGatewayServer(options: {
 
   await new Promise<void>((resolveListen, rejectListen) => {
     server.once("error", rejectListen);
-    server.listen(GATEWAY_LISTEN_PORT, GATEWAY_LISTEN_HOST, () => {
+    server.listen(options.port ?? GATEWAY_LISTEN_PORT, GATEWAY_LISTEN_HOST, () => {
       server.off("error", rejectListen);
-      console.log(`listening ${GATEWAY_LISTEN_HOST}:${GATEWAY_LISTEN_PORT}`);
+      const address = server.address();
+      console.log(`listening ${GATEWAY_LISTEN_HOST}:${address && typeof address !== "string" ? address.port : options.port ?? GATEWAY_LISTEN_PORT}`);
       resolveListen();
     });
   });

@@ -5,6 +5,7 @@
     "pages/match-detail/match-detail",
     "pages/my-predictions/my-predictions",
     "pages/profile/profile",
+    "pages/settings/settings",
     "pages/unlocks/unlocks",
     "pages/rankings/rankings",
     "pages/groups/groups",

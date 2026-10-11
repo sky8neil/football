@@ -375,7 +375,8 @@ Page({
       view,
       podiumItems: merged.slice(0, 3).map((item, index) => ({
         ...item,
-        placeText: ["第 1 名", "第 2 名", "第 3 名"][index],
+        isWinner: index === 0,
+        placeText: "第 " + item.rank + " 名",
       })),
       weekOptions: view.weekOptions,
       weekOptionLabels: view.weekOptions.map((item) => item.label),
