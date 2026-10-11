@@ -12,7 +12,9 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "gateway:dev": "npm run build && node scripts/gateway-dev.mjs"
+    "gateway:dev": "npm run build && node scripts/gateway-dev.mjs",
+    "cloudfunction:build": "tsc -p tsconfig.cloudfunction.json && node scripts/write-cloudfunction-build-info.mjs",
+    "cloudbase:schema": "npm run build && node scripts/cloudbase-schema.mjs"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",

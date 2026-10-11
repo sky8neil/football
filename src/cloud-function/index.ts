@@ -36,6 +36,7 @@ export interface CloudFunctionContextLike {
 }
 
 export interface CloudFunctionEvent {
+  action?: string;
   method?: string;
   path?: string;
   query?: Record<string, string>;
@@ -48,6 +49,10 @@ export interface CloudFunctionLogEntry {
   path: string;
   status: number;
   code?: string;
+  diag_code?: string;
+  layer?: string;
+  hint?: string;
+  sdk_code?: string | null;
 }
 
 export interface CloudFunctionHandlerDeps {
@@ -62,6 +67,13 @@ export interface CloudFunctionHandlerDeps {
     context: CloudFunctionContextLike,
     config: GatewayRuntimeConfig,
   ) => string | null;
+  classifyError?: (error: unknown) => {
+    diag_code: string;
+    layer: string;
+    hint: string;
+    sdk_code: string | null;
+    sdk_message?: string;
+  };
 }
 
 function normalizeOpenid(value: unknown): string | null {
@@ -196,7 +208,16 @@ export function createCloudFunctionHandler(
         );
         return { result: mapped };
       }
-      deps.log?.(logEntry(requestId, method, path, 500, "INTERNAL_ERROR"));
+      const diagnostic = deps.classifyError?.(err);
+      deps.log?.({
+        ...logEntry(requestId, method, path, 500, "INTERNAL_ERROR"),
+        ...(diagnostic ? {
+          diag_code: diagnostic.diag_code,
+          layer: diagnostic.layer,
+          hint: diagnostic.hint,
+          sdk_code: diagnostic.sdk_code,
+        } : {}),
+      });
       throw err;
     }
   };

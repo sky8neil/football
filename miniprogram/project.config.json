@@ -24,6 +24,7 @@
   "appid": "wx58c61999e9b3f3d5",
   "projectname": "football-v0",
   "miniprogramRoot": "./",
+  "cloudfunctionRoot": "../cloudfunctions/",
   "condition": {},
   "isGameTourist": false
 }

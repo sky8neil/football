@@ -255,10 +255,10 @@ describe("CloudBaseAppRepository", () => {
     ].sort());
   });
 
-  it("marks grouped crowd counts for the pre-launch CloudBase wiring slice", async () => {
+  it("counts grouped crowd results with database count operations", async () => {
     const repo = createCloudBaseRepository();
     await expect(repo.predictions.countByMatchGroupedByResult("match-id"))
-      .rejects.toThrow("尚未实现；待上线前接线切片");
+      .resolves.toEqual({ HOME: 0, DRAW: 0, AWAY: 0 });
   });
 
   it("retains soft-deleted users so identity resolution sees the tombstone", async () => {

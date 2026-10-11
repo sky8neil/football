@@ -1,6 +1,6 @@
-# CloudBase 仓储端口覆盖表（S13 A 段）
+# CloudBase 仓储端口覆盖表（S13 A 段 / S17）
 
-src/infrastructure/cloudbase-app-repository.ts 实现现有 AppRepository / UnitOfWork 仓储端口；`PredictionRepository.countByMatchGroupedByResult` 留给上线前 CloudBase 接线切片，当前保留明确未实现标记。字段使用 src/schema/collections.ts 定义的 snake_case，文档 _id 规则在下表备注。仓储只依赖 CloudBaseDb，端口定义位于 src/infrastructure/cloudbase-db.ts。
+src/infrastructure/cloudbase-app-repository.ts 实现现有 AppRepository / UnitOfWork 仓储端口；字段使用 src/schema/collections.ts 定义的 snake_case，文档 _id 规则在下表备注。仓储只依赖 CloudBaseDb，端口定义位于 src/infrastructure/cloudbase-db.ts。
 
 | 仓储端口 | 方法 | 状态 |
 |---|---|---|
@@ -15,7 +15,7 @@ src/infrastructure/cloudbase-app-repository.ts 实现现有 AppRepository / Unit
 | AnomalyRepository | findByKey, findOpenBlockingByMatch, findPage, insert, update | 已实现；_id = anomaly_id |
 | SyncLogRepository | insert, update | 已实现；_id = sync_job_id |
 | MatchRepository | findById, findBySeason, findByLeagueSeasonRound, findLive, insert, update, updateSettlementStatus | 已实现；_id = match_id |
-| PredictionRepository | findById, findByUserAndMatch, findByUserAndIdempotencyKey, findByUser, findByMatch, countByMatchGroupedByResult, insert, update | 其余方法已实现；`countByMatchGroupedByResult` 留有明确未实现标记，待上线前 CloudBase 接线切片；_id = prediction_id，两项业务唯一键由索引约束 |
+| PredictionRepository | findById, findByUserAndMatch, findByUserAndIdempotencyKey, findByUser, findByMatch, countByMatchGroupedByResult, insert, update | `countByMatchGroupedByResult` 使用三次数据库 count 按 match_id / derived_result 聚合；_id = prediction_id，两项业务唯一键由索引约束 |
 | JobLockRepository | acquire, isHeld, renew, release | 已实现；_id = lock_key，操作经事务执行 |
 | MatchResultRepository | findByMatchAndVersion, findLatestByMatch, insert | 已实现；_id = (match_id, result_version) |
 | SettlementRepository | findById, findByMatch, findByMatchAndVersionAndRule, findByStatus, insert, update | 已实现；_id = settlement_id |
@@ -33,4 +33,4 @@ src/infrastructure/cloudbase-app-repository.ts 实现现有 AppRepository / Unit
 
 CloudBaseDb 提供 get、原子 add、update、query、count 和 transaction。确定性 _id 用于可用自然键表达的唯一关系；其余复合业务唯一键由 schema 索引约束，并将冲突映射为 UniqueConstraintError。
 
-src/infrastructure/cloudbase-repository.test.ts 中的 MemoryCloudBaseDb 用于本地契约验证，覆盖唯一冲突、用户软删除记录、群分页、成员数、终榜过滤、事务回滚和 savepoint。没有 CloudBase SDK 适配器，也没有真实 CloudBase 环境；本表不代表真实库已完成集成验证。网关使用 FOOTBALL_REPOSITORY_BACKEND=memory|cloudbase 选择仓储；CloudBase 模式需要 FOOTBALL_CLOUD_ENVIRONMENT_ID、FOOTBALL_RESOURCE_NAMESPACE 和显式注入的 CloudBaseDb 适配器，不会自动回退内存仓储。
+src/infrastructure/cloudbase-repository.test.ts 中的 MemoryCloudBaseDb 用于仓储契约验证，覆盖唯一冲突、用户软删除记录、群分页、成员数、终榜过滤、事务回滚和 savepoint。`src/infrastructure/cloudbase-wx-db.ts` 实现 `wx-server-sdk` 数据库适配器，由云函数入口注入 SDK 数据库对象，并有单独的假 SDK 测试。适配器和事务能力**没有在真实 CloudBase 环境验证**。CloudBase 模式需要 `FOOTBALL_CLOUD_ENVIRONMENT_ID`、`FOOTBALL_RESOURCE_NAMESPACE` 和显式注入的 CloudBaseDb 适配器，不会自动回退内存仓储。

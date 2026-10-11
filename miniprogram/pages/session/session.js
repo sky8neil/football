@@ -63,7 +63,7 @@ Page({
       this.setData({
         loading: false,
         errorMessage: unauthorized
-          ? "身份缺失"
+          ? "请在微信中打开"
           : rateLimited
             ? "请稍后重试"
             : result.message || String(result.code || result.statusCode),

@@ -750,7 +750,7 @@ S1–S3 无外部影响，可连续合入；S5、S7、S10 是接口变更，必�
 
 ## 12. S13 CloudBase 接线（B1）
 
-> 现状（已核对）：`src/infrastructure/cloudbase-repository.ts` 只有 `CloudBaseUserRepository` 与注销映射的骨架，其余仓储全是 `TODO(B1 接线后)`；`package.json` **没有** `@cloudbase/node-sdk`；`src/gateway/http.ts` 只用 `InMemoryRepository`；仓库内没有 CloudBase 环境。
+> 历史背景：S13 编写时，`src/infrastructure/cloudbase-repository.ts` 只有骨架，仓库内没有 CloudBase 环境。后续 S17 明确改为「仅经微信云函数访问数据库」，当前实现使用 `wx-server-sdk`，**不实施本节旧方案中的 `@cloudbase/node-sdk` 接线**；实现状态以 §17 为准。
 > 因此本切片分两段：**A 段**可在本地完成并验证；**B 段**依赖真实环境，是**上线门禁**，不是编码任务。
 
 ### 12.1 A 段：本地可完成
@@ -765,10 +765,10 @@ S1–S3 无外部影响，可连续合入；S5、S7、S10 是接口变更，必�
 | B06 | 用**契约测试**验证：同一套仓储行为用例（对象：`InMemoryRepository` 与 `CloudBase*Repository` + 内存版 `CloudBaseDb` 假实现）两边都跑，结果必须一致。重点用例：唯一冲突、软删除过滤、cursor 分页、`findLatestBySeason` 排除 `is_final`、群成员计数 |
 | B07 | `gateway` 增加仓储选择：由配置决定使用内存还是 CloudBase；缺少 `FOOTBALL_CLOUD_ENVIRONMENT_ID` 等必填项时**启动即失败并给出明确信息**，不得悄悄回退到内存 |
 
-### 12.2 B 段：上线门禁（需要真实环境，不属于本轮编码验收）
+### 12.2 B 段：历史上线门禁方案（由 S17 的云函数接入方案替代）
 
-- 安装并锁定 `@cloudbase/node-sdk` 版本，实现 B02 的真实适配器，**这一步会改 `package.json`，需要你确认后再做**。
-- 在真实环境逐项验证：唯一性、事务与原子语义、`board_snapshots` 查询在数据量下的性能（A09 提到的 `level_season_id` 前缀索引此时再评估）、索引创建（`src/schema/indexes.ts`）。
+- 原计划由 Node 服务引入 `@cloudbase/node-sdk`；该部署方式已被 §17 明确替换。当前云函数包锁定 `wx-server-sdk`，由 §17 完成 CloudBase SDK 适配。
+- 仍需在真实环境逐项验证：唯一性、事务与原子语义、索引创建（`src/schema/indexes.ts`），并根据真实数据量评估查询表现。
 - 跑 §3.7 的回填：`rebuild/user-stats` 与 `rebuild/rankings`（`board=season`）。
 - 上线前把 `RANKING_FIRST_PERIOD_KEY` 从开发占位值改成真实上线周。
 
@@ -1063,11 +1063,11 @@ S1–S3 无外部影响，可连续合入；S5、S7、S10 是接口变更，必�
 |---|---|
 | 规范 §4.6 | 身份来自「网关 / 运行环境注入的可信 `openid`」；后端**不签发** JWT / Cookie / session token；客户端不得提交 `openid`、`user_id` |
 | `openapi.yaml` 根级 | `x-trusted-runtime-openid`：`injection: gateway_or_runtime`、`client_supply_forbidden: true` |
-| 云函数入口 `src/cloud-function/index.ts` | 已写好：身份只来自运行时 `context.OPENID`（对应 `cloud.getWXContext().OPENID`），`prod` 不认 mock；`DEPLOY.md` 已写明小程序用 `wx.cloud.callFunction({ name, data: { method, path, query, body } })` 调用 |
+| 云函数入口 `src/cloud-function/index.ts`、`src/cloud-function/runtime.ts`、`cloudfunctions/api/` | 已实现：身份只来自运行时 `context.OPENID`（对应 `cloud.getWXContext().OPENID`），`prod` 拒绝 mock；小程序用 `wx.cloud.callFunction({ name, data: { method, path, query, body } })` 调用。真实云函数部署仍待验收 |
 | 后端身份四态 | `src/gateway/assemble.ts` `resolveIdentity`：`anonymous / unregistered / deleted / active`；`unregistered`（有 openid 但还没有用户记录）在需登录接口上由 handler 返回 `401` |
-| 小程序 `services/api.js` | 只有 `wx.request` 直连 `config.gatewayOrigin`（本地 HTTP 网关）；**没有** `wx.cloud.init`，**没有** `wx.cloud.callFunction`，**没有** `wx.login` |
+| 小程序 `app.js`、`services/api.js` | 已实现按配置调用 `wx.cloud.init` 与 `wx.cloud.callFunction`，开发版默认仍可走本地 HTTP 网关；没有 `wx.login`（方案 A 不需要） |
 | 小程序会话页 | `pages/session/session` 只收昵称并调用 `POST /v1/session/init`，本地靠网关注入的 `local-dev-openid` 才有身份 |
-| `project.config.json` | `appid` 仍是 `touristappid`；游客 AppID **不能使用云开发** |
+| `project.config.json` | 当前已配置真实 AppID；用户已确认该 AppID 绑定 `cloud1`。云函数与真机流程尚未在云环境实测 |
 
 ### 16.2 方案选择
 
@@ -1105,17 +1105,17 @@ S1–S3 无外部影响，可连续合入；S5、S7、S10 是接口变更，必�
 | L05 | 安全护栏 | 正式版（`release`）下若配置成 `http` 或带有本地网关地址 → **拒绝发请求并报错**；任何请求不得携带 `openid`、`user_id`、token 字段（`data` 里出现这些键直接抛错，测试覆盖） |
 | L06 | `pages/session/session.*` | 流程不变；仅把错误文案「身份缺失」改成面向用户的说法（例如「请在微信中打开」）。**不新增** `wx.login` |
 | L07 | 登录回跳 | 现有会话页已支持 `return_to=match-detail` 和待加入邀请码；保持并补测试：登录成功后回到原页面，不丢当前比赛 id 与邀请码 |
-| L08 | `project.config.json` | 增 `cloudfunctionRoot`（如需在开发者工具里直接上传云函数）；`appid` **由用户本地替换为真实 AppID，不提交仓库** |
+| L08 | `project.config.json` | 已增加 `cloudfunctionRoot`；当前工作区已配置真实 AppID 并确认绑定 `cloud1`，不在文档重复 AppID 值 |
 
 #### 云函数 / 服务端
 
 | ID | 位置 | 要求 |
 |---|---|---|
 | L09 | 新建云函数包（如 `cloudfunctions/api/`）：`index.js`、`package.json` | 引入 `wx-server-sdk`；`cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV })`；入口里取 `cloud.getWXContext().OPENID`，按 `DEPLOY.md` 的方式调用 `createCloudFunctionHandler`。**不要在入口之外读取 openid** |
-| L10 | 云函数构建 | 把 `dist/` 里的网关与业务代码打进云函数包；明确构建命令与产物位置（新增 `npm` 脚本，例如 `cloudfunction:build`）；包内不得含 `.env`、密钥、本地种子数据 |
-| L11 | 仓储与限流装配 | 部署侧用 S13 的 CloudBase 仓储替换内存实现（依赖 S13 B 段的真实 `CloudBaseDb`）；**共享限流**：当前 `InMemoryRateLimiter` 在多个云函数实例间不共享，等于限流失效；至少在文档里记录，并评估使用 `cloudbase-rate-limit-store.ts` 的存储版实现 |
+| L10 | 云函数构建 | 把网关与业务代码打进云函数包；明确构建命令与产物位置（`npm run cloudfunction:build`，输出到 `cloudfunctions/api/dist/`，含构建时间元数据）；包内不得含 `.env`、密钥、本地种子数据 |
+| L11 | 仓储与限流装配 | 云函数运行时用 S13 仓储与 S17 `CloudBaseDb` 适配器；共享限流由 `CloudBaseRateLimitStore` 写入 `rate_limits` 集合，跨云函数实例共享 |
 | L12 | 启动自检 | `prod` 环境下：`FOOTBALL_MOCK_TRUSTED_OPENID` 必须为空，否则**启动即失败**（`DEPLOY.md` 目前只说「忽略」，这里加强为显式失败）；日志只允许 `request_id / method / path / status / code`，**不得打印完整 openid** |
-| L13 | 云函数超时与冷启动 | 云函数默认超时较短，需在控制台调大；在文档里记录冷启动对首屏的影响，前端首屏请求设置合理的加载态与重试 |
+| L13 | 云函数超时与冷启动 | 控制台超时建议设为 20 秒以上；冷启动会增加首屏首次请求延迟，前端沿用页面加载态和现有失败重试入口 |
 
 ### 16.5 测试
 
@@ -1135,9 +1135,9 @@ S1–S3 无外部影响，可连续合入；S5、S7、S10 是接口变更，必�
 
 ### 16.6 需要用户本人完成的事（代码做不了）
 
-1. 注册并获得**真实 AppID**，在开发者工具本地替换 `touristappid`（不要提交）。
-2. 在该 AppID 下**开通云开发**，创建 `test` 与 `prod` 两个环境（环境 ID 互不相同），在控制台绑定 `FOOTBALL_*` 环境变量。
-3. 创建云函数并上传；调大超时；把 CloudBase 数据库集合与索引按 `src/schema/` 建好（依赖 S13 B 段）。
+1. 注册并获得**真实 AppID**、在开发者工具配置并绑定 `cloud1`：已完成；当前 `project.config.json` 已配置该 AppID。
+2. 在该 AppID 下**开通云开发**并创建隔离的 `prod` 环境：`test` 环境已创建，`prod` 环境待上线前创建；云函数环境变量待在控制台配置。
+3. 创建云函数并上传；调大超时；按 S17 D08 / `npm run cloudbase:schema` 输出在 CloudBase 创建数据库集合与索引。
 4. 在微信开发者工具里选择云开发环境，用**真机调试 / 体验版**验证真实登录；`openid` 不要出现在截图或日志里。
 5. 在小程序后台配置「用户隐私保护指引」，如实说明会收集 openid 与昵称。
 
@@ -1162,7 +1162,7 @@ S1–S3 无外部影响，可连续合入；S5、S7、S10 是接口变更，必�
 
 | 环境 | 控制台名称 | `FOOTBALL_CLOUD_ENVIRONMENT_ID` | `FOOTBALL_RESOURCE_NAMESPACE` | 用途 | 状态 |
 |---|---|---|---|---|---|
-| `test` | cloud1 | `cloud1-d4ga6fvm0c6d4ec01` | `football_test`（**建议值，待用户确认**；集合名按 `cloudBaseCollectionName` 拼成 `football_test_users` 等） | 开发者工具真机调试、体验版、联调 | 已创建 |
+| `test` | cloud1 | `cloud1-d4ga6fvm0c6d4ec01` | `football_test`（用户已确认；集合名按 `cloudBaseCollectionName` 拼成 `football_test_users` 等） | 开发者工具真机调试、体验版、联调 | 已创建 |
 | `dev` | — | 待登记 | 待登记 | 如需单独的开发环境再开通；本地调试继续用内存网关，可不开通 | 未创建 |
 | `prod` | — | 待登记 | 待登记（不得与 `test` 相同） | 正式上线，独立全新环境，**不复用 `test` 的数据** | 未创建 |
 
@@ -1172,14 +1172,14 @@ S1–S3 无外部影响，可连续合入；S5、S7、S10 是接口变更，必�
 2. 小程序 `config.js` 的 `cloudEnvId` 按版本选择：`develop / trial` 用 `test` 环境 ID；`release` 在 `prod` 登记前**必须为空并拒绝发请求**（L05 的护栏）。
 3. 上线时 `prod` 使用全新环境，不清空、不迁移 `test` 数据（见上线流程）。
 4. `test` 环境里的种子 / 测试数据，用固定前缀标记（如昵称或 openid 前缀 `test-`），便于筛选和对账。
-5. 需要用户本人完成：在 `cloud1` 内创建数据库集合与索引（依赖 S13 B 段）；上传云函数并绑定 `FOOTBALL_ENVIRONMENT=test`、`FOOTBALL_REPOSITORY_BACKEND=cloudbase`、`FOOTBALL_CLOUD_ENVIRONMENT_ID`、`FOOTBALL_RESOURCE_NAMESPACE`、`FOOTBALL_MATCH_CURSOR_SECRET`（值在控制台填写）。
+5. 需要用户本人完成：在 `cloud1` 内按 S17 D08 输出创建数据库集合与索引；上传云函数并绑定 `FOOTBALL_ENVIRONMENT=test`、`FOOTBALL_REPOSITORY_BACKEND=cloudbase`、`FOOTBALL_CLOUD_ENVIRONMENT_ID`、`FOOTBALL_RESOURCE_NAMESPACE`、`FOOTBALL_MATCH_CURSOR_SECRET`（值在控制台填写）。
 
 待确认：
 
 | # | 问题 | 默认 |
 |---|---|---|
-| Q26 | `test` 环境的 `resource_namespace` 用什么 | `football_test`；若 `cloud1` 里还会放别的项目的集合，必须保留命名空间前缀以免混用 |
-| Q27 | 小程序真实 AppID 是否已与 `cloud1` 绑定 | 需确认：云开发环境必须属于该 AppID 才能被 `wx.cloud.init` 使用 |
+| Q26 | `test` 环境的 `resource_namespace` 用什么 | 已确认：`football_test`；若 `cloud1` 里还会放别的项目的集合，必须保留命名空间前缀以免混用 |
+| Q27 | 小程序真实 AppID 是否已与 `cloud1` 绑定 | 已确认绑定；云函数与真机调用仍待部署验证 |
 
 
 ---
@@ -1327,15 +1327,16 @@ S1–S3 无外部影响，可连续合入；S5、S7、S10 是接口变更，必�
 
 | 步骤 | 谁 | 内容 |
 |---|---|---|
-| 1 | Luna | D01–D10、G01–G06、17.7 自检动作，产出 `npm run cloudbase:schema` |
+| 1 | Luna | D01–D10、G01–G06、17.7 自检动作、`npm run cloudbase:schema`：代码侧已实现并完成自动化测试 |
 | 2 | 你 | 运行 `npm run cloudbase:schema`，按输出在 `cloud1` 建集合和索引（17.3 第 4、5 步） |
 | 3 | 你 | 17.3 第 7、8、9 步：建云函数、配环境变量、上传部署 |
 | 4 | 你 | 第 10 步运行 `{ "action": "diag" }`，把报告（已不含密钥）发给 Luna |
-| 5 | Luna | 按报告修正；用真环境实测事务能力，填 17.8；校正 17.6 的错误文本规则 |
+| 5 | Luna | 按报告修正；用真环境实测事务能力，填 17.8；校正 17.6 的错误文本规则（待 cloud1 部署后） |
 | 6 | 你 | 第 11 步改 `config.js`，体验版真机走完整链路 |
 
 ### 17.11 验收
 
+- 代码侧已实现 D01–D10、G01–G06 与 `{ "action": "diag" }`；自动化测试覆盖假 SDK、身份映射、错误分类、启动配置与诊断报告。真环境验收尚未完成。
 - 代码门禁全绿；日志与诊断相关的测试全部通过。
 - **真环境验收**：`{ "action": "diag" }` 在 `cloud1` 全部通过；体验版真机完成「游客浏览 → 登录 → 提交预测 → 退出重进仍是同一用户」。
 - 报告里如实写明：**事务能力是否已在真环境实测**、**索引是否人工核对**；未做就写未做。

@@ -5,21 +5,26 @@ import { dirname, join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+const cloudDiagnostics = await import("./cloud-diagnostics.js");
 
-function loadApi({ gatewayOrigin = "http://127.0.0.1:8787", URL } = {}) {
+function loadApi({ gatewayOrigin = "http://127.0.0.1:8787", URL, transport = "http", envVersion = "develop", cloudEnvId = "cloud-test", cloudFunctionName = "api" } = {}) {
   const wxRequest = vi.fn();
+  const callFunction = vi.fn();
+  const warn = vi.fn();
   const context = {
     module: { exports: {} },
     require(id) {
-      if (id === "../config.js") return { gatewayOrigin };
+      if (id === "../config.js") return { gatewayOrigin, transport, cloudEnvId, cloudFunctionName };
+      if (id === "./cloud-diagnostics.js") return cloudDiagnostics;
       throw new Error(`Unexpected require: ${id}`);
     },
-    wx: { request: wxRequest },
+    wx: { request: wxRequest, cloud: { callFunction }, getAccountInfoSync: () => ({ miniProgram: { envVersion } }) },
+    console: { warn },
     URL,
     URLSearchParams: undefined,
   };
   runInNewContext(readFileSync(join(HERE, "api.js"), "utf8"), context, { filename: "api.js" });
-  return { api: context.module.exports, wxRequest };
+  return { api: context.module.exports, wxRequest, callFunction, warn };
 }
 
 describe("mini program request URL compatibility", () => {
@@ -102,5 +107,52 @@ describe("mini program request URL compatibility", () => {
     const pending = api.request({ method: "GET", path: "/v1/matches" });
     wxRequest.mock.calls[0][0].fail();
     await expect(pending).resolves.toEqual({ statusCode: 0, data: undefined, code: undefined, message: undefined, details: undefined, request_id: undefined });
+  });
+
+  it("dispatches cloud requests without changing the service request shape", async () => {
+    const { api, callFunction, wxRequest } = loadApi({ transport: "cloud" });
+    const pending = api.request({ method: "POST", path: "/v1/session/init", data: { nickname: "Sky" }, query: { from: "a" } });
+    expect(callFunction.mock.calls[0][0]).toMatchObject({ name: "api", data: { method: "POST", path: "/v1/session/init", body: { nickname: "Sky" }, query: { from: "a" } } });
+    expect(wxRequest).not.toHaveBeenCalled();
+    callFunction.mock.calls[0][0].success({ result: { status: 201, body: { data: { nickname: "Sky" }, request_id: "12345678-1234-1234-1234-12345678abcd" } } });
+    await expect(pending).resolves.toMatchObject({ statusCode: 201, data: { nickname: "Sky" }, request_id: "12345678-1234-1234-1234-12345678abcd" });
+  });
+
+  it.each([200, 201, 401, 409, 422, 429])("maps cloud HTTP %s to the shared service result", async (status) => {
+    const { api, callFunction } = loadApi({ transport: "cloud" });
+    const pending = api.request({ method: "GET", path: "/v1/profile/me" });
+    callFunction.mock.calls[0][0].success({ result: { status, body: { data: { ok: true }, code: status >= 400 ? "ERROR" : undefined, message: "Request failed", request_id: "00000000-0000-4000-8000-12345678abcd" } } });
+    const result = await pending;
+    expect(result.statusCode).toBe(status);
+    if (status >= 400) expect(result.message).toContain("编号 abcd");
+  });
+
+  it("maps cloud invocation failure and logs a local diagnostic only in develop", async () => {
+    const { api, callFunction, warn } = loadApi({ transport: "cloud" });
+    const pending = api.request({ method: "GET", path: "/v1/matches" });
+    callFunction.mock.calls[0][0].fail({ errCode: -1, errMsg: "cloud function not found" });
+    await expect(pending).resolves.toMatchObject({ statusCode: 0 });
+    expect(warn).toHaveBeenCalledWith("[diag]", expect.objectContaining({ diag_code: "DIAG_CLIENT_FUNCTION_NOT_FOUND" }));
+  });
+
+  it("does not print technical diagnostics in release", async () => {
+    const { api, callFunction, warn } = loadApi({ transport: "cloud", envVersion: "release" });
+    const pending = api.request({ method: "GET", path: "/v1/matches" });
+    callFunction.mock.calls[0][0].fail({ errCode: -1, errMsg: "cloud function not found" });
+    await expect(pending).resolves.toMatchObject({ statusCode: 0 });
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("rejects HTTP in trial and release and blocks client supplied identity keys", () => {
+    const releaseHttp = loadApi({ envVersion: "release" });
+    expect(() => releaseHttp.api.request({ method: "GET", path: "/v1/matches" })).toThrow("must use cloud transport");
+    const { api, callFunction } = loadApi({ transport: "cloud" });
+    expect(() => api.request({ method: "POST", path: "/v1/session/init", data: { nickname: "Sky", nested: { openid: "fake" } } })).toThrow("identity field is forbidden");
+    expect(callFunction).not.toHaveBeenCalled();
+  });
+
+  it("requires cloud environment and function configuration", () => {
+    expect(() => loadApi({ transport: "cloud", cloudEnvId: "" }).api.request({ method: "GET", path: "/v1/matches" })).toThrow("cloudEnvId is required");
+    expect(() => loadApi({ transport: "cloud", cloudFunctionName: "" }).api.request({ method: "GET", path: "/v1/matches" })).toThrow("cloudFunctionName is required");
   });
 });

@@ -62,6 +62,7 @@ function createHandler(
     config?: GatewayRuntimeConfig;
     serverNow?: () => Date;
     log?: (entry: CloudFunctionLogEntry) => void;
+    classifyError?: CloudFunctionHandlerDeps["classifyError"];
     resolveOpenid?: CloudFunctionHandlerDeps["resolveOpenid"];
     services?: ReturnType<typeof makeServices>;
   } = {},
@@ -90,6 +91,7 @@ function createHandler(
       rate_limiter: services.rateLimiter,
       ...(options.serverNow !== undefined ? { serverNow: options.serverNow } : {}),
       ...(options.log !== undefined ? { log: options.log } : {}),
+      ...(options.classifyError !== undefined ? { classifyError: options.classifyError } : {}),
       ...(options.resolveOpenid !== undefined
         ? { resolveOpenid: options.resolveOpenid }
         : {}),
@@ -200,6 +202,24 @@ describe("createCloudFunctionHandler identity", () => {
     const created = await services.repo.users.findByOpenid(CONTEXT_OPENID);
     expect(created).not.toBeNull();
     expect(await services.repo.users.findByOpenid(MOCK_OPENID)).toBeNull();
+  });
+
+  it("keeps the same WeChat identity and user across repeated session initialization", async () => {
+    const { handler, services } = realAssemble({ config: makeConfig({ environment: "prod" }) });
+    const first = await handler(
+      { method: "POST", path: "/v1/session/init", body: { nickname: "Sky" } },
+      { OPENID: CONTEXT_OPENID },
+    );
+    const firstUser = await services.repo.users.findByOpenid(CONTEXT_OPENID);
+    const second = await handler(
+      { method: "POST", path: "/v1/session/init", body: { nickname: "Sky" } },
+      { OPENID: CONTEXT_OPENID },
+    );
+    const secondUser = await services.repo.users.findByOpenid(CONTEXT_OPENID);
+    expect(first.result.status).toBe(201);
+    expect(second.result.status).toBe(200);
+    expect(secondUser?.user_id).toBe(firstUser?.user_id);
+    expect(secondUser?.nickname).toBe("Sky");
   });
 
   it("passes null identity in prod without OPENID and Auth returns 401 UNAUTHORIZED", async () => {
@@ -475,6 +495,41 @@ describe("createCloudFunctionHandler request_id and envelope", () => {
       }),
     }));
     expect(thrown).toBeInstanceOf(DomainError);
+  });
+});
+
+describe("createCloudFunctionHandler unexpected error logging", () => {
+  it("logs one classified entry without request identity, body, or raw SDK message", async () => {
+    const entries: CloudFunctionLogEntry[] = [];
+    const openid = "wx-runtime-secret-openid";
+    const body = { nickname: "private body", secret: "private value" };
+    const { handler } = createHandler({
+      config: makeConfig({ environment: "prod" }),
+      assemble: async () => { throw new Error(`database failed for openid=${openid}`); },
+      log: (entry) => entries.push(entry),
+      classifyError: () => ({
+        diag_code: "DIAG_DB_COLLECTION_MISSING",
+        layer: "database",
+        hint: "Create the missing collection",
+        sdk_code: "COLLECTION_NOT_FOUND",
+        sdk_message: `openid=${openid}`,
+      }),
+    });
+
+    await expect(handler({ method: "POST", path: "/v1/session/init", body }, { OPENID: openid })).rejects.toThrow("database failed");
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      method: "POST",
+      path: "/v1/session/init",
+      status: 500,
+      code: "INTERNAL_ERROR",
+      diag_code: "DIAG_DB_COLLECTION_MISSING",
+      layer: "database",
+      sdk_code: "COLLECTION_NOT_FOUND",
+    });
+    expect(JSON.stringify(entries)).not.toContain(openid);
+    expect(JSON.stringify(entries)).not.toContain("private body");
+    expect(JSON.stringify(entries)).not.toContain("private value");
   });
 });
 
