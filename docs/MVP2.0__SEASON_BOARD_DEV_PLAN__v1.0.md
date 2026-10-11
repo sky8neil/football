@@ -1352,168 +1352,257 @@ S1–S3 无外部影响，可连续合入；S5、S7、S10 是接口变更，必�
 
 ---
 
-## 18. S18 比分同步：多数据源（多 key / 多 URL）、限流预算与分档轮询
+## 18. S18 比分同步：多数据源（football-data.org + BSD Sports API）、仅在有比赛时请求
 
-> 来源：用户已申请英超与中超的真实接口：英超 **10 次/分钟**，官方未公布日上限；中超 **7500 次/天**。两个数据源的 key 与额度各自独立。
-> 目标：比分**尽量及时**，但**绝不超过各数据源的频率与额度**；测试阶段不需要高频。
-> 密钥规则：**key 只存云函数环境变量，不写入本文档、仓库、日志、诊断报告。** 本文档不记录任何 key。（用户曾在对话中贴出过中超 key，建议到数据源后台重新生成。）
-> 依赖：S17（云函数、云数据库适配器、诊断日志）。与 §17 的 `diag` 动作、`DIAG_*` 排错编码风格保持一致。
+> 修订说明：本节**取代**此前按「两个源都是 API-Football」写的版本。用户确认的真实数据源是：
+> - **英超**：football-data.org（v4）。免费版 **10 次/分钟**，官方未列日上限；用户反馈**免费版比分与赛程存在延迟**，不适合强实时。
+> - **中超**：BSD Sports API（`sports.bzzoiro.com`，v2）。免费 **7500 次/天**（UTC 零点重置）；中超联赛 ID 为 **52**。
+> 两个源的**接口、认证方式、返回格式、状态枚举都与 API-Football 不同**，需要各写一个适配器，不能共用现有的 `ApiFootballClient` 路径与参数。
+> 用户规则：**只在「有比赛的时间」才请求数据源**。无比赛窗口 = 零请求。
+> 密钥规则：**key 只存云函数环境变量，不写入本文档、仓库、日志、诊断报告。**（用户曾在对话中贴出过完整的中超 key，建议到后台重新生成。）
+> 依赖：S17（云函数、云数据库适配器、诊断日志）。
 
-### 18.1 现状（已核对代码）
+### 18.1 参考文档（开发与联调用）
+
+| 数据源 | 文档 | 说明 |
+|---|---|---|
+| football-data.org | 快速入门 `https://www.football-data.org/documentation/quickstart`；v4 文档 `https://docs.football-data.org/general/v4/`（含 `match.html`、`policies.html`） | 认证头 `X-Auth-Token`；免费版 10 次/分钟；比赛资源字段与状态枚举见下 |
+| BSD Sports API | 足球文档 `https://sports.bzzoiro.com/docs/football/`；限额与约定 `https://sports.bzzoiro.com/docs/conventions/` | 基础地址 `https://sports.bzzoiro.com/api/v2/`；认证头 `Authorization: Token <key>` |
+
+两个源的文档页面我只读到了摘要，**部分细节（比赛字段名、分页、响应头）未在文档里看到，必须以真实响应样例为准**（18.10 第 2 步）。
+
+### 18.2 现状（已核对代码）
 
 | 项 | 事实 |
 |---|---|
-| 数据源客户端 | `src/provider/http.ts` 的 `ApiFootballClient`；`src/provider/transport.ts` 的 `FetchProviderHttpClient` 只接受**一个** `apiKey` 与**一个** `baseUrl`（默认 `https://v3.football.api-sports.io`），认证头固定为 `x-apisports-key` |
-| 联赛配置 | `SUPPORTED_LEAGUES`（`src/domain/config.ts`）有六个联赛，含 `api_football_league_id` 与 `api_football_season`；没有「该联赛用哪个数据源」的概念 |
-| 白名单 | `READ_ONLY_ENDPOINTS = fixtures / teams / fixtures/rounds / status`；`getFixtures` 只支持 `league / season / from / to / id / round` 参数，**不支持 `live`、`ids`** |
-| 比赛中与完场核对 | `provider-live-match.ts`、`provider-post-finish.ts` 对**每场比赛各发一次** `fixtures?id=...` 请求；同时多场比赛时请求量按「场数 × 轮询次数」增长 |
-| 间隔常量 | `FIXED_CONFIG_V1`：赛程 6 小时、开球前 24h–2h 每 30 分钟、开球前 2h 到完场每 3 分钟；`post_finish_verify` 每 3 分钟直到首次结算（`src/sync/config.ts`） |
-| 429 | 已有 `ProviderQuotaExceededError`，且 `quotaExceededStopsAutoRetry: true` |
-| 规范 §31.1 | 请求按 `api_football_league_id + api_football_season` 分别发起，**不得跨联赛复用同一响应** |
-| 限流 | 现有 `InMemoryRateLimiter` 是内存版；云函数多实例之间**不共享**，不能用来保证对外部数据源的限额 |
+| 客户端 | `src/provider/http.ts` 的 `ApiFootballClient` 与 `transport.ts` 的 `FetchProviderHttpClient` 只支持**一个** key、**一个** base URL，认证头固定 `x-apisports-key` |
+| 数据源枚举 | `Provider` 枚举目前只有 `api_football`；`TeamProviderMapping` / `MatchProviderMapping` 以 `provider + provider_*_id` 为键 |
+| 联赛配置 | `SUPPORTED_LEAGUES` 的字段都是 `api_football_league_id`、`api_football_season`，没有「该联赛用哪个数据源」 |
+| 下游映射 | `fixture-mapper.ts`、状态映射（规范 §31.3）、正式比分抽取（§31.4）都按 **API-Football 的 fixture 结构与短状态码**（`NS / 1H / HT / FT / PST / CANC …`）编写 |
+| 比赛中与完场核对 | `provider-live-match.ts`、`provider-post-finish.ts` 对**每场比赛各发一次**按 id 的请求 |
+| 429 | 已有 `ProviderQuotaExceededError` 与 `quotaExceededStopsAutoRetry` |
+| 规范 §31.1 | 禁止 Odds / Bookmaker / Bet；请求按联赛分别发起，不得跨联赛复用响应 |
+| 限流 | `InMemoryRateLimiter` 是内存版，云函数多实例不共享，不能用来保证外部限额 |
 
-### 18.2 总体策略
+### 18.3 总体策略
 
-1. **结算只需要最终比分**，比赛中的比分只影响展示。所以：**完场确认要快、要稳，比赛中的比分可以放慢**。
-2. **按联赛批量请求，不按比赛请求。** 一次请求拿到整个联赛的数据，请求量只取决于「联赛数 × 轮询次数」，与同时有几场比赛无关。
-3. **没有比赛就不请求。** 只有联赛存在处于对应时间窗口内的比赛时才发请求。
-4. **全局预算 + 优先级。** 所有同步任务共用同一数据源的预算；额度紧张时按「完场核对 > 比赛中 > 开球前核对 > 赛程同步」取舍，保证结算不被展示类请求饿死。
-5. **预算计数放数据库，不放内存。**
-6. **测试档与正式档两套间隔**，用环境变量切换，不改常量。
-7. 用户请求**绝不**直接访问数据源，小程序只读我们自己的数据库（现状已如此，保持）。
+1. **适配器模式。** 新增统一接口，每个数据源一个适配器；适配器把源响应**转换成现有的内部 fixture 结构**（即 `ApiFootballFixture` 的形状和短状态码），这样 `fixture-mapper`、状态映射、正式比分抽取、结算链路**一行不改**。
+2. **按联赛按日期范围批量请求**，一次请求拿到该联赛窗口内全部比赛（两个源都支持日期范围查询），请求量只取决于「联赛数 × 轮询次数」，与同时有几场比赛无关。因此**不再需要** API-Football 专用的 `live` / `ids` 参数。
+3. **只在有比赛的窗口内请求**（18.7）：无比赛窗口，除低频赛程同步外零请求。
+4. **全局预算 + 优先级**（18.6）：完场核对 > 比赛中 > 开球前核对 > 赛程同步。
+5. **预算计数放数据库**，不放内存。
+6. **测试档与正式档**两套间隔，环境变量切换。
+7. 用户请求**绝不**直接访问数据源，小程序只读我们自己的数据库。
+8. **英超免费版延迟是已知限制**：比赛中的英超比分在页面上会晚于真实比分；结算只依赖「已完赛」状态，晚几分钟不影响正确性，但需要在告警阈值与产品文案上处理（18.9）。
 
-### 18.3 多数据源模型（多 key / 多 URL）
+### 18.4 两个源的接口约定（以文档摘要为准，字段细节待样例确认）
 
-**配置结构**（放 `src/provider/sources.ts`，不含密钥值）：
+**football-data.org（英超，`source_id = fd`）**
+
+| 项 | 内容 |
+|---|---|
+| 基础地址 | `https://api.football-data.org/v4`（必须 https） |
+| 认证 | 请求头 `X-Auth-Token: <key>` |
+| 联赛标识 | 英超代码 `PL`（以真实响应为准） |
+| 赛季赛程 | `GET /competitions/PL/matches?season=2026`（赛季参数为赛季起始年，以真实响应核对） |
+| 日期范围 | `GET /competitions/PL/matches?dateFrom=yyyy-MM-dd&dateTo=yyyy-MM-dd`（两个参数需同时给出，范围不超过文档允许的天数） |
+| 状态 | `SCHEDULED, TIMED, IN_PLAY, PAUSED, FINISHED, SUSPENDED, POSTPONED, CANCELLED, AWARDED` |
+| 比分 | `score.winner / duration / fullTime / halfTime / regularTime / extraTime / penalties` |
+| 时间 | `utcDate`（UTC） |
+| 限额 | 免费 10 次/分钟；响应头里可能带剩余次数（**以真实响应为准**） |
+
+**BSD Sports API（中超，`source_id = bsd`）**
+
+| 项 | 内容 |
+|---|---|
+| 基础地址 | `https://sports.bzzoiro.com/api/v2/` |
+| 认证 | 请求头 `Authorization: Token <key>` |
+| 联赛标识 | 中超 `52` |
+| 赛事列表 | `GET /events/?league=52&date_from=yyyy-MM-dd&date_to=yyyy-MM-dd&limit=200&offset=0`（分页：`count / next / previous / results`，`limit` 最大 200） |
+| 状态 | `upcoming, live, finished, cancelled, postponed, unresolved`（`unresolved` = 开球时间已过、未踢、无结果） |
+| 时间 | ISO 8601 UTC |
+| 限额 | 免费 7500 次/天，**UTC 零点重置**；超限返回 `429` 且 `code = taster_exhausted`；另有每 IP 突发限制，返回 `429` 且 `code = rate_limited`，并带 `Retry-After`；响应头 `RateLimit-Policy` / `RateLimit` 给出剩余次数与重置秒数；热门接口有约 5 秒缓存，**轮询快于 5 秒没有意义** |
+| 付费接口 | `402` 表示该端点需付费，不应被我们调用 |
+| 禁用 | 该服务另提供 `odds`、`predictions` 等博彩相关数据，**规范 §31.1 一律禁止**，适配器白名单只允许赛事列表与赛事详情（见 P05） |
+
+### 18.5 状态与比分映射（适配器内完成，输出现有短状态码）
+
+| 内部短码 | football-data | BSD |
+|---|---|---|
+| `NS` 未开赛 | `SCHEDULED`, `TIMED` | `upcoming` |
+| `LIVE` 进行中 | `IN_PLAY` | `live` |
+| `HT` | `PAUSED` | （BSD 无对应，用 `LIVE`） |
+| `FT` 完场 | `FINISHED` | `finished` |
+| `PST` 延期 | `POSTPONED` | `postponed` |
+| `CANC` 取消 | `CANCELLED` | `cancelled` |
+| `SUSP` 中断 | `SUSPENDED` | — |
+| 异常 | `AWARDED`（判罚，无真实比分） | `unresolved` |
+
+- **异常两项不得当作完赛**：生成异常记录进入管理员异常队列（沿用现有 anomaly 机制），比赛保持当前状态、**不结算**。
+- **正式比分（规范 §31.4，90 分钟含伤停补时）**：联赛比赛没有加时与点球。football-data 在 `score.duration = REGULAR` 时取 `fullTime`（若有 `regularTime` 则以其为准）；`duration` 不是 `REGULAR` 时按异常处理。BSD 的比分字段名**待样例确认**。
+- 球队 / 比赛 ID：`Provider` 枚举增加 `football_data`、`bsd`；映射表按 `provider + provider_*_id` 存，**不同源的 ID 不可混用**。
+- 轮次：football-data 用 `matchday`；BSD 的轮次字段**待样例确认**，统一输出现有 `round_id` 约定（两位数字字符串）。
+
+### 18.6 配置模型与预算
+
+**数据源配置**（`src/provider/sources.ts`，不含密钥值）：
 
 ```text
 ProviderSource {
-  source_id            字符串，如 "epl"、"csl"
-  base_url_env         环境变量名，指向该源的 URL（缺省用默认 URL）
-  api_key_env          环境变量名，指向该源的 key（必填）
-  auth_header          认证头名称，默认 "x-apisports-key"（不同服务商可改）
-  max_per_minute       自设每分钟上限（≤ 服务商上限，留余量）
-  daily_cap            自设每日上限
-  leagues              该源负责的 league_id 列表
+  source_id             "fd" | "bsd"
+  adapter               "football_data" | "bsd" | "api_football"（保留给其余四个联赛）
+  base_url_env          环境变量名（缺省用默认地址）
+  api_key_env           环境变量名（必填）
+  auth                  { header: 名称, scheme: "raw" | "token" }   // fd: X-Auth-Token + raw；bsd: Authorization + "Token <key>"
+  max_per_minute        自设每分钟上限
+  daily_cap             自设每日上限
+  day_boundary          "utc"（BSD 按 UTC 零点）| "local"
+  leagues               [{ league_id, source_league_ref, season_param? }]
 }
 ```
 
-**环境变量命名**（只列键名；值在云函数控制台填写）：
+**环境变量**（只列键名；值在云函数控制台填写）：
 
 | 键 | 含义 |
 |---|---|
-| `FOOTBALL_PROVIDER_SOURCES` | 启用的数据源，如 `epl,csl` |
-| `FOOTBALL_PROVIDER_KEY_EPL` / `FOOTBALL_PROVIDER_KEY_CSL` | 各源的 key（**机密**） |
-| `FOOTBALL_PROVIDER_URL_EPL` / `FOOTBALL_PROVIDER_URL_CSL` | 各源的 base URL，可缺省 |
-| `FOOTBALL_PROVIDER_HEADER_EPL` / `..._CSL` | 认证头名，可缺省 |
-| `FOOTBALL_PROVIDER_PERMIN_EPL` / `..._CSL` | 每分钟自设上限，缺省 6 |
-| `FOOTBALL_PROVIDER_DAILY_EPL` / `..._CSL` | 每日自设上限，见 18.6 |
-| `FOOTBALL_SYNC_PROFILE` | `test` 或 `prod`，决定轮询间隔（18.7） |
+| `FOOTBALL_PROVIDER_SOURCES` | 启用的数据源，如 `fd,bsd` |
+| `FOOTBALL_PROVIDER_KEY_FD` / `FOOTBALL_PROVIDER_KEY_BSD` | 各源 key（**机密**） |
+| `FOOTBALL_PROVIDER_URL_FD` / `FOOTBALL_PROVIDER_URL_BSD` | 各源基础地址，可缺省 |
+| `FOOTBALL_PROVIDER_PERMIN_FD` / `_BSD` | 每分钟自设上限 |
+| `FOOTBALL_PROVIDER_DAILY_FD` / `_BSD` | 每日自设上限 |
+| `FOOTBALL_SYNC_PROFILE` | `test` 或 `prod` |
 | `FOOTBALL_SYNC_LEAGUES` | 启用同步的联赛，测试阶段 `premier_league,chinese_super_league` |
 
-**默认映射**：`premier_league → epl`，`chinese_super_league → csl`。其余四个联赛暂无数据源，**测试阶段不同步，也不报错**（只在启动日志里记一次「未配置，已跳过」）。
+**默认映射**：`premier_league → fd (PL)`；`chinese_super_league → bsd (52)`。其余四个联赛暂无数据源，测试阶段不同步，启动时只记一条「未配置，已跳过」。
 
-### 18.4 条目
+**额度默认值**
 
-| ID | 位置 | 要求 |
-|---|---|---|
-| P01 | `src/provider/sources.ts`（新） | 上述配置结构与从环境变量加载的纯函数 `loadProviderSources(env)`；缺必填 key → 失败并输出 `DIAG_PROVIDER_KEY_MISSING`（**只写 source_id 与环境变量名，不写值**） |
-| P02 | `src/provider/transport.ts` | `FetchProviderHttpClient` 支持可配置的认证头名；**key 与 base_url 绑定在同一个实例上**，不允许把一个源的 key 发到另一个源的 URL。`base_url` 必须是 `https`，否则拒绝 |
-| P03 | `src/provider/registry.ts`（新） | `ProviderClientRegistry.forLeague(leagueId)` 返回该联赛对应数据源的 `ApiFootballClient`（每个源一个实例，复用）；联赛没有配置数据源 → 返回「未配置」，调用方跳过 |
-| P04 | 同步任务改造 | `provider-sync-service`、`provider-live-match`、`provider-near-match`、`provider-post-finish`、`provider-full-schedule`、`provider-fixture-loader` 等所有创建或接收单个 client 的地方，改成按联赛从 `ProviderClientRegistry` 取 client。**先 grep 全部调用点**，逐个确认，不要遗漏 |
-| P05 | `src/provider/http.ts` | 在 `ApiFootballFixturesQuery` 增加 `live`（值为 `"all"` 或联赛 ID）与 `ids`（同一联赛的多个 fixture id，`-` 连接，最多 20 个）；`READ_ONLY_ENDPOINTS` 不变；仍然**禁止** odds / bookmaker / bet |
-| P06 | `src/application/provider-live-match.ts` | 由「逐场 `id=`」改为：每个启用联赛、窗口内有比赛时，发 **1 次** `fixtures?live=<league>`；按 provider fixture id 对回本地比赛。窗口内有比赛、但响应里没有（刚结束或尚未开始）的，交给完场核对处理 |
-| P07 | `src/application/provider-near-match.ts` | 由逐场改为**按联赛按日期范围**发 1 次请求（`from`/`to` 覆盖窗口内日期），再对回本地比赛 |
-| P08 | `src/application/provider-post-finish.ts` | 同一联赛内把待核对的 fixture id **合并**成 `ids=a-b-c`（≤20）；**不同联赛不合并**（遵守 §31.1「不得跨联赛复用同一响应」） |
-| P09 | 规范 `docs/MVP__v2.0.md` §31.1 | 补充：允许按联赛使用 `live` 与 `ids` 批量参数；仍按联赛分别发起；其余禁止项不变。**先改规范再改代码，同一提交** |
-| P10 | 调度入口 | 云函数增加定时触发路径，**每分钟一次**；每个任务根据最近一次执行记录判断「这一分钟到没到期」，不到期就直接返回，不请求数据源。定时触发的 cron 写法以云开发控制台为准 |
-| P11 | **安全：区分定时触发与小程序调用** | 定时任务入口**必须拒绝来自小程序客户端的调用**：小程序可以在 `callFunction` 的 `data` 里伪造任意字段（包括假装成定时事件），所以不能只看 `event` 内容。使用云函数上下文里表示调用来源的字段区分触发方式（具体字段与取值**以真环境实测为准**），并加测试：伪造的定时事件从客户端发来时返回拒绝 |
-| P12 | 手动触发 | 增加 `{ "action": "sync", "job": "future_schedule" }`：与 `{ "action": "diag" }` 同样**只在 `dev / test` 可用**，在云函数控制台「云端测试」里运行一次指定任务，**同样受预算约束**；用于第一次联调时验证 key 与 URL，不用等定时触发 |
+| 源 | 每分钟自设上限 | 每日自设上限（测试档 / 正式档） | 说明 |
+|---|---|---|---|
+| `fd` | 6（服务商限 10，留 40% 余量） | 300 / 1500 | 日上限官方未公布，按保守值 |
+| `bsd` | 30 | 1500 / 5000 | 服务商日限 7500，每 IP 另有突发限制；日用量按 UTC 零点重置 |
 
-### 18.5 预算与限流（放数据库）
+**预算机制**
 
 | ID | 要求 |
 |---|---|
-| B01 | 新集合 `provider_usage`（含 schema 与索引，纳入 §17 D08 的建表清单）：按「数据源 + 分钟」和「数据源 + 日期」两种桶记录请求次数；文档 `_id` 由桶键确定性拼出 |
-| B02 | 计数必须是**原子自增**（数据库层的自增操作，不是「先读再写」）；S17 的适配器要支持该操作，并在 17.8 事务能力表里注明 |
-| B03 | `ProviderBudget.acquire(sourceId, jobType, now)` → `allowed` 或 `denied(reason)`。规则：每分钟已用 < `max_per_minute`；当日已用 < `daily_cap × 优先级比例` |
-| B04 | 优先级比例：完场核对 100%；比赛中 90%；开球前核对 70%；赛程同步 50%。比例随日用量触发：用量越接近上限，低优先级越早被拒 |
-| B05 | 被拒绝不是错误：记录一条 `skipped_budget` 日志（含任务名、数据源、原因），本轮不请求，等下一个节拍 |
-| B06 | 读取响应头里的剩余额度（API-Football 通常返回每分钟与每日的剩余次数，**具体头名以真实响应为准**）：剩余过低时，下一次 `acquire` 直接拒绝；并把观测值写入日志，便于对照自己的计数是否漂移 |
-| B07 | 429：记录该数据源的「恢复时间」（响应头提供则用，否则按下一分钟 / 次日零点），到恢复时间前该源一律拒绝；不重试（沿用现有 `quotaExceededStopsAutoRetry`） |
-| B08 | 当日用量到 80% 输出告警日志（`DIAG_PROVIDER_QUOTA_WARN`），到 100% 停止低优先级任务 |
-| B09 | 可选：每日一次调用数据源的账户状态接口（白名单里已有 `status`）核对剩余额度；**是否占用额度需在真环境确认**，未确认前默认关闭 |
+| B01 | 新集合 `provider_usage`（纳入 §17 D08 建表清单）：按「数据源 + 分钟」与「数据源 + 日期（按该源的 `day_boundary`）」记录次数，`_id` 由桶键确定性拼出 |
+| B02 | 计数必须是数据库层**原子自增**，不是先读再写；S17 适配器需支持，并写入 §17.8 事务能力表 |
+| B03 | `ProviderBudget.acquire(sourceId, jobType, now)` → `allowed` / `denied(reason)`；每分钟已用 < `max_per_minute`，当日已用 < `daily_cap × 优先级比例` |
+| B04 | 优先级比例：完场核对 100%；比赛中 90%；开球前核对 70%；赛程同步 50% |
+| B05 | 被拒绝不是错误：记一条 `skipped_budget` 日志，等下一节拍 |
+| B06 | 读取剩余额度：`bsd` 读 `RateLimit`（剩余次数 `r`、重置秒数 `t`）；`fd` 读响应头（**头名以真实响应为准**）。剩余过低时下一次直接拒绝，并把观测值写日志对照自己的计数 |
+| B07 | 429：`bsd` 区分 `taster_exhausted`（恢复时间 = 下一个 UTC 零点）与 `rate_limited`（按 `Retry-After`）；`fd` 按下一分钟；到恢复时间前该源一律拒绝，不重试（沿用 `quotaExceededStopsAutoRetry`） |
+| B08 | 当日用量到 80% 告警（`DIAG_PROVIDER_QUOTA_WARN`），到 100% 停止低优先级任务 |
 
-### 18.6 额度默认值
+### 18.7 「只在有比赛的时间才请求」：窗口规则
 
-| 数据源 | 每分钟自设上限 | 每日自设上限（测试档） | 每日自设上限（正式档） | 说明 |
-|---|---|---|---|---|
-| `epl` | 6（服务商限 10，留 40% 余量） | 300 | 1500 | 日上限官方未公布，按保守值，**确认后再调** |
-| `csl` | 6（服务商未说明每分钟限制，保守取值） | 800 | 4000 | 服务商日限 7500，约取一半 |
+**定义（以本地数据库中该联赛的比赛为准）**
 
-### 18.7 分档间隔（测试档 vs 正式档）
+| 窗口 | 范围 | 作用 |
+|---|---|---|
+| 开球前核对点 | 开球前 **2 小时**与开球前 **30 分钟**，各一次 | 确认开球时间与状态未变 |
+| 比赛窗口 | 开球前 **10 分钟** 到 开球后 **3 小时** | 取比分与状态 |
+| 完场核对窗口 | 从「检测到已完赛」或「开球后 105 分钟」起，到首次结算完成为止，最长到开球后 24 小时 | 取最终比分，直至结算 |
+| 兜底 | 超过开球后 24 小时仍未结算的比赛，降为每天核对一次，并生成异常提醒 | 避免卡死但不烧额度 |
 
-通过 `FOOTBALL_SYNC_PROFILE` 选择；`FIXED_CONFIG_V1` 里现有常量作为**正式档**，测试档另建，不改正式档数值。
+**规则**
 
-| 任务 | 正式档 | 测试档 | 请求方式 |
+1. 每个节拍先看：该联赛此刻是否有**任何一场**处于上述窗口内；没有 → **直接返回，零请求**。
+2. 有 → 对该联赛发 **1 次**日期范围请求，范围覆盖昨天到明天（避免跨 UTC 零点漏掉夜间比赛），一次响应更新窗口内所有比赛。
+3. **赛程同步**是唯一不依赖「已有比赛」的请求（它负责发现比赛）：测试档 12 小时一次，正式档 6 小时一次；全赛季核对每天一次。
+4. 国际比赛日、休赛期、本地没有比赛的日子：只会有赛程同步的请求。
+
+**间隔（窗口内）**
+
+| 任务 | 正式档 | 测试档 | 说明 |
 |---|---|---|---|
-| 未来赛程同步 | 6 小时 | 12 小时 | 每联赛 1 次 |
-| 全赛季核对 | 24 小时 | 24 小时 | 每联赛 1 次 |
-| 开球前核对（24h–2h） | 30 分钟 | 2 小时 | 每联赛 1 次（日期范围） |
-| 比赛中（开球前 2h 至完场） | 3 分钟 | 10 分钟 | 每联赛 1 次（`live`） |
-| 完场核对（至首次结算） | 3 分钟 | 3 分钟 | 每联赛 1 次（`ids`，≤20） |
+| 比赛窗口轮询：中超（`bsd`） | 2 分钟 | 5 分钟 | 服务端热接口约缓存 5 秒，再快没有意义 |
+| 比赛窗口轮询：英超（`fd`） | 5 分钟 | 10 分钟 | 免费版数据本身延迟，轮询更快不会更实时 |
+| 完场核对 | 3 分钟 | 5 分钟 | 结算前提，**优先级最高** |
+| 开球前核对点 | 各 1 次 | 各 1 次 | 见上表 |
+| 赛程同步 | 6 小时 | 12 小时 | |
 
-估算（单联赛、最忙的比赛日）：正式档约 150 次/天，测试档约 50 次/天；按每分钟计平均都远低于 1 次。
+估算（单联赛、最忙比赛日）：测试档约 50 次/天，正式档约 150 次/天，远低于各源额度。
 
-### 18.8 排错诊断（沿用 §17 风格）
+### 18.8 条目
+
+| ID | 位置 | 要求 |
+|---|---|---|
+| P01 | `src/provider/sources.ts`（新） | 18.6 的配置结构与 `loadProviderSources(env)`；缺必填 key → 失败并输出 `DIAG_PROVIDER_KEY_MISSING`（只写 source_id 与变量名，不写值） |
+| P02 | `src/provider/transport.ts` | 认证头名与格式可配置（`X-Auth-Token` 原样 / `Authorization: Token <key>`）；**key 与 base_url 绑定在同一实例**，不会把一个源的 key 发给另一个源；`base_url` 必须是 `https` |
+| P03 | `src/provider/adapter.ts`（新） | 统一接口 `ProviderAdapter { fetchSeasonFixtures, fetchFixturesByDateRange }`，返回内部 fixture 形状（18.3 第 1 条） |
+| P04 | `src/provider/football-data-adapter.ts`、`bsd-adapter.ts`（新） | 各自实现：路径与参数拼装、分页（BSD 的 `limit/offset`，直到 `next` 为空）、响应校验、状态与比分映射（18.5）、转成内部 fixture。**逐条校验，单条非法不丢弃整批**（沿用 §31.5） |
+| P05 | 白名单 | football-data 适配器只允许 `competitions/{code}/matches`；BSD 适配器只允许 `events/`（列表与详情）。任何包含 `odds`、`bookmaker`、`bet`、`prediction` 的路径一律拒绝，并有测试 |
+| P06 | `src/provider/registry.ts`（新） | `ProviderRegistry.forLeague(leagueId)` 返回对应适配器实例（每源一个，复用）；联赛未配置 → 返回「未配置」，调用方跳过 |
+| P07 | `src/domain/enums.ts` 与 schema | `Provider` 增加 `football_data`、`bsd`；映射集合的枚举同步；`SUPPORTED_LEAGUES` 增加「数据源引用」（不删除现有 `api_football_*` 字段，其余四个联赛仍可用） |
+| P08 | 同步任务改造 | `provider-sync-service`、`provider-live-match`、`provider-near-match`、`provider-post-finish`、`provider-full-schedule`、`provider-fixture-loader` 等所有取 client 的地方，改用 `ProviderRegistry`；比赛中与完场核对由「逐场请求」改为 18.7 的「按联赛一次日期范围请求」。**先 grep 全部调用点** |
+| P09 | 窗口判断 | 纯函数 `activeWindow(matches, now)`（18.7），供各任务共用；单测覆盖每个窗口边界 |
+| P10 | 规范 `docs/MVP__v2.0.md` §1.4 / §31 | 把「Provider」改为多数据源：说明各联赛的数据源、状态映射来源、正式比分口径；§31.1 的禁止项扩展到 `prediction`；**先改规范，再改代码，同一提交** |
+| P11 | 调度入口 | 云函数定时触发每分钟一次；每个任务按最近执行记录判断是否到期，不到期直接返回。cron 写法以云开发控制台为准 |
+| P12 | **安全：区分定时触发与小程序调用** | 定时入口**必须拒绝来自小程序客户端的调用**：小程序可在 `callFunction` 的 `data` 里伪造任意字段（包括假装是定时事件），所以不能只看 `event` 内容。用云函数上下文里表示调用来源的字段区分（**字段与取值以真环境实测为准**），并加测试：伪造的定时事件从客户端发来时被拒绝 |
+| P13 | 手动触发 | `{ "action": "sync", "job": "future_schedule" }`，与 `{ "action": "diag" }` 同样**仅 `dev / test` 可用**，仍受预算约束；用于第一次联调验证 key 与 URL |
+| P14 | 球队名称与队徽 | football-data 的球队名常带后缀（如 `Arsenal FC`、`Wolverhampton Wanderers FC`），队徽查找（`miniprogram/utils/logo-registry.js`）的别名规则需补充（去掉 `FC` 等后缀）；中超球队名的语言与写法**待样例确认**后补别名 |
+
+### 18.9 英超延迟与告警
+
+- `LIVE_SYNC_FAILURE_ALERT_MINUTES = 10` 是按「实时源」设计的；对 `fd` 需要按源放宽阈值（例如 20 分钟），并在配置里允许每个源单独设置，避免免费版的正常延迟被当作故障。
+- 结算只看「已完赛」状态与最终比分，英超数据晚到只会让结算晚几分钟，不影响正确性。
+- **产品需确认**：英超比赛中的比分是否在界面上标注「数据可能有延迟」。默认不加；若加，属于文案，不影响后端。
+- 英超免费版若在某些时段出现「状态已变化但比分还是旧值」，适配器遇到 `FINISHED` 但比分缺失时，按 §31.5 Fail Closed：不结算，下次轮询重试。
+
+### 18.10 排错诊断（沿用 §17 风格）
 
 | 现象 | `diag_code` | 提示 |
 |---|---|---|
-| 启用了数据源但缺 key | `DIAG_PROVIDER_KEY_MISSING` | 到云函数环境变量补 `FOOTBALL_PROVIDER_KEY_<源>`（只显示变量名） |
-| 返回 401 / 403，或响应里带账号 / 套餐相关错误 | `DIAG_PROVIDER_AUTH` | key 错误；或当前套餐不包含该联赛 / 赛季；或认证头名不对（检查 `FOOTBALL_PROVIDER_HEADER_<源>`） |
-| 请求成功但返回 0 条 | `DIAG_PROVIDER_NO_DATA` | 常见原因：`api_football_season`（见 `SUPPORTED_LEAGUES`）与数据源实际赛季不一致，或套餐不含该赛季；日志里带上联赛 ID 和赛季参数 |
-| 返回格式不是预期的 API-Football v3 结构 | `DIAG_PROVIDER_FORMAT` | 该源的返回格式与现有映射不一致，需要补映射；日志里带响应的**字段名摘要**，不带数据本身 |
-| 429 | `DIAG_PROVIDER_QUOTA` | 额度或频率超限，列出恢复时间；检查自设上限是否过高 |
-| 超时 / 网络失败 | `DIAG_PROVIDER_NETWORK` | 记录数据源 ID 与耗时；云函数是否能访问外网 |
+| 启用了源但缺 key | `DIAG_PROVIDER_KEY_MISSING` | 到云函数环境变量补 `FOOTBALL_PROVIDER_KEY_<源>`（只显示变量名） |
+| 401 / 403 | `DIAG_PROVIDER_AUTH` | key 错误；或认证头格式不对（football-data 用 `X-Auth-Token`，BSD 用 `Authorization: Token <key>`）；或当前套餐不含该联赛 / 赛季 |
+| BSD 返回 402 | `DIAG_PROVIDER_PAID_ONLY` | 调用了需要付费的端点，核对白名单与路径 |
+| 请求成功但 0 条 | `DIAG_PROVIDER_NO_DATA` | 赛季参数（football-data）或联赛 ID（BSD `52`）与该源不符；或该日期范围内确实没有比赛；日志带联赛与日期范围 |
+| 返回结构缺少预期字段 | `DIAG_PROVIDER_FORMAT` | 适配器与真实响应不一致；日志只带**字段名摘要**，不带数据本身 |
+| 遇到 `AWARDED` / `unresolved` | `DIAG_PROVIDER_MATCH_ANOMALY` | 已进入管理员异常队列，不结算 |
+| 429 | `DIAG_PROVIDER_QUOTA` | BSD 区分 `taster_exhausted`（每日额度，次日 UTC 零点恢复）与 `rate_limited`（突发，按 `Retry-After`）；football-data 按分钟恢复；日志带恢复时间 |
+| 超时 / 网络失败 | `DIAG_PROVIDER_NETWORK` | 数据源 ID 与耗时；云函数是否能访问外网 |
 | 被预算拒绝 | `skipped_budget`（信息级） | 不是错误；日志带当前用量与上限 |
-| 联赛没有配置数据源 | `DIAG_PROVIDER_LEAGUE_UNCONFIGURED`（信息级，启动时一次） | 该联赛未启用同步，页面无比赛属预期 |
+| 窗口内无比赛而跳过 | `skipped_no_window`（信息级） | 预期行为，零请求 |
+| 联赛未配置数据源 | `DIAG_PROVIDER_LEAGUE_UNCONFIGURED`（信息级，启动一次） | 该联赛未启用同步，页面无比赛属预期 |
 
-日志只含：数据源 ID、联赛 ID、接口路径、HTTP 状态、耗时、剩余额度；**不含 key、完整 URL 查询串里的敏感字段、响应正文**。`{ "action": "diag" }` 的报告里追加一段「数据源」检查：每个启用源的 key 是否存在（是 / 否）、URL 主机名、最近一次请求的状态与耗时、当日已用与上限、距恢复时间。
+日志只含：数据源 ID、联赛 ID、接口路径、HTTP 状态、耗时、剩余额度；**不含 key、响应正文**。`{ "action": "diag" }` 报告追加「数据源」段：每个启用源的 key 是否存在（是 / 否）、URL 主机名、最近一次请求状态与耗时、当日已用 / 上限、距恢复时间。
 
-### 18.9 测试
+### 18.11 测试
 
-- **配置**：多个源互不串用（A 源请求绝不带 B 源的 key）；`https` 校验；缺 key 失败且信息中不含值；未配置联赛被跳过。
-- **注册表**：`forLeague` 返回正确的 client；同一源复用实例。
-- **批量请求**：live 只发 1 次；near-match 按联赛按日期 1 次；post-finish 同联赛合并、跨联赛不合并、超过 20 个拆批；窗口内无比赛时**零请求**。
-- **预算**：并发 `acquire` 不超过每分钟上限（用假数据库并发测）；优先级比例生效；日用量到 80% 告警；到上限拒绝低优先级但仍允许完场核对；429 之后到恢复时间前一律拒绝。
-- **间隔**：测试档与正式档各任务的到期判断；同一分钟多个任务到期时不突破每分钟上限。
-- **安全**：从客户端伪造的定时事件被拒绝；`sync` 与 `diag` 动作在 `prod` 被拒绝。
-- **回归**：原有 provider / sync 测试全部通过；规范 §31.1 与实现一致。
+- **适配器**：用真实响应样例（去掉 key）做夹具，覆盖每个状态映射、比分抽取（含 `duration` 非 `REGULAR`）、`AWARDED` / `unresolved` 进入异常、分页（BSD 多页）、单条非法不拖垮整批、白名单拒绝 `odds` / `prediction`。
+- **配置**：多个源互不串用 key；`https` 校验；缺 key 失败且信息不含值；未配置联赛被跳过。
+- **窗口**：`activeWindow` 的每个边界（开球前 2 小时 / 30 分钟 / 10 分钟、开球后 3 小时、24 小时、已结算）；无比赛窗口时**零请求**（spy 断言）；跨 UTC 零点的夜间比赛不漏。
+- **预算**：并发 `acquire` 不超每分钟上限；优先级比例生效；80% 告警；到上限仍允许完场核对；BSD 两种 429 的恢复时间；日桶按 UTC 零点。
+- **安全**：客户端伪造的定时事件被拒；`sync` / `diag` 动作在 `prod` 被拒绝。
+- **回归**：现有 provider / sync / settlement 测试全部通过（因为适配器输出内部 fixture 形状，下游不变）。
 - 门禁：`tsc` / `vitest` / `build` / `git diff --check`。
 
-### 18.10 分工
+### 18.12 分工
 
 | 步骤 | 谁 | 内容 |
 |---|---|---|
-| 1 | 你 | 在云函数控制台添加数据源相关环境变量（18.3 表）；英超与中超 key 各填各的；`FOOTBALL_SYNC_PROFILE=test`、`FOOTBALL_SYNC_LEAGUES=premier_league,chinese_super_league` |
-| 2 | 你 | 各提供一份**去掉 key 的真实响应样例**（英超、中超各一份，来自 `fixtures` 接口），确认格式与 API-Football v3 一致、赛季参数是否正确 |
-| 3 | Luna | P01–P12、B01–B09、诊断与测试 |
-| 4 | 你 | 在控制台建 `provider_usage` 集合与索引（以 `npm run cloudbase:schema` 输出为准） |
-| 5 | 你加 Luna | 云端测试运行 `{ "action": "sync", "job": "future_schedule" }`，确认赛程能写入；再开定时触发器（每分钟）观察一个比赛日 |
-| 6 | 你 | 到数据源后台核对**实际用量**与我们的计数是否一致，把官方的日上限告诉 Luna 调整 18.6 |
+| 1 | 你 | 在云函数控制台添加 18.6 的环境变量（两个 key 各填各的）；`FOOTBALL_SYNC_PROFILE=test`；`FOOTBALL_SYNC_LEAGUES=premier_league,chinese_super_league` |
+| 2 | 你 | 提供**去掉 key 的真实响应样例**：football-data 的 `competitions/PL/matches`（赛季赛程一份、日期范围一份，最好含一场已完赛）；BSD 的 `events/?league=52&date_from&date_to`（含一场已完赛、一场未开赛）与一条赛事详情。Luna 据此定字段映射 |
+| 3 | 你 | 核对两个服务的**使用条款**：是否允许商用、是否允许在应用内展示比分、有无署名要求（我没有核实） |
+| 4 | Luna | P01–P14、B01–B08、诊断与测试 |
+| 5 | 你 | 在控制台建 `provider_usage` 集合与索引（以 `npm run cloudbase:schema` 输出为准） |
+| 6 | 你加 Luna | 云端测试运行 `{ "action": "sync", "job": "future_schedule" }`，确认赛程能写入；再开定时触发器（每分钟）观察一个比赛日 |
+| 7 | 你 | 到两个数据源后台核对实际用量与我们的计数是否一致，把真实上限告诉 Luna 调整 18.6 |
 
-### 18.11 验收
+### 18.13 验收
 
 - 代码门禁全绿。
-- 真环境：两个数据源各完成一次赛程同步；一个比赛日内，数据源后台显示的用量**不超过**自设上限；比赛完场后能自动结算。
-- 报告如实写明：**数据源的返回格式、`live`/`ids` 参数、响应头里的额度字段是否已经在真实响应上验证**；未验证就写未验证。
+- 真环境：两个源各完成一次赛程同步；一个比赛日内**无比赛的时段零请求**，数据源后台用量不超过自设上限；中超比赛完场后自动结算；英超在延迟下仍能正确结算。
+- 报告如实写明：**两个源的真实字段映射、响应头额度字段、`duration` 与 `AWARDED` 行为是否已在真实响应上验证**；未验证就写未验证。
 
-### 18.12 待确认（有默认值，不阻塞）
+### 18.14 待确认（有默认值，不阻塞）
 
 | # | 问题 | 默认 |
 |---|---|---|
-| Q31 | 英超与中超是否同一服务商、同一响应格式 | 默认两者都是 API-Football v3 格式（本文按此设计）；不是的话需补映射（P04 之后再加一个条目） |
-| Q32 | 英超每日上限 | 未知，先用 18.6 的保守自设值；拿到官方数字后调整 |
-| Q33 | 中超每分钟上限 | 未知，先用 6；拿到官方数字后调整 |
-| Q34 | 另外四个联赛何时接入 | 有 key 后在 `FOOTBALL_PROVIDER_SOURCES` 增加数据源即可，无需改代码 |
-| Q35 | 比赛中的轮询间隔 | 测试档 10 分钟，正式档 3 分钟；上线后可按实际额度收紧到 1–2 分钟 |
+| Q31 | 英超免费版延迟到底多大 | 未知；上线前用一个比赛日实测（对照官网比分的时间差），再决定告警阈值与是否加界面提示 |
+| Q32 | football-data 免费版是否包含 2026 赛季与英超全部字段 | 以真实响应为准；若 `DIAG_PROVIDER_NO_DATA`，先核对赛季参数与套餐 |
+| Q33 | BSD 的比赛字段名、轮次字段 | 待样例确认（18.12 第 2 步） |
+| Q34 | 另外四个联赛何时接入 | 有 key 与适配器后在 `FOOTBALL_PROVIDER_SOURCES` 增加即可；若仍是 API-Football，可复用保留的 `api_football` 适配器 |
+| Q35 | 数据源条款是否允许商用 / 展示 | 需用户核对（18.12 第 3 步） |
