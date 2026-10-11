@@ -1,15 +1,8 @@
-<view class="page">
-  <image class="page-bg" src="/assets/images/home-pitch-bg.webp" mode="aspectFill"></image>
-  <view class="topbar-spacer"></view>
-  <view class="decor decor-arc"></view>
-  <view class="topbar">
-    <view class="brand">
-      <view class="mark"><image class="mark-ball" src="/assets/icons/icon-ball.png" mode="aspectFit"></image></view>
-      <view class="brand-copy">
-        <view class="brand-name"><text>{{nickname}}</text><text class="brand-sub">，今天看哪场？</text></view>
-      </view>
-    </view>
-  </view>
+<view class="page" style="--native-header-height:{{headerHeight}}px">
+  <image class="page-bg" src="/assets/images/baseline-pitch.webp" mode="aspectFill"></image>
+  <view class="stadium-overlay"></view>
+  <view class="topbar-spacer" style="height:{{headerHeight}}px"></view>
+  <view class="welcome"><view class="welcome-avatar">{{avatarText}}</view><view class="welcome-copy"><view class="welcome-title">{{nickname}}，今天看哪场？</view><view class="welcome-note">每一次预测，都是对足球的理解</view></view></view>
 
   <view class="leagues-wrap">
     <scroll-view class="leagues" scroll-x enable-flex scroll-with-animation>

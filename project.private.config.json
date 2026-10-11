@@ -1,0 +1,25 @@
+{
+  "libVersion": "3.17.4",
+  "projectname": "football",
+  "setting": {
+    "urlCheck": true,
+    "coverView": true,
+    "lazyloadPlaceholderEnable": false,
+    "skylineRenderEnable": false,
+    "preloadBackgroundData": false,
+    "autoAudits": false,
+    "showShadowRootInWxmlPanel": true,
+    "compileHotReLoad": true
+  },
+  "condition": {
+    "miniprogram": {
+      "list": [
+        {
+          "query": "/Users/neilxu/Documents/script/football/miniprogram  4.",
+          "scene": null,
+          "launchMode": "default"
+        }
+      ]
+    }
+  }
+}

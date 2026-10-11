@@ -1,3 +1,4 @@
+const { headerHeight } = require("../../utils/ui-layout.js");
 const { getTeamLogo, getLeagueLogo } = require("../../utils/logo-registry.js");
 const { resolveNickname, truncateNickname } = require("../../utils/nickname.js");
 const { listMatches } = require("../../services/matches.js");
@@ -8,8 +9,8 @@ const { COPY: CROWD_COPY } = require("../../utils/crowd-copy.js");
 const LEAGUES = [
   { id: "premier_league", name: "英超" },
   { id: "la_liga", name: "西甲" },
-  { id: "bundesliga", name: "德甲" },
   { id: "serie_a", name: "意甲" },
+  { id: "bundesliga", name: "德甲" },
   { id: "ligue_1", name: "法甲" },
   { id: "chinese_super_league", name: "中超" },
 ];
@@ -85,6 +86,8 @@ function formatPrediction(prediction) {
 
 Page({
   data: {
+    headerHeight: headerHeight(),
+    avatarText: "球",
     state: "loading", items: [], errorMessage: "", hasMore: false, nextCursor: null, loadingMore: false, nickname: "",
     leagues: [], selectedLeague: "premier_league", dates: [], selectedDate: "", openCount: 0, doneCount: 0, recentScore: null,
     scrollIntoView: "", resultsTransition: "results-enter",
@@ -93,7 +96,7 @@ Page({
 
   onLoad() {
     const dates = buildDates(new Date());
-    this.setData({ dates, selectedDate: dates[0].key, leagues: LEAGUES.map((item) => ({ ...item, logo: getLeagueLogo(item.id) })), nickname: truncateNickname(resolveNickname()) });
+    this.setData({ dates, selectedDate: dates[0].key, leagues: LEAGUES.map((item) => ({ ...item, logo: getLeagueLogo(item.id) })), nickname: truncateNickname(resolveNickname()), avatarText: Array.from(resolveNickname())[0] || "球" });
     resolveDefaultLeague(listMatches, new Date()).then((leagueId) => {
       if (!this.userChangedLeague) this.setData({ selectedLeague: leagueId });
       this.initialized = true;

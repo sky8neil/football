@@ -1,81 +1,35 @@
-<view class="page">
-  <image class="stadium-background" src="/assets/images/home-pitch-bg.webp" mode="aspectFill" />
+<view class="page version-1" style="--native-header-height:{{headerHeight}}px">
+  <image class="stadium-background" src="/assets/images/baseline-pitch.webp" mode="aspectFill" />
   <view class="stadium-overlay"></view>
   <view class="secondary-content">
-  <view wx:if="{{state === 'loading'}}" class="loading"></view>
-  <view wx:elif="{{state === 'unauthorized'}}" class="state-panel">
-    <text>登录后查看个人资料</text>
-    <button bindtap="onSessionTap">登录</button>
-  </view>
-  <view wx:elif="{{state === 'userDeleted' || state === 'userNotFound' || state === 'rateLimited'}}" class="state-panel">
-    {{errorMessage}}
-  </view>
-  <view wx:elif="{{state === 'error'}}" class="state-panel">
-    <text>{{errorMessage}}</text>
-    <button bindtap="onRetry">重试</button>
-  </view>
-  <view wx:else class="profile-content">
-    <view class="profile-heading">
-      <view class="avatar">{{avatarText}}</view>
-      <view class="identity">
-        <text class="nickname">{{nickname}}</text>
-        <text class="favorite">{{favoriteTeamText}}</text>
-      </view>
-    </view>
-
-    <view wx:if="{{previousSeasonRecap}}" class="recap glass-card">{{previousSeasonRecap}}</view>
-
-    <view class="stats-section dark-overview">
-      <view class="section-title">生涯</view>
-      <view class="stats-grid">
-        <view class="stat"><text class="value">{{careerPoints}}</text><text class="label">积分</text></view>
-        <view class="stat"><text class="value">{{careerValidPredictions}}</text><text class="label">有效预测</text></view>
-        <view class="stat"><text class="value">Lv{{careerLevel}}</text><text class="label">当前等级</text></view>
-        <view class="stat"><text class="value">Lv{{careerBestLevel}}</text><text class="label">最高等级</text></view>
-      </view>
-    </view>
-
-    <view class="stats-section glass-card">
-      <view class="section-heading">
-        <text class="section-title">本赛季</text>
-        <text class="season-id">{{seasonId}}</text>
-      </view>
-      <view class="stats-grid">
-        <view class="stat"><text class="value">{{seasonValidPredictions}}</text><text class="label">有效预测</text></view>
-        <view class="stat"><text class="value">Lv{{seasonLevel}}</text><text class="label">当前等级</text></view>
-        <view class="stat"><text class="value">Lv{{seasonBestLevel}}</text><text class="label">最高等级</text></view>
-      </view>
-    </view>
-
-    <view class="actions">
-      <button bindtap="onPredictionsTap">全部预测</button>
-      <button bindtap="onUnlocksTap">我的解锁</button>
-    </view>
-
-    <view class="groups-section glass-card">
-      <view class="section-heading">
-        <text class="section-title">我的群</text>
-        <button class="text-action" bindtap="onGroupsTap">全部</button>
-      </view>
-      <view wx:if="{{!hasGroups}}" class="empty-groups">
-        <text>{{emptyGroupsText}}</text>
-        <view class="actions">
-          <button bindtap="onJoinGroupTap">{{joinGroupText}}</button>
-          <button bindtap="onCreateGroupTap" loading="{{groupCreating}}" disabled="{{groupCreating}}">{{createGroupText}}</button>
+    <view class="welcome"><view class="avatar welcome-fallback">{{avatarText}}</view><view class="welcome-copy"><text class="html-b">{{nickname || '你好'}}，今天看哪场？</text><text class="html-small">每一次预测，都是对足球的理解</text></view><view wx:if="{{userId}}" class="welcome-id num" aria-label="用户 ID {{userId}}">ID {{userId}}</view></view>
+    <view wx:if="{{state === 'loading'}}" class="loading">加载中</view>
+    <view wx:elif="{{state !== 'ready'}}" class="state-panel"><text>{{state === 'unauthorized' ? '登录后查看个人资料' : errorMessage}}</text><button wx:if="{{state === 'unauthorized'}}" bindtap="onSessionTap">登录</button><button wx:elif="{{state === 'error'}}" bindtap="onRetry">重试</button></view>
+    <view wx:else class="content">
+      <view class="card strong emblem-head">
+        <view class="hero-top"><text class="eyebrow">个人成长档案</text><button class="edit" bindtap="onSessionTap" aria-label="编辑个人资料"><image class="icon" src="/assets/icons/ui-settings.png" /></button></view>
+        <view class="hero-core"><view class="ring"><view class="ring-track"></view><view class="ring-fill" style="background:conic-gradient(#3aa37a 0deg {{progressDegrees}}deg,transparent {{progressDegrees}}deg 360deg)"></view><view class="ring-center"><text>{{avatarText}}</text></view></view>
+          <view class="identity"><view class="html-h1">{{nickname}} <text class="level-badge">Lv.{{careerLevel}}</text></view><view class="title-name">{{levelName}}</view><button class="team" bindtap="onSessionTap">主队 · {{favoriteTeamText}} <text>›</text></button></view>
         </view>
-        <view wx:if="{{errorMessage}}">{{errorMessage}}</view>
       </view>
-      <view
-        wx:for="{{groups}}"
-        wx:key="group_id"
-        class="group-row"
-        data-group-id="{{item.group_id}}"
-        bindtap="onGroupTap"
-      >
-        <text>{{item.display_name}}</text>
-        <view class="group-trailing"><text>{{item.memberCountText}} · {{item.role === 'owner' ? '群主' : '成员'}}</text><text class="group-chevron">›</text></view>
+      <view class="card next-level-panel">
+        <view class="upgrade-heading"><view class="html-h2">升级进度</view><button class="upgrade-help" bindtap="onLevelHelp" aria-label="查看等级说明">?</button></view>
+        <view class="level-path"><view wx:for="{{levelPath}}" wx:key="level" class="level-step {{item.kind}}"><view class="level-dot">{{item.level}}</view><text>{{item.name}}</text></view></view>
+        <view class="upgrade-condition"><text>表现门槛</text><text class="html-b">{{performanceText}}</text></view>
+        <view class="upgrade-integral"><text>累计积分门槛</text><text class="html-b num">{{careerPoints}} / {{nextThreshold === null ? '—' : nextThreshold}}</text></view>
+        <view class="upgrade-integral-note">{{nextThreshold === null ? (maxLevel ? '已达最高等级' : '完成 20 场有效预测后定级') : '积分门槛 ' + progressPercent + '% · 距下一等级还差 ' + remainingPoints + ' 分'}}</view>
+        <view class="upgrade-note">表现与积分需同时达线，每次最多升一级。</view><view class="evaluation">每周一 10:00 评估 · 达线不即时升级</view>
       </view>
+      <view wx:if="{{previousSeasonRecap}}" class="card recap">{{previousSeasonRecap}}</view>
+      <view class="card stats-card"><view class="card-heading"><view class="html-h2">我的成绩单</view><view class="segmented"><button class="{{statScope === 'career' ? 'selected' : ''}}" aria-selected="{{statScope === 'career'}}" data-scope="career" bindtap="onStatScope">生涯</button><button class="{{statScope === 'season' ? 'selected' : ''}}" aria-selected="{{statScope === 'season'}}" data-scope="season" bindtap="onStatScope">本赛季</button></view></view>
+        <view class="metrics"><view><text class="html-b num">{{statScope === 'career' ? careerPoints : '—'}}</text><text class="html-span">累计积分</text></view><view><text class="html-b num">{{statScope === 'career' ? careerValidPredictions : seasonValidPredictions}}</text><text class="html-span">有效预测场次</text></view><view><text class="html-b num">{{statScope === 'career' ? careerExactHits : '—'}}</text><text class="html-span">精确命中</text></view></view>
+        <view class="stats-footer"><text>{{statScope === 'career' ? '永久累计 · 不随赛季清零' : seasonId}}</text><text class="pill">Lv.{{statScope === 'career' ? careerLevel : seasonLevel}} {{statScope === 'career' ? levelName : seasonLevelName}}</text></view>
+      </view>
+      <view class="section-title"><view><view class="html-h2">我的预言群</view><view class="html-p">和熟悉的人，一起看球</view></view><button class="text-button" bindtap="onGroupsTap">管理 ›</button></view>
+      <view class="card group-card"><view wx:if="{{!hasGroups}}" class="empty-groups">{{emptyGroupsText}}</view><button wx:for="{{groups}}" wx:key="group_id" class="group-row" data-group-id="{{item.group_id}}" bindtap="onGroupTap"><view class="group-art"><image class="icon" src="/assets/icons/ui-group.png" /></view><view class="group-copy"><text class="html-b">{{item.display_name}}</text><text class="html-small">{{item.memberCountText}} · 本周榜</text></view><text>›</text></button><view class="group-actions"><button bindtap="onJoinGroupTap">＋ 邀请码加入</button><button bindtap="onCreateGroupTap" loading="{{groupCreating}}" disabled="{{groupCreating}}"><image class="icon" src="/assets/icons/ui-group.png" />创建预言群</button></view><view wx:if="{{errorMessage}}">{{errorMessage}}</view></view>
+      <view class="section-title"><view class="html-h2">最近预测</view><button class="text-button" bindtap="onPredictionsTap">全部预测 ›</button></view>
+      <view class="card results-card"><view wx:if="{{recentState !== 'ready'}}" class="empty-groups">{{recentState === 'loading' ? '加载中' : '暂时无法读取最近预测'}}</view><view wx:elif="{{!recentPredictions.length}}" class="empty-groups">还没有预测，去比赛页试试吧</view><view wx:for="{{recentPredictions}}" wx:key="prediction_id" class="result" bindtap="onPredictionsTap"><view class="result-top"><view class="fixture"><image class="crest" src="{{item.homeLogo}}" mode="aspectFit" /><image class="crest" src="{{item.awayLogo}}" mode="aspectFit" /><text class="html-b">{{item.homeName}} · {{item.awayName}}</text></view><text class="result-points">{{item.pointsText}}</text></view><view class="result-bottom"><text>预测 {{item.predictionText}}<text class="actual">实际 {{item.actualText}}</text></text><text class="result-state {{item.resultClass}}">{{item.resultText}}</text></view></view></view>
+      <view class="card utility"><button bindtap="onRulesTap"><image class="icon" src="/assets/icons/ui-rules.png" /><text>计分与玩法规则</text><text class="utility-arrow">›</text></button><button bindtap="onSessionTap"><image class="icon" src="/assets/icons/ui-settings.png" /><text>设置与账户</text><text class="utility-arrow">›</text></button></view><view class="end-note">每一次预测，都是对足球的理解。</view>
     </view>
-  </view>
   </view>
 </view>

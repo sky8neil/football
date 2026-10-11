@@ -42,9 +42,9 @@ describe("shared mini program bottom navigation", () => {
     const setData = vi.fn();
     runInNewContext(read(`pages/${name}/${name}.js`), {
       Page: (value) => { definition = value; },
-      require: () => ({}), wx: { getStorageSync: () => null },
+      require: () => ({ headerHeight: () => 88 }), wx: { getStorageSync: () => null },
     });
-    const page = { getTabBar: () => ({ setData }), loadFirstPage: vi.fn(), loadPage: vi.fn(), initialized: false };
+    const page = { getTabBar: () => ({ setData }), loadFirstPage: vi.fn(), loadPage: vi.fn(), loadRecentPredictions: vi.fn(), initialized: false };
     definition.onShow.call(page);
     expect(setData).toHaveBeenCalledWith({ selected: index });
   });

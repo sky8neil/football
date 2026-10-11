@@ -316,3 +316,16 @@ page {
   --tab-person-head-top: 5rpx;
   --tab-person-body-bottom: 3rpx;
 }
+
+/* v0.41-cc ui-consistency.css and theme-cc.css final palette. */
+page {
+  --navy-700:#1f4d36; --navy-900:#0e2d20;
+  --ui-ink:#163024; --ui-secondary:#42564a; --ui-muted:#52665b;
+  --ui-positive:#1a5c26; --ui-selected:#2f8a3a;
+  --ui-line:rgba(255,255,255,.88); --ui-card:rgba(255,255,255,.68);
+  --ui-shadow:0 16rpx 48rpx rgba(23,60,35,.08);
+  --ui-font:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Noto Sans SC","Microsoft YaHei",sans-serif;
+  --font-family-number:var(--ui-font); --text-secondary:var(--ui-secondary); --text-muted:var(--ui-muted);
+  --surface-card:var(--ui-card); --surface-card-strong:var(--ui-card); --shadow-card:var(--ui-shadow);
+  --blur-card:24rpx; --tab-muted:var(--ui-muted); --tab-selected:var(--ui-selected);
+}

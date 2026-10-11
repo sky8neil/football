@@ -44,6 +44,7 @@ function capturePage(filePath, modules) {
   setGlobal("Page", (pageConfig) => { config = pageConfig; });
   loadCommonJs(filePath, (id) => {
     if (Object.prototype.hasOwnProperty.call(modules, id)) return modules[id];
+    if (id === "../../utils/ui-layout.js") return { headerHeight: () => 88 };
     throw new Error("Unexpected require: " + id);
   });
   return config;

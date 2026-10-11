@@ -58,6 +58,7 @@ function loadPage({ matchesResult, submitResult } = {}) {
       return { createUuidV4: () => "00000000-0000-4000-8000-000000000001", submitPrediction };
     }
     if (id === "../../utils/crowd-copy.js") return { COPY: { homeLink: "大家怎么选 ›" } };
+    if (id === "../../utils/ui-layout.js") return { headerHeight: () => 88 };
     throw new Error(`Unexpected require: ${id}`);
   });
   const page = Object.assign({}, pageConfig, {
@@ -82,8 +83,8 @@ describe("matches page gateway workflows", () => {
     expect(page.data.leagues.map(({ id, name, logo }) => [id, name, logo])).toEqual([
       ["premier_league", "英超", "league.png"],
       ["la_liga", "西甲", "league.png"],
-      ["bundesliga", "德甲", "league.png"],
       ["serie_a", "意甲", "league.png"],
+      ["bundesliga", "德甲", "league.png"],
       ["ligue_1", "法甲", "league.png"],
       ["chinese_super_league", "中超", "league.png"],
     ]);

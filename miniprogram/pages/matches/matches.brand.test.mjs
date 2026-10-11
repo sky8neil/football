@@ -150,6 +150,7 @@ function loadHomePage({ stored } = {}) {
       const modulePath = join(HERE, "..", "..", "utils", "matches-default-league.js");
       return loadCommonJs(modulePath, () => { throw new Error("matches-default-league has no dependencies"); });
     }
+    if (id === "../../utils/ui-layout.js") return { headerHeight: () => 88 };
     throw new Error(`Unexpected require: ${id}`);
   });
   const page = instantiate(config, { loadFirstPage() {} });
@@ -165,6 +166,7 @@ function loadSessionPage({ result, stored } = {}) {
       return { initSession: () => Promise.resolve(result) };
     }
     if (id === "../../utils/nickname.js") return loadNicknameUtil();
+    if (id === "../../utils/ui-layout.js") return { headerHeight: () => 88 };
     throw new Error(`Unexpected require: ${id}`);
   });
   return { page: instantiate(config), ...wxStub };

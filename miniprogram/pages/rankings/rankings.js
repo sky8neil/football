@@ -3,6 +3,7 @@ const { getMyProfile } = require("../../services/profile.js");
 const { getMyLevels } = require("../../services/levels.js");
 const { listMyGroups } = require("../../services/groups.js");
 const { buildRankingViewModel } = require("../../utils/rankings-view-model.js");
+const { headerHeight } = require("../../utils/ui-layout.js");
 const COPY = require("../../utils/rankings-copy.js");
 
 function displayTeamId(value) {
@@ -16,6 +17,7 @@ function presentItem(item, board) {
   const displayed = {
     user_id: item.user_id,
     rank: item.rank,
+    rankText: String(item.rank).padStart(2, "0"),
     display_name: item.display_name,
     favoriteTeamText: displayTeamId(item.favorite_team_id),
     career_level: item.career_level,
@@ -54,12 +56,15 @@ function presentItem(item, board) {
 Page({
   data: {
     state: "loading",
+    headerHeight: headerHeight(),
+    nickname: "", avatarText: "球", currentUserId: "",
     board: "week",
     availableBoards: ["week", "career", "strength"],
     showCareerBoard: true,
     showStrengthBoard: true,
     showSeasonBoard: false,
     scope: "global",
+    scopeSheetOpen: false,
     groupId: null,
     groups: [],
     showGroupScope: true,
@@ -134,6 +139,7 @@ Page({
         return;
       }
       const profile = profileResult.data || {};
+      this.setData({ nickname: profile.nickname, avatarText: Array.from(profile.nickname || "球")[0], currentUserId: profile.user_id });
       Promise.all([listMyGroups({}), getMyLevels(), this.fetchRankings(true)]).then((results) => {
         const groupsResult = results[0];
         const levelsResult = results[1];
@@ -235,6 +241,31 @@ Page({
     }, () => this.loadFirstPage());
   },
 
+  onScopeSheet() { this.setData({ scopeSheetOpen: true }); },
+
+  onScopeSheetClose() { this.setData({ scopeSheetOpen: false }); },
+
+  stopScopeTap() {},
+
+  onScopePick(event) {
+    this.setData({ scopeSheetOpen: false });
+    if (event.currentTarget.dataset.scope === "global") {
+      this.onScopeTap({ currentTarget: { dataset: { scope: "global" } } });
+    } else {
+      this.onGroupChange({ detail: { value: event.currentTarget.dataset.index } });
+    }
+  },
+
+  onRulesTap() {
+    wx.showModal({ title: "排行榜规则", content: "本周榜按本周已结算积分排名；生涯榜累计历史积分；赛季榜需参与至少2个等级赛季后开放。实力榜取近两年最多300场有效预测，满50场参与排名。公开前20名，其余显示前百分比。", showCancel: false });
+  },
+
+  onScoreHelp() {
+    wx.showModal({ title: "预测评分", content: "预测评分 =（近期预测积分 + 68）÷（有效预测场数 + 40），展示值向下保留两位小数。取最近两年内最多300场有效预测，满50场参与实力榜。", showCancel: false });
+  },
+
+  onLoginTap() { wx.navigateTo({ url: "/pages/session/session" }); },
+
   onInviteTap() {
     if (this.data.scope === "group" && this.data.groupId) {
       wx.navigateTo({ url: `/pages/groups/detail?group_id=${this.data.groupId}` });
@@ -326,7 +357,16 @@ Page({
         me.seasons_participated = payload.me.seasons_participated;
       }
     }
+    const metricLabel = { week: "周积分", career: "生涯积分", season: "赛季积分", strength: "预测评分" }[this.data.board];
+    const ranked = me && me.status === "ranked";
+    const standingLabel = ranked ? (me.rank != null && me.rank <= 20 ? "第 " + me.rank + " 名" : me.top_percent != null ? "前 " + me.top_percent + "%" : "已入榜") : "暂无排名";
+    const ownItem = merged.find(item => item.user_id === (this.profileData && this.profileData.user_id));
+    const rawMe = payload.me || {};
+    const rawValue = this.data.board === "strength" ? rawMe.strength_index : this.data.board === "career" ? rawMe.career_points : this.data.board === "season" ? rawMe.season_points : rawMe.period_score;
+    const standingValue = rawValue != null ? rawValue : ownItem ? ownItem.mainValue : ranked ? "—" : this.data.board === "strength" ? "—" : "0";
+    const standingStatus = ranked ? "你位于" + (this.data.scope === "group" ? "群内" : "全站") + standingLabel + (me.rank != null ? "，排名第 " + me.rank + " 名。" : "。") : me && me.status === "below_threshold" ? "还差 " + me.remaining_valid_predictions + " 场有效预测参与排名。" : me && me.status === "not_eligible" ? "参与满 2 个等级赛季后开放。" : "完成首场有效预测并结算后参与排名。";
     this.setData({
+      metricLabel, standingLabel, standingValue, standingStatus,
       state: "list",
       items: merged,
       listItems: view.showPodium ? merged.slice(3) : merged,
