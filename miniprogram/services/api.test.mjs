@@ -118,6 +118,20 @@ describe("mini program request URL compatibility", () => {
     await expect(pending).resolves.toMatchObject({ statusCode: 201, data: { nickname: "Sky" }, request_id: "12345678-1234-1234-1234-12345678abcd" });
   });
 
+  it("serializes cloud query values like HTTP query parameters", () => {
+    const { api, callFunction } = loadApi({ transport: "cloud" });
+    api.request({
+      method: "GET",
+      path: "/v1/matches",
+      query: { limit: 100, enabled: false, cursor: "next", absent: undefined, omitted: null },
+    });
+    expect(callFunction.mock.calls[0][0].data.query).toEqual({
+      limit: "100",
+      enabled: "false",
+      cursor: "next",
+    });
+  });
+
   it.each([200, 201, 401, 409, 422, 429])("maps cloud HTTP %s to the shared service result", async (status) => {
     const { api, callFunction } = loadApi({ transport: "cloud" });
     const pending = api.request({ method: "GET", path: "/v1/profile/me" });

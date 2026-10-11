@@ -1,6 +1,6 @@
 module.exports = {
-  // develop defaults to the local gateway; switch to cloud for cloud-function testing.
-  transport: "http",
+  // Local DevTools tests the deployed CloudBase function through wx.cloud.callFunction.
+  transport: "cloud",
   gatewayOrigin: "http://127.0.0.1:8787",
   cloudEnvId: "cloud1-d4ga6fvm0c6d4ec01",
   cloudFunctionName: "api",

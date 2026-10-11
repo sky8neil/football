@@ -3112,7 +3112,6 @@ matches:
 predictions:
   INDEX(user_id, submitted_at DESC)
   INDEX(match_id)
-  INDEX(user_id, match_id)
 
 rankings:
   INDEX(period_type, period_key, global_rank)
@@ -3157,6 +3156,8 @@ anomalies:
   INDEX(status, blocking, last_seen_at DESC)
   INDEX(match_id, status)
 ```
+
+`UNIQUE(user_id, match_id)` in §22.1 also serves queries on the same field pattern. Do not create a second non-unique index with identical keys; CloudBase rejects that duplicate index definition.
 
 ---
 

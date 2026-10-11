@@ -143,12 +143,6 @@ describe("第 22 节数据库索引定义", () => {
         unique: false,
       },
       {
-        collection: "predictions",
-        name: "ix_predictions_user_match",
-        fields: ["user_id", "match_id"],
-        unique: false,
-      },
-      {
         collection: "rankings",
         name: "ix_rankings_period_rank",
         fields: ["period_type", "period_key", "global_rank"],
@@ -257,5 +251,12 @@ describe("第 22 节数据库索引定义", () => {
       expect(actualKeys.has(keyOf(item))).toBe(true);
     }
     expect(QUERY_INDEXES.every((item) => item.unique === false)).toBe(true);
+
+    const keyPatterns = new Set<string>();
+    for (const index of [...UNIQUE_INDEXES, ...QUERY_INDEXES]) {
+      const pattern = `${index.collection}|${index.fields.join(",")}`;
+      expect(keyPatterns.has(pattern), `duplicate index key pattern: ${pattern}`).toBe(false);
+      keyPatterns.add(pattern);
+    }
   });
 });

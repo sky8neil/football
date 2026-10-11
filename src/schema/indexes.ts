@@ -141,12 +141,6 @@ export const QUERY_INDEXES: readonly IndexDef[] = [
     unique: false,
   },
   {
-    collection: "predictions",
-    name: "ix_predictions_user_match",
-    fields: ["user_id", "match_id"],
-    unique: false,
-  },
-  {
     collection: "rankings",
     name: "ix_rankings_period_rank",
     fields: ["period_type", "period_key", "global_rank"],

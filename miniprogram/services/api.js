@@ -45,6 +45,16 @@ function assertNoClientIdentity(value) {
   });
 }
 
+function normalizeCloudQuery(query) {
+  if (!query || typeof query !== "object") return query;
+  const normalized = {};
+  Object.keys(query).forEach((key) => {
+    const value = query[key];
+    if (value !== undefined && value !== null) normalized[key] = String(value);
+  });
+  return normalized;
+}
+
 function accountVersion() {
   try {
     return wx.getAccountInfoSync().miniProgram.envVersion;
@@ -93,7 +103,9 @@ function request({ method, path, data, query }) {
     if (transport === "cloud") {
       wx.cloud.callFunction({
         name: config.cloudFunctionName,
-        data: { method, path, query, body: data },
+        // HTTP query parameters always arrive as strings. Preserve that contract
+        // when the cloud transport passes query data directly to the function.
+        data: { method, path, query: normalizeCloudQuery(query), body: data },
         success(res) { resolve(fromGatewayResponse(res.result, true)); },
         fail(error) {
           if (envVersion === "develop" || envVersion === "trial") {
