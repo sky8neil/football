@@ -221,25 +221,25 @@ MVP 不实现：
 
 ## 1.4 MVP 支持联赛与当前赛季
 
-`provider = "api_football"`（全部六联赛统一使用该 Provider）。
+当前 MVP 按联赛配置 Provider：英超使用 `football_data`，中超使用 `bsd`，其余四个欧洲联赛保留 `api_football`。不同 Provider 的外部 ID 只在各自 mapping 中有效。
 
 `SUPPORTED_LEAGUES`（= `LEVEL_ELIGIBLE_LEAGUES`，等级白名单与联赛支持范围同源，见第 17.4 节）为封闭枚举，编码不得自动扩展枚举外的联赛或赛季：
 
-| `league_id` | 名称 | `api_football_league_id` | `api_football_season`（当前） | `season_id`（当前，平台口径） | 赛季周期 | `round_id` 上限 |
-|---|---|---|---|---|---|---|
-| `premier_league` | 英超 | `39` | `2026` | `2026_2027` | 8 月–次年 5 月 | `38`（`"01".."38"`） |
-| `la_liga` | 西甲 | `140` | `2026` | `2026_2027` | 8 月–次年 5 月 | `38`（`"01".."38"`） |
-| `serie_a` | 意甲 | `135` | `2026` | `2026_2027` | 8 月–次年 5 月 | `38`（`"01".."38"`） |
-| `bundesliga` | 德甲 | `78` | `2026` | `2026_2027` | 8 月–次年 5 月 | `34`（`"01".."34"`） |
-| `ligue_1` | 法甲 | `61` | `2026` | `2026_2027` | 8 月–次年 5 月 | `34`（`"01".."34"`） |
-| `chinese_super_league` | 中超 | `169` | `2026` | `2026` | 自然年 3–11 月 | `30`（`"01".."30"`） |
+| `league_id` | 名称 | `provider` | `source_league_ref` | `source_season_ref` | `api_football_league_id`（兼容） | `api_football_season`（兼容） | `season_id`（平台口径） | 赛季周期 | `round_id` 上限 |
+|---|---|---|---|---|---|---|---|---|---|
+| `premier_league` | 英超 | `football_data` | `PL` | `2026` | `39` | `2026` | `2026_2027` | 8 月–次年 5 月 | `38`（`"01".."38"`） |
+| `la_liga` | 西甲 | `api_football` | `140` | `2026` | `140` | `2026` | `2026_2027` | 8 月–次年 5 月 | `38`（`"01".."38"`） |
+| `serie_a` | 意甲 | `api_football` | `135` | `2026` | `135` | `2026` | `2026_2027` | 8 月–次年 5 月 | `38`（`"01".."38"`） |
+| `bundesliga` | 德甲 | `api_football` | `78` | `2026` | `78` | `2026` | `2026_2027` | 8 月–次年 5 月 | `34`（`"01".."34"`） |
+| `ligue_1` | 法甲 | `api_football` | `61` | `2026` | `61` | `2026` | `2026_2027` | 8 月–次年 5 月 | `34`（`"01".."34"`） |
+| `chinese_super_league` | 中超 | `bsd` | `52` | `2026` | `169` | `2026` | `2026` | 自然年 3–11 月 | `30`（`"01".."30"`） |
 
 规则：
 
 - `league_id` 为封闭枚举，取值即上表六项；`matches.league_id` 只能是上表之一。
 - `season_id` 格式按联赛类型固定：五大联赛（跨年赛季）为 `"YYYY_YYYY+1"`；中超（自然年赛季）为 `"YYYY"`。两种格式不得混用、不得互相推断。
 - 每个联赛的「当前赛季」为该联赛唯一允许创建新 `matches` 的 `season_id`；跨赛季扩展（切换到下一赛季）需要更新本表并保持向后兼容读取（历史赛季比赛与统计永久保留，不删除、不迁移）。
-- `api_football_season` 是 Provider 请求参数，不直接等于 `season_id`；两者的映射关系由本表显式登记，不得由服务端动态猜测。
+- `source_league_ref` / `source_season_ref` 是当前 Provider 请求参数；API-Football 联赛继续保留 `api_football_*` 兼容字段。Provider 与赛季请求参数都由本表显式登记，不得由服务端动态猜测。
 - 本表六联赛之间相互独立：赛程同步、状态机、结算、等级窗口白名单、分享卡等均按 `league_id` 隔离或显式聚合，禁止跨联赛拼接 `round_id` 语义。
 - 「等级赛季」（用于等级评级，第 17.4 节）是独立于本表 `season_id` 的平台统一口径，不与本表联赛赛季混淆。
 
@@ -4392,11 +4392,11 @@ Request：
 
 ---
 
-# 31. API-Football Adapter
+# 31. Provider Adapter
 
 ## 31.1 只允许读取
 
-MVP 只使用：
+MVP 的 Provider adapter 只读取：
 
 - 赛程。
 - kickoff。
@@ -4405,13 +4405,14 @@ MVP 只使用：
 - round。
 - 正式比分。
 
-覆盖第 1.4 节全部六联赛：每个 Provider 请求按 `api_football_league_id` + `api_football_season`（第 1.4 节表）分别发起，返回结果按映射写回对应 `league_id`；不得跨联赛复用同一响应。
+数据源按第 1.4 节和本章 31.10 配置：五大联赛以 football-data.org（`fd`）为主，中超以 BSD Sports API（`bsd`）为主；`5d`、OpenFoot（`of`）和 sportapi.ai（`sp`）只按分工用于比赛中观察、结果校验、兜底或夜间对账。比赛列表分别访问各自只读的赛程端点。每个请求按联赛发起；sportapi.ai 的日期响应可含多个联赛，必须先按配置的联赛 ID 过滤。返回结果按 `provider + provider_*_id` 映射写回对应 `league_id`；不得跨联赛或跨 Provider 复用外部 ID。
 
 禁止调用：
 
 - Odds。
 - Bookmaker。
 - Bet。
+- Prediction。
 - 任何博彩市场接口。
 
 ## 31.2 Fixture 时间
@@ -4427,7 +4428,7 @@ MVP 只使用：
 
 ## 31.3 Provider status 映射
 
-API-Football short status 映射：
+所有 adapter 先映射为内部短状态，再复用本节状态机。API-Football short status 映射：
 
 ```text
 TBD  -> scheduled, kickoff_confirmed=false
@@ -4451,6 +4452,12 @@ ABD  -> abandoned
 FT   -> finished
 ```
 
+football-data.org 映射：`SCHEDULED/TIMED -> NS`、`IN_PLAY -> LIVE`、`PAUSED -> HT`、`FINISHED -> FT`、`POSTPONED -> PST`、`CANCELLED -> CANC`、`SUSPENDED -> SUSP`。`AWARDED` 不作为完赛状态。
+
+BSD 映射：`notstarted/upcoming -> NS`、`live -> LIVE`、`finished -> FT`、`postponed -> PST`、`cancelled -> CANC`。`unresolved` 进入 `UNEXPECTED_PROVIDER_STATUS` anomaly，不结算。仅处理 `stage = regular-season` 的比赛。
+
+5DollarFootballAPI 映射：`scheduled -> NS`、`in_play -> LIVE`、`finished -> FT`、`postponed -> PST`、`cancelled -> CANC`；未知状态进入 anomaly。OpenFoot 映射：`scheduled -> NS`、`live -> LIVE`、`finished -> FT`、`postponed -> PST`、`cancelled -> CANC`；未知状态进入 anomaly。sportapi.ai 映射：`Scheduled -> NS`、`LIVE -> LIVE`、`FT -> FT`、`Postponed -> PST`、`Cancelled -> CANC`；`Suspended`、`AET`、`PENS` 和其他未知值进入 anomaly，不结算。
+
 MVP 六联赛不应出现：
 
 ```text
@@ -4471,14 +4478,14 @@ PEN
 
 ## 31.4 正式比分抽取
 
-只有 Provider status `FT`：
+只有归一后的 Provider status `FT` 且数据源满足正式比分规则：
 
 - `regular_home_score = score.fulltime.home`
 - `regular_away_score = score.fulltime.away`
 
 必须均为 integer 0..99。
 
-不得使用：
+对 `fd` 和 `bsd` 的权威正式结果，不得使用：
 
 - `goals.home/away`
 - 当前 live score
@@ -4487,6 +4494,10 @@ PEN
 - penalty score
 
 作为 MVP 正式结算比分。
+
+football-data.org 只有 `score.duration = REGULAR` 才允许使用 `score.regularTime`（优先）或 `score.fullTime`；缺少 `REGULAR` duration 的 `FINISHED` 记录按异常处理。BSD `finished` 使用该场赛事的 `home_score` / `away_score`。任何数据源均不得使用加时或点球比分。
+
+次要来源的比分只作为采信规则的观察值：`5d` 使用 `goals.home/away`，OpenFoot 使用 `score.home/away`，sportapi.ai 使用 `home_score/away_score`。这些字段不得单独绕过 31.10 的采信条件。
 
 ## 31.5 Provider 数据缺失
 
@@ -4556,6 +4567,31 @@ Provider 同步入口（单 fixture 应用及其直接调用边界）的业务�
   - 若按同步窗口筛选 fixture，窗口起点、终点和本轮筛选也必须从传入的 `server_now` 计算。
 - `server_now` 无效时，入口必须 Fail Closed，返回 `422 VALIDATION_ERROR`（`field=server_now`），并在事实写入、锁获取、Provider IO 或其他业务推进前停止。
 - 遇到规范没有定义的时间组合时，不得猜测时间、继续写入或改变 Provider 结果；应 Fail Closed 并记录为待处理异常。
+
+## 31.10 多数据源、采信与对账
+
+### 来源分工
+
+- 五大联赛：`fd` 主数据源；`5d` 提供比赛中观察和完场次要观察；`of` 只用于兜底校验和夜间对账，结果不展示给用户。
+- 中超：`bsd` 主数据源；`sp` 作为兜底校验和夜间对账；`of` 不用于中超当日结果。
+- `5d` 的实时端点一次返回全部联赛时，同一节拍只请求一次，再按赛事 ID 分发；该响应不跨联赛复用业务数据。
+- 同一数据源的多联赛请求按任务优先级执行，同优先级按最近成功时间轮转；所有请求先检查各自预算，超限留到下一节拍。
+- 不调用赔率、角球、牌、事件、阵容、球员、预期进球、积分榜或 WebSocket 端点；适配器不得保存这些响应字段。
+
+### 结果采信
+
+1. 五大联赛的 `fd` 和中超的 `bsd` 是各自权威来源。权威来源报完赛且正式比分完整时可采信。
+2. 五大联赛仅当 `5d` 与 `of`、或 `5d` 与 `fd` 两个不同来源均报完赛且 90 分钟比分一致时，才可采信非权威结果。
+3. 只有一个非权威来源报完赛时保持待确认，等待权威结果或管理员确认；一个来源的完赛状态不得单独触发结算。
+4. 来源比分冲突、完赛与进行中状态冲突、`UNKNOWN`、`UNRESOLVED`、`AWARDED`、`AET` 或 `PENS` 均进入异常队列，不自动结算。
+5. 结果审计保留现有 `result_source`（`provider` / `admin`）语义，并在 `match_results` 记录实际 `provider_source` 和 `compared_providers`；不得写入 key 或完整响应正文。
+
+### 跨源映射与夜间对账
+
+- 本地比赛是唯一锚点。跨源数据先通过 `team_provider_mappings` 的 `(provider, provider_team_id)` 对齐主客队，再按联赛和开球时间匹配；中超容差 5 分钟，其他联赛 30 分钟。
+- 缺少 ID 映射或出现多条候选时记 `DIAG_PROVIDER_MATCH_UNLINKED` 并忽略该观察，不按名称模糊匹配自动创建球队或比赛。
+- 夜间对账每天读取昨天已结算的比赛：五大联赛使用 `of`，中超使用 `sp`。不一致只产生快照和异常，不改写已结算结果；`of` 返回仅用于内部校验，不作为面向用户的内容。
+- `diag` 显示各源的角色、预算用量、最近请求与联赛最近成功时间；另外展示 `fd` 每个 key 的分钟额度、`of` `meta.access`、BSD `ratelimit` 和 `sp` 的 HTTP 403 / Cloudflare 1010 状态。
 - 状态映射、Provider 数据合法性、状态回退、球队/开球变更保护和正式比分来源继续遵守第 31.1–31.8 节及既有状态机；本节不新增状态或 Provider 特殊处理。
 
 ---

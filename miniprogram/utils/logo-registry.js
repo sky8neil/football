@@ -194,8 +194,15 @@ function normalizeTeamName(name) {
 function getTeamLogo(leagueId, team) {
   const league = MANIFEST[leagueId];
   const key = normalizeTeamName(team && typeof team === "object" ? team.name : team);
-  const slug = (TEAM_ALIASES[leagueId] && TEAM_ALIASES[leagueId][key]) || key;
-  return (league && league.teams[slug]) || PLACEHOLDER;
+  if (!league) return PLACEHOLDER;
+  const aliases = TEAM_ALIASES[leagueId] || {};
+  const directSlug = aliases[key] || key;
+  if (league.teams[directSlug]) return league.teams[directSlug];
+  const normalizedKey = key
+    .replace(/^(?:fc|afc|football-club)-/, "")
+    .replace(/-(?:fc|afc|football-club)$/, "");
+  const normalizedSlug = aliases[normalizedKey] || normalizedKey;
+  return league.teams[normalizedSlug] || PLACEHOLDER;
 }
 
 function getLeagueLogo(leagueId) {

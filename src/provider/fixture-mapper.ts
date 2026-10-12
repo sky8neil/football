@@ -19,13 +19,16 @@ export interface MapperAnomaly {
 }
 
 export interface NormalizedFixture {
+  provider?: "api_football" | "football_data" | "bsd" | "5dollar" | "openfoot" | "sportapi";
   providerMatchId: string;
   leagueProviderId: string;
   season: string | null;
   round: string | null;
   roundId?: string | null;
   homeTeamProviderId: string;
+  homeTeamName?: string | null;
   awayTeamProviderId: string;
+  awayTeamName?: string | null;
   kickoffAt: Date | null;
   kickoffConfirmed: boolean;
   kickoffDeltaMs: number | null;
@@ -88,12 +91,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function emptyFixture(): NormalizedFixture {
   return {
     providerMatchId: "",
+    provider: "api_football",
     leagueProviderId: "",
     season: null,
     round: null,
     roundId: null,
     homeTeamProviderId: "",
+    homeTeamName: null,
     awayTeamProviderId: "",
+    awayTeamName: null,
     kickoffAt: null,
     kickoffConfirmed: false,
     kickoffDeltaMs: null,
@@ -114,9 +120,12 @@ export function normalizeFixture(raw: ApiFootballFixture): NormalizeFixtureResul
 
   const anomalies: MapperAnomaly[] = [];
   let entityFailed = false;
+  const provider = raw.provider ?? "api_football";
 
   const providerMatchId =
-    typeof raw.fixture.id === "number" ? String(raw.fixture.id) : "";
+    typeof raw.fixture.id === "number" || typeof raw.fixture.id === "string"
+      ? String(raw.fixture.id)
+      : "";
   if (providerMatchId.length === 0) {
     anomalies.push(dataInvalid({ field: "fixture.id" }));
     entityFailed = true;
@@ -124,8 +133,12 @@ export function normalizeFixture(raw: ApiFootballFixture): NormalizeFixtureResul
 
   const homeTeamId = raw.teams?.home?.id;
   const awayTeamId = raw.teams?.away?.id;
-  const homeTeamProviderId = typeof homeTeamId === "number" ? String(homeTeamId) : "";
-  const awayTeamProviderId = typeof awayTeamId === "number" ? String(awayTeamId) : "";
+  const homeTeamName = typeof raw.teams?.home?.name === "string" ? raw.teams.home.name : null;
+  const awayTeamName = typeof raw.teams?.away?.name === "string" ? raw.teams.away.name : null;
+  const homeTeamProviderId =
+    typeof homeTeamId === "number" || typeof homeTeamId === "string" ? String(homeTeamId) : "";
+  const awayTeamProviderId =
+    typeof awayTeamId === "number" || typeof awayTeamId === "string" ? String(awayTeamId) : "";
   if (homeTeamProviderId.length === 0 || awayTeamProviderId.length === 0) {
     anomalies.push(
       dataInvalid({ field: "teams", home: homeTeamProviderId, away: awayTeamProviderId }),
@@ -135,13 +148,15 @@ export function normalizeFixture(raw: ApiFootballFixture): NormalizeFixtureResul
 
   const leagueId = raw.league?.id;
   const leagueProviderId =
-    typeof leagueId === "number" && Number.isInteger(leagueId) && leagueId > 0
-      ? String(leagueId)
-      : "";
+    typeof leagueId === "string" && leagueId.length > 0
+      ? leagueId
+      : typeof leagueId === "number" && Number.isInteger(leagueId) && leagueId > 0
+        ? String(leagueId)
+        : "";
   const registeredLeague =
     leagueProviderId.length === 0
       ? undefined
-      : findSupportedLeagueByProviderId(leagueProviderId);
+      : findSupportedLeagueByProviderId(leagueProviderId, provider);
   if (leagueProviderId.length === 0) {
     anomalies.push(dataInvalid({ field: "league.id" }));
     entityFailed = true;
@@ -167,12 +182,12 @@ export function normalizeFixture(raw: ApiFootballFixture): NormalizeFixtureResul
     entityFailed = true;
   } else if (
     registeredLeague !== undefined &&
-    season !== registeredLeague.api_football_season
+    season !== registeredLeague.source_season_ref
   ) {
     anomalies.push(
       dataInvalid({
         field: "league.season",
-        expected: registeredLeague.api_football_season,
+        expected: registeredLeague.source_season_ref,
         actual: season,
       }),
     );
@@ -180,16 +195,17 @@ export function normalizeFixture(raw: ApiFootballFixture): NormalizeFixtureResul
   }
 
   const round =
-    typeof raw.league?.round === "string" && raw.league.round.length > 0
-      ? raw.league.round
+    (typeof raw.league?.round === "string" || typeof raw.league?.round === "number") && String(raw.league.round).length > 0
+      ? String(raw.league.round)
       : null;
   let roundId: string | null = null;
-  if (round === null) {
+  const hasScheduleAuthority = provider === "api_football" || provider === "football_data" || provider === "bsd";
+  if (round === null && hasScheduleAuthority) {
     anomalies.push(dataInvalid({ field: "league.round" }));
     entityFailed = true;
-  } else if (registeredLeague !== undefined) {
+  } else if (round !== null && registeredLeague !== undefined) {
     roundId = tryParseProviderRoundId(round, registeredLeague.round_max);
-    if (roundId === null) {
+    if (roundId === null && hasScheduleAuthority) {
       anomalies.push(
         dataInvalid({
           field: "league.round",
@@ -267,13 +283,16 @@ export function normalizeFixture(raw: ApiFootballFixture): NormalizeFixtureResul
 
   return {
     fixture: {
+      provider,
       providerMatchId,
       leagueProviderId,
       season,
       round,
       roundId,
       homeTeamProviderId,
+      homeTeamName,
       awayTeamProviderId,
+      awayTeamName,
       kickoffAt: kickoff.kickoffAt,
       kickoffConfirmed,
       kickoffDeltaMs: kickoff.deltaMs,

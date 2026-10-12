@@ -10,7 +10,7 @@ import { newUuid } from "../domain/ids.js";
 import { validateMatchTransition } from "../domain/match-state-machine.js";
 import type { ProviderSnapshot } from "../domain/types.js";
 import type { ApiFootballFixture } from "../provider/types.js";
-import { normalizeFixture, type MapperAnomaly } from "../provider/fixture-mapper.js";
+import { normalizeFixture, type MapperAnomaly, type NormalizedFixture } from "../provider/fixture-mapper.js";
 import type { AppRepository, UnitOfWork } from "../infrastructure/repositories.js";
 import {
   ProviderResultSyncService,
@@ -25,6 +25,8 @@ import { ProviderScheduleSyncService } from "./provider-schedule-sync.js";import
 import { persistAnomalyInTransaction } from "./anomaly-persistence.js";
 import { AnomalyEvaluationService } from "./anomaly-evaluation.js";
 import { assertValidServerNow } from "./period-finalize.js";
+import { ensureCrossSourceMatchMapping } from "./provider-cross-source.js";
+import { decideProviderResultAdoption, type ProviderResultObservation } from "./provider-result-adoption.js";
 
 export interface ProviderFixtureFailure {
   kind: "failed";
@@ -93,11 +95,12 @@ async function persistMapperFailure(
   anomalies: readonly MapperAnomaly[],
   payload: Record<string, unknown>,
   serverNow: Date,
+  provider: NormalizedFixture["provider"] = Provider.ApiFootball,
 ): Promise<ProviderFixtureFailure> {
   return repo.withTransaction(async (tx) => {
     requireMapperFailurePorts(tx);
     const mapping = await tx.matchProviderMappings.findByProviderAndExternalId(
-      Provider.ApiFootball,
+      provider,
       providerMatchId,
     );
     if (mapping !== null && (await tx.matches.findById(mapping.match_id)) === null) {
@@ -107,7 +110,7 @@ async function persistMapperFailure(
     const snapshot: ProviderSnapshot = {
       schema_version: SCHEMA_VERSION,
       snapshot_id: newUuid(),
-      provider: Provider.ApiFootball,
+      provider,
       entity_type: "match",
       entity_id: mapping?.match_id ?? null,
       provider_entity_id: providerMatchId,
@@ -211,6 +214,7 @@ export class ProviderFixtureSyncService {
   private async evaluateAfterFixture(
     outcome: ProviderFixtureSyncOutcome,
     providerMatchId: string,
+    provider: NormalizedFixture["provider"],
     serverNow: Date,
   ): Promise<void> {
     const matchId = outcome.match_id;
@@ -219,7 +223,7 @@ export class ProviderFixtureSyncService {
     }
 
     if (outcome.kind !== "failed" && outcome.kind !== "conflict") {
-      await this.markSuccessfulProviderSync(matchId, providerMatchId, serverNow);
+      await this.markSuccessfulProviderSync(matchId, providerMatchId, provider, serverNow);
       await this.repo.withTransaction(async (tx) => {
         await persistAnomalyInTransaction(
           tx,
@@ -247,6 +251,7 @@ export class ProviderFixtureSyncService {
   private async markSuccessfulProviderSync(
     matchId: string,
     providerMatchId: string,
+    provider: NormalizedFixture["provider"],
     serverNow: Date,
   ): Promise<void> {
     const snapshots = this.repo.providerSnapshots;
@@ -256,7 +261,7 @@ export class ProviderFixtureSyncService {
     await snapshots.insert({
       schema_version: SCHEMA_VERSION,
       snapshot_id: newUuid(),
-      provider: Provider.ApiFootball,
+      provider: provider ?? Provider.ApiFootball,
       entity_type: "match",
       entity_id: matchId,
       provider_entity_id: providerMatchId,
@@ -291,8 +296,8 @@ export class ProviderFixtureSyncService {
     }
 
     const [homeMapping, awayMapping] = await Promise.all([
-      mappings.findByProviderAndExternalId(Provider.ApiFootball, fixture.homeTeamProviderId),
-      mappings.findByProviderAndExternalId(Provider.ApiFootball, fixture.awayTeamProviderId),
+      mappings.findByProviderAndExternalId(fixture.provider ?? Provider.ApiFootball, fixture.homeTeamProviderId),
+      mappings.findByProviderAndExternalId(fixture.provider ?? Provider.ApiFootball, fixture.awayTeamProviderId),
     ]);
     if (homeMapping === null || awayMapping === null) {
       return null;
@@ -316,20 +321,29 @@ export class ProviderFixtureSyncService {
         normalized.anomalies,
         payload,
         serverNow,
+        normalized.fixture.provider,
       );
       await this.evaluateAfterFixture(
         outcome,
         normalized.fixture.providerMatchId,
+        normalized.fixture.provider,
         serverNow,
       );
       return outcome;
+    }
+
+    if (["5dollar", "openfoot", "sportapi"].includes(normalized.fixture.provider ?? "")) {
+      const mapping = await ensureCrossSourceMatchMapping(this.repo, normalized.fixture, serverNow);
+      if (mapping.match_id === null) {
+        return { kind: "failed", match_id: null, anomaly_types: [AnomalyType.ProviderDataInvalid] };
+      }
     }
 
     if (normalized.fixture.status.kind === MatchStatus.Scheduled) {
       const mappings = this.repo.matchProviderMappings;
       if (mappings !== undefined) {
         const existing = await mappings.findByProviderAndExternalId(
-          Provider.ApiFootball,
+          normalized.fixture.provider ?? Provider.ApiFootball,
           normalized.fixture.providerMatchId,
         );
         if (existing === null) {
@@ -341,6 +355,7 @@ export class ProviderFixtureSyncService {
           await this.evaluateAfterFixture(
             outcome,
             normalized.fixture.providerMatchId,
+            normalized.fixture.provider,
             serverNow,
           );
           return outcome;
@@ -357,6 +372,7 @@ export class ProviderFixtureSyncService {
       await this.evaluateAfterFixture(
         teamChange,
         normalized.fixture.providerMatchId,
+        normalized.fixture.provider,
         serverNow,
       );
       return teamChange;
@@ -391,11 +407,7 @@ export class ProviderFixtureSyncService {
           serverNow,
         );
       case MatchStatus.Finished:
-        return this.resultSync.applyFinishedFixture(
-          normalized.fixture,
-          payload,
-          serverNow,
-        );
+        return this.applyAdoptableResult(normalized.fixture, payload, serverNow);
       default:
         throw internalError("Provider fixture 状态未通过 mapper 校验");
       }
@@ -403,8 +415,100 @@ export class ProviderFixtureSyncService {
     await this.evaluateAfterFixture(
       outcome,
       normalized.fixture.providerMatchId,
+      normalized.fixture.provider,
       serverNow,
     );
     return outcome;
   }
+
+  private async applyAdoptableResult(
+    fixture: NormalizedFixture,
+    payload: Record<string, unknown>,
+    serverNow: Date,
+  ): Promise<ProviderResultSyncOutcome | ProviderFixtureFailure> {
+    const provider = (fixture.provider ?? Provider.ApiFootball) as Provider;
+    const matchMapping = await this.repo.matchProviderMappings?.findByProviderAndExternalId(provider, fixture.providerMatchId);
+    if (!matchMapping) return { kind: "failed", match_id: null, anomaly_types: [AnomalyType.ProviderDataInvalid] };
+    const match = await this.repo.matches.findById(matchMapping.match_id);
+    if (!match) return { kind: "failed", match_id: matchMapping.match_id, anomaly_types: [AnomalyType.ProviderDataInvalid] };
+    const observation = toResultObservation(fixture, provider, serverNow);
+    await this.persistResultObservation(match.match_id, fixture.providerMatchId, observation, serverNow);
+    const snapshots = await this.repo.providerSnapshots?.findByEntity("match", match.match_id) ?? [];
+    const observations = snapshots.flatMap((snapshot) => {
+      const raw = snapshot.payload.provider_result_observation;
+      return isProviderResultObservation(raw) ? [raw] : [];
+    });
+    const decision = decideProviderResultAdoption(match.league_id, observations, match.kickoff_at, serverNow);
+    if (decision.kind === "wait") {
+      await this.persistResultAdoptionAnomaly(match.match_id, AnomalyType.ProviderResultPending, false, {
+        reason: decision.reason,
+        compared_providers: observations.map((item) => item.provider),
+      }, serverNow);
+      return { kind: "failed", match_id: match.match_id, anomaly_types: [AnomalyType.ProviderResultPending] };
+    }
+    if (decision.kind === "anomaly") {
+      await this.persistResultAdoptionAnomaly(match.match_id, AnomalyType.ProviderResultConflict, true, {
+        reason: decision.reason,
+        compared_providers: observations.map((item) => item.provider),
+      }, serverNow);
+      return { kind: "conflict", match_id: match.match_id, result_version: match.result_version, anomaly_type: AnomalyType.ProviderResultConflict };
+    }
+    await this.persistResultAdoptionAnomaly(match.match_id, AnomalyType.ProviderResultPending, false, {}, serverNow, false);
+    return this.resultSync.applyFinishedFixture({
+      ...fixture,
+      resultProvider: decision.provider,
+      comparedProviders: decision.compared_providers,
+    }, payload, serverNow);
+  }
+
+  private async persistResultObservation(
+    matchId: string,
+    providerMatchId: string,
+    observation: ProviderResultObservation,
+    serverNow: Date,
+  ): Promise<void> {
+    await this.repo.providerSnapshots?.insert({
+      schema_version: SCHEMA_VERSION,
+      snapshot_id: newUuid(),
+      provider: observation.provider,
+      entity_type: "match",
+      entity_id: matchId,
+      provider_entity_id: providerMatchId,
+      event_type: "result_observed",
+      payload: { provider_result_observation: observation },
+      created_at: serverNow,
+    });
+  }
+
+  private async persistResultAdoptionAnomaly(
+    matchId: string,
+    type: AnomalyType,
+    blocking: boolean,
+    details: Record<string, unknown>,
+    serverNow: Date,
+    open = true,
+  ): Promise<void> {
+    await this.repo.withTransaction(async (tx) => {
+      await persistAnomalyInTransaction(tx, matchId, type, { open, blocking }, details, serverNow);
+    });
+  }
+}
+
+function toResultObservation(fixture: NormalizedFixture, provider: Provider, observedAt: Date): ProviderResultObservation {
+  const status = fixture.status.kind === "finished" ? "finished"
+    : fixture.status.kind === "live" ? "live"
+    : fixture.status.kind === "unexpected" || fixture.status.kind === "missing" ? "unknown" : "other";
+  return {
+    provider,
+    status,
+    score: fixture.fulltime,
+    raw_status: fixture.rawStatus,
+    observed_at: observedAt,
+  };
+}
+
+function isProviderResultObservation(value: unknown): value is ProviderResultObservation {
+  if (typeof value !== "object" || value === null) return false;
+  const entry = value as Partial<ProviderResultObservation>;
+  return typeof entry.provider === "string" && typeof entry.status === "string" && entry.observed_at instanceof Date;
 }

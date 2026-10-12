@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { SUPPORTED_LEAGUES } from "../domain/config.js";
-import { Provider, SCHEMA_VERSION, TeamStatus } from "../domain/enums.js";
+import { Provider, SCHEMA_VERSION, SyncJobType, TeamStatus } from "../domain/enums.js";
 import { newUuid } from "../domain/ids.js";
 import type { TeamProviderMapping } from "../domain/types.js";
 import { InMemoryRepository } from "../infrastructure/repositories.js";
@@ -49,6 +49,8 @@ describe("ProviderTeamSyncService", () => {
       SUPPORTED_LEAGUES.map((row) => ({
         leagueId: row.api_football_league_id,
         season: row.api_football_season,
+        jobType: SyncJobType.FutureSchedule,
+        serverNow: NOW,
       })),
     );
 

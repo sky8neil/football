@@ -39,6 +39,29 @@ The diagnostic transaction probe only proves that a simple insert/commit works. 
 
 These checks are not represented as complete until run in the actual `cloud1` environment. Do not treat fake SDK tests as cloud deployment or login acceptance.
 
+## Provider Sync (S18-S21)
+
+Set provider credentials in the CloudBase console only. The active-source configuration for the full six-league rollout is:
+
+| Key | Value or requirement |
+| --- | --- |
+| `FOOTBALL_PROVIDER_SOURCES` | `fd,bsd,5d,of,sp` |
+| `FOOTBALL_PROVIDER_KEY_FD_1` / `FOOTBALL_PROVIDER_KEY_FD_2` | Two football-data.org keys; `FOOTBALL_PROVIDER_KEY_FD` remains an alias for the first key |
+| `FOOTBALL_PROVIDER_KEY_BSD` | One BSD Sports API key |
+| `FOOTBALL_PROVIDER_KEY_5D` | One 5DollarFootballAPI key |
+| `FOOTBALL_PROVIDER_KEY_OF` | One OpenFootAPI key |
+| `FOOTBALL_PROVIDER_KEY_SP` | One sportapi.ai key |
+| `FOOTBALL_SYNC_PROFILE` | `test` |
+| `FOOTBALL_SYNC_LEAGUES` | `premier_league,la_liga,serie_a,bundesliga,ligue_1,chinese_super_league` |
+
+The defaults map five European leagues to `fd` and Chinese Super League to `bsd`; `5d`, `of`, and `sp` are secondary, fallback, or reconciliation sources according to the development plan. Optional source URLs, rate caps, and provider league references are listed in §18.6 and §20.9. Never put credential values in source files, sample JSON, or logs.
+
+Run `npm run cloudbase:schema -- --namespace football_test` after building. Create the listed collections and indexes in `cloud1`, including `provider_usage`, `provider_key_state`, and `provider_league_state`; the command prints the schema and does not apply it.
+
+For source mapping work, `npm run providers:map-teams -- --input <file.json>` accepts exported local teams and sanitized provider team samples and prints a review report only. `npm run logos:check -- --input <file.json>` checks normalized fixture samples against packaged team logos. Neither command connects to a provider or writes database mappings.
+
+For cloud validation, invoke `{ "action": "diag" }`, then synchronize each league separately with `{ "action": "sync", "job": "future_schedule", "league": "<league_id>" }` when using the cloud-function test panel. A schedule sync without `league` selects the least recently successful configured league. Each scheduled future/full-season sync handles one league per call. Add a CloudBase timer trigger for every minute (`Type: Timer`) and observe the league rotation. Validate the source's real response shape, quota values, per-league daily request counts, and fixture writes before accepting the deployment. `sp` reachability, 304 quota behavior, `fd` live delay, and the all-leagues `5d` live response need live or `cloud1` confirmation.
+
 ## Logging and Rollback
 
 Startup logs contain environment name, environment ID, namespace, repository backend, required-key presence, SDK version, and Node version. Request logs contain request ID, method, path, status, code, and classified diagnostic fields for unexpected errors. Logs do not include request bodies, OPENID, or environment-variable values.

@@ -1,5 +1,4 @@
-import { MatchStatus, Provider, SettlementStatus, SyncJobType } from "../domain/enums.js";
-import { findSupportedLeagueById, SUPPORTED_LEAGUES } from "../domain/config.js";
+import { MatchStatus, SettlementStatus, SyncJobType } from "../domain/enums.js";
 import { internalError } from "../domain/errors.js";
 import type { Match } from "../domain/types.js";
 import type { AppRepository } from "../infrastructure/repositories.js";
@@ -14,11 +13,11 @@ import {
 } from "./provider-sync-job.js";
 import { ProviderFixtureSyncService } from "./provider-fixture-sync.js";
 import {
-  ProviderTeamSyncService,
   type ProviderTeamClient,
   type ProviderTeamSyncOutcome,
 } from "./provider-team-sync.js";
 import { SYNC_TASKS_V1, type SyncTaskConfig } from "../sync/config.js";
+import { loadActiveWindowFixtures } from "./provider-window-loader.js";
 
 /**
  * P1-1 / P2-1（32.5）：post_finish 高频确认只持续到首次 settlement 开始。
@@ -59,7 +58,6 @@ export type ProviderPostFinishVerifyOutcome =
 
 /** 贯通 32.5 的 finished 后确认任务入口；Provider client 由调用方注入。 */
 export class ProviderPostFinishVerifyService {
-  private readonly teamSync: ProviderTeamSyncService;
   private readonly fixtureJob: ProviderFixtureSyncJobService;
 
   constructor(
@@ -67,7 +65,6 @@ export class ProviderPostFinishVerifyService {
     private readonly client: ProviderPostFinishVerifyClient,
     retryOptions: ProviderFixtureSyncRetryOptions = {},
   ) {
-    this.teamSync = new ProviderTeamSyncService(repo, client);
     this.fixtureJob = new ProviderFixtureSyncJobService(
       repo,
       new ProviderFixtureSyncService(repo),
@@ -76,58 +73,8 @@ export class ProviderPostFinishVerifyService {
   }
 
   async run(serverNow: Date): Promise<ProviderPostFinishVerifyOutcome> {
-    let teams: ProviderTeamSyncOutcome | null = null;
-    const config = SYNC_TASKS_V1[SyncJobType.PostFinishVerify];
     const load: ProviderFixtureBatchLoader = async (loadNow) => {
-      teams ??= await this.teamSync.sync(loadNow);
-      const mappings = this.repo.matchProviderMappings;
-      if (mappings === undefined) {
-        throw internalError("post_finish_verify 缺少 match provider mappings repository");
-      }
-      const candidates: Array<{
-        leagueId: string;
-        season: string;
-        fixtureId: string;
-      }> = [];
-      const seasonIds = new Set(SUPPORTED_LEAGUES.map((league) => league.season_id));
-      for (const seasonId of seasonIds) {
-        const matches = await this.repo.matches.findBySeason(seasonId);
-        for (const match of matches) {
-          if (!includeInPostFinishHighFreq(match, config)) {
-            continue;
-          }
-          const registeredLeague = findSupportedLeagueById(match.league_id);
-          if (registeredLeague === undefined) {
-            continue;
-          }
-          const matchMappings = await mappings.findByMatchId(match.match_id);
-          const providerMapping = matchMappings.find(
-            (mapping) => mapping.provider === Provider.ApiFootball,
-          );
-          if (providerMapping !== undefined) {
-            candidates.push({
-              leagueId: registeredLeague.api_football_league_id,
-              season: registeredLeague.api_football_season,
-              fixtureId: providerMapping.provider_match_id,
-            });
-          }
-        }
-      }
-      const fixturesByMatch = await Promise.all(
-        candidates.map(async (candidate) =>
-          this.client.getFixtures({
-            fixtureId: candidate.fixtureId,
-            leagueId: candidate.leagueId,
-            season: candidate.season,
-          }),
-        ),
-      );
-      return fixturesByMatch.flatMap((fixtures) =>
-        fixtures.map((fixture) => ({
-          fixture,
-          payload: { fixture },
-        })),
-      );
+      return loadActiveWindowFixtures(this.repo, this.client, SyncJobType.PostFinishVerify, loadNow);
     };
     const fixtures = await this.fixtureJob.run(
       SyncJobType.PostFinishVerify,
@@ -137,9 +84,10 @@ export class ProviderPostFinishVerifyService {
     if (fixtures.kind === "skipped") {
       return { kind: "skipped", fixtures };
     }
-    if (teams === null) {
-      throw internalError("post_finish_verify 已完成但未记录球队同步结果");
-    }
-    return { kind: "completed", teams, fixtures };
+    return {
+      kind: "completed",
+      teams: { kind: "completed", teams_read: 0, teams_created: 0, teams_unchanged: 0 },
+      fixtures,
+    };
   }
 }

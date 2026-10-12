@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { SUPPORTED_LEAGUES } from "../domain/config.js";
+import { SyncJobType } from "../domain/enums.js";
 import { makeApiFixture } from "../provider/fixture-factory.js";
 import type { ApiFootballFixturesQuery } from "../provider/http.js";
 import type { ApiFootballFixture } from "../provider/types.js";
@@ -23,7 +24,7 @@ function eplOnly<T>(
 
 function expectSixLeagueCalls(
   calls: unknown[],
-  extra: Record<string, string> = {},
+  extra: Record<string, unknown> = {},
 ): void {
   expect(calls).toHaveLength(SUPPORTED_LEAGUES.length);
   expect(calls).toEqual(
@@ -87,6 +88,8 @@ describe("createFutureScheduleLoader", () => {
     expectSixLeagueCalls(getFixtures.mock.calls.map((call) => call[0]), {
       dateFrom: "2026-08-10",
       dateTo: "2026-09-09",
+      jobType: SyncJobType.FutureSchedule,
+      serverNow: NOW,
     });
   });
 
@@ -148,7 +151,10 @@ describe("createFullScheduleVerifyLoader", () => {
         payload: { fixture },
       },
     ]);
-    expectSixLeagueCalls(getSeasonFixtures.mock.calls.map((call) => call[0]));
+    expectSixLeagueCalls(getSeasonFixtures.mock.calls.map((call) => call[0]), {
+      jobType: SyncJobType.FullScheduleVerify,
+      serverNow: NOW,
+    });
   });
 
   it("无效 server_now 时 fail closed 且不调用 Provider client", async () => {
@@ -190,6 +196,8 @@ describe("createNearMatchLoader", () => {
     expectSixLeagueCalls(getFixtures.mock.calls.map((call) => call[0]), {
       dateFrom: "2026-08-10",
       dateTo: "2026-08-11",
+      jobType: SyncJobType.NearMatch,
+      serverNow: NOW,
     });
   });
 
@@ -250,6 +258,8 @@ describe("createLiveMatchLoader", () => {
     expectSixLeagueCalls(calls, {
       dateFrom: "2026-08-10",
       dateTo: "2026-08-10",
+      jobType: SyncJobType.LiveMatch,
+      serverNow: NOW,
     });
   });
 

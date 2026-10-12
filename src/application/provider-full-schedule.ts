@@ -35,15 +35,15 @@ export type ProviderFullScheduleVerifyOutcome =
 export class ProviderFullScheduleVerifyService {
   private readonly teamSync: ProviderTeamSyncService;
   private readonly fixtureJob: ProviderFixtureSyncJobService;
-  private readonly fullScheduleLoader: ProviderFixtureBatchLoader;
+  private readonly client: ProviderFullScheduleVerifyClient;
 
   constructor(
     private readonly repo: AppRepository,
     client: ProviderFullScheduleVerifyClient,
     retryOptions: ProviderFixtureSyncRetryOptions = {},
   ) {
+    this.client = client;
     this.teamSync = new ProviderTeamSyncService(repo, client);
-    this.fullScheduleLoader = createFullScheduleVerifyLoader(client);
     this.fixtureJob = new ProviderFixtureSyncJobService(
       repo,
       new ProviderFixtureSyncService(repo),
@@ -51,11 +51,13 @@ export class ProviderFullScheduleVerifyService {
     );
   }
 
-  async run(serverNow: Date): Promise<ProviderFullScheduleVerifyOutcome> {
+  async run(serverNow: Date, leagueId?: string): Promise<ProviderFullScheduleVerifyOutcome> {
+    const leagueIds = leagueId === undefined ? undefined : [leagueId];
+    const fullScheduleLoader = createFullScheduleVerifyLoader(this.client, leagueIds);
     let teams: ProviderTeamSyncOutcome | null = null;
     const load: ProviderFixtureBatchLoader = async (loadNow) => {
-      teams ??= await this.teamSync.sync(loadNow);
-      return this.fullScheduleLoader(loadNow);
+      teams ??= await this.teamSync.sync(loadNow, SyncJobType.FullScheduleVerify, leagueIds);
+      return fullScheduleLoader(loadNow);
     };
     const fixtures = await this.fixtureJob.run(
       SyncJobType.FullScheduleVerify,

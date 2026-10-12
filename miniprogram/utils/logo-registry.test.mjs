@@ -60,6 +60,11 @@ describe("team display-name lookup", () => {
     const r = loadLogoRegistry();
     expect(r.getTeamLogo("premier_league", { team_id: "uuid", name: "Arsenal" })).toBe(r.MANIFEST.premier_league.teams.arsenal);
   });
+  it("resolves football-data club names with a trailing FC suffix", () => {
+    const r = loadLogoRegistry();
+    expect(r.getTeamLogo("premier_league", "Arsenal FC")).toBe(r.MANIFEST.premier_league.teams.arsenal);
+    expect(r.getTeamLogo("premier_league", "Chelsea Football Club")).toBe(r.MANIFEST.premier_league.teams.chelsea);
+  });
   it("resolves common aliases and preserves missing-asset fallback", () => {
     const r = loadLogoRegistry();
     for (const [name, slug] of [["Manchester United", "manchester-united"], ["Man United", "manchester-united"], ["Tottenham Hotspur", "tottenham"], ["Tottenham", "tottenham"], ["Brighton & Hove Albion", "brighton"]]) {

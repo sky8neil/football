@@ -231,6 +231,30 @@ export const QUERY_INDEXES: readonly IndexDef[] = [
     unique: false,
   },
   {
+    collection: "provider_usage",
+    name: "ix_provider_usage_source_bucket",
+    fields: ["source_id", "bucket_type", "bucket_start"],
+    unique: false,
+  },
+  {
+    collection: "provider_key_state",
+    name: "uk_provider_key_state_key_id",
+    fields: ["key_id"],
+    unique: true,
+  },
+  {
+    collection: "provider_league_state",
+    name: "uk_provider_league_state_source_job_league",
+    fields: ["source_id", "job_type", "league_id"],
+    unique: true,
+  },
+  {
+    collection: "provider_league_state",
+    name: "ix_provider_league_state_success",
+    fields: ["source_id", "job_type", "last_success_at"],
+    unique: false,
+  },
+  {
     collection: "sync_logs",
     name: "ix_sync_logs_type_started",
     fields: ["job_type", "started_at:desc"],

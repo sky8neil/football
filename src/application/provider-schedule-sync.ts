@@ -60,7 +60,8 @@ function buildMatch(
     throw internalError("Provider 赛程发现只接受 mapper 已验证的 scheduled kickoff 和 round");
   }
 
-  const league = findSupportedLeagueByProviderId(fixture.leagueProviderId);
+  const provider = fixture.provider ?? Provider.ApiFootball;
+  const league = findSupportedLeagueByProviderId(fixture.leagueProviderId, provider);
   if (league === undefined) {
     throw new ProviderDataError("provider fixture league is not in SUPPORTED_LEAGUES");
   }
@@ -120,7 +121,7 @@ function discoveredSnapshot(
   return {
     schema_version: SCHEMA_VERSION,
     snapshot_id: newUuid(),
-    provider: Provider.ApiFootball,
+    provider: fixture.provider ?? Provider.ApiFootball,
     entity_type: "match",
     entity_id: matchId,
     provider_entity_id: fixture.providerMatchId,
@@ -147,7 +148,7 @@ export class ProviderScheduleSyncService {
       }
 
       const existing = await tx.matchProviderMappings.findByProviderAndExternalId(
-        Provider.ApiFootball,
+        fixture.provider ?? Provider.ApiFootball,
         fixture.providerMatchId,
       );
       if (existing !== null) {
@@ -156,11 +157,11 @@ export class ProviderScheduleSyncService {
 
       const [homeMapping, awayMapping] = await Promise.all([
         tx.teamProviderMappings.findByProviderAndExternalId(
-          Provider.ApiFootball,
+          fixture.provider ?? Provider.ApiFootball,
           fixture.homeTeamProviderId,
         ),
         tx.teamProviderMappings.findByProviderAndExternalId(
-          Provider.ApiFootball,
+          fixture.provider ?? Provider.ApiFootball,
           fixture.awayTeamProviderId,
         ),
       ]);
@@ -191,7 +192,7 @@ export class ProviderScheduleSyncService {
       await tx.matchProviderMappings.insert({
         schema_version: SCHEMA_VERSION,
         match_id: match.match_id,
-        provider: Provider.ApiFootball,
+        provider: fixture.provider ?? Provider.ApiFootball,
         provider_match_id: fixture.providerMatchId,
         created_at: serverNow,
         updated_at: serverNow,

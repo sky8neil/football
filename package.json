@@ -14,7 +14,9 @@
     "test:watch": "vitest",
     "gateway:dev": "npm run build && node scripts/gateway-dev.mjs",
     "cloudfunction:build": "tsc -p tsconfig.cloudfunction.json && node scripts/write-cloudfunction-build-info.mjs",
-    "cloudbase:schema": "npm run build && node scripts/cloudbase-schema.mjs"
+    "cloudbase:schema": "npm run build && node scripts/cloudbase-schema.mjs",
+    "logos:check": "node scripts/logos-check.mjs",
+    "providers:map-teams": "node scripts/providers-map-teams.mjs"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",

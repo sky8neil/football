@@ -12,7 +12,7 @@ export interface ApiFootballFixtureStatus {
 }
 
 export interface ApiFootballFixtureTeam {
-  id: number;
+  id: number | string;
   name?: string;
   winner?: boolean | null;
 }
@@ -24,8 +24,10 @@ export interface ApiFootballScorePeriod {
 
 /** fixture 对象（31 节只读契约的输入）。 */
 export interface ApiFootballFixture {
+  /** Source tag for fixtures normalized by the multi-provider adapters. */
+  provider?: "api_football" | "football_data" | "bsd" | "5dollar" | "openfoot" | "sportapi";
   fixture: {
-    id: number;
+    id: number | string;
     /** ISO 8601 时间字符串 */
     date: string;
     /** unix 秒时间戳 */
@@ -33,10 +35,10 @@ export interface ApiFootballFixture {
     status: ApiFootballFixtureStatus;
   };
   league: {
-    id: number;
+    id: number | string;
     name?: string;
     season?: number | string;
-    round?: string;
+    round?: number | string;
   };
   teams: {
     home: ApiFootballFixtureTeam;
@@ -52,8 +54,9 @@ export interface ApiFootballFixture {
 }
 
 export interface ApiFootballTeam {
+  provider?: "api_football" | "football_data" | "bsd" | "5dollar" | "openfoot" | "sportapi";
   team: {
-    id: number;
+    id: number | string;
     name: string;
     short_code?: string | null;
     country?: string | null;

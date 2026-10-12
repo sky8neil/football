@@ -1,7 +1,6 @@
 import {
   AnomalyType,
   MatchStatus,
-  Provider,
   SCHEMA_VERSION,
   SettlementStatus,
 } from "../domain/enums.js";
@@ -124,7 +123,7 @@ async function saveSnapshot(
   await tx.providerSnapshots!.insert({
     schema_version: SCHEMA_VERSION,
     snapshot_id: newUuid(),
-    provider: Provider.ApiFootball,
+    provider: fixture.provider ?? "api_football",
     entity_type: "match",
     entity_id: matchId,
     provider_entity_id: fixture.providerMatchId,
@@ -213,7 +212,7 @@ export class ProviderStatusSyncService {
       }
 
       const mapping = await tx.matchProviderMappings.findByProviderAndExternalId(
-        Provider.ApiFootball,
+        fixture.provider ?? "api_football",
         fixture.providerMatchId,
       );
       if (mapping === null) {
@@ -392,7 +391,7 @@ export class ProviderStatusSyncService {
       requireTeamChangePorts(tx);
 
       const matchMapping = await tx.matchProviderMappings.findByProviderAndExternalId(
-        Provider.ApiFootball,
+        fixture.provider ?? "api_football",
         fixture.providerMatchId,
       );
       if (matchMapping === null) {
@@ -407,11 +406,11 @@ export class ProviderStatusSyncService {
 
       const [homeMapping, awayMapping] = await Promise.all([
         tx.teamProviderMappings.findByProviderAndExternalId(
-          Provider.ApiFootball,
+          fixture.provider ?? "api_football",
           fixture.homeTeamProviderId,
         ),
         tx.teamProviderMappings.findByProviderAndExternalId(
-          Provider.ApiFootball,
+          fixture.provider ?? "api_football",
           fixture.awayTeamProviderId,
         ),
       ]);
@@ -499,7 +498,7 @@ export class ProviderStatusSyncService {
       }
 
       const mapping = await tx.matchProviderMappings.findByProviderAndExternalId(
-        Provider.ApiFootball,
+        fixture.provider ?? "api_football",
         fixture.providerMatchId,
       );
       if (mapping === null) {
@@ -674,7 +673,7 @@ export class ProviderStatusSyncService {
       }
 
       const mapping = await tx.matchProviderMappings.findByProviderAndExternalId(
-        Provider.ApiFootball,
+        fixture.provider ?? "api_football",
         fixture.providerMatchId,
       );
       if (mapping === null) {
@@ -822,7 +821,7 @@ export class ProviderStatusSyncService {
       }
 
       const mapping = await tx.matchProviderMappings.findByProviderAndExternalId(
-        Provider.ApiFootball,
+        fixture.provider ?? "api_football",
         fixture.providerMatchId,
       );
       if (mapping === null) {
@@ -950,7 +949,7 @@ export class ProviderStatusSyncService {
       }
 
       const mapping = await tx.matchProviderMappings.findByProviderAndExternalId(
-        Provider.ApiFootball,
+        fixture.provider ?? "api_football",
         fixture.providerMatchId,
       );
       if (mapping === null) {

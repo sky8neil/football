@@ -1,5 +1,5 @@
 import { SUPPORTED_LEAGUES, type SupportedLeague } from "../domain/config.js";
-import { Provider, SCHEMA_VERSION, TeamStatus } from "../domain/enums.js";
+import { Provider, SCHEMA_VERSION, SyncJobType, TeamStatus } from "../domain/enums.js";
 import { internalError, validationError } from "../domain/errors.js";
 import { newUuid } from "../domain/ids.js";
 import type { AppRepository, UnitOfWork } from "../infrastructure/repositories.js";
@@ -39,6 +39,7 @@ function assertValidServerNow(serverNow: Date): void {
 }
 
 function parseProviderTeam(raw: ApiFootballTeam): {
+  provider: Provider;
   provider_team_id: string;
   name: string;
 } {
@@ -52,9 +53,8 @@ function parseProviderTeam(raw: ApiFootballTeam): {
   const name = fields.name;
   const shortCode = fields.short_code;
   if (
-    typeof id !== "number" ||
-    !Number.isInteger(id) ||
-    id <= 0 ||
+    !(typeof id === "number" && Number.isInteger(id) && id > 0) &&
+      !(typeof id === "string" && id.length > 0) ||
     typeof name !== "string" ||
     name.length === 0 ||
     (shortCode !== undefined && shortCode !== null && typeof shortCode !== "string")
@@ -63,6 +63,7 @@ function parseProviderTeam(raw: ApiFootballTeam): {
   }
 
   return {
+    provider: raw.provider ?? Provider.ApiFootball,
     provider_team_id: String(id),
     name,
   };
@@ -75,17 +76,26 @@ export class ProviderTeamSyncService {
     private readonly client: ProviderTeamClient,
   ) {}
 
-  async sync(serverNow: Date): Promise<ProviderTeamSyncOutcome> {
+  async sync(
+    serverNow: Date,
+    jobType: typeof SyncJobType.FutureSchedule | typeof SyncJobType.FullScheduleVerify = SyncJobType.FutureSchedule,
+    leagueIds?: readonly string[],
+  ): Promise<ProviderTeamSyncOutcome> {
     assertValidServerNow(serverNow);
     const batches: Array<{
       league: SupportedLeague;
       teams: readonly ApiFootballTeam[];
     }> = [];
     let teamsRead = 0;
-    for (const league of SUPPORTED_LEAGUES) {
+    const leagues = leagueIds
+      ? SUPPORTED_LEAGUES.filter((league) => leagueIds.includes(league.league_id))
+      : SUPPORTED_LEAGUES;
+    for (const league of leagues) {
       const providerTeams = await this.client.getTeams({
         leagueId: league.api_football_league_id,
         season: league.api_football_season,
+        jobType,
+        serverNow,
       });
       if (!Array.isArray(providerTeams)) {
         throw new ProviderDataError("provider teams response must be an array");
@@ -104,7 +114,7 @@ export class ProviderTeamSyncService {
           const parsed = parseProviderTeam(raw);
           const existingMapping =
             await tx.teamProviderMappings.findByProviderAndExternalId(
-              Provider.ApiFootball,
+              parsed.provider,
               parsed.provider_team_id,
             );
 
@@ -133,7 +143,7 @@ export class ProviderTeamSyncService {
           const mapping: TeamProviderMapping = {
             schema_version: SCHEMA_VERSION,
             team_id: teamId,
-            provider: Provider.ApiFootball,
+            provider: parsed.provider,
             provider_team_id: parsed.provider_team_id,
             created_at: serverNow,
             updated_at: serverNow,

@@ -1,10 +1,6 @@
 import { SyncJobType } from "../domain/enums.js";
-import { internalError } from "../domain/errors.js";
 import type { AppRepository } from "../infrastructure/repositories.js";
-import {
-  createNearMatchLoader,
-  type NearMatchFixtureClient,
-} from "./provider-fixture-loader.js";
+import type { NearMatchFixtureClient } from "./provider-fixture-loader.js";
 import {
   ProviderFixtureSyncJobService,
   type ProviderFixtureBatchLoader,
@@ -13,10 +9,10 @@ import {
 } from "./provider-sync-job.js";
 import { ProviderFixtureSyncService } from "./provider-fixture-sync.js";
 import {
-  ProviderTeamSyncService,
   type ProviderTeamClient,
   type ProviderTeamSyncOutcome,
 } from "./provider-team-sync.js";
+import { loadActiveWindowFixtures } from "./provider-window-loader.js";
 
 export interface ProviderNearMatchClient
   extends NearMatchFixtureClient,
@@ -35,17 +31,13 @@ export type ProviderNearMatchOutcome =
 
 /** 贯通 32.3 的 T-24h 到 T-2h 任务入口；Provider client 由调用方注入。 */
 export class ProviderNearMatchService {
-  private readonly teamSync: ProviderTeamSyncService;
   private readonly fixtureJob: ProviderFixtureSyncJobService;
-  private readonly nearMatchLoader: ProviderFixtureBatchLoader;
 
   constructor(
     private readonly repo: AppRepository,
-    client: ProviderNearMatchClient,
+    private readonly client: ProviderNearMatchClient,
     retryOptions: ProviderFixtureSyncRetryOptions = {},
   ) {
-    this.teamSync = new ProviderTeamSyncService(repo, client);
-    this.nearMatchLoader = createNearMatchLoader(client);
     this.fixtureJob = new ProviderFixtureSyncJobService(
       repo,
       new ProviderFixtureSyncService(repo),
@@ -54,10 +46,8 @@ export class ProviderNearMatchService {
   }
 
   async run(serverNow: Date): Promise<ProviderNearMatchOutcome> {
-    let teams: ProviderTeamSyncOutcome | null = null;
     const load: ProviderFixtureBatchLoader = async (loadNow) => {
-      teams ??= await this.teamSync.sync(loadNow);
-      return this.nearMatchLoader(loadNow);
+      return loadActiveWindowFixtures(this.repo, this.client, SyncJobType.NearMatch, loadNow);
     };
     const fixtures = await this.fixtureJob.run(
       SyncJobType.NearMatch,
@@ -67,9 +57,10 @@ export class ProviderNearMatchService {
     if (fixtures.kind === "skipped") {
       return { kind: "skipped", fixtures };
     }
-    if (teams === null) {
-      throw internalError("near_match 已完成但未记录球队同步结果");
-    }
-    return { kind: "completed", teams, fixtures };
+    return {
+      kind: "completed",
+      teams: { kind: "completed", teams_read: 0, teams_created: 0, teams_unchanged: 0 },
+      fixtures,
+    };
   }
 }

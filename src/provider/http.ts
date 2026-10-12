@@ -12,6 +12,7 @@ import type {
   ApiFootballStatusResult,
   ApiFootballTeam,
 } from "./types.js";
+import type { SyncJobType } from "../domain/enums.js";
 
 export const API_FOOTBALL_BASE_URL = "https://v3.football.api-sports.io";
 
@@ -35,19 +36,24 @@ export class ProviderError extends Error {
 
 export class ProviderHttpError extends ProviderError {
   readonly status: number;
-  constructor(status: number, message: string) {
+  readonly providerCode: string | null;
+  constructor(status: number, message: string, providerCode: string | null = null) {
     super(`PROVIDER_HTTP_${status}`, message);
     this.name = "ProviderHttpError";
     this.status = status;
+    this.providerCode = providerCode;
   }
 }
 
 export class ProviderQuotaExceededError extends ProviderError {
+  readonly status = 429;
   readonly resetAt: Date | null;
-  constructor(resetAt: Date | null) {
+  readonly providerCode: string | null;
+  constructor(resetAt: Date | null, providerCode: string | null = null) {
     super("PROVIDER_QUOTA_EXCEEDED", "Provider quota exceeded");
     this.name = "ProviderQuotaExceededError";
     this.resetAt = resetAt;
+    this.providerCode = providerCode;
   }
 }
 
@@ -76,16 +82,22 @@ export interface ApiFootballFixturesQuery {
   leagueId: string;
   season: string;
   round?: string;
+  jobType?: SyncJobType;
+  serverNow?: Date;
 }
 
 export interface ApiFootballSeasonFixturesQuery {
   leagueId: string;
   season: string;
+  jobType?: SyncJobType;
+  serverNow?: Date;
 }
 
 export interface ApiFootballTeamQuery {
   leagueId: string;
   season: string;
+  jobType?: SyncJobType;
+  serverNow?: Date;
 }
 
 function decodeEnvelope<T>(json: unknown): ApiFootballEnvelope<T> {

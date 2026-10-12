@@ -40,14 +40,15 @@ export type ProviderFutureScheduleOutcome =
 export class ProviderFutureScheduleService {
   private readonly teamSync: ProviderTeamSyncService;
   private readonly fixtureJob: ProviderFixtureSyncJobService;
+  private readonly client: ProviderScheduleSyncClient;
 
   constructor(
     private readonly repo: AppRepository,
     client: ProviderScheduleSyncClient,
     retryOptions: ProviderFixtureSyncRetryOptions = {},
   ) {
+    this.client = client;
     this.teamSync = new ProviderTeamSyncService(repo, client);
-    this.futureScheduleLoader = createFutureScheduleLoader(client);
     this.fixtureJob = new ProviderFixtureSyncJobService(
       repo,
       new ProviderFixtureSyncService(repo),
@@ -55,13 +56,13 @@ export class ProviderFutureScheduleService {
     );
   }
 
-  private readonly futureScheduleLoader: ProviderFixtureBatchLoader;
-
-  async run(serverNow: Date): Promise<ProviderFutureScheduleOutcome> {
+  async run(serverNow: Date, leagueId?: string): Promise<ProviderFutureScheduleOutcome> {
+    const leagueIds = leagueId === undefined ? undefined : [leagueId];
+    const futureScheduleLoader = createFutureScheduleLoader(this.client, leagueIds);
     let teams: ProviderTeamSyncOutcome | null = null;
     const load: ProviderFixtureBatchLoader = async (loadNow) => {
-      teams ??= await this.teamSync.sync(loadNow);
-      return this.futureScheduleLoader(loadNow);
+      teams ??= await this.teamSync.sync(loadNow, SyncJobType.FutureSchedule, leagueIds);
+      return futureScheduleLoader(loadNow);
     };
     const fixtures = await this.fixtureJob.run(
       SyncJobType.FutureSchedule,

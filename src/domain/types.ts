@@ -157,6 +157,8 @@ export interface Match extends BaseDoc {
   result_version: number;
   settled_result_version: number;
   result_source: ResultSource | null;
+  result_provider?: Provider | null;
+  compared_providers?: Provider[];
   scoring_rule_version: ScoringRuleVersion;
   finish_detected_at: Date | null;
   settled_at: Date | null;
@@ -178,6 +180,8 @@ export interface MatchResult extends BaseDoc {
   regular_home_score: number;
   regular_away_score: number;
   source: ResultSource;
+  provider_source?: Provider | null;
+  compared_providers?: Provider[];
   provider_status: string | null;
   admin_id: string | null;
   reason: string | null;

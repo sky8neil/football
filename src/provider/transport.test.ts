@@ -183,6 +183,17 @@ describe("FetchProviderHttpClient", () => {
     expect((err as ProviderQuotaExceededError).resetAt?.getTime()).toBe(resetUnix * 1000);
   });
 
+  it("429 读取服务商错误码用于选择恢复时间", async () => {
+    const { fetchImpl } = createRecordingFetch(() => new Response(JSON.stringify({ code: "taster_exhausted" }), {
+      status: 429,
+      headers: { "content-type": "application/json" },
+    }));
+    const err = await createClient(fetchImpl).getJson("fixtures", {}).catch((caught: unknown) => caught);
+
+    expect(err).toBeInstanceOf(ProviderQuotaExceededError);
+    expect(err).toMatchObject({ status: 429, providerCode: "taster_exhausted" });
+  });
+
   it("408 → ProviderHttpError status=408（§49.13 retry 集合）", async () => {
     const { fetchImpl } = createRecordingFetch(
       () => new Response("timeout", { status: 408, statusText: "Request Timeout" }),

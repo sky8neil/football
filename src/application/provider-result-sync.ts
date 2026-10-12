@@ -1,7 +1,6 @@
 import {
   AnomalyType,
   MatchStatus,
-  Provider,
   ResultSource,
   SCHEMA_VERSION,
   SettlementStatus,
@@ -12,16 +11,20 @@ import { newUuid } from "../domain/ids.js";
 import { validateMatchTransition } from "../domain/match-state-machine.js";
 import { validateSettlementTransition } from "../domain/settlement-state-machine.js";
 import type { Match, MatchResult, ProviderSnapshot } from "../domain/types.js";
+import type { Provider } from "../domain/enums.js";
 import type { AppRepository, UnitOfWork } from "../infrastructure/repositories.js";
 import { persistAnomalyInTransaction } from "./anomaly-persistence.js";
 import { transitionMatchSettlementStatus } from "./first-settlement-service.js";
 import { assertValidServerNow } from "./period-finalize.js";
 
 export interface ProviderResultFixture {
+  provider?: "api_football" | "football_data" | "bsd" | "5dollar" | "openfoot" | "sportapi";
   providerMatchId: string;
   status: { kind: string };
   fulltime: { home: number; away: number } | null;
   rawStatus: string | null;
+  resultProvider?: Provider;
+  comparedProviders?: Provider[];
 }
 
 export type ProviderResultSyncOutcome =
@@ -92,7 +95,7 @@ async function saveSnapshot(
   await snapshots.insert({
     schema_version: SCHEMA_VERSION,
     snapshot_id: newUuid(),
-    provider: Provider.ApiFootball,
+    provider: fixture.provider ?? "api_football",
     entity_type: "match",
     entity_id: matchId,
     provider_entity_id: fixture.providerMatchId,
@@ -204,7 +207,7 @@ export class ProviderResultSyncService {
       }
 
       const mapping = await tx.matchProviderMappings.findByProviderAndExternalId(
-        Provider.ApiFootball,
+        fixture.provider ?? "api_football",
         fixture.providerMatchId,
       );
       if (mapping === null) {
@@ -279,6 +282,8 @@ export class ProviderResultSyncService {
         regular_home_score: fixture.fulltime.home,
         regular_away_score: fixture.fulltime.away,
         source: ResultSource.Provider,
+        provider_source: fixture.resultProvider ?? (fixture.provider as Provider | undefined) ?? null,
+        compared_providers: fixture.comparedProviders ?? [(fixture.provider as Provider | undefined) ?? "api_football"],
         provider_status: fixture.rawStatus,
         admin_id: null,
         reason: null,
@@ -303,6 +308,8 @@ export class ProviderResultSyncService {
         regular_away_score: result.regular_away_score,
         result_version: resultVersion,
         result_source: ResultSource.Provider,
+        result_provider: fixture.resultProvider ?? (fixture.provider as Provider | undefined) ?? null,
+        compared_providers: fixture.comparedProviders ?? [(fixture.provider as Provider | undefined) ?? "api_football"],
         // 轮询错过 live 时，首次发现 finished 也必须冻结周期锚点。
         period_anchor_at: match.period_anchor_at ?? match.kickoff_at,
         prediction_closed_at: match.prediction_closed_at ?? serverNow,

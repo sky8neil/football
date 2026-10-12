@@ -21,6 +21,9 @@ export interface CloudBaseDb {
     options?: CloudBaseQueryOptions,
   ): Promise<CloudBaseDocument[]>;
   count(collection: string, filter?: Record<string, unknown>): Promise<number>;
+  reserveCounter?(collection: string, id: string, field: string, limit: number, initial: CloudBaseDocument): Promise<boolean>;
+  adjustCounter?(collection: string, id: string, field: string, delta: number): Promise<void>;
+  getCounter?(collection: string, id: string, field: string): Promise<number>;
   transaction<T>(work: (transactionDb: CloudBaseDb) => Promise<T>): Promise<T>;
 }
 

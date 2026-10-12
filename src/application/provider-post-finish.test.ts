@@ -15,7 +15,7 @@ import type { ApiFootballFixture } from "../provider/types.js";
 import { ProviderPostFinishVerifyService } from "./provider-post-finish.js";
 
 const NOW = new Date("2026-08-10T12:34:56.000Z");
-const KICKOFF_OVER_24_HOURS_AGO = new Date("2026-08-09T10:00:00.000Z");
+const KICKOFF_OVER_24_HOURS_AGO = new Date("2026-08-10T10:00:00.000Z");
 
 async function seedMappedMatch(
   repo: InMemoryRepository,
@@ -41,7 +41,7 @@ async function seedMappedMatch(
   ): TeamProviderMapping => ({
     schema_version: 1,
     team_id: teamId,
-    provider: Provider.ApiFootball,
+    provider: Provider.FootballData,
     provider_team_id: providerTeamId,
     created_at: NOW,
     updated_at: NOW,
@@ -86,7 +86,7 @@ async function seedMappedMatch(
   await repo.matchProviderMappings.insert({
     schema_version: 1,
     match_id: match.match_id,
-    provider: Provider.ApiFootball,
+    provider: Provider.FootballData,
     provider_match_id: providerMatchId,
     created_at: NOW,
     updated_at: NOW,
@@ -104,6 +104,8 @@ describe("ProviderPostFinishVerifyService", () => {
       timestamp: KICKOFF_OVER_24_HOURS_AGO.getTime() / 1000,
       round: "Regular Season - 1",
     });
+    fixture.provider = Provider.FootballData;
+    fixture.league.id = "PL";
     const getTeams = vi.fn(async (query: {
       leagueId: string;
       season: string;
@@ -118,12 +120,13 @@ describe("ProviderPostFinishVerifyService", () => {
       ];
     });
     const getFixtures = vi.fn(async (query: {
-      fixtureId?: string;
+      dateFrom?: string;
+      dateTo?: string;
       leagueId: string;
       season: string;
     }): Promise<readonly ApiFootballFixture[]> => {
       expect(query.season).toBe(MVP_SEASON.api_football_season);
-      return query.fixtureId === "1200041" ? [fixture] : [];
+      return query.leagueId === MVP_SEASON.api_football_league_id ? [fixture] : [];
     });
 
     const outcome = await new ProviderPostFinishVerifyService(repo, {
@@ -135,9 +138,9 @@ describe("ProviderPostFinishVerifyService", () => {
       kind: "completed",
       teams: {
         kind: "completed",
-        teams_read: 2,
+        teams_read: 0,
         teams_created: 0,
-        teams_unchanged: 2,
+        teams_unchanged: 0,
       },
       fixtures: {
         kind: "completed",
@@ -148,7 +151,7 @@ describe("ProviderPostFinishVerifyService", () => {
       },
     });
     const mapping = await repo.matchProviderMappings.findByProviderAndExternalId(
-      Provider.ApiFootball,
+      Provider.FootballData,
       "1200041",
     );
     expect(mapping).not.toBeNull();
@@ -157,10 +160,11 @@ describe("ProviderPostFinishVerifyService", () => {
       settlement_status: SettlementStatus.Waiting,
       result_version: 1,
     });
-    expect(getTeams).toHaveBeenCalledTimes(SUPPORTED_LEAGUES.length);
+    expect(getTeams).not.toHaveBeenCalled();
     expect(getFixtures).toHaveBeenCalledTimes(1);
     expect(getFixtures.mock.calls[0]?.[0]).toMatchObject({
-      fixtureId: "1200041",
+      dateFrom: "2026-08-09",
+      dateTo: "2026-08-11",
       leagueId: MVP_SEASON.api_football_league_id,
       season: MVP_SEASON.api_football_season,
     });
@@ -170,7 +174,7 @@ describe("ProviderPostFinishVerifyService", () => {
     const repo = new InMemoryRepository();
     await seedMappedMatch(repo, "1200042");
     const mapping = await repo.matchProviderMappings.findByProviderAndExternalId(
-      Provider.ApiFootball,
+      Provider.FootballData,
       "1200042",
     );
     const match = await repo.matches.findById(mapping!.match_id);
@@ -206,6 +210,8 @@ describe("ProviderPostFinishVerifyService", () => {
       timestamp: KICKOFF_OVER_24_HOURS_AGO.getTime() / 1000,
       round: "Regular Season - 1",
     });
+    fixture.provider = Provider.FootballData;
+    fixture.league.id = "PL";
     const getTeams = vi.fn(async () => []);
     const getFixtures = vi.fn(async (query: { fixtureId?: string }) =>
       query.fixtureId === "1200042" ? [fixture] : [],
@@ -241,7 +247,7 @@ describe("ProviderPostFinishVerifyService", () => {
     const repo = new InMemoryRepository();
     await seedMappedMatch(repo, "1200043");
     const mapping = await repo.matchProviderMappings.findByProviderAndExternalId(
-      Provider.ApiFootball,
+      Provider.FootballData,
       "1200043",
     );
     const match = await repo.matches.findById(mapping!.match_id);
@@ -258,10 +264,10 @@ describe("ProviderPostFinishVerifyService", () => {
       timestamp: KICKOFF_OVER_24_HOURS_AGO.getTime() / 1000,
       round: "Regular Season - 1",
     });
+    fixture.provider = Provider.FootballData;
+    fixture.league.id = "PL";
     const getTeams = vi.fn(async () => []);
-    const getFixtures = vi.fn(async (query: { fixtureId?: string }) =>
-      query.fixtureId === "1200043" ? [fixture] : [],
-    );
+    const getFixtures = vi.fn(async () => [fixture]);
 
     const outcome = await new ProviderPostFinishVerifyService(repo, {
       getTeams,

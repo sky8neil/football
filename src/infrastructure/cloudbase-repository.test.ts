@@ -107,6 +107,29 @@ class MemoryCloudBaseDb implements CloudBaseDb {
     return (await this.query(collection, filter)).length;
   }
 
+  async reserveCounter(collection: string, id: string, field: string, limit: number, initial: CloudBaseDocument): Promise<boolean> {
+    const key = `${collection}/${id}`;
+    const current: CloudBaseDocument = this.documents.get(key) ?? cloneValue({ ...initial, _id: id });
+    const value = typeof current[field] === "number" ? current[field] as number : 0;
+    if (value >= limit) return false;
+    current[field] = value + 1;
+    this.documents.set(key, cloneValue(current));
+    return true;
+  }
+
+  async adjustCounter(collection: string, id: string, field: string, delta: number): Promise<void> {
+    const key = `${collection}/${id}`;
+    const current = this.documents.get(key);
+    if (!current) return;
+    current[field] = (typeof current[field] === "number" ? current[field] as number : 0) + delta;
+    this.documents.set(key, cloneValue(current));
+  }
+
+  async getCounter(collection: string, id: string, field: string): Promise<number> {
+    const current = await this.get(collection, id);
+    return typeof current?.[field] === "number" ? current[field] as number : 0;
+  }
+
   async transaction<T>(work: (transactionDb: CloudBaseDb) => Promise<T>): Promise<T> {
     if (this.transactionView) return this.runTransaction(work);
     const previous = this.transactionTail;

@@ -92,48 +92,114 @@ export const SUPPORTED_LEAGUES = [
   {
     league_id: "premier_league",
     name: "英超",
+    provider: "football_data",
     api_football_league_id: "39",
     api_football_season: "2026",
+    provider_source_id: "fd",
+    source_league_ref: "PL",
+    source_season_ref: "2026",
+    provider_refs: {
+      fd: "PL",
+      bsd: null,
+      "5d": "4160026622",
+      of: "comp_premier_league_eng",
+      sp: null,
+    },
     season_id: "2026_2027",
     round_max: 38,
   },
   {
     league_id: "la_liga",
     name: "西甲",
+    provider: "football_data",
     api_football_league_id: "140",
     api_football_season: "2026",
+    provider_source_id: "fd",
+    source_league_ref: "PD",
+    source_season_ref: "2026",
+    provider_refs: {
+      fd: "PD",
+      bsd: null,
+      "5d": "4212821298",
+      of: "comp_laliga_es",
+      sp: null,
+    },
     season_id: "2026_2027",
     round_max: 38,
   },
   {
     league_id: "serie_a",
     name: "意甲",
+    provider: "football_data",
     api_football_league_id: "135",
     api_football_season: "2026",
+    provider_source_id: "fd",
+    source_league_ref: "SA",
+    source_season_ref: "2026",
+    provider_refs: {
+      fd: "SA",
+      bsd: null,
+      "5d": "3405541143",
+      of: "comp_serie_a_it",
+      sp: null,
+    },
     season_id: "2026_2027",
     round_max: 38,
   },
   {
     league_id: "bundesliga",
     name: "德甲",
+    provider: "football_data",
     api_football_league_id: "78",
     api_football_season: "2026",
+    provider_source_id: "fd",
+    source_league_ref: "BL1",
+    source_season_ref: "2026",
+    provider_refs: {
+      fd: "BL1",
+      bsd: null,
+      "5d": "686337048",
+      of: "comp_bundesliga_de",
+      sp: null,
+    },
     season_id: "2026_2027",
     round_max: 34,
   },
   {
     league_id: "ligue_1",
     name: "法甲",
+    provider: "football_data",
     api_football_league_id: "61",
     api_football_season: "2026",
+    provider_source_id: "fd",
+    source_league_ref: "FL1",
+    source_season_ref: "2026",
+    provider_refs: {
+      fd: "FL1",
+      bsd: null,
+      "5d": "3614399544",
+      of: "comp_ligue_1_fr",
+      sp: null,
+    },
     season_id: "2026_2027",
     round_max: 34,
   },
   {
     league_id: "chinese_super_league",
     name: "中超",
+    provider: "bsd",
     api_football_league_id: "169",
     api_football_season: "2026",
+    provider_source_id: "bsd",
+    source_league_ref: "52",
+    source_season_ref: "2026",
+    provider_refs: {
+      fd: null,
+      bsd: "52",
+      "5d": null,
+      of: "comp_chinese_super_league_chn",
+      sp: "85",
+    },
     season_id: "2026",
     round_max: 30,
   },
@@ -146,8 +212,25 @@ export type SupportedLeagueId = SupportedLeague["league_id"];
 
 export function findSupportedLeagueByProviderId(
   providerLeagueId: string,
+  provider: "api_football" | "football_data" | "bsd" | "5dollar" | "openfoot" | "sportapi" = "api_football",
 ): SupportedLeague | undefined {
-  return SUPPORTED_LEAGUES.find((row) => row.api_football_league_id === providerLeagueId);
+  if (provider === "api_football") {
+    return SUPPORTED_LEAGUES.find((row) => row.api_football_league_id === providerLeagueId);
+  }
+  const sourceId = provider === "football_data" ? "fd"
+    : provider === "bsd" ? "bsd"
+    : provider === "5dollar" ? "5d"
+    : provider === "openfoot" ? "of"
+    : provider === "sportapi" ? "sp"
+    : null;
+  if (sourceId === null) return undefined;
+  return SUPPORTED_LEAGUES.find((row) => row.provider_refs[sourceId] === providerLeagueId);
+}
+
+export function providerForLeague(
+  leagueId: string,
+): "api_football" | "football_data" | "bsd" | "5dollar" | "openfoot" | "sportapi" | undefined {
+  return findSupportedLeagueById(leagueId)?.provider;
 }
 
 export function findSupportedLeagueById(leagueId: string): SupportedLeague | undefined {
@@ -161,7 +244,7 @@ export function isSupportedLeagueId(value: string): value is SupportedLeagueId {
 export const MVP_SEASON = {
   league_id: SUPPORTED_LEAGUES[0].league_id,
   season_id: SUPPORTED_LEAGUES[0].season_id,
-  provider: "api_football",
+  provider: "football_data",
   api_football_league_id: SUPPORTED_LEAGUES[0].api_football_league_id,
   api_football_season: SUPPORTED_LEAGUES[0].api_football_season,
 } as const;

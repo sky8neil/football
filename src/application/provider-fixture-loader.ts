@@ -1,4 +1,5 @@
 import { FIXED_CONFIG_V1, SUPPORTED_LEAGUES } from "../domain/config.js";
+import { SyncJobType } from "../domain/enums.js";
 import { internalError, validationError } from "../domain/errors.js";
 import { parseKickoff } from "../provider/kickoff.js";
 import type {
@@ -13,24 +14,29 @@ import type { ProviderFixtureBatchLoader } from "./provider-sync-job.js";
 
 export interface FutureScheduleFixtureClient {
   getFixtures(query: ApiFootballFixturesQuery): Promise<readonly ApiFootballFixture[]>;
+  orderLeagues?(leagueIds: readonly string[], jobType: SyncJobType, now: Date): Promise<string[]>;
 }
 
 export interface NearMatchFixtureClient {
   getFixtures(query: ApiFootballFixturesQuery): Promise<readonly ApiFootballFixture[]>;
+  orderLeagues?(leagueIds: readonly string[], jobType: SyncJobType, now: Date): Promise<string[]>;
 }
 
 export interface LiveMatchFixtureClient {
   getFixtures(query: ApiFootballFixturesQuery): Promise<readonly ApiFootballFixture[]>;
+  orderLeagues?(leagueIds: readonly string[], jobType: SyncJobType, now: Date): Promise<string[]>;
 }
 
 export interface PostFinishVerifyFixtureClient {
   getFixtures(query: ApiFootballFixturesQuery): Promise<readonly ApiFootballFixture[]>;
+  orderLeagues?(leagueIds: readonly string[], jobType: SyncJobType, now: Date): Promise<string[]>;
 }
 
 export interface FullScheduleFixtureClient {
   getSeasonFixtures(
     query: ApiFootballSeasonFixturesQuery,
   ): Promise<readonly ApiFootballFixture[]>;
+  orderLeagues?(leagueIds: readonly string[], jobType: SyncJobType, now: Date): Promise<string[]>;
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -60,11 +66,23 @@ function parseFixtureKickoff(fixture: ApiFootballFixture): Date | null {
 }
 
 async function loadFixturesForSupportedLeagues(
-  load: (leagueId: string, season: string) => Promise<readonly ApiFootballFixture[]>,
+  client: { orderLeagues?: (leagueIds: readonly string[], jobType: SyncJobType, now: Date) => Promise<string[]> },
+  load: (leagueId: string, season: string, jobType: SyncJobType, serverNow: Date) => Promise<readonly ApiFootballFixture[]>,
+  jobType: SyncJobType,
+  serverNow: Date,
+  leagueIds?: readonly string[],
 ): Promise<ApiFootballFixture[]> {
   const fixtures: ApiFootballFixture[] = [];
-  for (const league of SUPPORTED_LEAGUES) {
-    fixtures.push(...await load(league.api_football_league_id, league.api_football_season));
+  const eligibleLeagues = leagueIds
+    ? SUPPORTED_LEAGUES.filter((league) => leagueIds.includes(league.league_id))
+    : SUPPORTED_LEAGUES;
+  const orderedIds = client.orderLeagues
+    ? await client.orderLeagues(eligibleLeagues.map((league) => league.league_id), jobType, serverNow)
+    : eligibleLeagues.map((league) => league.league_id);
+  for (const leagueId of orderedIds) {
+    const league = SUPPORTED_LEAGUES.find((row) => row.league_id === leagueId);
+    if (!league) continue;
+    fixtures.push(...await load(league.api_football_league_id, league.api_football_season, jobType, serverNow));
   }
   return fixtures;
 }
@@ -86,19 +104,26 @@ function nearMatchWindowHours(): { earliest: number; latest: number } {
 /** 生成 32.1 的未来赛程 loader；HTTP client 由外部注入，本模块不连接 Provider。 */
 export function createFutureScheduleLoader(
   client: FutureScheduleFixtureClient,
+  leagueIds?: readonly string[],
 ): ProviderFixtureBatchLoader {
   return async (serverNow) => {
     assertValidDate(serverNow);
     const dateTo = new Date(
       serverNow.getTime() + FIXED_CONFIG_V1.SYNC_FUTURE_DAYS * DAY_MS,
     );
-    const fixtures = await loadFixturesForSupportedLeagues((leagueId, season) =>
-      client.getFixtures({
+    const fixtures = await loadFixturesForSupportedLeagues(
+      client,
+      (leagueId, season, jobType, now) => client.getFixtures({
         dateFrom: formatUtcDate(serverNow),
         dateTo: formatUtcDate(dateTo),
         leagueId,
         season,
+        jobType,
+        serverNow: now,
       }),
+      SyncJobType.FutureSchedule,
+      serverNow,
+      leagueIds,
     );
     return fixtures.flatMap((fixture) => {
       const kickoff = parseFixtureKickoff(fixture);
@@ -123,13 +148,18 @@ export function createNearMatchLoader(
     const window = nearMatchWindowHours();
     const earliestKickoff = new Date(serverNow.getTime() + window.earliest * HOUR_MS);
     const latestKickoff = new Date(serverNow.getTime() + window.latest * HOUR_MS);
-    const fixtures = await loadFixturesForSupportedLeagues((leagueId, season) =>
-      client.getFixtures({
+    const fixtures = await loadFixturesForSupportedLeagues(
+      client,
+      (leagueId, season, jobType, now) => client.getFixtures({
         dateFrom: formatUtcDate(earliestKickoff),
         dateTo: formatUtcDate(latestKickoff),
         leagueId,
         season,
+        jobType,
+        serverNow: now,
       }),
+      SyncJobType.NearMatch,
+      serverNow,
     );
 
     return fixtures.flatMap((fixture) => {
@@ -160,13 +190,18 @@ export function createLiveMatchLoader(
     const latestKickoff = new Date(
       serverNow.getTime() + config.windowStartHoursBeforeKickoff * HOUR_MS,
     );
-    const fixtures = await loadFixturesForSupportedLeagues((leagueId, season) =>
-      client.getFixtures({
+    const fixtures = await loadFixturesForSupportedLeagues(
+      client,
+      (leagueId, season, jobType, now) => client.getFixtures({
         dateFrom: formatUtcDate(serverNow),
         dateTo: formatUtcDate(latestKickoff),
         leagueId,
         season,
+        jobType,
+        serverNow: now,
       }),
+      SyncJobType.LiveMatch,
+      serverNow,
     );
 
     return fixtures.flatMap((fixture) => {
@@ -184,11 +219,16 @@ export function createLiveMatchLoader(
 /** 生成 32.2 的完整赛季校验 loader；HTTP client 由外部注入，本模块不连接 Provider。 */
 export function createFullScheduleVerifyLoader(
   client: FullScheduleFixtureClient,
+  leagueIds?: readonly string[],
 ): ProviderFixtureBatchLoader {
   return async (serverNow) => {
     assertValidDate(serverNow);
-    const fixtures = await loadFixturesForSupportedLeagues((leagueId, season) =>
-      client.getSeasonFixtures({ leagueId, season }),
+    const fixtures = await loadFixturesForSupportedLeagues(
+      client,
+      (leagueId, season, jobType, now) => client.getSeasonFixtures({ leagueId, season, jobType, serverNow: now }),
+      SyncJobType.FullScheduleVerify,
+      serverNow,
+      leagueIds,
     );
     return fixtures.map((fixture) => ({
       fixture,

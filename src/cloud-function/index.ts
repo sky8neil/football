@@ -37,6 +37,9 @@ export interface CloudFunctionContextLike {
 
 export interface CloudFunctionEvent {
   action?: string;
+  job?: string;
+  league?: string;
+  Type?: string;
   method?: string;
   path?: string;
   query?: Record<string, string>;

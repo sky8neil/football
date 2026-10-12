@@ -20,7 +20,7 @@ export type ProviderSyncOutcome =
   | ProviderLiveMatchOutcome
   | ProviderPostFinishVerifyOutcome;
 
-export type ProviderSyncRunner = (serverNow: Date) => Promise<ProviderSyncOutcome>;
+export type ProviderSyncRunner = (serverNow: Date, leagueId?: string) => Promise<ProviderSyncOutcome>;
 
 export type ProviderSyncRunnerMap = {
   [jobType in ProviderSyncJobType]: ProviderSyncRunner;
@@ -49,11 +49,12 @@ export class ProviderSyncDispatcher {
   async run(
     jobType: ProviderSyncJobType,
     serverNow: Date,
+    leagueId?: string,
   ): Promise<ProviderSyncOutcome> {
     if (!isProviderSyncJobType(jobType)) {
       throw validationError("未知 Provider job_type", { field: "job_type" });
     }
     assertServerNow(serverNow);
-    return this.runners[jobType](serverNow);
+    return this.runners[jobType](serverNow, leagueId);
   }
 }

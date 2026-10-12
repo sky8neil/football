@@ -37,6 +37,11 @@ export type Result = (typeof Result)[keyof typeof Result];
 
 export const Provider = {
   ApiFootball: "api_football",
+  FootballData: "football_data",
+  Bsd: "bsd",
+  FiveDollar: "5dollar",
+  OpenFoot: "openfoot",
+  SportApi: "sportapi",
 } as const;
 export type Provider = (typeof Provider)[keyof typeof Provider];
 
@@ -154,6 +159,7 @@ export const SyncJobType = {
   NearMatch: "near_match",
   LiveMatch: "live_match",
   PostFinishVerify: "post_finish_verify",
+  ProviderReconcile: "provider_reconcile",
   PeriodFinalize: "period_finalize",
   DailyConsistency: "daily_consistency",
   WeeklyLevelEval: "weekly_level_eval",
@@ -178,6 +184,8 @@ export const AnomalyType = {
   FinishedNoScore: "FINISHED_NO_SCORE",
   InvalidFinalScore: "INVALID_FINAL_SCORE",
   ProviderStateConflict: "PROVIDER_STATE_CONFLICT",
+  ProviderResultConflict: "DIAG_PROVIDER_RESULT_CONFLICT",
+  ProviderResultPending: "DIAG_PROVIDER_RESULT_PENDING",
   ProviderDataInvalid: "PROVIDER_DATA_INVALID",
   UnexpectedProviderStatus: "UNEXPECTED_PROVIDER_STATUS",
   TeamChangeAfterPrediction: "TEAM_CHANGE_AFTER_PREDICTION",

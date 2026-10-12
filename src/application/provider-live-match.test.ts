@@ -44,7 +44,7 @@ async function seedMappedMatch(
   ): TeamProviderMapping => ({
     schema_version: 1,
     team_id: teamId,
-    provider: Provider.ApiFootball,
+    provider: Provider.FootballData,
     provider_team_id: providerTeamId,
     created_at: NOW,
     updated_at: NOW,
@@ -88,7 +88,7 @@ async function seedMappedMatch(
   await repo.matchProviderMappings.insert({
     schema_version: 1,
     match_id: match.match_id,
-    provider: Provider.ApiFootball,
+    provider: Provider.FootballData,
     provider_match_id: providerMatchId,
     created_at: NOW,
     updated_at: NOW,
@@ -98,7 +98,7 @@ async function seedMappedMatch(
 describe("ProviderLiveMatchService", () => {
   it("串联固定赛季球队 mapping、live_match loader 与 fixture 同步", async () => {
     const repo = new InMemoryRepository();
-    const kickoffAt = new Date(NOW.getTime() - 36 * 60 * 60 * 1000);
+    const kickoffAt = new Date(NOW.getTime() - 60 * 60 * 1000);
     await seedMappedMatch(repo, "1200031", kickoffAt);
     const fixture = makeApiFixture({
       fixtureId: 1200031,
@@ -107,6 +107,8 @@ describe("ProviderLiveMatchService", () => {
       timestamp: kickoffAt.getTime() / 1000,
       round: "Regular Season - 1",
     });
+    fixture.provider = Provider.FootballData;
+    fixture.league.id = "PL";
     const getTeams = vi.fn(async (query: {
       leagueId: string;
       season: string;
@@ -121,10 +123,7 @@ describe("ProviderLiveMatchService", () => {
       ];
     });
     const getFixtures = vi.fn(async (query: ApiFootballFixturesQuery) =>
-      query.fixtureId === "1200031" ||
-      query.leagueId === MVP_SEASON.api_football_league_id
-        ? [fixture]
-        : [],
+      query.leagueId === MVP_SEASON.api_football_league_id ? [fixture] : [],
     );
 
     const outcome = await new ProviderLiveMatchService(repo, {
@@ -135,21 +134,20 @@ describe("ProviderLiveMatchService", () => {
     expect(outcome).toMatchObject({
       teams: {
         kind: "completed",
-        teams_read: 2,
+        teams_read: 0,
         teams_created: 0,
-        teams_unchanged: 2,
+        teams_unchanged: 0,
       },
       fixtures: {
         kind: "completed",
         job_type: SyncJobType.LiveMatch,
-        // 窗口 loader 与已知未完赛补查同时返回同一 fixture，按 id 去重后只应用一次。
         items_read: 1,
         items_changed: 1,
         items_failed: 0,
       },
     });
     const mapping = await repo.matchProviderMappings.findByProviderAndExternalId(
-      Provider.ApiFootball,
+      Provider.FootballData,
       "1200031",
     );
     expect(mapping).not.toBeNull();
@@ -158,9 +156,13 @@ describe("ProviderLiveMatchService", () => {
       season_id: MVP_SEASON.season_id,
       round_id: "01",
     });
-    expect(getTeams).toHaveBeenCalledTimes(SUPPORTED_LEAGUES.length);
-    expect(getFixtures).toHaveBeenCalledTimes(SUPPORTED_LEAGUES.length + 1);
-    expect(getFixtures.mock.calls.some(([query]) => query.fixtureId === "1200031")).toBe(true);
+    expect(getTeams).not.toHaveBeenCalled();
+    expect(getFixtures).toHaveBeenCalledTimes(1);
+    expect(getFixtures.mock.calls[0]?.[0]).toMatchObject({
+      dateFrom: "2026-08-09",
+      dateTo: "2026-08-11",
+      leagueId: MVP_SEASON.api_football_league_id,
+    });
   });
 
   it("批量含 1 条结构非法 fixture：合法项正常应用，非法项留 provider_error 证据且不弃整包", async () => {
@@ -174,12 +176,11 @@ describe("ProviderLiveMatchService", () => {
       timestamp: kickoffAt.getTime() / 1000,
       round: "Regular Season - 1",
     });
+    valid.provider = Provider.FootballData;
+    valid.league.id = "PL";
     const invalid = {} as ApiFootballFixture;
     const getTeams = vi.fn(async () => []);
     const getFixtures = vi.fn(async (query: ApiFootballFixturesQuery) => {
-      if (query.fixtureId !== undefined) {
-        return [valid];
-      }
       if (query.leagueId === MVP_SEASON.api_football_league_id) {
         return [valid, invalid];
       }
@@ -214,7 +215,7 @@ describe("ProviderLiveMatchService", () => {
     const repo = new InMemoryRepository();
     await seedMappedMatch(repo, "1200032");
     const mapping = await repo.matchProviderMappings.findByProviderAndExternalId(
-      Provider.ApiFootball,
+      Provider.FootballData,
       "1200032",
     );
     const match = await repo.matches.findById(mapping!.match_id);
@@ -227,7 +228,7 @@ describe("ProviderLiveMatchService", () => {
     await repo.providerSnapshots.insert({
       schema_version: 1,
       snapshot_id: newUuid(),
-      provider: Provider.ApiFootball,
+      provider: Provider.FootballData,
       entity_type: "match",
       entity_id: match!.match_id,
       provider_entity_id: "1200032",
