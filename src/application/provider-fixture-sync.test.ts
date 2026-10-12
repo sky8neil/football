@@ -52,8 +52,10 @@ function makeFixture(
   providerMatchId: string,
   status: string,
   score?: { home: number | null; away: number | null },
+  provider: Provider = Provider.ApiFootball,
 ): ApiFootballFixture {
   return {
+    provider,
     fixture: {
       id: Number(providerMatchId),
       date: "2026-08-09T12:00:00.000Z",
@@ -61,7 +63,7 @@ function makeFixture(
       status: { short: status },
     },
     league: {
-      id: 39,
+      id: provider === Provider.FootballData ? "PL" : 39,
       season: 2026,
       round: "Regular Season - 1",
     },
@@ -77,12 +79,13 @@ async function seedMatch(
   repo: InMemoryRepository,
   match: Match,
   providerMatchId: string,
+  provider: Provider = Provider.ApiFootball,
 ): Promise<void> {
   await repo.matches.insert(match);
   await repo.matchProviderMappings.insert({
     schema_version: 1,
     match_id: match.match_id,
-    provider: "api_football",
+    provider,
     provider_match_id: providerMatchId,
     created_at: NOW,
     updated_at: NOW,
@@ -291,10 +294,10 @@ describe("ProviderFixtureSyncService", () => {
   it("将 FT + fulltime 交给赛果同步并追加 result v1", async () => {
     const repo = new InMemoryRepository();
     const match = makeMatch();
-    await seedMatch(repo, match, "1100002");
+    await seedMatch(repo, match, "1100002", Provider.FootballData);
 
     const result = await new ProviderFixtureSyncService(repo).applyFixture(
-      makeFixture("1100002", "FT", { home: 2, away: 1 }),
+      makeFixture("1100002", "FT", { home: 2, away: 1 }, Provider.FootballData),
       { fixture: { id: 1100002 }, score: { fulltime: { home: 2, away: 1 } } },
       NOW,
     );
@@ -313,14 +316,14 @@ describe("ProviderFixtureSyncService", () => {
   it("业务判断和 Provider 事实写入只使用注入的 server_now", async () => {
     const repo = new InMemoryRepository();
     const match = makeMatch();
-    await seedMatch(repo, match, "1100008");
+    await seedMatch(repo, match, "1100008", Provider.FootballData);
     const serverNow = new Date("2026-08-09T00:07:00.000Z");
 
     vi.useFakeTimers({ now: new Date("2026-08-10T12:00:00.000Z") });
     try {
       await expect(
         new ProviderFixtureSyncService(repo).applyFixture(
-          makeFixture("1100008", "FT", { home: 2, away: 1 }),
+          makeFixture("1100008", "FT", { home: 2, away: 1 }, Provider.FootballData),
           { fixture: { id: 1100008 }, score: { fulltime: { home: 2, away: 1 } } },
           serverNow,
         ),
@@ -335,6 +338,7 @@ describe("ProviderFixtureSyncService", () => {
         created_at: serverNow,
       });
       await expect(repo.providerSnapshots.findByEntity("match", match.match_id)).resolves.toEqual([
+        expect.objectContaining({ created_at: serverNow }),
         expect.objectContaining({ created_at: serverNow }),
         expect.objectContaining({ created_at: serverNow }),
       ]);
@@ -606,9 +610,9 @@ describe("ProviderFixtureSyncService", () => {
   it("无分 finished 后合法 FT 到达：写分、进入 waiting 并 resolve 两规则", async () => {
     const repo = new InMemoryRepository();
     const match = makeMatch();
-    await seedMatch(repo, match, "1100102");
+    await seedMatch(repo, match, "1100102", Provider.FootballData);
     const service = new ProviderFixtureSyncService(repo);
-    const invalidFixture = makeFixture("1100102", "FT", { home: null, away: 1 });
+    const invalidFixture = makeFixture("1100102", "FT", { home: null, away: 1 }, Provider.FootballData);
     const invalidPayload = { fixture: { id: 1100102 }, score: { fulltime: { home: null, away: 1 } } };
 
     await service.applyFixture(invalidFixture, invalidPayload, NOW);
@@ -625,7 +629,7 @@ describe("ProviderFixtureSyncService", () => {
     const legalAt = new Date(NOW.getTime() + 25 * 60 * 1000);
     await expect(
       service.applyFixture(
-        makeFixture("1100102", "FT", { home: 2, away: 1 }),
+        makeFixture("1100102", "FT", { home: 2, away: 1 }, Provider.FootballData),
         { fixture: { id: 1100102 }, score: { fulltime: { home: 2, away: 1 } } },
         legalAt,
       ),

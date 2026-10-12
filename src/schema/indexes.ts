@@ -107,6 +107,18 @@ export const UNIQUE_INDEXES: readonly IndexDef[] = [
     fields: ["group_id", "user_id"],
     unique: true,
   },
+  {
+    collection: "provider_key_state",
+    name: "uk_provider_key_state_key_id",
+    fields: ["key_id"],
+    unique: true,
+  },
+  {
+    collection: "provider_league_state",
+    name: "uk_provider_league_state_source_job_league",
+    fields: ["source_id", "job_type", "league_id"],
+    unique: true,
+  },
 ] as const;
 
 export const QUERY_INDEXES: readonly IndexDef[] = [
@@ -235,18 +247,6 @@ export const QUERY_INDEXES: readonly IndexDef[] = [
     name: "ix_provider_usage_source_bucket",
     fields: ["source_id", "bucket_type", "bucket_start"],
     unique: false,
-  },
-  {
-    collection: "provider_key_state",
-    name: "uk_provider_key_state_key_id",
-    fields: ["key_id"],
-    unique: true,
-  },
-  {
-    collection: "provider_league_state",
-    name: "uk_provider_league_state_source_job_league",
-    fields: ["source_id", "job_type", "league_id"],
-    unique: true,
   },
   {
     collection: "provider_league_state",

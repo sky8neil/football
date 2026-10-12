@@ -83,6 +83,10 @@ function monthBucket(sourceId: ProviderSourceId, now: Date): ProviderUsageBucket
   return makeBucket(sourceId, "month", key, new Date(`${key}-01T00:00:00.000Z`));
 }
 
+function providerStateKey(sourceId: ProviderSourceId, keyId?: string): string {
+  return sourceId === "fd" && keyId ? `${sourceId}:${keyId}` : sourceId;
+}
+
 export class InMemoryProviderUsageStore implements ProviderUsageStore {
   private readonly counters = new Map<string, number>();
 
@@ -151,7 +155,7 @@ export class ProviderBudget {
     if (source === undefined) return { allowed: false, reason: "source_unconfigured" };
     const key = source.api_keys.find((candidate) => candidate.key_id === keyId) ?? source.api_keys[0];
     if (key === undefined) return { allowed: false, reason: "source_unconfigured" };
-    const stateKey = keyId ? `${sourceId}:${keyId}` : sourceId;
+    const stateKey = providerStateKey(sourceId, keyId);
     const blocked = this.blockedUntil.get(stateKey);
     if (blocked !== undefined) {
       if (now.getTime() < blocked) return { allowed: false, reason: "provider_cooldown", key_id: key.key_id };
@@ -232,13 +236,13 @@ export class ProviderBudget {
 
   observeRemoteQuota(sourceId: ProviderSourceId, remaining: number, resetAt: Date | null, now: Date, keyId?: string): void {
     const reset = resetAt ?? new Date(now.getTime() + 60_000);
-    const stateKey = keyId ? `${sourceId}:${keyId}` : sourceId;
+    const stateKey = providerStateKey(sourceId, keyId);
     this.observedRemaining.set(stateKey, { count: remaining, reset_at: reset.getTime() });
     this.log?.({ event: "provider_quota_observed", source_id: sourceId, ...(keyId ? { key_id: keyId } : {}), remaining_requests: remaining, resets_at: reset.toISOString() });
   }
 
   pauseSource(sourceId: ProviderSourceId, until: Date, providerCode: string | null, keyId?: string): void {
-    const stateKey = keyId ? `${sourceId}:${keyId}` : sourceId;
+    const stateKey = providerStateKey(sourceId, keyId);
     this.blockedUntil.set(stateKey, until.getTime());
     this.log?.({ diag_code: "DIAG_PROVIDER_QUOTA", source_id: sourceId, ...(keyId ? { key_id: keyId } : {}), provider_code: providerCode, resets_at: until.toISOString() });
   }

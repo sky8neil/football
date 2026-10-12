@@ -107,6 +107,7 @@ describe("S0 Collection schema（规范 §21）", () => {
       "near_match",
       "live_match",
       "post_finish_verify",
+      "provider_reconcile",
       "period_finalize",
       "daily_consistency",
       "weekly_level_eval",

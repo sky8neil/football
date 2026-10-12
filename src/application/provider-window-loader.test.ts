@@ -10,6 +10,7 @@ const NOW = new Date("2026-10-11T12:00:00.000Z");
 function mappedMatch(leagueId: string, kickoffAt: Date): Match {
   return {
     league_id: leagueId,
+    match_id: "match-id",
     kickoff_at: kickoffAt,
     match_status: MatchStatus.Scheduled,
     settlement_status: SettlementStatus.Pending,
@@ -23,6 +24,7 @@ function repository(match: Match | null, provider: Provider, providerMatchId: st
     matches: { findBySeason: async () => match ? [match] : [] },
     matchProviderMappings: {
       findByMatchId: async () => match ? [{ match_id: matchId, provider, provider_match_id: providerMatchId }] : [],
+      findByProviderAndExternalId: async () => match ? { match_id: matchId } : null,
     },
   } as unknown as AppRepository;
 }

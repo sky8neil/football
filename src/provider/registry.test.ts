@@ -52,7 +52,7 @@ describe("ProviderRegistry", () => {
       requests.push(url);
       return new Response(JSON.stringify(url.includes("events/") ? { count: 0, next: null, results: [] } : { matches: [] }), { status: 200 });
     };
-    const client = new ProviderRegistry({ config, fetchImpl }).asClient();
+    const client = new ProviderRegistry({ config, fetchImpl, minimumGapMs: 0 }).asClient();
     const start = new Date("2026-10-11T12:00:00.000Z");
     const poll = (leagueId: string, afterMinutes: number) => client.getFixtures({
       leagueId,
@@ -87,7 +87,7 @@ describe("ProviderRegistry", () => {
         headers: { "content-type": "application/json", "RateLimit": "requests; r=0; t=300" },
       });
     };
-    const client = new ProviderRegistry({ config, fetchImpl, budget }).asClient();
+    const client = new ProviderRegistry({ config, fetchImpl, budget, minimumGapMs: 0 }).asClient();
     const query = {
       leagueId: "169",
       season: "2026",

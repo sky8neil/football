@@ -58,12 +58,13 @@ async function seedMatch(
   repo: InMemoryRepository,
   match: Match,
   providerMatchId: string,
+  provider: "api_football" | "football_data" = "api_football",
 ): Promise<void> {
   await repo.matches.insert(match);
   await repo.matchProviderMappings.insert({
     schema_version: 1,
     match_id: match.match_id,
-    provider: "api_football",
+    provider,
     provider_match_id: providerMatchId,
     created_at: NOW,
     updated_at: NOW,
@@ -87,13 +88,21 @@ describe("ProviderFixtureSyncJobService", () => {
     const first = makeMatch();
     const second = makeMatch();
     await seedMatch(repo, first, "1100001");
-    await seedMatch(repo, second, "1100002");
+    await seedMatch(repo, second, "1100002", "football_data");
     const syncLogs = recordingSyncLogs();
     const load = vi.fn(async (serverNow: Date) => {
       expect(serverNow).toBe(NOW);
+      const authoritativeFixture = makeApiFixture({
+        fixtureId: 1100002,
+        statusShort: "FT",
+        fulltimeHome: 2,
+        fulltimeAway: 1,
+      });
+      authoritativeFixture.provider = "football_data";
+      authoritativeFixture.league.id = "PL";
       return [
         item(makeApiFixture({ fixtureId: 1100001, statusShort: "TBD" })),
-        item(makeApiFixture({ fixtureId: 1100002, statusShort: "FT", fulltimeHome: 2, fulltimeAway: 1 })),
+        item(authoritativeFixture),
       ];
     });
 

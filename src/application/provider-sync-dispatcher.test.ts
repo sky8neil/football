@@ -37,7 +37,7 @@ describe("ProviderSyncDispatcher", () => {
     await expect(dispatcher.run(SyncJobType.LiveMatch, NOW)).resolves.toEqual(
       skipped(SyncJobType.LiveMatch),
     );
-    expect(jobRunners[SyncJobType.LiveMatch]).toHaveBeenCalledWith(NOW);
+    expect(jobRunners[SyncJobType.LiveMatch]).toHaveBeenCalledWith(NOW, undefined);
     expect(jobRunners[SyncJobType.LiveMatch]).toHaveBeenCalledTimes(1);
     expect(jobRunners[SyncJobType.FutureSchedule]).not.toHaveBeenCalled();
     expect(jobRunners[SyncJobType.FullScheduleVerify]).not.toHaveBeenCalled();

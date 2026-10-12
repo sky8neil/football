@@ -354,6 +354,9 @@ export class ProviderRegistry {
       ? this.entryForSource(explicitSourceId, league.league_id)
       : selectedPlan ? this.entryForSource(selectedPlan.source_id, league.league_id) : null;
     if (selected === null || selected === undefined) return this.legacyFetch(query, season);
+    if (jobType === SyncJobType.LiveMatch && !this.liveRequestDue(selected.source.source_id, now)) {
+      return [];
+    }
     const trackLeagueInBudget = !(jobType === SyncJobType.LiveMatch && selected.source.source_id === "5d");
     const callOptions = this.callOptions(selected, jobType, now, trackLeagueInBudget);
     const fetch = async (): Promise<readonly ApiFootballFixture[]> => {

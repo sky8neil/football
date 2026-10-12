@@ -62,7 +62,10 @@ export async function loadActiveWindowFixtures(
     });
     for (const fixture of fixtures) {
       const fixtureId = fixture.fixture?.id;
-      if (fixtureId === undefined || String(fixtureId).length === 0) continue;
+      if (fixtureId === undefined || String(fixtureId).length === 0) {
+        result.push({ fixture, payload: { fixture } });
+        continue;
+      }
       const provider = (fixture.provider ?? "api_football") as Provider;
       const mapping = await mappings.findByProviderAndExternalId(provider, String(fixtureId));
       if (mapping && ids.has(mapping.match_id)) {

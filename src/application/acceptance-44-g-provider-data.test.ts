@@ -161,8 +161,10 @@ function makeFixture(options: {
   goals?: { home: number | null; away: number | null };
   homeTeamId?: number;
   awayTeamId?: number;
+  provider?: Provider;
 } = { status: "FT" }): ApiFootballFixture {
   const fixture: ApiFootballFixture = {
+    ...(options.provider === undefined ? {} : { provider: options.provider }),
     fixture: {
       id: Number(PROVIDER_MATCH_ID),
       date: KICKOFF.toISOString(),
@@ -170,7 +172,7 @@ function makeFixture(options: {
       status: { short: options.status },
     },
     league: {
-      id: 39,
+      id: options.provider === Provider.FootballData ? "PL" : 39,
       season: 2026,
       round: "Regular Season - 1",
     },
@@ -188,13 +190,16 @@ function makeFixture(options: {
   return fixture;
 }
 
-async function setup(match = makeMatch(), options?: { withDefaultTeams?: boolean }) {
+async function setup(
+  match = makeMatch(),
+  options?: { withDefaultTeams?: boolean; resultProvider?: Provider },
+) {
   const repo = new InMemoryRepository();
   await repo.matches.insert(match);
   await repo.matchProviderMappings.insert({
     schema_version: 1,
     match_id: MATCH_ID,
-    provider: Provider.ApiFootball,
+    provider: options?.resultProvider ?? Provider.ApiFootball,
     provider_match_id: PROVIDER_MATCH_ID,
     created_at: NOW,
     updated_at: NOW,
@@ -213,9 +218,9 @@ async function setup(match = makeMatch(), options?: { withDefaultTeams?: boolean
 
 describe("G. Provider 数据（规范 44-G）", () => {
   it("G43 FT + fulltime 合法比分可以创建 result v1", async () => {
-    const { repo, service } = await setup();
+    const { repo, service } = await setup(makeMatch(), { resultProvider: Provider.FootballData });
     const outcome = await service.applyFixture(
-      makeFixture({ status: "FT", fulltime: { home: 2, away: 1 } }),
+      makeFixture({ status: "FT", fulltime: { home: 2, away: 1 }, provider: Provider.FootballData }),
       { case: "G43" },
       NOW,
     );
@@ -497,11 +502,11 @@ describe("G. Provider 数据（规范 44-G）", () => {
       finish_detected_at: NOW,
       settled_at: NOW,
     });
-    const { repo, service } = await setup(finished);
+    const { repo, service } = await setup(finished, { resultProvider: Provider.FootballData });
     await repo.matchResults.insert(makeResult());
 
     const outcome = await service.applyFixture(
-      makeFixture({ status: "FT", fulltime: { home: 1, away: 1 } }),
+      makeFixture({ status: "FT", fulltime: { home: 1, away: 1 }, provider: Provider.FootballData }),
       { case: "G50" },
       new Date(NOW.getTime() + 60_000),
     );

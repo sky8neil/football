@@ -51,6 +51,25 @@
 4. 核对 BSD 响应映射、Schema 枚举和索引约定后再调整实现或断言。
 5. 修复后重新运行 `npm run typecheck` 和 `npm test`，与本文件记录的基线比较，并在本文件追加修复结果。
 
-## 本轮范围
+## 基线记录说明
 
-本文件只记录失败和建议排查顺序；没有修改业务代码、测试代码或云端配置。
+基线阶段仅记录失败和建议排查顺序，未修改业务代码、测试代码或云端配置。修复与验证结果见下文。
+
+## 修复结果
+
+日期：2026-10-12
+
+- 修复 `SUPPORTED_LEAGUES` 缺少运行时导入的问题，恢复 Provider 来源模块的类型检查和测试加载。
+- Provider fixture 同步测试改用与赛果映射一致的 Provider，并补全 Football-Data 的联赛标识；业务判断使用注入的 `server_now`，测试同步校准对应快照数量。
+- 窗口加载器将缺少 fixture ID 的数据交给后续校验和失败统计，不再静默丢弃；补齐 loader 测试所需的 mapping 仓储接口和 match ID。
+- Live Match 请求遵守来源配置的最小轮询间隔；相关 Registry 测试显式关闭间隔限制，以验证请求和额度行为。
+- Provider 额度的远端配额与冷却状态按 FD key 分开记录，单 key 来源按 source 记录。
+- BSD adapter 测试数据按其响应契约提供常规赛 stage、扁平队名及数字轮次，并断言规范化后的轮次格式。
+- Schema 测试纳入已定义的 `provider_reconcile` job type；将两个唯一索引从查询索引列表移至唯一索引列表。
+- 同步测试 mock 与 dispatcher 的实际参数保持一致。
+
+## 修复后验证
+
+- `npm run typecheck`：通过。
+- `npm test`：164 个测试文件通过，1551 项测试通过，0 失败。
+- `git diff --check`：通过。

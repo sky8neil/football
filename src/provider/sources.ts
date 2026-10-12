@@ -1,5 +1,5 @@
 import { Provider } from "../domain/enums.js";
-import type { SupportedLeagueId } from "../domain/config.js";
+import { SUPPORTED_LEAGUES, type SupportedLeagueId } from "../domain/config.js";
 import { ProviderDataError } from "./http.js";
 
 export type ProviderSourceId = "fd" | "bsd" | "5d" | "of" | "sp";

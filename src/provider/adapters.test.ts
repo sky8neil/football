@@ -80,13 +80,14 @@ describe("BsdAdapter", () => {
       results: [{
         id: "event-1",
         league_id: 52,
+        stage: "regular-season",
         event_date: "2026-08-08T14:00:00Z",
         status: "finished",
         round_number: 1,
         home_team_id: 10,
         away_team_id: 11,
-        home_team_name: "Beijing Guoan",
-        away_team_name: "Shanghai Port",
+        home_team: "Beijing Guoan",
+        away_team: "Shanghai Port",
         home_score: 2,
         away_score: 1,
       }],
@@ -96,11 +97,14 @@ describe("BsdAdapter", () => {
       results: [{
         id: "event-2",
         league_id: 52,
+        stage: "regular-season",
         event_date: "2026-08-09T14:00:00Z",
         status: "upcoming",
-        round_number: "2",
-        home_team: { id: 12, name: "Shandong Taishan" },
-        away_team: { id: 13, name: "Zhejiang" },
+        round_number: 2,
+        home_team_id: 12,
+        away_team_id: 13,
+        home_team: "Shandong Taishan",
+        away_team: "Zhejiang",
       }],
     });
     const adapter = new BsdAdapter(client);
@@ -116,12 +120,13 @@ describe("BsdAdapter", () => {
     expect(fixtures[0]).toMatchObject({
       provider: "bsd",
       fixture: { id: "event-1", status: { short: "FT" } },
-      league: { id: 52, round: "1" },
+      league: { id: 52, round: "01" },
       teams: { home: { id: 10, name: "Beijing Guoan" } },
       score: { fulltime: { home: 2, away: 1 } },
     });
     expect(fixtures[1]).toMatchObject({
       fixture: { id: "event-2", status: { short: "NS" } },
+      league: { round: "02" },
       teams: { home: { id: 12, name: "Shandong Taishan" } },
     });
   });

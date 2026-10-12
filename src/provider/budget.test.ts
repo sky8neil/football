@@ -17,11 +17,11 @@ describe("ProviderBudget", () => {
     for (let i = 0; i < 5; i += 1) {
       await expect(budget.acquire("bsd", SyncJobType.FutureSchedule, now)).resolves.toMatchObject({ allowed: true });
     }
-    await expect(budget.acquire("bsd", SyncJobType.FutureSchedule, now)).resolves.toEqual({ allowed: false, reason: "daily_limit" });
+    await expect(budget.acquire("bsd", SyncJobType.FutureSchedule, now)).resolves.toMatchObject({ allowed: false, reason: "day_limit", key_id: "bsd#1" });
     for (let i = 0; i < 4; i += 1) {
       await expect(budget.acquire("bsd", SyncJobType.LiveMatch, now)).resolves.toMatchObject({ allowed: true });
     }
-    await expect(budget.acquire("bsd", SyncJobType.LiveMatch, now)).resolves.toEqual({ allowed: false, reason: "daily_limit" });
+    await expect(budget.acquire("bsd", SyncJobType.LiveMatch, now)).resolves.toMatchObject({ allowed: false, reason: "day_limit", key_id: "bsd#1" });
     await expect(budget.acquire("bsd", SyncJobType.PostFinishVerify, now)).resolves.toMatchObject({ allowed: true, daily_used: 10 });
   });
 
@@ -36,7 +36,7 @@ describe("ProviderBudget", () => {
     expect(concurrent.filter((item) => item.allowed)).toHaveLength(3);
 
     const snapshot = await budget.usageSnapshot(now);
-    expect(snapshot.bsd).toEqual({ used: 3, cap: 10, warning: false });
+    expect(snapshot.bsd).toMatchObject({ used: 3, cap: 10, warning: false, minute_used: 3, hour_used: 0, month_used: 0 });
     for (let i = 1; i <= 5; i += 1) {
       await budget.acquire("bsd", SyncJobType.PostFinishVerify, new Date(now.getTime() + i * 60_000));
     }
@@ -60,6 +60,7 @@ describe("ProviderBudget", () => {
     await expect(budget.acquire("bsd", SyncJobType.LiveMatch, now)).resolves.toEqual({
       allowed: false,
       reason: "provider_quota",
+      key_id: "bsd#1",
     });
     await expect(budget.acquire("bsd", SyncJobType.LiveMatch, resetAt)).resolves.toMatchObject({ allowed: true });
   });
@@ -73,6 +74,7 @@ describe("ProviderBudget", () => {
     await expect(budget.acquire("bsd", SyncJobType.LiveMatch, now)).resolves.toEqual({
       allowed: false,
       reason: "provider_cooldown",
+      key_id: "bsd#1",
     });
     await expect(budget.acquire("bsd", SyncJobType.LiveMatch, resetAt)).resolves.toMatchObject({ allowed: true });
   });
