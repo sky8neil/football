@@ -15,7 +15,7 @@ function match(kickoffAt: Date, status: Match["match_status"] = MatchStatus.Sche
 }
 
 describe("activeWindow", () => {
-  it("selects only the T-2h and T-30m pre-match checkpoints", () => {
+  it("selects scheduled fixtures between T-24h and T-2h", () => {
     const twoHourCheckpoint = match(new Date(NOW.getTime() + 2 * 60 * 60_000));
     const twoHourCheckpointTail = match(new Date(NOW.getTime() + 2 * 60 * 60_000 + 59_999));
     const outsideTwoHourCheckpoint = match(new Date(NOW.getTime() + 2 * 60 * 60_000 + 60_000));
@@ -29,19 +29,18 @@ describe("activeWindow", () => {
       thirtyMinuteCheckpoint,
       outsideThirtyMinuteCheckpoint,
     ], NOW, SyncJobType.NearMatch)).toEqual([
-      twoHourCheckpoint,
       twoHourCheckpointTail,
-      thirtyMinuteCheckpoint,
+      outsideTwoHourCheckpoint,
     ]);
   });
 
-  it("selects from ten minutes before kickoff through three hours after kickoff", () => {
+  it("selects from T-2h until finished without a live cutoff", () => {
     expect(activeWindow([
       match(new Date(NOW.getTime() + 10 * 60_000)),
       match(new Date(NOW.getTime() - 3 * 60 * 60_000), MatchStatus.Live),
       match(new Date(NOW.getTime() + 10 * 60_000 + 1)),
       match(new Date(NOW.getTime() - 3 * 60 * 60_000 - 1), MatchStatus.Live),
-    ], NOW, SyncJobType.LiveMatch)).toHaveLength(2);
+    ], NOW, SyncJobType.LiveMatch)).toHaveLength(4);
   });
 
   it("selects unsettled finished matches and only the daily tick after 24 hours", () => {

@@ -256,8 +256,9 @@ export function rebuildPeriodRankings(
     compareRankingEntry(RankingBoard.Week, a.comparable, b.comparable),
   );
 
-  return ranked.map(({ entry }, index) => ({
+  let position = 0;
+  return ranked.map(({ entry }) => ({
     ...entry,
-    global_rank: rankForPosition(entry.valid_predictions, index + 1),
+    global_rank: entry.valid_predictions < 1 ? null : rankForPosition(entry.valid_predictions, ++position),
   }));
 }

@@ -1,3 +1,7 @@
+import { runSettlementTimer } from "./settlement-timer.js";
+import { SettlementOrchestrationService } from "./settlement-orchestration-service.js";
+import { calculatePeriodKey } from "../domain/time.js";
+import { rankingPeriodLockKey } from "./settlement-item-application-service.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   MatchStatus,
@@ -406,6 +410,11 @@ describe("FirstSettlementService.start - 成功路径", () => {
                 matchWrites.push({ kind: "update", value: updated });
                 await tx.matches.update(updated);
               },
+              updateSettlementProgress: async (mid, version, settledAt) => {
+                const before = await tx.matches.findById(mid);
+                matchWrites.push({ kind: "update", value: { ...before!, settled_result_version: version, settled_at: settledAt } });
+                await tx.matches.updateSettlementProgress(mid, version, settledAt);
+              },
               updateSettlementStatus: async (mid, status, updatedAt) => {
                 matchWrites.push({
                   kind: "updateSettlementStatus",
@@ -530,7 +539,7 @@ describe("FirstSettlementService.start - 成功路径", () => {
     expect(matchAfter?.settled_at).toBeNull();
     expect(
       (await repo.settlements.findByMatchAndVersionAndRule(match.match_id, 1, RULE))?.status,
-    ).toBe(SettlementDocStatus.Pending);
+    ).toBe(SettlementDocStatus.Running);
   });
 
   it("finalize 前重新读取 result_version：处理 v1 期间出现 v2 时保持 correcting", async () => {
@@ -614,7 +623,7 @@ describe("FirstSettlementService.start - 已结算重复调用", () => {
     expect(await repo.settlements.findByStatus(SettlementDocStatus.Settled)).toHaveLength(1);
   });
 
-  it("settlement 已 settled 但 match 仍 waiting：复用已完成 settlement，不创建、不触碰 match", async () => {
+  it("settlement 已 settled 但 match 仍 waiting：复用已完成 settlement，不创建、补齐 match 缓存", async () => {
     const { repo, match } = await setup();
     const settlement = makeSettlement({
       match_id: match.match_id,
@@ -635,7 +644,7 @@ describe("FirstSettlementService.start - 已结算重复调用", () => {
       skipped_applied_count: 0,
     });
     const matchAfter = await repo.matches.findById(match.match_id);
-    expect(matchAfter?.settlement_status).toBe(SettlementStatus.Waiting);
+    expect(matchAfter?.settlement_status).toBe(SettlementStatus.Settled);
   });
 });
 
@@ -821,7 +830,7 @@ describe("FirstSettlementService.start - 并发锁", () => {
       });
       expect(
         (await repo.settlementItems.findBySettlement(settlement.settlement_id))[0]?.status,
-      ).toBe(SettlementItemStatus.Pending);
+      ).toBe(SettlementItemStatus.Applied);
       expect((await repo.matches.findById(match.match_id))?.settlement_status).not.toBe(
         SettlementStatus.Settled,
       );
@@ -1105,5 +1114,46 @@ describe("FirstSettlementService.start - §15.5 单 item 原子性", () => {
         "p_fail",
       ),
     ).toMatchObject({ status: SettlementItemStatus.Failed, last_error_message: "boom" });
+  });
+});
+
+
+describe("R3 生产结算流程", () => {
+  it("定时任务为完赛预测入账，随后自动处理改判，重复触发不重复积分", async () => {
+    const { repo, match } = await setup({ match: { period_anchor_at: new Date("2026-08-08T06:00:00Z") } });
+    const user = makeUser();
+    const prediction = makePrediction(match.match_id, { user_id: user.user_id });
+    await repo.users.insert(user);
+    await repo.predictions.insert(prediction);
+    await runSettlementTimer(repo, NOW);
+    expect((await repo.users.findById(user.user_id))?.career_points).toBe(12);
+    expect((await repo.predictions.findById(prediction.prediction_id))?.match_score).toBe(12);
+    await repo.matchResults.insert(makeResult({ match_id: match.match_id, result_version: 2, regular_home_score: 0, regular_away_score: 0 }));
+    const settled = (await repo.matches.findById(match.match_id))!;
+    await repo.matches.update({ ...settled, result_version: 2, regular_home_score: 0, regular_away_score: 0, settlement_status: SettlementStatus.Correcting });
+    await runSettlementTimer(repo, NOW);
+    await runSettlementTimer(repo, NOW);
+    expect((await repo.users.findById(user.user_id))?.career_points).toBe(0);
+    expect((await repo.users.findById(user.user_id))?.career_valid_predictions).toBe(1);
+    expect((await repo.matches.findById(match.match_id))?.settled_result_version).toBe(2);
+    expect((await repo.predictions.findById(prediction.prediction_id))?.match_score).toBe(0);
+  });
+
+  it("周榜锁冲突保留已入账积分，下一次定时任务仅补齐榜单和 finalize", async () => {
+    const anchor = new Date("2026-08-08T06:00:00Z");
+    const { repo, match } = await setup({ match: { period_anchor_at: anchor } });
+    const user = makeUser();
+    const prediction = makePrediction(match.match_id, { user_id: user.user_id });
+    await repo.users.insert(user);
+    await repo.predictions.insert(prediction);
+    const rankLock = rankingPeriodLockKey("week", calculatePeriodKey("week", anchor));
+    await repo.jobLocks.acquire(rankLock, "other-ranking-job", new Date(NOW.getTime() + 60_000));
+    await expect(new SettlementOrchestrationService(repo).startFirst(match.match_id, NOW, false)).rejects.toMatchObject({ code: "RANKING_REBUILD_ALREADY_RUNNING" });
+    expect((await repo.users.findById(user.user_id))?.career_points).toBe(12);
+    expect((await repo.settlementItems.findByStatus(SettlementItemStatus.Applied))).toHaveLength(1);
+    await repo.jobLocks.release(rankLock, "other-ranking-job");
+    await runSettlementTimer(repo, NOW);
+    expect((await repo.users.findById(user.user_id))?.career_points).toBe(12);
+    expect((await repo.matches.findById(match.match_id))?.settlement_status).toBe(SettlementStatus.Settled);
   });
 });

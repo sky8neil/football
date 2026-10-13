@@ -20,7 +20,7 @@ const WEEK: PeriodRef = {
   period_key: "2026_W32",
 };
 const MONTH = {
-  period_type: PeriodType.Month,
+  period_type: ("month" as PeriodType),
   period_key: "2026_08",
 } as unknown as PeriodRef;
 const OTHER_WEEK: PeriodRef = {

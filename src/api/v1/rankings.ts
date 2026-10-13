@@ -163,7 +163,7 @@ export async function getRankings(
         ...(result.is_provisional === undefined ? {} : { is_provisional: result.is_provisional }),
         items: result.items,
         page: { next_cursor: result.next_cursor, has_more: result.has_more },
-        ...(result.me === undefined ? {} : { me: result.me }),
+        me: result.me ?? { status: "not_participated" },
       },
       request_id: input.request_id,
     },

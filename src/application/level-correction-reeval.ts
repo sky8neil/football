@@ -38,13 +38,10 @@ import {
   eligibleSeasonStats,
   evaluateWithProtection,
   levelScopeLockKey,
-  WEEKLY_LEVEL_EVAL_LOCK_KEY,
 } from "./weekly-level-eval.js";
 
 export const LEVEL_CORRECTION_REEVAL_LOCK_KEY = `sync:${SyncJobType.LevelCorrectionReeval}`;
 const LEVEL_JOB_LEASE_MILLISECONDS = FIXED_CONFIG_V1.JOB_LEASE_MINUTES * 60 * 1000;
-const LEVEL_EVAL_START_DELAY_MILLISECONDS =
-  FIXED_CONFIG_V1.LEVEL_EVAL_START_DELAY_MINUTES * 60 * 1000;
 const WEEK_MILLISECONDS = 7 * 24 * 60 * 60 * 1000;
 
 export interface LevelCorrectionReevalOutcome {
@@ -63,22 +60,14 @@ function currentWeeklyCycleAsOf(asOf: Date): Date {
     : new Date(candidate.getTime() - WEEK_MILLISECONDS);
 }
 
-async function weeklyEvaluationIsIncomplete(
-  repo: AppRepository,
+function weeklyEvaluationIsIncomplete(
   cycleAsOf: Date,
   serverNow: Date,
   completedWeeklyAsOf: Date | null,
-): Promise<boolean> {
-  if (
-    completedWeeklyAsOf?.getTime() === cycleAsOf.getTime() ||
-    currentWeeklyCycleAsOf(serverNow).getTime() !== cycleAsOf.getTime()
-  ) {
-    return false;
-  }
-  if (serverNow.getTime() < cycleAsOf.getTime() + LEVEL_EVAL_START_DELAY_MILLISECONDS) {
-    return true;
-  }
-  return repo.jobLocks.isHeld(WEEKLY_LEVEL_EVAL_LOCK_KEY, serverNow);
+): boolean {
+  // 时间宽限或锁释放不能证明任务完成；用户的本周 week_base 在下方单独检查。
+  return completedWeeklyAsOf?.getTime() !== cycleAsOf.getTime() &&
+    currentWeeklyCycleAsOf(serverNow).getTime() === cycleAsOf.getTime();
 }
 
 function stateForCorrection(
@@ -101,8 +90,7 @@ function stateForCorrection(
     state.week_base_level !== null;
   const useStoredBase = baseStoredForCycle || correctionAlreadyThisCycle;
   if (
-    state.last_eval_as_of !== null && state.last_eval_as_of.getTime() > asOf.getTime() &&
-    !useStoredBase
+    state.last_eval_as_of !== null && state.last_eval_as_of.getTime() > asOf.getTime()
   ) {
     return { base: current, nextState: state, deferred: false, stale: true };
   }
@@ -251,8 +239,7 @@ export class LevelCorrectionReevalService {
       const users = [...new Set(items.map((item) => item.user_id))];
       const match = await this.repo.matches.findById(settlement.match_id);
       const cycleAsOf = currentWeeklyCycleAsOf(asOf);
-      const weeklyTaskIncomplete = await weeklyEvaluationIsIncomplete(
-        this.repo,
+      const weeklyTaskIncomplete = weeklyEvaluationIsIncomplete(
         cycleAsOf,
         serverNow,
         completedWeeklyAsOf,

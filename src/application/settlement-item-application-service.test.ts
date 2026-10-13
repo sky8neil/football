@@ -320,7 +320,7 @@ describe("SettlementItemApplicationService", () => {
       last_scoring_match_at: ANCHOR,
       global_rank: null,
     });
-    expect((await repo.rankings.findAll()).some((entry) => entry.period_type === PeriodType.Month)).toBe(false);
+    expect((await repo.rankings.findAll()).some((entry) => entry.period_type === ("month" as PeriodType))).toBe(false);
     expect(await repo.levelHistory.findByUser(user.user_id)).toEqual([]);
 
     expect((await repo.unlocks.findByUser(user.user_id)).map((unlock) => unlock.unlock_code)).toEqual([

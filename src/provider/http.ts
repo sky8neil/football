@@ -214,10 +214,7 @@ export class ApiFootballClient {
       league: query.leagueId,
       season: query.season,
     });
-    if (!env.response.every(isApiFootballTeam)) {
-      throw new ProviderDataError("provider teams response missing team fields");
-    }
-    return env.response;
+    return env.response.filter(isApiFootballTeam);
   }
 
   async getFixtureRounds(query: ApiFootballTeamQuery): Promise<string[]> {
@@ -225,10 +222,7 @@ export class ApiFootballClient {
       league: query.leagueId,
       season: query.season,
     });
-    if (!env.response.every(isApiFootballRound)) {
-      throw new ProviderDataError("provider rounds response contains invalid round");
-    }
-    return env.response;
+    return env.response.filter(isApiFootballRound);
   }
 
   async getStatus(): Promise<ApiFootballStatusResult> {

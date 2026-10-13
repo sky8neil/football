@@ -172,7 +172,7 @@ Page({
       scoreText: hasScore ? `${item.regular_home_score} : ${item.regular_away_score}` : "VS",
       scoreSub: item.can_predict_reason === "ALREADY_SUBMITTED" ? "已锁定" : item.match_status === "live" ? "LIVE" : item.match_status === "finished" ? (hasScore ? "FT" : "待结算") : item.display_time || (kick ? `${pad(kick.hour)}:${pad(kick.minute)}` : ""),
       bugClass: item.match_status === "live" || item.match_status === "finished" ? "dark" : "",
-      predText: submitted ? formatPrediction(submitted) : item.my_prediction ? formatPrediction(item.my_prediction) : item.match_status === "live" ? formatPrediction(item.my_prediction) : item.match_status === "finished" ? formatPrediction(item.my_prediction) : "未开赛",
+      predText: submitted ? formatPrediction(submitted) : item.can_predict_reason === "ALREADY_SUBMITTED" ? "已提交预测 · 查看详情" : item.match_status === "scheduled" ? "未开赛" : "未预测",
       derivedResult: draft.home > draft.away ? "主胜" : draft.home < draft.away ? "客胜" : "平局",
       submitError: this.data.submitErrors ? this.data.submitErrors[key] : "",
     });

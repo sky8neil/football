@@ -8,7 +8,7 @@ import {
 import { internalError } from "../domain/errors.js";
 import {
   buildLevelInputs,
-  evaluateLevel,
+  replayLevel,
   type LevelPredictionFact,
 } from "../domain/levels.js";
 import {
@@ -344,6 +344,7 @@ function expectedLevelValues(params: {
   bestLevel: number;
   state: LevelState | undefined;
   facts: readonly LevelPredictionFact[];
+  correctionSettledAts: readonly Date[];
   scope: LevelScope;
   levelSeasonId: string | null;
   history: readonly LevelHistoryEntry[];
@@ -357,44 +358,25 @@ function expectedLevelValues(params: {
   last_eval_b_points: number;
   last_eval_rule_version: string | null;
 } {
+  const firstEvalAsOf = FIXED_CONFIG_V1.LEVEL_FIRST_EVAL_AS_OF as Date | null;
   const state = params.state ?? defaultLevelState();
-  const lastEvalAsOf = state.last_eval_as_of;
-  let level = params.level;
-  let belowCount = state.below_count;
-  let lastEvalN = state.last_eval_n;
-  let lastEvalScoreSum = state.last_eval_score_sum;
-  let lastEvalBPoints = state.last_eval_b_points;
-  let lastEvalRuleVersion = state.last_eval_rule_version;
-
-  if (lastEvalAsOf !== null) {
-    const inputs = buildLevelInputs(
-      params.facts,
-      params.scope,
-      lastEvalAsOf,
-      params.levelSeasonId ?? undefined,
-    );
-    lastEvalN = inputs.n;
-    lastEvalScoreSum = inputs.S;
-    lastEvalBPoints = inputs.b_points;
-    lastEvalRuleVersion = FIXED_CONFIG_V1.LEVEL_RULE_VERSION;
-
-    const firstEvalAsOf = FIXED_CONFIG_V1.LEVEL_FIRST_EVAL_AS_OF as Date | null;
-    if (firstEvalAsOf !== null && lastEvalAsOf.getTime() >= firstEvalAsOf.getTime()) {
-      const result = evaluateLevel(
-        {
-          level: state.week_base_level ?? params.level,
-          best_level: params.bestLevel,
-          below_count: state.week_base_below_count ?? state.below_count,
-        },
-        inputs,
-        lastEvalRuleVersion,
-        lastEvalAsOf,
-        levelProtectionEndAsOf(firstEvalAsOf),
-      );
-      level = result.level;
-      belowCount = result.below_count;
-    }
-  }
+  const replay = replayLevel({
+    scope: params.scope,
+    facts: params.facts,
+    correctionSettledAts: params.correctionSettledAts,
+    firstEvalAsOf,
+    untilAsOf: state.last_eval_as_of ?? new Date(0),
+    protectionEndAsOf: firstEvalAsOf === null ? null : levelProtectionEndAsOf(firstEvalAsOf),
+    ruleVersion: FIXED_CONFIG_V1.LEVEL_RULE_VERSION,
+    ...(params.levelSeasonId === null ? {} : { levelSeasonId: params.levelSeasonId }),
+  });
+  const level = replay.level;
+  const belowCount = replay.below_count;
+  const lastEvalAsOf = replay.last_eval_as_of;
+  const lastEvalN = replay.last_inputs?.n ?? 0;
+  const lastEvalScoreSum = replay.last_inputs?.S ?? 0;
+  const lastEvalBPoints = replay.last_inputs?.b_points ?? 0;
+  const lastEvalRuleVersion = lastEvalAsOf === null ? null : FIXED_CONFIG_V1.LEVEL_RULE_VERSION;
 
   const maximumHistoryLevel = historyBestLevel(
     params.history,
@@ -430,6 +412,7 @@ function expectedCareerValues(
     bestLevel: existingBestLevel,
     state: existingState,
     facts: buildReplayFacts(facts).facts,
+    correctionSettledAts: buildReplayFacts(facts).correctionSettledAts,
     scope: LevelScope.Career,
     levelSeasonId: null,
     history,
@@ -477,6 +460,7 @@ function expectedSeasonValues(
     bestLevel: existingBestLevel,
     state: existingState,
     facts: buildReplayFacts(facts).facts,
+    correctionSettledAts: buildReplayFacts(facts).correctionSettledAts,
     scope: LevelScope.Season,
     levelSeasonId: seasonId,
     history,

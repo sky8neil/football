@@ -24,6 +24,7 @@ export interface CareerLevelData {
   last_evaluated_at: string | null;
   next_evaluation_at: string;
   is_former_top: boolean;
+  b_points?: number | null;
 }
 
 export interface SeasonLevelData {
@@ -111,6 +112,7 @@ export class LevelsQueryService {
         valid_predictions: user.career_valid_predictions,
         remaining_to_rated: remainingToRated(user.career_valid_predictions),
         last_evaluated_at: careerState?.last_eval_as_of?.toISOString() ?? null,
+        b_points: careerState?.last_eval_as_of ? careerState.last_eval_b_points : null,
         next_evaluation_at: nextMondayEvalAt(serverNow).toISOString(),
         is_former_top: user.career_best_level === FIXED_CONFIG_V1.LEVEL_MAX &&
           user.career_level < FIXED_CONFIG_V1.LEVEL_MAX,

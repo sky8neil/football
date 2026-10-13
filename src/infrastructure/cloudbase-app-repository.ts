@@ -269,10 +269,17 @@ export class CloudBaseAppRepository implements AppRepository {
         assertMatchResultVersionInvariants(match);
         await this.update("matches", match.match_id, match);
       },
+      updateSettlementProgress: async (matchId, resultVersion, settledAt) => {
+        const match = await this.byId<Match>("matches", matchId);
+        if (match === null) throw new DocumentNotFoundError("matches", matchId);
+        await this.db.update(this.collection("matches"), matchId, { _id: matchId,
+          settled_result_version: Math.max(match.settled_result_version, resultVersion),
+          settled_at: settledAt, updated_at: settledAt });
+      },
       updateSettlementStatus: async (matchId, settlementStatus, updatedAt) => {
         const match = await this.byId<Match>("matches", matchId);
         if (match === null) throw new DocumentNotFoundError("matches", matchId);
-        await this.update("matches", matchId, { ...match, settlement_status: settlementStatus, updated_at: updatedAt });
+        await this.db.update(this.collection("matches"), matchId, { _id: matchId, settlement_status: settlementStatus, updated_at: updatedAt });
       },
     };
     this.predictions = {

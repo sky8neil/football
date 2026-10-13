@@ -24,8 +24,8 @@
 ### 领域与核心规则
 
 - TypeScript strict、ESM、Vitest；固定 `schema_version=1` 的配置与领域模型。
-- 时间与周期（Asia/Shanghai）、等级赛季边界（`level_season_of`，8 月切换）、比分推导、计分（s / S / n / B 四项）、排行榜比较器。
-- 等级 **v3.0**：每周一 10:00 截面周评估（任务 10:10 启动）、首期保护期、赛季冻结、`best_level` 只增不减、非 rebuild 变更 `|Δ|≤1` 等不变量；生涯与等级赛季双 scope。
+- 时间与周期（Asia/Shanghai）、等级赛季边界（`level_season_of`，7 月 1 日切换）、比分推导、计分（s / S / n / B 四项）、排行榜比较器。
+- 等级 **v3.0**：每周一 10:00 截面周评估（任务 10:10 启动）、首期保护期、赛季冻结、`best_level` 只增不减、周评估变更 `|Δ|≤1`、同周改判按周基线重评 等不变量；生涯与等级赛季双 scope。
 - 比赛状态机、预测提交服务端校验（截止时间、两层幂等、UUID v4 幂等键）、结算状态机。
 - `finished` 且无正式比分时保持 `waiting`：比分与结算字段为 `null`，不把缺失比分当 0。
 
@@ -53,14 +53,14 @@
 - 调度任务：`period_finalize`（1h）、`daily_consistency`（24h）、`weekly_level_eval`（周一 10:10）、`level_correction_reeval`（事件触发）、榜单快照（60min / 24h）。
 - 状态机保护（禁止状态回退）、异常快照、anomaly、job lock + lease、retry、`sync_logs`、注入式 `server_now` 语义；Provider 批次逐条容错（非法条目实体级留证，不弃整包）。
 
-### API 一览（v1：22 条路径 / 25 个操作）
+### API 一览（v1：23 条路径 / 27 个操作）
 
 - 会话与身份：`POST /v1/session/init`（身份由运行时注入可信 `openid`，不使用 Bearer/JWT/Cookie/session token）。
-- 比赛：`GET /v1/matches`、`GET /v1/matches/{match_id}`。
+- 比赛：`GET /v1/matches`、`GET /v1/matches/{match_id}`、`GET /v1/matches/{match_id}/crowd`。
 - 预测：`POST /v1/predictions`、`GET /v1/predictions/me`、`GET /v1/predictions/me/{prediction_id}`。
-- 资料：`GET|PATCH|DELETE /v1/profile/me`、`GET /v1/profiles/{user_id}`。
+- 资料：`GET|PATCH|POST|DELETE /v1/profile/me`、`GET /v1/profiles/{user_id}`。
 - 等级/解锁/分享卡：`GET /v1/levels/me`、`GET /v1/unlocks/me`、`GET /v1/share-card/me`。
-- 排行榜：`GET /v1/rankings`（week / career / strength；scope=global / group）。
+- 排行榜：`GET /v1/rankings`（week / season / career / strength；scope=global / group）。
 - 群组：`POST /v1/groups`、`POST /v1/groups/join`、`GET /v1/groups/me`、`GET /v1/groups/{group_id}`、`POST /v1/groups/{group_id}/leave`、`DELETE /v1/groups/{group_id}`。
 - 管理端：`GET /v1/admin/anomalies`、`POST /v1/admin/matches/{match_id}/result-corrections`、`POST /v1/admin/matches/{match_id}/retry-settlement`、`POST /v1/admin/rebuild/users/{user_id}`、`POST /v1/admin/rebuild/rankings`（变更写审计）。
 - 成功 envelope：`data + request_id`；分页 `items + page.next_cursor + page.has_more`；错误 envelope：`code + message + request_id + details`。

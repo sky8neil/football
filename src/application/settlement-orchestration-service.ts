@@ -116,17 +116,15 @@ export class SettlementOrchestrationService {
     hasBlockingAnomaly: boolean,
   ): Promise<FirstSettlementStartOutcome | CorrectionSettlementOutcome> {
     const first = await this.first.start(matchId, serverNow, hasBlockingAnomaly);
-    if (first.kind === "started") {
-      const continued = await continuePendingCorrections(
+    if (first.kind === "started" || first.kind === "already_settled" ||
+        (await this.repo.matches.findById(matchId))?.settlement_status === SettlementStatus.Correcting) {
+      await continuePendingCorrections(
         this.repo,
         this.correction,
         matchId,
         serverNow,
         this.levelCorrectionReeval,
       );
-      if (continued?.kind === "failed" || continued?.kind === "already_running") {
-        return continued;
-      }
     }
     return first;
   }
@@ -136,24 +134,20 @@ export class SettlementOrchestrationService {
     serverNow: Date,
   ): Promise<RetrySettlementOutcome> {
     const outcome = await this.retryService.retry(settlementId, serverNow);
-    if (outcome.kind === "settled") {
+    if (outcome.kind === "settled" || outcome.kind === "already_settled") {
       const settlement = await this.repo.settlements.findById(settlementId);
       if (settlement !== null) {
-        const continued = await continuePendingCorrections(
+        if (settlement.is_correction) {
+          await runCorrectionReeval(this.levelCorrectionReeval, settlementId, serverNow);
+        }
+        await continuePendingCorrections(
           this.repo,
           this.correction,
           settlement.match_id,
           serverNow,
           this.levelCorrectionReeval,
         );
-        if (continued?.kind === "failed") {
-          return {
-            kind: "failed",
-            settlement_id: continued.settlement_id,
-            processed_count: continued.processed_count,
-            skipped_applied_count: continued.skipped_applied_count,
-          };
-        }
+
       }
     }
     return outcome;

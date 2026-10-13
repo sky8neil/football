@@ -5,7 +5,7 @@ import {
   findSupportedLeagueById,
   isSupportedLeagueId,
 } from "../domain/config.js";
-import { MatchStatus, UserStatus, type MatchStatus as MatchStatusValue } from "../domain/enums.js";
+import { MatchStatus, SettlementStatus, UserStatus, type MatchStatus as MatchStatusValue } from "../domain/enums.js";
 import {
   canSubmitPrediction,
   predictRejectReason,
@@ -284,19 +284,22 @@ function mapMyPrediction(
   prediction: Prediction,
   userId: string,
   matchId: string,
+  match: Match,
 ): MyMatchPrediction {
   if (prediction.user_id !== userId || prediction.match_id !== matchId) {
     throw internalError(`prediction 归属不一致（prediction_id=${prediction.prediction_id}）`);
   }
+  const settled = match.settlement_status === SettlementStatus.Settled &&
+    prediction.applied_result_version === match.result_version;
   return {
     prediction_id: prediction.prediction_id,
     pred_home_score: prediction.pred_home_score,
     pred_away_score: prediction.pred_away_score,
     derived_result: prediction.derived_result,
     submitted_at: prediction.submitted_at.toISOString(),
-    match_score: prediction.match_score,
-    wdl_hit: prediction.wdl_hit,
-    exact_hit: prediction.exact_hit,
+    match_score: settled ? prediction.match_score : null,
+    wdl_hit: settled ? prediction.wdl_hit : null,
+    exact_hit: settled ? prediction.exact_hit : null,
   };
 }
 
@@ -391,7 +394,7 @@ export class MatchQueryService {
     for (const match of page) {
       const homeTeam = await teams.findById(match.home_team_id);
       const awayTeam = await teams.findById(match.away_team_id);
-      const prediction = user === null || user.status === UserStatus.Deleted
+      const prediction = user === null
         ? null
         : await this.repo.predictions.findByUserAndMatch(user.user_id, match.match_id);
       items.push(toItem(match, homeTeam, awayTeam, user, prediction, input.server_now));
@@ -445,7 +448,7 @@ export class MatchQueryService {
     const homeTeam = await teams.findById(match.home_team_id);
     const awayTeam = await teams.findById(match.away_team_id);
     const prediction =
-      user === null || user.status === UserStatus.Deleted
+      user === null
         ? null
         : await this.repo.predictions.findByUserAndMatch(user.user_id, match.match_id);
 
@@ -454,7 +457,7 @@ export class MatchQueryService {
       my_prediction:
         prediction === null || user === null
           ? null
-          : mapMyPrediction(prediction, user.user_id, match.match_id),
+          : mapMyPrediction(prediction, user.user_id, match.match_id, match),
     };
   }
 }

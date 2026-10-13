@@ -15,15 +15,12 @@ export function activeWindow(
     const elapsed = current - kickoff;
     if (jobType === "near_match") {
       const untilKickoff = kickoff - current;
-      const atCheckpoint = (minutes: number) => {
-        const checkpoint = minutes * MINUTE_MS;
-        return untilKickoff >= checkpoint && untilKickoff < checkpoint + MINUTE_MS;
-      };
-      return match.match_status === MatchStatus.Scheduled && (atCheckpoint(120) || atCheckpoint(30));
+      return match.match_status === MatchStatus.Scheduled &&
+        untilKickoff > 2 * HOUR_MS && untilKickoff <= 24 * HOUR_MS;
     }
     if (jobType === "live_match") {
-      return (match.match_status === MatchStatus.Scheduled || match.match_status === MatchStatus.Live) &&
-        kickoff >= current - 3 * HOUR_MS && kickoff <= current + 10 * MINUTE_MS;
+      return match.match_status === MatchStatus.Live ||
+        (match.match_status === MatchStatus.Scheduled && kickoff <= current + 2 * HOUR_MS);
     }
     if (jobType === "post_finish_verify") {
       const awaitingFirstSettlement = match.settlement_status === SettlementStatus.Pending ||

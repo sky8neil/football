@@ -178,20 +178,18 @@ describe("ApiFootballClient（注入式 HTTP client，不访问真实 API）", (
     expect(status.account.firstname).toBe("t");
   });
 
-  it("getTeams 关键字段缺失时按 ProviderDataError fail closed", async () => {
+  it("getTeams 过滤缺失关键字段的条目", async () => {
     const { http } = makeHttp(() => envelope([{} as ApiFootballTeam]));
     const client = new ApiFootballClient(http);
 
-    await expect(client.getTeams({ leagueId: "39", season: "2026" }))
-      .rejects.toBeInstanceOf(ProviderDataError);
+    await expect(client.getTeams({ leagueId: "39", season: "2026" })).resolves.toEqual([]);
   });
 
-  it("getFixtureRounds 响应包含非字符串 round 时按 ProviderDataError fail closed", async () => {
+  it("getFixtureRounds 过滤非法 round", async () => {
     const { http } = makeHttp(() => envelope([{} as unknown as string]));
     const client = new ApiFootballClient(http);
 
-    await expect(client.getFixtureRounds({ leagueId: "39", season: "2026" }))
-      .rejects.toBeInstanceOf(ProviderDataError);
+    await expect(client.getFixtureRounds({ leagueId: "39", season: "2026" })).resolves.toEqual([]);
   });
 
   it("status response 为空时按关键字段缺失 fail closed", async () => {

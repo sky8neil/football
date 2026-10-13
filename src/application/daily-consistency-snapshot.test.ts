@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { FIXED_CONFIG_V1 } from "../domain/config.js";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   MatchStatus,
   PeriodType,
@@ -21,6 +22,9 @@ import { InMemoryRepository } from "../infrastructure/repositories.js";
 import { checkDailyConsistency } from "./daily-consistency.js";
 import { RepositoryDailyConsistencySnapshotSource } from "./daily-consistency-snapshot.js";
 import { defaultLevelState } from "../domain/types.js";
+
+const ORIGINAL_FIRST_EVAL = FIXED_CONFIG_V1.LEVEL_FIRST_EVAL_AS_OF;
+afterEach(() => Object.defineProperty(FIXED_CONFIG_V1, "LEVEL_FIRST_EVAL_AS_OF", { value: ORIGINAL_FIRST_EVAL, configurable: true }));
 
 const NOW = new Date("2026-08-09T00:00:00.000Z");
 const USER_ID = "user-1";
@@ -305,6 +309,7 @@ describe("RepositoryDailyConsistencySnapshotSource", () => {
   });
 
   it("以 last_inputs 截面重算 career/season，不按当前总量即时定级", async () => {
+    Object.defineProperty(FIXED_CONFIG_V1, "LEVEL_FIRST_EVAL_AS_OF", { value: new Date("2026-08-03T02:00:00.000Z"), configurable: true });
     const repo = await setup();
     const evalAt = new Date("2026-08-10T02:00:00.000Z");
     const cachedState = {
@@ -346,6 +351,7 @@ describe("RepositoryDailyConsistencySnapshotSource", () => {
   });
 
   it("last_eval 之后窗口内修正不产生等级差异（截面按 applied_at 过滤）", async () => {
+    Object.defineProperty(FIXED_CONFIG_V1, "LEVEL_FIRST_EVAL_AS_OF", { value: new Date("2026-08-03T02:00:00.000Z"), configurable: true });
     const repo = new InMemoryRepository();
     const evalAt = new Date("2026-08-10T02:00:00.000Z");
     const firstAppliedAt = new Date("2026-08-08T07:30:00.000Z");
@@ -419,7 +425,7 @@ describe("RepositoryDailyConsistencySnapshotSource", () => {
     expect(careerDifference?.fields ?? []).not.toContain("career_last_eval_score_sum");
   });
 
-  it("没有评估起点时保留等级缓存，不按当前账本制造等级差异", async () => {
+  it("没有评估起点时纠正错误等级缓存为未定级基线", async () => {
     const repo = await setup();
     const user = await repo.users.findById(USER_ID);
     if (user === null) {
@@ -446,12 +452,12 @@ describe("RepositoryDailyConsistencySnapshotSource", () => {
     const snapshot = await new RepositoryDailyConsistencySnapshotSource(repo).load(NOW);
 
     expect(snapshot.career[0]?.expected).toMatchObject({
-      career_level: 3,
-      career_best_level: 3,
+      career_level: 1,
+      career_best_level: 1,
     });
     expect(snapshot.season_stats[0]?.expected).toMatchObject({
-      level: 4,
-      best_level: 4,
+      level: 1,
+      best_level: 1,
     });
   });
 

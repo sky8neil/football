@@ -53,7 +53,6 @@ export type ResultSource = (typeof ResultSource)[keyof typeof ResultSource];
 
 export const PeriodType = {
   Week: "week",
-  Month: "month",
 } as const;
 export type PeriodType = (typeof PeriodType)[keyof typeof PeriodType];
 
@@ -185,6 +184,7 @@ export const AnomalyType = {
   InvalidFinalScore: "INVALID_FINAL_SCORE",
   ProviderStateConflict: "PROVIDER_STATE_CONFLICT",
   ProviderResultConflict: "DIAG_PROVIDER_RESULT_CONFLICT",
+  ProviderMatchUnlinked: "DIAG_PROVIDER_MATCH_UNLINKED",
   ProviderResultPending: "DIAG_PROVIDER_RESULT_PENDING",
   ProviderDataInvalid: "PROVIDER_DATA_INVALID",
   UnexpectedProviderStatus: "UNEXPECTED_PROVIDER_STATUS",

@@ -116,8 +116,8 @@ Page({
         : [];
       const level = Number(profile.career_level) || 1;
       const nextThreshold = ({2: 80, 3: 170, 4: 380, 5: 630})[level] ?? null;
-      const points = Number(profile.career_points) || 0;
-      const progressPercent = nextThreshold === null ? (level === 6 ? 100 : 0) : nextThreshold === 0 ? 0 : Math.min(100, Math.floor(points / nextThreshold * 100));
+      const points = career.b_points == null ? null : Number(career.b_points);
+      const progressPercent = points === null ? 0 : nextThreshold === null ? (level === 6 ? 100 : 0) : nextThreshold === 0 ? 0 : Math.min(100, Math.floor(points / nextThreshold * 100));
       const startLevel = Math.min(4, Math.max(1, level - 1));
       this.setData({
         userId: profile.user_id,
@@ -126,8 +126,9 @@ Page({
         maxLevel: level === 6,
         levelName: LEVEL_NAMES[level],
         seasonLevelName: LEVEL_NAMES[Number(profile.season_level) || 1],
+        bPoints: points === null ? "待评估" : String(points),
         nextThreshold, progressPercent, progressDegrees: progressPercent * 3.6,
-        remainingPoints: nextThreshold === null ? 0 : Math.max(0, nextThreshold - points),
+        remainingPoints: nextThreshold === null || points === null ? null : Math.max(0, nextThreshold - points),
         performanceText: career.is_rated ? "以每周评估结果为准" : "还需 " + (career.remaining_to_rated || 0) + " 场有效预测定级",
         levelPath: [startLevel, startLevel + 1, startLevel + 2].map(value => ({level:value, name:LEVEL_NAMES[value], kind:value === level ? "current" : value === level + 1 ? "next" : ""})),
         state: "ready",
@@ -186,7 +187,7 @@ Page({
           this.setData({ favoriteTeamText: team.name, favoriteTeamLogo: teamLogo });
           return;
         }
-        cursor = payload.next_cursor || null;
+        cursor = (payload.page || {}).next_cursor || null;
         if (seen.has(cursor)) return;
         seen.add(cursor);
       } while (cursor);
@@ -200,7 +201,7 @@ Page({
   },
 
   onLevelHelp() {
-    wx.showModal({ title: "生涯等级与升级", content: "圆环仅表示累计积分门槛进度。升级需要表现与积分同时达线，每周一 10:00（北京时间）评估，每次最多升一级。实际等级以服务端评估为准。", showCancel: false });
+    wx.showModal({ title: "生涯等级与升级", content: "圆环仅表示最近一次评估的 B 分门槛进度。升级需要表现与积分同时达线，每周一 10:00（北京时间）评估，每次最多升一级。实际等级以服务端评估为准。", showCancel: false });
   },
 
   onRulesTap() {
@@ -225,7 +226,7 @@ Page({
         predictionText: item.pred_home_score + " : " + item.pred_away_score,
         actualText: item.regular_home_score == null ? "待结算" : item.regular_home_score + " : " + item.regular_away_score,
         pointsText: item.match_score == null ? "待结算" : "+" + item.match_score + " 分",
-        resultClass: item.exact_hit ? "exact" : item.wdl_hit ? "wdl" : "miss",
+        resultClass: item.match_score == null ? "pending" : item.exact_hit ? "exact" : item.wdl_hit ? "wdl" : "miss",
         resultText: item.exact_hit ? "精确命中" : item.wdl_hit ? "胜平负命中" : item.match_score == null ? "等待结算" : "未命中",
       }); }) });
     }).catch(() => this.setData({ recentState: "error" }));

@@ -439,7 +439,7 @@ describe("L. 等级 v2（规范 44-L / 17.5–17.9）", () => {
     expect(afterCorr.below_count).toBe(0);
   });
 
-  it("Q1 没有首次评估时不产生事件并保留缓存等级", () => {
+  it("Q1 没有首次评估时返回未定级基线", () => {
     const initial = baseState(3, 1, 5);
     const replayed = replayLevel({
       scope: LevelScope.Career,
@@ -452,7 +452,7 @@ describe("L. 等级 v2（规范 44-L / 17.5–17.9）", () => {
       initialState: initial,
     });
 
-    expect(replayed).toMatchObject(initial);
+    expect(replayed).toMatchObject({ level: 1, best_level: 1, below_count: 0 });
     expect(replayed.last_eval_as_of).toBeNull();
   });
 

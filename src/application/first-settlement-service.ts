@@ -1,20 +1,7 @@
+import { reconcileSettledMatch } from "./settlement-progress.js";
 /**
- * 首次结算 orchestration 服务（阶段 4 切片 C）。
- *
- * FirstSettlementService.start(matchId, serverNow, hasBlockingAnomaly) 是首次结算
- * 唯一服务入口：必须读取 match，交由 decideFirstSettlement 纯决策；仅当 kind=start
- * 才继续。继续流程：
- * - 读取 match_results 最新版本；
- * - 按 (match_id, result_version, rule_version) 创建或复用 settlement；若已存在
- *   settled settlement 则不再创建、直接返回已完成（重复调用幂等）；
- * - match.settlement_status waiting -> settling；
- * - 读取该 settlement 的全部 items，仅处理 pending/failed，applied 跳过；
- * - 通过可注入 itemWorker(item, result) 处理 item，成功则 item -> applied；
- * - 全部成功：settlement -> settled/done，match -> settled（settled_result_version、
- *   settled_at）；无 items 同样成功 settled；
- * - itemWorker 失败：当前 item -> failed（attempt_count+1、记录 last_error），
- *   settlement -> failed/apply_items，match -> failed，抛出原错误；已 applied 的
- *   item 不回滚，重试只处理 pending/failed（规范 15.4 部分失败恢复）。
+ * 首次结算入口：准备账本、逐 item 原子入账、重算周榜、完成结算。
+ * 准备、各 item、周榜和 finalize 分别提交；applied item 不随之后的失败回滚。
  */
 import {
   SCHEMA_VERSION,
@@ -32,9 +19,19 @@ import {
 } from "../domain/errors.js";
 import { newUuid } from "../domain/ids.js";
 import { validateSettlementTransition } from "../domain/settlement-state-machine.js";
-import type { MatchResult, SettlementDoc, SettlementItem } from "../domain/types.js";
-import type { AppRepository, UnitOfWork } from "../infrastructure/repositories.js";
-import { decideFirstSettlement, FirstSettlementCode } from "./first-settlement.js";
+import type {
+  MatchResult,
+  SettlementDoc,
+  SettlementItem,
+} from "../domain/types.js";
+import type {
+  AppRepository,
+  UnitOfWork,
+} from "../infrastructure/repositories.js";
+import {
+  decideFirstSettlement,
+  FirstSettlementCode,
+} from "./first-settlement.js";
 import { assertValidServerNow } from "./period-finalize.js";
 import { rebuildSettlementWeekRanks } from "./settlement-item-application-service.js";
 import { prepareSettlementItems } from "./settlement-item-preparation.js";
@@ -102,7 +99,10 @@ function buildSettlement(
   };
 }
 
-export function workerErrorInfo(err: unknown): { code: string; message: string } {
+export function workerErrorInfo(err: unknown): {
+  code: string;
+  message: string;
+} {
   const code =
     err instanceof DomainError
       ? err.code
@@ -134,10 +134,14 @@ export async function transitionMatchSettlementStatus(
     return;
   }
   if (!validateSettlementTransition(match.settlement_status, to)) {
-    throw conflictError("MATCH_STATE_CONFLICT", "比赛结算状态转移违反结算状态机", {
-      from: match.settlement_status,
-      to,
-    });
+    throw conflictError(
+      "MATCH_STATE_CONFLICT",
+      "比赛结算状态转移违反结算状态机",
+      {
+        from: match.settlement_status,
+        to,
+      },
+    );
   }
   await tx.matches.updateSettlementStatus(matchId, to, serverNow);
 }
@@ -206,9 +210,16 @@ export class FirstSettlementService {
     const leaseUntil = new Date(
       serverNow.getTime() + FIXED_CONFIG_V1.JOB_LEASE_MINUTES * 60 * 1000,
     );
-    const acquired = await this.repo.jobLocks.acquire(lockKey, ownerId, leaseUntil);
+    const acquired = await this.repo.jobLocks.acquire(
+      lockKey,
+      ownerId,
+      leaseUntil,
+    );
     if (!acquired) {
-      return { kind: "not_started", code: FirstSettlementCode.AlreadyRunning };
+      return {
+        kind: "not_started" as const,
+        code: FirstSettlementCode.AlreadyRunning,
+      };
     }
 
     let workerError: unknown;
@@ -216,16 +227,34 @@ export class FirstSettlementService {
     const lockRenewal = startSettlementLockRenewal(this.repo, lockKey, ownerId);
 
     try {
-      const outcome = await this.repo.withTransaction(
-        async (tx): Promise<FirstSettlementStartOutcome> => {
+      await reconcileSettledMatch(this.repo, matchId);
+      const outcome = await (async (): Promise<FirstSettlementStartOutcome> => {
+        const prepared = await this.repo.withTransaction(async (tx) => {
           const match = await tx.matches.findById(matchId);
           if (match === null) {
             throw notFoundError("MATCH");
           }
+          if ((await tx.anomalies?.findOpenBlockingByMatch(matchId))?.length) {
+            return {
+              kind: "not_started" as const,
+              code: FirstSettlementCode.NotReady,
+            };
+          }
 
+          const unfinished = (await tx.settlements.findByMatch(matchId))
+            .filter(
+              (row) =>
+                !row.is_correction &&
+                row.status !== SettlementDocStatus.Settled,
+            )
+            .sort((a, b) => a.result_version - b.result_version)[0];
           const decision = decideFirstSettlement({
             match_status: match.match_status,
-            settlement_status: match.settlement_status,
+            settlement_status:
+              match.settlement_status === SettlementStatus.Settling &&
+              unfinished !== undefined
+                ? SettlementStatus.Waiting
+                : match.settlement_status,
             finish_detected_at: match.finish_detected_at,
             result_version: match.result_version,
             regular_home_score: match.regular_home_score,
@@ -241,7 +270,7 @@ export class FirstSettlementService {
               match.scoring_rule_version,
             );
             return {
-              kind: "already_settled",
+              kind: "already_settled" as const,
               settlement_id: settled?.settlement_id ?? null,
               processed_count: 0,
               skipped_applied_count: 0,
@@ -249,10 +278,15 @@ export class FirstSettlementService {
           }
 
           if (decision.kind !== "start") {
-            return { kind: "not_started", code: decision.code };
+            return { kind: "not_started" as const, code: decision.code };
           }
 
-          const result = await tx.matchResults.findLatestByMatch(matchId);
+          const result = unfinished
+            ? await tx.matchResults.findByMatchAndVersion(
+                matchId,
+                unfinished.result_version,
+              )
+            : await tx.matchResults.findLatestByMatch(matchId);
           if (result === null) {
             throw internalError("首次结算前必须存在最新 match_results 版本");
           }
@@ -267,18 +301,21 @@ export class FirstSettlementService {
             ruleVersion,
           );
           if (existing === null) {
-            settlement = buildSettlement(matchId, resultVersion, ruleVersion, serverNow);
+            settlement = buildSettlement(
+              matchId,
+              resultVersion,
+              ruleVersion,
+              serverNow,
+            );
             await tx.settlements.insert(settlement);
             settlementCreated = true;
           } else if (existing.status === SettlementDocStatus.Settled) {
             return {
-              kind: "already_settled",
+              kind: "already_settled" as const,
               settlement_id: existing.settlement_id,
               processed_count: 0,
               skipped_applied_count: 0,
             };
-          } else if (existing.status === SettlementDocStatus.Running) {
-            return { kind: "not_started", code: FirstSettlementCode.AlreadyRunning };
           } else {
             settlement = existing;
           }
@@ -302,41 +339,69 @@ export class FirstSettlementService {
           };
           await tx.settlements.update(runningSettlement);
 
-          const items = await prepareSettlementItems(tx, settlement, result, serverNow);
-          let processedCount = 0;
-          let skippedAppliedCount = 0;
+          const items = await prepareSettlementItems(
+            tx,
+            settlement,
+            result,
+            serverNow,
+          );
+          return {
+            kind: "prepared" as const,
+            match,
+            result,
+            settlement,
+            settlementCreated,
+            runningSettlement,
+            items,
+            resultVersion,
+          };
+        });
+        if (prepared.kind !== "prepared")
+          return prepared as FirstSettlementStartOutcome;
+        const {
+          match,
+          result,
+          settlement,
+          settlementCreated,
+          runningSettlement,
+          items,
+          resultVersion,
+        } = prepared;
+        const tx = this.repo;
+        let processedCount = 0;
+        let skippedAppliedCount = 0;
 
-          for (const item of items) {
-            if (item.status === SettlementItemStatus.Applied) {
-              skippedAppliedCount += 1;
-              continue;
-            }
+        for (const item of items) {
+          if (item.status === SettlementItemStatus.Applied) {
+            skippedAppliedCount += 1;
+            continue;
+          }
 
-            lockRenewal.assertHealthy();
-            try {
-              // §15.5：单 item 的预测/聚合/unlock 与 item→applied 必须同事务；
-              // savepoint 隔离失败项自身写入，失败记录在回滚后另行提交。
-              await tx.savepoint(async (itemTx) => {
-                const workResult = await this.itemWorker(item, result, {
-                  tx: itemTx,
-                  server_now: serverNow,
-                });
-                if (workResult?.item_applied !== true) {
-                  await itemTx.settlementItems.update({
-                    ...item,
-                    status: SettlementItemStatus.Applied,
-                    applied_at: serverNow,
-                    attempt_count: item.attempt_count + 1,
-                    last_error_code: null,
-                    last_error_message: null,
-                    updated_at: serverNow,
-                  });
-                }
+          lockRenewal.assertHealthy();
+          try {
+            // 单个 item 独立提交；失败项整笔回滚，已 applied 项不受后续失败影响。
+            await this.repo.withTransaction(async (itemTx) => {
+              const workResult = await this.itemWorker(item, result, {
+                tx: itemTx,
+                server_now: serverNow,
               });
-            } catch (err) {
-              workerFailed = true;
-              workerError = err;
-              const { code, message } = workerErrorInfo(err);
+              if (workResult?.item_applied !== true) {
+                await itemTx.settlementItems.update({
+                  ...item,
+                  status: SettlementItemStatus.Applied,
+                  applied_at: serverNow,
+                  attempt_count: item.attempt_count + 1,
+                  last_error_code: null,
+                  last_error_message: null,
+                  updated_at: serverNow,
+                });
+              }
+            });
+          } catch (err) {
+            workerFailed = true;
+            workerError = err;
+            const { code, message } = workerErrorInfo(err);
+            await this.repo.withTransaction(async (tx) => {
               await tx.settlementItems.update({
                 ...item,
                 status: SettlementItemStatus.Failed,
@@ -359,32 +424,40 @@ export class FirstSettlementService {
                 SettlementStatus.Failed,
                 serverNow,
               );
-              break;
-            }
-
-            lockRenewal.assertHealthy();
-            processedCount += 1;
-          }
-
-          if (workerFailed) {
-            return {
-              kind: "started",
-              settlement_id: settlement.settlement_id,
-              settlement_created: settlementCreated,
-              processed_count: processedCount,
-              skipped_applied_count: skippedAppliedCount,
-            };
+            });
+            break;
           }
 
           lockRenewal.assertHealthy();
-          await tx.settlements.update({
-            ...runningSettlement,
-            phase: SettlementPhase.RebuildRanks,
-            updated_at: serverNow,
-          });
-          if (items.length > 0 && match.period_anchor_at !== null) {
-            await rebuildSettlementWeekRanks(tx, match.period_anchor_at, serverNow);
-          }
+          processedCount += 1;
+        }
+
+        if (workerFailed) {
+          return {
+            kind: "started",
+            settlement_id: settlement.settlement_id,
+            settlement_created: settlementCreated,
+            processed_count: processedCount,
+            skipped_applied_count: skippedAppliedCount,
+          };
+        }
+
+        lockRenewal.assertHealthy();
+        await tx.settlements.update({
+          ...runningSettlement,
+          phase: SettlementPhase.RebuildRanks,
+          updated_at: serverNow,
+        });
+        if (items.length > 0 && match.period_anchor_at !== null) {
+          await this.repo.withTransaction((rankTx) =>
+            rebuildSettlementWeekRanks(
+              rankTx,
+              match.period_anchor_at!,
+              serverNow,
+            ),
+          );
+        }
+        await this.repo.withTransaction(async (tx) => {
           const finalizingSettlement: SettlementDoc = {
             ...runningSettlement,
             phase: SettlementPhase.Finalize,
@@ -406,12 +479,11 @@ export class FirstSettlementService {
 
           // 49.3 / 15.9 finalize 顺序：先写 settled_result_version=v 与 settled_at，
           // 再重新读取 result_version 决定 settled 或 settling -> correcting。
-          await tx.matches.update({
-            ...finalMatch,
-            settled_result_version: resultVersion,
-            settled_at: serverNow,
-            updated_at: serverNow,
-          });
+          await tx.matches.updateSettlementProgress(
+            finalMatch.match_id,
+            resultVersion,
+            serverNow,
+          );
           const afterFinalize = await tx.matches.findById(matchId);
           if (afterFinalize === null) {
             throw notFoundError("MATCH");
@@ -425,16 +497,16 @@ export class FirstSettlementService {
               : SettlementStatus.Settled,
             serverNow,
           );
+        });
 
-          return {
-            kind: "started",
-            settlement_id: settlement.settlement_id,
-            settlement_created: settlementCreated,
-            processed_count: processedCount,
-            skipped_applied_count: skippedAppliedCount,
-          };
-        },
-      );
+        return {
+          kind: "started",
+          settlement_id: settlement.settlement_id,
+          settlement_created: settlementCreated,
+          processed_count: processedCount,
+          skipped_applied_count: skippedAppliedCount,
+        };
+      })();
 
       if (workerFailed) {
         throw workerError;

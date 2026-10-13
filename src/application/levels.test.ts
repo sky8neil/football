@@ -78,6 +78,7 @@ describe("LevelsQueryService", () => {
         valid_predictions: 76,
         remaining_to_rated: 0,
         last_evaluated_at: lastEval.toISOString(),
+        b_points: 0,
         next_evaluation_at: "2026-08-10T02:00:00.000Z",
         is_former_top: false,
       },

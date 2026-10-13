@@ -342,6 +342,11 @@ describe("RetrySettlementService.retry - 成功路径", () => {
                 matchWrites.push({ kind: "update", value: updated });
                 await tx.matches.update(updated);
               },
+              updateSettlementProgress: async (mid, version, settledAt) => {
+                const before = await tx.matches.findById(mid);
+                matchWrites.push({ kind: "update", value: { ...before!, settled_result_version: version, settled_at: settledAt } });
+                await tx.matches.updateSettlementProgress(mid, version, settledAt);
+              },
               updateSettlementStatus: async (mid, status, updatedAt) => {
                 matchWrites.push({
                   kind: "updateSettlementStatus",
@@ -465,7 +470,7 @@ describe("RetrySettlementService.retry - 成功路径", () => {
     expect(matchAfter?.settled_result_version).toBe(0);
     expect(matchAfter?.settled_at).toBeNull();
     expect((await repo.settlements.findById(settlement.settlement_id))?.status).toBe(
-      SettlementDocStatus.Failed,
+      SettlementDocStatus.Running,
     );
   });
 
@@ -696,10 +701,10 @@ describe("RetrySettlementService.retry - 状态约束", () => {
       ))?.status,
     ).toBe(SettlementItemStatus.Pending);
     const matchAfter = await repo.matches.findById(match.match_id);
-    expect(matchAfter?.settlement_status).toBe(SettlementStatus.Waiting);
+    expect(matchAfter?.settlement_status).toBe(SettlementStatus.Settled);
   });
 
-  it("settlement status=running -> already_running，不调用 worker", async () => {
+  it("settlement status=running 且无持有锁时续跑", async () => {
     const { repo, match } = await setup();
     const settlement = makeFailedSettlement({
       match_id: match.match_id,
@@ -714,11 +719,7 @@ describe("RetrySettlementService.retry - 状态约束", () => {
 
     const outcome = await service.retry(settlement.settlement_id, NOW);
 
-    expect(outcome).toEqual({
-      kind: "already_running",
-      settlement_id: settlement.settlement_id,
-      code: FirstSettlementCode.AlreadyRunning,
-    });
+    expect(outcome).toMatchObject({ kind: "settled", settlement_id: settlement.settlement_id });
     expect(worker).not.toHaveBeenCalled();
   });
 
@@ -745,11 +746,13 @@ describe("RetrySettlementService.retry - 状态约束", () => {
     expect(worker).not.toHaveBeenCalled();
   });
 
-  it("is_correction=true 的 failed settlement 不走普通 retry，保留给 correction 入口", async () => {
+  it("is_correction=true 的 failed settlement 可以从通用 retry 恢复", async () => {
     const { repo, match } = await setup();
+    await repo.matches.update({ ...match, result_version: 2, settled_result_version: 1, settlement_status: SettlementStatus.Failed });
+    await repo.matchResults.insert(makeResult({ match_id: match.match_id, result_version: 2 }));
     const settlement = makeFailedSettlement({
       match_id: match.match_id,
-      result_version: 1,
+      result_version: 2,
       is_correction: true,
     });
     await repo.settlements.insert(settlement);
@@ -761,20 +764,16 @@ describe("RetrySettlementService.retry - 状态约束", () => {
 
     const outcome = await service.retry(settlement.settlement_id, NOW);
 
-    expect(outcome).toEqual({
-      kind: "not_retryable",
-      settlement_id: settlement.settlement_id,
-      status: SettlementDocStatus.Failed,
-    });
-    expect(worker).not.toHaveBeenCalled();
+    expect(outcome).toMatchObject({ kind: "settled", settlement_id: settlement.settlement_id });
+    expect(worker).toHaveBeenCalledTimes(1);
     expect(
       (await repo.settlementItems.findBySettlementAndPrediction(
         settlement.settlement_id,
         item.prediction_id,
       ))?.status,
-    ).toBe(SettlementItemStatus.Pending);
+    ).toBe(SettlementItemStatus.Applied);
     expect((await repo.matches.findById(match.match_id))?.settlement_status).toBe(
-      SettlementStatus.Waiting,
+      SettlementStatus.Settled,
     );
   });
 });

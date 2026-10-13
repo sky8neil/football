@@ -486,7 +486,7 @@ describe("LevelCorrectionReevalService §17.7 / §32.10", () => {
     });
   });
 
-  it("[F1] 用户没有本周周评估且周任务已结束时以当前状态重评", async () => {
+  it("[F1] 用户没有本周周评估且周任务已结束时延后重评", async () => {
     const { repo, user, correctionSettlementId } = await seedCorrection(false);
     const previousWeek = new Date("2026-08-03T02:00:00.000Z");
     const currentUser = await repo.users.findById(user.user_id);
@@ -514,10 +514,10 @@ describe("LevelCorrectionReevalService §17.7 / §32.10", () => {
       CORRECTION_AS_OF,
     );
 
-    expect(outcome.kind).toBe("completed");
+    expect(outcome.kind).toBe("deferred");
     expect(await repo.users.findById(user.user_id)).toMatchObject({
-      career_level: 4,
-      career_level_state: { week_base_as_of: WEEKLY_AS_OF },
+      career_level: currentUser.career_level,
+      career_level_state: { week_base_as_of: previousWeek },
     });
   });
 
@@ -680,7 +680,7 @@ describe("LevelCorrectionReevalService §17.7 / §32.10", () => {
     expect(await repo.users.findById(user.user_id)).toMatchObject({ career_level: 4 });
   });
 
-  it("[F2] 周评估已落账后仍以同周 week_base 改判", async () => {
+  it("[F2] 后续评估已落账时不重放旧 correction", async () => {
     const { repo, user, correctionSettlementId } = await seedCorrection(false);
     const laterSameWeek = new Date("2026-08-15T02:00:00.000Z");
     const currentUser = await repo.users.findById(user.user_id);
@@ -705,10 +705,10 @@ describe("LevelCorrectionReevalService §17.7 / §32.10", () => {
 
     const outcome = await reeval(repo).runForSettlement(correctionSettlementId, CORRECTION_AS_OF);
 
-    expect(outcome.evaluated_count).toBeGreaterThan(0);
+    expect(outcome.evaluated_count).toBe(0);
     expect(await repo.users.findById(user.user_id)).toMatchObject({
-      career_level: 3,
-      career_level_state: { last_eval_as_of: CORRECTION_AS_OF },
+      career_level: currentUser.career_level,
+      career_level_state: { last_eval_as_of: laterSameWeek },
     });
   });
 });

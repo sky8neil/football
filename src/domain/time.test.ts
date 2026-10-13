@@ -46,9 +46,9 @@ describe("K. 排行榜 - 周期 key（规范 7 / 44-K）", () => {
 
   it("S10：month 周期 key 不再支持", () => {
     const anchor = new Date("2026-08-31T15:59:00Z");
-    expect(() => calculatePeriodKey(PeriodType.Month, anchor)).toThrow(/未知 period_type/);
-    expect(isValidPeriodKey(PeriodType.Month, "2026-08")).toBe(false);
-    expect(() => periodEndAt(PeriodType.Month, "2026-08")).toThrow(
+    expect(() => calculatePeriodKey(("month" as PeriodType), anchor)).toThrow(/未知 period_type/);
+    expect(isValidPeriodKey(("month" as PeriodType), "2026-08")).toBe(false);
+    expect(() => periodEndAt(("month" as PeriodType), "2026-08")).toThrow(
       /period_key 格式与 period_type 不匹配/,
     );
   });

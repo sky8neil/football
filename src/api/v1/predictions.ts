@@ -205,7 +205,7 @@ export function validateMyPredictionsQuery(
     throw validationError("season_id 必须是字符串", { field: "season_id" });
   }
   const seasonId = query.season_id === undefined ? null : query.season_id;
-  if (seasonId !== null && leagueId === null && query.cursor === undefined) {
+  if (seasonId !== null && leagueId === null) {
     throw validationError("season_id 仅能与 league_id 同时提供", { field: "season_id" });
   }
   if (

@@ -27,6 +27,7 @@ import { ProviderReconcileService } from "../application/provider-reconcile.js";
 import { ProviderSyncDispatcher, type ProviderSyncJobType } from "../application/provider-sync-dispatcher.js";
 import { SyncJobType } from "../domain/enums.js";
 import { SUPPORTED_LEAGUES } from "../domain/config.js";
+import { runSettlementTimer } from "../application/settlement-timer.js";
 import { activeWindow } from "../application/provider-active-window.js";
 import type { Match } from "../domain/types.js";
 import { createCloudFunctionHandler, type CloudFunctionContextLike, type CloudFunctionEvent } from "./index.js";
@@ -185,11 +186,13 @@ export function createCloudFunctionRuntime(options: CloudFunctionRuntimeOptions)
       if (leagueScopedJob && scheduledLeague === undefined) {
         return { result: { status: 200, body: { data: { kind: "skipped", reason: "no_configured_leagues" }, request_id: makeRequestId() } } };
       }
-      const data = await providerDispatcher.run(event.job, serverNow, scheduledLeague);
+      const sync = await providerDispatcher.run(event.job, serverNow, scheduledLeague);
+      const data = { sync, settlements: await runSettlementTimer(repo, serverNow) };
       return { result: { status: 200, body: { data, request_id: makeRequestId() } } };
     }
     if (event.Type === "Timer") {
-      const data = await runDueProviderJobs({
+      const serverNow = new Date();
+      const providerData = await runDueProviderJobs({
         cloudDb,
         dispatcher: providerDispatcher,
         providerRegistry,
@@ -197,9 +200,10 @@ export function createCloudFunctionRuntime(options: CloudFunctionRuntimeOptions)
         sourceIds: providerSources.sources.map((source) => source.source_id),
         profile: providerSources.sync_profile,
         reconcile: providerReconcile,
-        serverNow: new Date(),
+        serverNow,
         log: logger,
       });
+      const data = { ...providerData, settlements: await runSettlementTimer(repo, serverNow) };
       return { result: { status: 200, body: { data, request_id: makeRequestId() } } };
     }
     return handler(event, context);
@@ -222,9 +226,9 @@ function providerJobIntervalMs(
   const hour = 60 * minute;
   if (job === SyncJobType.FutureSchedule) return (profile === "test" ? 12 : 6) * hour;
   if (job === SyncJobType.FullScheduleVerify) return 24 * hour;
-  if (job === SyncJobType.NearMatch) return minute;
+  if (job === SyncJobType.NearMatch) return 30 * minute;
   if (job === SyncJobType.PostFinishVerify) return (profile === "test" ? 5 : 3) * minute;
-  return minute;
+  return 3 * minute;
 }
 
 async function runDueProviderJobs(input: {

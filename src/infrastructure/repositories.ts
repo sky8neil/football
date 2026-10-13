@@ -244,6 +244,7 @@ export interface MatchRepository {
   findLive(): Promise<Match[]>;
   insert(match: Match): Promise<void>;
   update(match: Match): Promise<void>;
+  updateSettlementProgress(matchId: string, resultVersion: number, settledAt: Date): Promise<void>;
   /** 只更新结算状态与更新时间，保留并发写入的其它 match 字段。 */
   updateSettlementStatus(
     matchId: string,
@@ -690,6 +691,11 @@ export class InMemoryRepository implements AppRepository {
       findLive: () => self.findLiveMatches(),
       insert: (match) => self.insertMatch(match),
       update: (match) => self.updateMatch(match),
+      updateSettlementProgress: async (matchId, resultVersion, settledAt) => {
+        const match = await self.findMatchById(matchId);
+        if (match === null) throw new DocumentNotFoundError("matches", matchId);
+        await self.updateMatch({ ...match, settled_result_version: Math.max(match.settled_result_version, resultVersion), settled_at: settledAt, updated_at: settledAt });
+      },
       updateSettlementStatus: (matchId, settlementStatus, updatedAt) =>
         self.updateMatchSettlementStatus(matchId, settlementStatus, updatedAt),
     };

@@ -1,22 +1,7 @@
+import { reconcileSettledMatch } from "./settlement-progress.js";
 /**
- * 结算重试 orchestration 服务（阶段 4 切片 D：部分失败恢复与 retry settlement）。
- *
- * RetrySettlementService.retry(settlementId, serverNow) 是失败结算重试唯一服务入口：
- * - 仅允许非 correction settlement.status = failed 参与重试；settled -> already_settled（重复 retry
- *   不重复积分/worker），running -> already_running，其余状态 -> not_retryable，
- *   settlement 不存在 -> SETTLEMENT_NOT_FOUND；
- * - 读取 settlement 对应 match / match_results / items；
- * - 按 settlement.match_id 获取 job lock `settlement:match:{match_id}`（lease 使用现有
- *   jobLocks，owner 使用新 UUID，finally 释放），无法获取 -> SETTLEMENT_ALREADY_RUNNING；
- * - settlement failed -> running/apply_items，match -> settling；
- * - 仅处理 pending/failed items，applied 永不调用 worker；
- * - 每个 item worker 成功立即 item -> applied（attempt_count+1）；失败立即 item -> failed
- *   （attempt_count+1、last_error），settlement -> failed/apply_items 并保留已 applied，
- *   match -> failed，返回 kind=failed（不伪造事务回滚：已 applied 不回滚）；
- * - 全部成功（含无 items）：settlement -> settled/done；match 在没有更高结果版本时
- *   -> settled，否则 -> correcting（均更新 settled_result_version / settled_at）。
- *
- * 不实现 correction、career、rankings、levels、admin、provider、frontend。
+ * 结算恢复入口：失败或租约释放后的 running 结算可恢复，包括 correction。
+ * 准备、各 item、周榜和 finalize 分别提交；applied item 不随之后的失败回滚。
  */
 import {
   SettlementDocStatus,
@@ -24,11 +9,22 @@ import {
   SettlementPhase,
   SettlementStatus,
 } from "../domain/enums.js";
-import { notFoundError, internalError } from "../domain/errors.js";
+import {
+  conflictError,
+  notFoundError,
+  internalError,
+} from "../domain/errors.js";
 import { newUuid } from "../domain/ids.js";
 import { FIXED_CONFIG_V1 } from "../domain/config.js";
-import type { AdminAuditLog, MatchResult, SettlementDoc } from "../domain/types.js";
-import type { AppRepository, UnitOfWork } from "../infrastructure/repositories.js";
+import type {
+  AdminAuditLog,
+  MatchResult,
+  SettlementDoc,
+} from "../domain/types.js";
+import type {
+  AppRepository,
+  UnitOfWork,
+} from "../infrastructure/repositories.js";
 import { FirstSettlementCode } from "./first-settlement.js";
 import {
   settlementMatchLockKey,
@@ -89,10 +85,9 @@ export type RetrySettlementOutcome = (
       settlement_id: string;
       status: SettlementDocStatus;
     }
-)
-  & {
-    audit_log?: AdminAuditLog;
-  };
+) & {
+  audit_log?: AdminAuditLog;
+};
 
 export { settlementMatchLockKey } from "./first-settlement-service.js";
 
@@ -113,26 +108,16 @@ export class RetrySettlementService {
       throw notFoundError("SETTLEMENT");
     }
 
-    if (existing.is_correction) {
-      return {
-        kind: "not_retryable",
-        settlement_id: settlementId,
-        status: existing.status,
-      };
-    }
     if (existing.status === SettlementDocStatus.Settled) {
-      return { kind: "already_settled", settlement_id: settlementId };
+      await reconcileSettledMatch(this.repo, existing.match_id);
+      return { kind: "already_settled" as const, settlement_id: settlementId };
     }
-    if (existing.status === SettlementDocStatus.Running) {
+    if (
+      existing.status !== SettlementDocStatus.Failed &&
+      existing.status !== SettlementDocStatus.Running
+    ) {
       return {
-        kind: "already_running",
-        settlement_id: settlementId,
-        code: FirstSettlementCode.AlreadyRunning,
-      };
-    }
-    if (existing.status !== SettlementDocStatus.Failed) {
-      return {
-        kind: "not_retryable",
+        kind: "not_retryable" as const,
         settlement_id: settlementId,
         status: existing.status,
       };
@@ -143,7 +128,11 @@ export class RetrySettlementService {
     const leaseUntil = new Date(
       serverNow.getTime() + FIXED_CONFIG_V1.JOB_LEASE_MINUTES * 60 * 1000,
     );
-    const acquired = await this.repo.jobLocks.acquire(lockKey, ownerId, leaseUntil);
+    const acquired = await this.repo.jobLocks.acquire(
+      lockKey,
+      ownerId,
+      leaseUntil,
+    );
     if (!acquired) {
       return {
         kind: "already_running",
@@ -154,32 +143,24 @@ export class RetrySettlementService {
 
     const lockRenewal = startSettlementLockRenewal(this.repo, lockKey, ownerId);
     try {
-      return await this.repo.withTransaction<RetrySettlementOutcome>(
-        async (tx): Promise<RetrySettlementOutcome> => {
+      return await (async (): Promise<RetrySettlementOutcome> => {
+        const prepared = await this.repo.withTransaction(async (tx) => {
           const settlement = await tx.settlements.findById(settlementId);
           if (settlement === null) {
             throw notFoundError("SETTLEMENT");
           }
-          if (settlement.is_correction) {
-            return {
-              kind: "not_retryable",
-              settlement_id: settlementId,
-              status: settlement.status,
-            };
-          }
           if (settlement.status === SettlementDocStatus.Settled) {
-            return { kind: "already_settled", settlement_id: settlementId };
-          }
-          if (settlement.status === SettlementDocStatus.Running) {
             return {
-              kind: "already_running",
+              kind: "already_settled" as const,
               settlement_id: settlementId,
-              code: FirstSettlementCode.AlreadyRunning,
             };
           }
-          if (settlement.status !== SettlementDocStatus.Failed) {
+          if (
+            settlement.status !== SettlementDocStatus.Failed &&
+            settlement.status !== SettlementDocStatus.Running
+          ) {
             return {
-              kind: "not_retryable",
+              kind: "not_retryable" as const,
               settlement_id: settlementId,
               status: settlement.status,
             };
@@ -189,20 +170,18 @@ export class RetrySettlementService {
           if (match === null) {
             throw notFoundError("MATCH");
           }
+          if (
+            (await tx.anomalies?.findOpenBlockingByMatch(settlement.match_id))
+              ?.length
+          ) {
+            throw conflictError(
+              "SETTLEMENT_NOT_READY",
+              "比赛存在未解决的阻塞异常",
+            );
+          }
 
           if (settlement.result_version <= match.settled_result_version) {
             throw internalError("重试结算 result_version 不得回退已结算版本");
-          }
-
-          if (
-            match.settlement_status === SettlementStatus.Settling ||
-            match.settlement_status === SettlementStatus.Correcting
-          ) {
-            return {
-              kind: "already_running",
-              settlement_id: settlementId,
-              code: FirstSettlementCode.AlreadyRunning,
-            };
           }
 
           const result = await tx.matchResults.findByMatchAndVersion(
@@ -216,7 +195,12 @@ export class RetrySettlementService {
           const oldAuditValue = auditWriter
             ? await snapshotSettlementForAudit(tx, settlementId)
             : null;
-          const items = await prepareSettlementItems(tx, settlement, result, serverNow);
+          const items = await prepareSettlementItems(
+            tx,
+            settlement,
+            result,
+            serverNow,
+          );
           const runningSettlement: SettlementDoc = {
             ...settlement,
             status: SettlementDocStatus.Running,
@@ -232,42 +216,65 @@ export class RetrySettlementService {
           await transitionMatchSettlementStatus(
             tx,
             settlement.match_id,
-            SettlementStatus.Settling,
+            settlement.is_correction
+              ? SettlementStatus.Correcting
+              : SettlementStatus.Settling,
             serverNow,
           );
 
-          let processedCount = 0;
-          let skippedAppliedCount = 0;
+          return {
+            kind: "prepared" as const,
+            match,
+            result,
+            settlement,
+            runningSettlement,
+            items,
+            oldAuditValue,
+          };
+        });
+        if (prepared.kind !== "prepared")
+          return prepared as RetrySettlementOutcome;
+        const {
+          match,
+          result,
+          settlement,
+          runningSettlement,
+          items,
+          oldAuditValue,
+        } = prepared;
+        const tx = this.repo;
+        let processedCount = 0;
+        let skippedAppliedCount = 0;
 
-          for (const item of items) {
-            if (item.status === SettlementItemStatus.Applied) {
-              skippedAppliedCount += 1;
-              continue;
-            }
+        for (const item of items) {
+          if (item.status === SettlementItemStatus.Applied) {
+            skippedAppliedCount += 1;
+            continue;
+          }
 
-            lockRenewal.assertHealthy();
-            try {
-              // §15.5：单 item 的预测/聚合/unlock 与 item→applied 必须同事务；
-              // savepoint 隔离失败项自身写入，失败记录在回滚后另行提交。
-              await tx.savepoint(async (itemTx) => {
-                const workResult = await this.itemWorker(item, result, {
-                  tx: itemTx,
-                  server_now: serverNow,
-                });
-                if (workResult?.item_applied !== true) {
-                  await itemTx.settlementItems.update({
-                    ...item,
-                    status: SettlementItemStatus.Applied,
-                    applied_at: serverNow,
-                    attempt_count: item.attempt_count + 1,
-                    last_error_code: null,
-                    last_error_message: null,
-                    updated_at: serverNow,
-                  });
-                }
+          lockRenewal.assertHealthy();
+          try {
+            // 单个 item 独立提交；失败项整笔回滚，已 applied 项不受后续失败影响。
+            await this.repo.withTransaction(async (itemTx) => {
+              const workResult = await this.itemWorker(item, result, {
+                tx: itemTx,
+                server_now: serverNow,
               });
-            } catch (err) {
-              const { code, message } = workerErrorInfo(err);
+              if (workResult?.item_applied !== true) {
+                await itemTx.settlementItems.update({
+                  ...item,
+                  status: SettlementItemStatus.Applied,
+                  applied_at: serverNow,
+                  attempt_count: item.attempt_count + 1,
+                  last_error_code: null,
+                  last_error_message: null,
+                  updated_at: serverNow,
+                });
+              }
+            });
+          } catch (err) {
+            const { code, message } = workerErrorInfo(err);
+            await this.repo.withTransaction(async (tx) => {
               await tx.settlementItems.update({
                 ...item,
                 status: SettlementItemStatus.Failed,
@@ -290,38 +297,47 @@ export class RetrySettlementService {
                 SettlementStatus.Failed,
                 serverNow,
               );
-              const outcome: RetrySettlementOutcome = {
-                kind: "failed",
-                settlement_id: settlementId,
-                processed_count: processedCount,
-                skipped_applied_count: skippedAppliedCount,
-              };
-              return auditWriter === undefined
-                ? outcome
-                : {
-                    ...outcome,
-                    audit_log: await auditWriter(
-                      tx,
-                      oldAuditValue ?? (await snapshotSettlementForAudit(tx, settlementId)),
-                      await snapshotSettlementForAudit(tx, settlementId),
-                      serverNow,
-                    ),
-                  };
-            }
-
-            lockRenewal.assertHealthy();
-            processedCount += 1;
+            });
+            const outcome: RetrySettlementOutcome = {
+              kind: "failed",
+              settlement_id: settlementId,
+              processed_count: processedCount,
+              skipped_applied_count: skippedAppliedCount,
+            };
+            return auditWriter === undefined
+              ? outcome
+              : {
+                  ...outcome,
+                  audit_log: await auditWriter(
+                    tx,
+                    oldAuditValue ??
+                      (await snapshotSettlementForAudit(tx, settlementId)),
+                    await snapshotSettlementForAudit(tx, settlementId),
+                    serverNow,
+                  ),
+                };
           }
 
           lockRenewal.assertHealthy();
-          await tx.settlements.update({
-            ...runningSettlement,
-            phase: SettlementPhase.RebuildRanks,
-            updated_at: serverNow,
-          });
-          if (items.length > 0 && match.period_anchor_at !== null) {
-            await rebuildSettlementWeekRanks(tx, match.period_anchor_at, serverNow);
-          }
+          processedCount += 1;
+        }
+
+        lockRenewal.assertHealthy();
+        await tx.settlements.update({
+          ...runningSettlement,
+          phase: SettlementPhase.RebuildRanks,
+          updated_at: serverNow,
+        });
+        if (items.length > 0 && match.period_anchor_at !== null) {
+          await this.repo.withTransaction((rankTx) =>
+            rebuildSettlementWeekRanks(
+              rankTx,
+              match.period_anchor_at!,
+              serverNow,
+            ),
+          );
+        }
+        await this.repo.withTransaction(async (tx) => {
           const finalizingSettlement: SettlementDoc = {
             ...runningSettlement,
             phase: SettlementPhase.Finalize,
@@ -342,17 +358,17 @@ export class RetrySettlementService {
           }
           // 49.3 / 15.9 finalize 顺序：先写 settled_result_version=v 与 settled_at，
           // 再重新读取 result_version 决定 settled 或 settling -> correcting。
-          await tx.matches.update({
-            ...finalMatch,
-            settled_result_version: settlement.result_version,
-            settled_at: serverNow,
-            updated_at: serverNow,
-          });
+          await tx.matches.updateSettlementProgress(
+            finalMatch.match_id,
+            settlement.result_version,
+            serverNow,
+          );
           const afterFinalize = await tx.matches.findById(settlement.match_id);
           if (afterFinalize === null) {
             throw notFoundError("MATCH");
           }
-          const hasNewerResult = afterFinalize.result_version > settlement.result_version;
+          const hasNewerResult =
+            afterFinalize.result_version > settlement.result_version;
           await transitionMatchSettlementStatus(
             tx,
             settlement.match_id,
@@ -361,26 +377,27 @@ export class RetrySettlementService {
               : SettlementStatus.Settled,
             serverNow,
           );
+        });
 
-          const outcome: RetrySettlementOutcome = {
-            kind: "settled",
-            settlement_id: settlementId,
-            processed_count: processedCount,
-            skipped_applied_count: skippedAppliedCount,
-          };
-          return auditWriter === undefined
-            ? outcome
-            : {
-                ...outcome,
-                audit_log: await auditWriter(
-                  tx,
-                  oldAuditValue ?? (await snapshotSettlementForAudit(tx, settlementId)),
-                  await snapshotSettlementForAudit(tx, settlementId),
-                  serverNow,
-                ),
-              };
-        },
-      );
+        const outcome: RetrySettlementOutcome = {
+          kind: "settled",
+          settlement_id: settlementId,
+          processed_count: processedCount,
+          skipped_applied_count: skippedAppliedCount,
+        };
+        return auditWriter === undefined
+          ? outcome
+          : {
+              ...outcome,
+              audit_log: await auditWriter(
+                tx,
+                oldAuditValue ??
+                  (await snapshotSettlementForAudit(tx, settlementId)),
+                await snapshotSettlementForAudit(tx, settlementId),
+                serverNow,
+              ),
+            };
+      })();
     } finally {
       lockRenewal.stop();
       await this.repo.jobLocks.release(lockKey, ownerId);
@@ -406,8 +423,14 @@ export async function snapshotSettlementForAudit(
     settlement_status: match.settlement_status,
     phase: settlement.phase,
     attempt_count: settlement.attempt_count,
-    failed_item_count: items.filter((item) => item.status === SettlementItemStatus.Failed).length,
-    pending_item_count: items.filter((item) => item.status === SettlementItemStatus.Pending).length,
-    applied_item_count: items.filter((item) => item.status === SettlementItemStatus.Applied).length,
+    failed_item_count: items.filter(
+      (item) => item.status === SettlementItemStatus.Failed,
+    ).length,
+    pending_item_count: items.filter(
+      (item) => item.status === SettlementItemStatus.Pending,
+    ).length,
+    applied_item_count: items.filter(
+      (item) => item.status === SettlementItemStatus.Applied,
+    ).length,
   };
 }

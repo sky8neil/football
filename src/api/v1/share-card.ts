@@ -48,7 +48,7 @@ export async function getShareCardMe(
     input.server_now,
   );
   const query = validateShareCardQuery(input.query);
-  const data = await service.getShareCard(input.authenticated_user_id, query);
+  const data = await service.getShareCard(input.authenticated_user_id, query, input.server_now);
   return {
     status: 200,
     body: {

@@ -836,7 +836,7 @@ export class ProviderStatusSyncService {
 
       const sameStatus = match.match_status === MatchStatus.Cancelled;
       if (
-        !shouldVoidOnCancel(MatchStatus.Cancelled, match.settlement_status) ||
+        !shouldVoidOnCancel(MatchStatus.Cancelled, match.settlement_status, match.settled_result_version) ||
         (!sameStatus && !validateMatchTransition(match.match_status, MatchStatus.Cancelled))
       ) {
         await saveSnapshot(

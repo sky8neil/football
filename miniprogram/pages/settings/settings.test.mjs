@@ -5,7 +5,7 @@ function load() {
   let definition;
   const getMyProfile = vi.fn(async () => ({ statusCode: 200, data: { nickname: "球友", favorite_team_id: null } }));
   const updateMyProfile = vi.fn(async () => ({ statusCode: 200, data: { nickname: "新昵称" } }));
-  const listMatches = vi.fn(async () => ({ statusCode: 200, data: { items: [{ league_id: "premier_league", home_team: { team_id: "a", name: "Arsenal" }, away_team: { team_id: "b", name: "Chelsea" } }], next_cursor: "next" } }));
+  const listMatches = vi.fn(async () => ({ statusCode: 200, data: { items: [{ league_id: "premier_league", home_team: { team_id: "a", name: "Arsenal" }, away_team: { team_id: "b", name: "Chelsea" } }], page: { next_cursor: "next" } } }));
   const storeNickname = vi.fn();
   const wx = { getStorageSync: vi.fn(), setStorageSync: vi.fn(), navigateBack: vi.fn(), showToast: vi.fn() };
   runInNewContext(readFileSync(new URL("./settings.js", import.meta.url), "utf8"), {

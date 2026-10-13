@@ -254,6 +254,8 @@ describe("V2 list status matrix", () => {
       updated_at: NOW,
     });
 
+    const match = (await harness.repo.matches.findById(matchId))!;
+    await harness.repo.matches.update({ ...match, settlement_status: "settled", result_version: 1, settled_result_version: 1 });
     const settledDetail = await request(harness, {
       method: "GET",
       path: `/v1/matches/${matchId}`,

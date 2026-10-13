@@ -112,6 +112,8 @@ Page({
   },
 
   loadFirstPage() {
+    const requestSerial = (this.requestSerial || 0) + 1;
+    this.requestSerial = requestSerial;
     this.setData({
       state: "loading",
       items: [],
@@ -122,6 +124,7 @@ Page({
       loadingMore: false,
     });
     getMyProfile().then((profileResult) => {
+      if (this.requestSerial !== requestSerial) return;
       if (profileResult.statusCode === 401 && profileResult.code === "UNAUTHORIZED") {
         this.setData({
           state: "guest",
@@ -141,6 +144,7 @@ Page({
       const profile = profileResult.data || {};
       this.setData({ nickname: profile.nickname, avatarText: Array.from(profile.nickname || "球")[0], currentUserId: profile.user_id });
       Promise.all([listMyGroups({}), getMyLevels(), this.fetchRankings(true)]).then((results) => {
+        if (this.requestSerial !== requestSerial) return;
         const groupsResult = results[0];
         const levelsResult = results[1];
         if (groupsResult.statusCode !== 200 || levelsResult.statusCode !== 200) {
@@ -163,7 +167,7 @@ Page({
           groups: groupItems,
           groupNames: groupItems.map((item) => item.display_name),
           selectedGroupIndex: selectedGroupIndex < 0 ? 0 : selectedGroupIndex,
-        }, () => this.applyListResult(results[2], true));
+        }, () => this.applyListResult(results[2], true, requestSerial));
       });
     });
   },
@@ -278,7 +282,8 @@ Page({
     wx.switchTab({ url: "/pages/matches/matches" });
   },
 
-  applyListResult(result, replace) {
+  applyListResult(result, replace, requestSerial) {
+    if (requestSerial !== undefined && this.requestSerial !== requestSerial) return;
     if (result.statusCode === 422 && result.code === "VALIDATION_ERROR") {
       this.setData({
         state: "validationError",
@@ -359,11 +364,11 @@ Page({
     }
     const metricLabel = { week: "周积分", career: "生涯积分", season: "赛季积分", strength: "预测评分" }[this.data.board];
     const ranked = me && me.status === "ranked";
-    const standingLabel = ranked ? (me.rank != null && me.rank <= 20 ? "第 " + me.rank + " 名" : me.top_percent != null ? "前 " + me.top_percent + "%" : "已入榜") : "暂无排名";
+    const rankLabel = ranked ? (me.rank != null && me.rank <= 20 ? "第 " + me.rank + " 名" : me.top_percent != null ? "前 " + me.top_percent + "%" : "已入榜") : "暂无排名";
     const ownItem = merged.find(item => item.user_id === (this.profileData && this.profileData.user_id));
-    const rawMe = payload.me || {};
-    const rawValue = this.data.board === "strength" ? rawMe.strength_index : this.data.board === "career" ? rawMe.career_points : this.data.board === "season" ? rawMe.season_points : rawMe.period_score;
-    const standingValue = rawValue != null ? rawValue : ownItem ? ownItem.mainValue : ranked ? "—" : this.data.board === "strength" ? "—" : "0";
+    const standingValue = ownItem ? ownItem.mainValue : "—";
+    const standingLabel = this.data.board === "strength" && ranked
+      ? rankLabel + " · 共 " + payload.entry_count + " 人" : rankLabel;
     const standingStatus = ranked ? "你位于" + (this.data.scope === "group" ? "群内" : "全站") + standingLabel + (me.rank != null ? "，排名第 " + me.rank + " 名。" : "。") : me && me.status === "below_threshold" ? "还差 " + me.remaining_valid_predictions + " 场有效预测参与排名。" : me && me.status === "not_eligible" ? "参与满 2 个等级赛季后开放。" : "完成首场有效预测并结算后参与排名。";
     this.setData({
       metricLabel, standingLabel, standingValue, standingStatus,
@@ -404,8 +409,9 @@ Page({
       return;
     }
     this.setData({ loadingMore: true, errorMessage: "" });
+    const requestSerial = this.requestSerial;
     this.fetchRankings(false, this.data.nextCursor).then((result) => {
-      this.applyListResult(result, false);
+      this.applyListResult(result, false, requestSerial);
     });
   },
 

@@ -649,7 +649,7 @@ describe("CorrectionSettlementService.correct - 重复调用与复用", () => {
     });
   });
 
-  it("已有 running correction settlement 时 Fail Closed，不重复执行", async () => {
+  it("已有 running correction settlement 且无持有锁时续跑", async () => {
     const { repo, match } = await setupCorrection();
     const settlement = await seedCorrectionSettlement(repo, match.match_id, []);
     await repo.settlements.update({
@@ -666,15 +666,11 @@ describe("CorrectionSettlementService.correct - 重复调用与复用", () => {
       NOW,
     );
 
-    expect(outcome).toEqual({
-      kind: "already_running",
-      settlement_id: settlement.settlement_id,
-      code: CorrectionSettlementCode.AlreadyRunning,
-    });
+    expect(outcome).toMatchObject({ kind: "settled", settlement_id: settlement.settlement_id });
     expect(worker).not.toHaveBeenCalled();
     expect(await repo.settlements.findById(settlement.settlement_id)).toMatchObject({
-      status: SettlementDocStatus.Running,
-      attempt_count: 1,
+      status: SettlementDocStatus.Settled,
+      attempt_count: 2,
     });
   });
 });

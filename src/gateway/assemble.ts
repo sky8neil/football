@@ -27,7 +27,7 @@ import {
   leaveGroup,
 } from "../api/v1/groups.js";
 import { getShareCardMe } from "../api/v1/share-card.js";
-import { makeRequestId, mapErrorToHttp } from "../api/v1/validation.js";
+import { assertUnknownFields, makeRequestId, mapErrorToHttp } from "../api/v1/validation.js";
 import type { RateLimiter } from "../api/v1/rate-limit.js";
 import type { SessionService } from "../application/session.js";
 import type { MatchQueryService } from "../application/match-query.js";
@@ -290,6 +290,7 @@ export async function handleGatewayRequest(
 
     const matchId = matchIdFromPath(path);
     if (method === "GET" && matchId !== null) {
+      assertUnknownFields(input.query, new Set());
       const identity = await resolveIdentity(trustedOpenid, input.repo);
       const result = await getMatch(input.services.matches, {
         authenticated_user_id: publicReadUserId(identity),
@@ -359,6 +360,7 @@ export async function handleGatewayRequest(
     }
 
     if (method === "GET" && path === "/v1/profile/me") {
+      assertUnknownFields(input.query, new Set());
       const identity = await resolveIdentity(trustedOpenid, input.repo);
       const profile =
         input.services.profile ?? new ProfileQueryService(input.repo);
@@ -418,6 +420,7 @@ export async function handleGatewayRequest(
     }
 
     if (method === "GET" && path === "/v1/levels/me") {
+      assertUnknownFields(input.query, new Set());
       const identity = await resolveIdentity(trustedOpenid, input.repo);
       const levels =
         input.services.levels ?? new LevelsQueryService(input.repo);

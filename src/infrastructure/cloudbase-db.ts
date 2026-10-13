@@ -14,6 +14,7 @@ export interface CloudBaseDb {
   get(collection: string, id: string): Promise<CloudBaseDocument | null>;
   /** 原子新增；主键或唯一索引冲突时拒绝。 */
   add(collection: string, id: string, document: CloudBaseDocument): Promise<void>;
+  /** 仅合并传入字段，与 SDK doc.update 一致。 */
   update(collection: string, id: string, document: CloudBaseDocument): Promise<void>;
   query(
     collection: string,

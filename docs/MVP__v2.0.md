@@ -221,17 +221,17 @@ MVP 不实现：
 
 ## 1.4 MVP 支持联赛与当前赛季
 
-当前 MVP 按联赛配置 Provider：英超使用 `football_data`，中超使用 `bsd`，其余四个欧洲联赛保留 `api_football`。不同 Provider 的外部 ID 只在各自 mapping 中有效。
+当前 MVP 按联赛配置 Provider：五大联赛使用 `football_data`（fd），中超使用 `bsd`。不同 Provider 的外部 ID 只在各自 mapping 中有效。
 
 `SUPPORTED_LEAGUES`（= `LEVEL_ELIGIBLE_LEAGUES`，等级白名单与联赛支持范围同源，见第 17.4 节）为封闭枚举，编码不得自动扩展枚举外的联赛或赛季：
 
 | `league_id` | 名称 | `provider` | `source_league_ref` | `source_season_ref` | `api_football_league_id`（兼容） | `api_football_season`（兼容） | `season_id`（平台口径） | 赛季周期 | `round_id` 上限 |
 |---|---|---|---|---|---|---|---|---|---|
 | `premier_league` | 英超 | `football_data` | `PL` | `2026` | `39` | `2026` | `2026_2027` | 8 月–次年 5 月 | `38`（`"01".."38"`） |
-| `la_liga` | 西甲 | `api_football` | `140` | `2026` | `140` | `2026` | `2026_2027` | 8 月–次年 5 月 | `38`（`"01".."38"`） |
-| `serie_a` | 意甲 | `api_football` | `135` | `2026` | `135` | `2026` | `2026_2027` | 8 月–次年 5 月 | `38`（`"01".."38"`） |
-| `bundesliga` | 德甲 | `api_football` | `78` | `2026` | `78` | `2026` | `2026_2027` | 8 月–次年 5 月 | `34`（`"01".."34"`） |
-| `ligue_1` | 法甲 | `api_football` | `61` | `2026` | `61` | `2026` | `2026_2027` | 8 月–次年 5 月 | `34`（`"01".."34"`） |
+| `la_liga` | 西甲 | `football_data` | `PD` | `2026` | `140` | `2026` | `2026_2027` | 8 月–次年 5 月 | `38`（`"01".."38"`） |
+| `serie_a` | 意甲 | `football_data` | `SA` | `2026` | `135` | `2026` | `2026_2027` | 8 月–次年 5 月 | `38`（`"01".."38"`） |
+| `bundesliga` | 德甲 | `football_data` | `BL1` | `2026` | `78` | `2026` | `2026_2027` | 8 月–次年 5 月 | `34`（`"01".."34"`） |
+| `ligue_1` | 法甲 | `football_data` | `FL1` | `2026` | `61` | `2026` | `2026_2027` | 8 月–次年 5 月 | `34`（`"01".."34"`） |
 | `chinese_super_league` | 中超 | `bsd` | `52` | `2026` | `169` | `2026` | `2026` | 自然年 3–11 月 | `30`（`"01".."30"`） |
 
 规则：
@@ -360,6 +360,8 @@ FINISHED_NO_SCORE_ALERT_MINUTES = 20
 JOB_LEASE_MINUTES = 10
 SYNC_LOG_RETENTION_DAYS = 30
 ```
+
+R3 实现口径：`LEVEL_FIRST_EVAL_AS_OF` 未登记（null）时，rebuild / daily consistency 的等级事实基线为 level=1、below_count=0，不能信任现有缓存；best_level 仍保留有效 history 的历史下界。上线首评日期需按实际上线周登记，并与首榜周对齐；开发占位 `RANKING_FIRST_PERIOD_KEY=2026-W31` 不表示上线日期已经确定。
 
 以下为等级（`level_v3.0`）、排行榜与群的冻结配置，登记规则同上；带 `LEVEL_` 前缀的判定参数属于「影响历史结果的配置」，任何数值变化必须新建 `level_v3.x` 子版本并带生效 `as_of`，只追加不改写，不回溯重算已产生的评估结果（详见第 17 节）：
 
@@ -646,7 +648,7 @@ UNIQUE(provider, provider_match_id)
 
 - 禁止通过球队名、开赛时间、比分等模糊条件自动绑定旧 `match_id`。
 - 必须通过明确 mapping 导入流程创建映射。
-- MVP 只实现 `api_football`，覆盖第 1.4 节全部六联赛。
+- MVP 主源以第 1.4 节为准：五大联赛 `football_data`（fd），中超 `bsd`；其余已配置源作为补充源。
 
 ## 5.3 round_id
 
@@ -1221,9 +1223,11 @@ waiting -> voided
 settling -> settled
 settling -> failed
 settling -> correcting
+settling -> voided  # 仅 cancelled 且 settled_result_version=0
 
 failed -> settling
 failed -> correcting
+failed -> voided  # 仅 cancelled 且 settled_result_version=0
 
 settled -> correcting
 
@@ -1243,7 +1247,7 @@ correcting -> failed
 settlement_status -> voided
 ```
 
-已经 `settled` 的比赛自动变为 cancelled 不属于 MVP 正常业务；必须形成 blocking anomaly，禁止自动作废历史积分。
+`settled_result_version > 0` 的比赛（包括 correction 失败后的 failed）自动变为 cancelled 不属于 MVP 正常业务；必须形成 blocking anomaly，禁止自动作废历史积分。
 
 ---
 
@@ -2983,6 +2987,7 @@ board                       enum(career, strength, season)
 level_season_id             string|null       # 仅 board=season 必填，其它 board 为 null
 is_final                    bool, default false  # 仅 board=season：true 表示赛季终榜（第 19.11 节），冻结后不可变、永久保留
 snapshot_at                 date
+snapshot_kind               enum(entry, head), default entry
 user_id                     string UUID
 rank                        int >=1
 
@@ -3005,6 +3010,8 @@ window_n                    int >=0|null      # n
 created_at                  date
 schema_version              int, fixed 1
 ```
+
+实现使用 `snapshot_kind=head` 标记该批快照（包括空榜），其 user_id 为 nil UUID、rank=1，仅为内部元数据；查询必须排除 head，不能将其计入人数或历史可选赛季。普通用户行使用 entry。
 
 排序键使用原始整数（`career_points`/`exact_hits`/`valid_predictions`/`last_scoring_match_at`，赛季榜取对应 `season_*` 字段，或 `window_score_sum`/`window_n`），不持久化浮点排序键。
 
@@ -5205,7 +5212,7 @@ finish_detected_at 一旦非 null 不得修改
 # 等级（第 17 节）
 1 <= level <= 6；best_level >= level；best_level 只增不减（career 与每个等级赛季）
 level >= 2 => 对应 scope 有效预测累计 >= 20
-非 rebuild 的相邻两次状态：|to_level - from_level| <= 1
+weekly_eval 相邻状态：|to_level - from_level| <= 1；correction_reeval 从同周 week_base 重算，可由 week_base-1 回到 week_base+1，history 允许跨 2 级
 同一 scope 同一评估周内：level <= week_base_level + 1
 保护期内：level >= week_base_level
 below_count ∈ {0,1}
@@ -5219,7 +5226,7 @@ rankings（board=week）.valid_predictions >= 1 时才存在文档
 board_snapshots 排序键使用原始整数，不持久化浮点排序键
 groups.member_count == COUNT(group_members WHERE status=active)（允许短暂不一致，daily consistency 校验）
 每 group_id + user_id 最多 1 条 group_members 记录
-群主的 group_members 记录不得进入 status=left（只能通过解散群变为 groups.status=dissolved）
+活跃群的群主不得普通退出；解散群时全部 active 成员（包括群主）变为 left，groups.status=dissolved、member_count=0，回收成员名额
 ```
 
 系统在事务前后应进行必要 invariant assertion。

@@ -41,7 +41,7 @@ export async function loadActiveWindowFixtures(
     candidateMatchIds.set(league.league_id, ids);
   }
 
-  const from = new Date(serverNow.getTime() - 24 * 60 * 60_000).toISOString().slice(0, 10);
+  const from = new Date(Math.min(serverNow.getTime() - 24 * 60 * 60_000, ...matches.map(match => match.kickoff_at.getTime()))).toISOString().slice(0, 10);
   const to = new Date(serverNow.getTime() + 24 * 60 * 60_000).toISOString().slice(0, 10);
   const result: ProviderFixtureBatchItem[] = [];
   const orderedIds = client.orderLeagues

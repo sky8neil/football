@@ -21,7 +21,7 @@ describe("profile favorite team emblem", () => {
   });
   it("resolves the actual team and caches its logo after cache is cleared", async () => {
     const { page, listMatches, cache } = load();
-    listMatches.mockResolvedValueOnce({ statusCode: 200, data: { items: [], next_cursor: "next" } });
+    listMatches.mockResolvedValueOnce({ statusCode: 200, data: { items: [], page: { next_cursor: "next" } } });
     listMatches.mockResolvedValueOnce({ statusCode: 200, data: { items: [{ league_id: "premier_league", home_team: { team_id: "a", name: "Arsenal" } }] } });
     await page.loadFavoriteTeam("a");
     expect(listMatches).toHaveBeenLastCalledWith({ limit: 100, cursor: "next" });

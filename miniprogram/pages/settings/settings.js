@@ -43,7 +43,7 @@ Page({
           wx.setStorageSync("team_logo:" + team.team_id, getTeamLogo(match.league_id, team));
         }
       }
-      this.setData({ teams, nextCursor: payload.next_cursor || null, hasMore: !!payload.next_cursor });
+      this.setData({ teams, nextCursor: (payload.page || {}).next_cursor || null, hasMore: !!(payload.page || {}).next_cursor });
       this.filterTeams();
       this.refreshTeamName();
     } catch (_) { this.setData({ teamsError: "球队加载失败，请重试" }); }

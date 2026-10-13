@@ -294,8 +294,9 @@ export async function rebuildGlobalRanks(
       },
     }));
     comparable.sort((a, b) => compareRankingEntry(RankingBoard.Week, a.value, b.value));
-    for (const [index, item] of comparable.entries()) {
-      const globalRank = rankForPosition(item.entry.valid_predictions, index + 1);
+    let position = 0;
+    for (const item of comparable) {
+      const globalRank = item.entry.valid_predictions < 1 ? null : rankForPosition(item.entry.valid_predictions, ++position);
       if (item.entry.global_rank !== globalRank) {
         await rankings.update({ ...item.entry, global_rank: globalRank, updated_at: now });
       }

@@ -128,33 +128,19 @@ export class AdminRetrySettlementService implements RetrySettlementCommand {
       }
 
       const allSettlements = await tx.settlements.findByMatch(matchId);
-      if (
-        match.settlement_status === SettlementStatus.Settling ||
-        match.settlement_status === SettlementStatus.Correcting
-      ) {
-        throw conflictError("SETTLEMENT_ALREADY_RUNNING", "比赛已有结算任务正在运行");
-      }
-
-      const runningSettlement = allSettlements.find(
-        (settlement) => settlement.status === SettlementDocStatus.Running,
-      );
-      if (runningSettlement !== undefined) {
-        throw conflictError("SETTLEMENT_ALREADY_RUNNING", "比赛已有结算任务正在运行", {
-          settlement_id: runningSettlement.settlement_id,
-          result_version: runningSettlement.result_version,
-        });
-      }
-
-      const failedSettlements = allSettlements.filter(
+      const retryableSettlements = allSettlements.map(settlement =>
+        settlement.status === SettlementDocStatus.Running
+          ? { ...settlement, status: SettlementDocStatus.Failed } : settlement);
+      const failedSettlements = retryableSettlements.filter(
         (settlement) => settlement.status === SettlementDocStatus.Failed,
       );
       const targetSettlement = selectFailedSettlementTarget(
         match,
         failedSettlements,
-        allSettlements,
+        retryableSettlements,
       );
       if (targetSettlement.is_correction) {
-        if (!validateSettlementTransition(match.settlement_status, SettlementStatus.Correcting)) {
+        if (match.settlement_status !== SettlementStatus.Correcting && !validateSettlementTransition(match.settlement_status, SettlementStatus.Correcting)) {
           throw conflictError(
             "MATCH_STATE_CONFLICT",
             "管理员 correction retry 不能绕过比赛结算状态机",
@@ -168,7 +154,7 @@ export class AdminRetrySettlementService implements RetrySettlementCommand {
           result_version: targetSettlement.result_version,
         };
       }
-      if (!validateSettlementTransition(match.settlement_status, SettlementStatus.Settling)) {
+      if (match.settlement_status !== SettlementStatus.Settling && !validateSettlementTransition(match.settlement_status, SettlementStatus.Settling)) {
         throw conflictError(
           "MATCH_STATE_CONFLICT",
           "管理员重试不能绕过比赛结算状态机",

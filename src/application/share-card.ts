@@ -108,7 +108,7 @@ interface SettledFact {
 export class ShareCardQueryService {
   constructor(private readonly repo: AppRepository) {}
 
-  async getShareCard(userId: string, input: ShareCardQuery): Promise<ShareCardData> {
+  async getShareCard(userId: string, input: ShareCardQuery, serverNow: Date = new Date()): Promise<ShareCardData> {
     if (!isValidUuid(userId)) {
       throw validationError("user_id 必须为 UUID v4", { field: "user_id" });
     }
@@ -165,7 +165,7 @@ export class ShareCardQueryService {
       favorite_team_id: user.favorite_team_id,
       season_level: (await this.repo.userSeasonStats?.findByUserAndSeason(
         user.user_id,
-        levelSeasonOf(new Date()),
+        levelSeasonOf(serverNow),
       ))?.level ?? 1,
       league_id: query.league_id,
       round_id: query.round_id,
@@ -177,7 +177,7 @@ export class ShareCardQueryService {
     };
   }
 
-  get(userId: string, input: ShareCardQuery): Promise<ShareCardData> {
-    return this.getShareCard(userId, input);
+  get(userId: string, input: ShareCardQuery, serverNow: Date = new Date()): Promise<ShareCardData> {
+    return this.getShareCard(userId, input, serverNow);
   }
 }

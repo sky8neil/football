@@ -757,7 +757,7 @@ describe("RebuildPeriodRankingsService", () => {
 
     await expect(
       new RebuildPeriodRankingsService(repo).rebuildPeriodRankings(
-        PeriodType.Month,
+        ("month" as PeriodType),
         "2026-08",
         NOW,
       ),

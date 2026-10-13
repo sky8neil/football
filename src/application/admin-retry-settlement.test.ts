@@ -445,7 +445,7 @@ describe("AdminRetrySettlementService", () => {
   });
 
   it.each([SettlementStatus.Settling, SettlementStatus.Correcting])(
-    "match settlement_status=%s 时优先返回 SETTLEMENT_ALREADY_RUNNING，即使没有 failed settlement",
+    "match settlement_status=%s 时优先返回 SETTLEMENT_NOT_READY，即使没有 failed settlement",
     async (settlementStatus) => {
       const { repo, match, settlement } = await setup({ settlement_status: settlementStatus });
       await repo.settlements.update({
@@ -464,12 +464,12 @@ describe("AdminRetrySettlementService", () => {
           match.match_id,
           NOW,
         ),
-      ).rejects.toMatchObject({ code: "SETTLEMENT_ALREADY_RUNNING" });
+      ).rejects.toMatchObject({ code: "SETTLEMENT_NOT_READY" });
       expect(worker).not.toHaveBeenCalled();
     },
   );
 
-  it("存在普通 running settlement 时优先返回 SETTLEMENT_ALREADY_RUNNING", async () => {
+  it("存在普通 running settlement 且无锁时可以接管", async () => {
     const { repo, match, settlement } = await setup();
     await repo.settlements.update({
       ...settlement,
@@ -478,10 +478,8 @@ describe("AdminRetrySettlementService", () => {
     });
     const worker = vi.fn(async () => {});
 
-    await expect(
-      new AdminRetrySettlementService(repo, worker).retry(TRUSTED_OPENID, match.match_id, NOW),
-    ).rejects.toMatchObject({ code: "SETTLEMENT_ALREADY_RUNNING" });
-    expect(worker).not.toHaveBeenCalled();
+    await expect(new AdminRetrySettlementService(repo, worker).retry(TRUSTED_OPENID, match.match_id, NOW)).resolves.toMatchObject({ kind: "settled" });
+    expect((await repo.settlements.findById(settlement.settlement_id))?.status).toBe(SettlementDocStatus.Settled);
   });
 
   it("match 处于非法状态（pending）时 admin retry fail closed，抛 MATCH_STATE_CONFLICT", async () => {
@@ -586,7 +584,7 @@ describe("AdminRetrySettlementService", () => {
     });
   });
 
-  it("correction settlement 残留 running 时返回 already_running，不重复处理", async () => {
+  it("correction settlement 残留 running 时且无锁时可以接管", async () => {
     const { repo, match, settlement } = await setup({
       result_version: 2,
       settled_result_version: 1,
@@ -623,11 +621,11 @@ describe("AdminRetrySettlementService", () => {
         match.match_id,
         NOW,
       ),
-    ).rejects.toMatchObject({ code: "SETTLEMENT_ALREADY_RUNNING" });
+    ).resolves.toMatchObject({ kind: "settled" });
     expect(worker).not.toHaveBeenCalled();
     expect(await repo.settlements.findById(runningCorrection.settlement_id)).toMatchObject({
-      status: SettlementDocStatus.Running,
-      attempt_count: 1,
+      status: SettlementDocStatus.Settled,
+      attempt_count: 2,
     });
   });
 

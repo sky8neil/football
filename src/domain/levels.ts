@@ -420,10 +420,10 @@ export function replayLevel(params: ReplayLevelParams): ReplayLevelResult {
 
   const initialState = params.initialState ?? { level: 1, best_level: 1, below_count: 0 };
   if (firstEvalAsOf === null) {
-    // Q1 没有评估起点时不构造评估事件，等级缓存保持不变。
+    // 未登记首评时没有评估事件，返回尚未定级的基线。
     return {
-      ...initialState,
-      week_base: { ...initialState },
+      level: 1, best_level: 1, below_count: 0,
+      week_base: { level: 1, best_level: 1, below_count: 0 },
       week_base_as_of: null,
       last_inputs: null,
       last_eval_as_of: null,

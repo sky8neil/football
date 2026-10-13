@@ -353,6 +353,33 @@ paths:
           $ref: '#/components/responses/RateLimited'
         '422':
           $ref: '#/components/responses/ValidationError'
+    post:
+      tags: [profile]
+      summary: 微信兼容别名： 更新我的用户资料
+      x-requires-trusted-openid: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProfilePatchRequest'
+      responses:
+        '200':
+          description: 更新后的当前用户资料
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MyProfileEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '422':
+          $ref: '#/components/responses/ValidationError'
     delete:
       tags: [profile]
       summary: 注销我的用户账号
@@ -534,8 +561,6 @@ paths:
           $ref: '#/components/responses/ValidationError'
         '403':
           $ref: '#/components/responses/Forbidden'
-        '404':
-          $ref: '#/components/responses/NotFound'
         '500':
           $ref: '#/components/responses/InternalError'
   /groups:
@@ -1357,6 +1382,46 @@ components:
       type: object
       additionalProperties: false
       required: [board, scope, period_key, updated_at, server_now, available_boards, seasons_participated, entry_count, items, page, me]
+      oneOf:
+        - required: [current_period_key]
+          properties:
+            board:
+              enum: [week]
+            period_key:
+              type: string
+              nullable: false
+              pattern: '^[0-9]{4}-W[0-9]{2}$'
+          not:
+            anyOf:
+              - required: [level_season_id]
+              - required: [available_level_seasons]
+              - required: [is_provisional]
+        - required: [level_season_id, available_level_seasons, is_provisional]
+          properties:
+            board:
+              enum: [season]
+            level_season_id:
+              type: string
+              nullable: false
+            period_key:
+              type: string
+              nullable: true
+              enum: [null]
+          not:
+            required: [current_period_key]
+        - properties:
+            board:
+              enum: [career, strength]
+            period_key:
+              type: string
+              nullable: true
+              enum: [null]
+          not:
+            anyOf:
+              - required: [current_period_key]
+              - required: [level_season_id]
+              - required: [available_level_seasons]
+              - required: [is_provisional]
       properties:
         board:
           type: string
@@ -1993,6 +2058,10 @@ components:
           format: date-time
         is_former_top:
           type: boolean
+        b_points:
+          type: integer
+          nullable: true
+          description: 最近一次等级评估的 B 分；尚未评估为 null。
     SeasonLevelData:
       type: object
       additionalProperties: false
@@ -2266,7 +2335,7 @@ components:
           format: uuid
         type:
           type: string
-          enum: [LIVE_SYNC_STALE, LIVE_TOO_LONG, FINISHED_NO_SCORE, INVALID_FINAL_SCORE, PROVIDER_STATE_CONFLICT, PROVIDER_DATA_INVALID, UNEXPECTED_PROVIDER_STATUS, TEAM_CHANGE_AFTER_PREDICTION, KICKOFF_CHANGE_AFTER_ANCHOR, ADMIN_PROVIDER_RESULT_CONFLICT]
+          enum: [LIVE_SYNC_STALE, LIVE_TOO_LONG, FINISHED_NO_SCORE, INVALID_FINAL_SCORE, PROVIDER_STATE_CONFLICT, DIAG_PROVIDER_RESULT_CONFLICT, DIAG_PROVIDER_RESULT_PENDING, DIAG_PROVIDER_MATCH_UNLINKED, PROVIDER_DATA_INVALID, UNEXPECTED_PROVIDER_STATUS, TEAM_CHANGE_AFTER_PREDICTION, KICKOFF_CHANGE_AFTER_ANCHOR, ADMIN_PROVIDER_RESULT_CONFLICT]
         blocking:
           type: boolean
         status:

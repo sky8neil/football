@@ -118,7 +118,7 @@ describe("PeriodFinalizeService", () => {
     const repo = new InMemoryRepository();
 
     await expect(
-      new PeriodFinalizeService(repo).finalize(PeriodType.Month, "2026-08", NOW),
+      new PeriodFinalizeService(repo).finalize(("month" as PeriodType), "2026-08", NOW),
     ).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
   });
 

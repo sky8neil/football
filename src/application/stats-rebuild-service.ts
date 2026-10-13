@@ -11,7 +11,6 @@ import { newUuid } from "../domain/ids.js";
 import { assertSeasonStatsInvariants, assertUserCareerInvariants } from "../domain/invariants.js";
 import {
   replayLevel,
-  type LevelEvalState,
   type LevelInputs,
   type LevelPredictionFact,
   type ReplayLevelResult,
@@ -144,7 +143,7 @@ function buildLevelHistory(
 
 function storedLevelState(replay: ReplayLevelResult, existing: LevelState | undefined): LevelState {
   if (replay.last_eval_as_of === null || replay.last_inputs === null) {
-    return existing ?? defaultLevelState();
+    return defaultLevelState();
   }
   return {
     below_count: replay.below_count,
@@ -179,11 +178,6 @@ function replayScope(params: {
   const untilAsOf = params.isLevelFrozen && params.levelSeasonId !== undefined
     ? new Date(Math.min(params.untilAsOf.getTime(), seasonFinalEvalAsOf(params.levelSeasonId).getTime()))
     : params.untilAsOf;
-  const currentState: LevelEvalState = {
-    level: params.currentLevel,
-    best_level: Math.max(params.currentBestLevel, params.bestFloor),
-    below_count: params.currentLevelState?.below_count ?? 0,
-  };
   const replay = replayLevel({
     scope: params.scope,
     facts: params.facts,
@@ -194,7 +188,7 @@ function replayScope(params: {
     protectionEndAsOf: params.firstEvalAsOf === null
       ? null
       : levelProtectionEndAsOf(params.firstEvalAsOf),
-    initialState: currentState,
+    initialState: { level: 1, best_level: 1, below_count: 0 },
     ...(params.levelSeasonId === undefined ? {} : { levelSeasonId: params.levelSeasonId }),
   });
   const levelState = storedLevelState(replay, params.currentLevelState);

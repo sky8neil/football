@@ -20,6 +20,8 @@ export interface FieldDef {
   enum?: readonly (string | number)[];
   min?: number;
   max?: number;
+  minLength?: number;
+  maxLength?: number;
   default?: unknown;
   note?: string;
   fields?: Record<string, FieldDef>;
@@ -507,6 +509,9 @@ export const COLLECTION_DEFINITIONS: readonly CollectionDef[] = [
           "FINISHED_NO_SCORE",
           "INVALID_FINAL_SCORE",
           "PROVIDER_STATE_CONFLICT",
+          "DIAG_PROVIDER_RESULT_CONFLICT",
+          "DIAG_PROVIDER_RESULT_PENDING",
+          "DIAG_PROVIDER_MATCH_UNLINKED",
           "PROVIDER_DATA_INVALID",
           "UNEXPECTED_PROVIDER_STATUS",
           "TEAM_CHANGE_AFTER_PREDICTION",
@@ -580,7 +585,7 @@ export const COLLECTION_DEFINITIONS: readonly CollectionDef[] = [
     fields: {
       group_id: { type: "string", required: true, immutable: true, note: "UUID v4" },
       owner_user_id: { type: "string", required: true, note: "UUID" },
-      invite_code: { type: "string", required: true, unique: true },
+      invite_code: { type: "string", required: true, unique: true, minLength: 8, maxLength: 8 },
       status: { type: "string", required: true, enum: ["active", "dissolved"] },
       member_count: { type: "int", required: true, min: 0, default: 1 },
       created_at: { type: "date", required: true },

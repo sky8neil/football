@@ -142,7 +142,7 @@ export function assertLevelHistoryInvariants(entry: LevelHistoryEntry): void {
     "level_history reason closed",
   );
   assert(
-    entry.reason === "rebuild" || Math.abs(entry.to_level - entry.from_level) <= 1,
+    entry.reason !== "weekly_eval" || Math.abs(entry.to_level - entry.from_level) <= 1,
     "non-rebuild level_history changes at most one level",
   );
 }

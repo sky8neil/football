@@ -72,8 +72,9 @@ class MemoryCloudBaseDb implements CloudBaseDb {
     if (!this.documents.has(storageKey)) {
       throw new CloudBaseDocumentNotFoundError(collection, id);
     }
-    this.assertUnique(collection, document, id);
-    this.documents.set(storageKey, cloneValue({ ...document, _id: id }));
+    const merged = { ...this.documents.get(storageKey)!, ...document, _id: id };
+    this.assertUnique(collection, merged, id);
+    this.documents.set(storageKey, cloneValue(merged));
   }
 
   async query(
