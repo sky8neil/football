@@ -114,7 +114,7 @@ export class CloudBaseWxDb implements CloudBaseDb {
   async update(collection: string, id: string, document: CloudBaseDocument): Promise<void> {
     try {
       const result = await this.db.collection(collection).doc(id).update({ data: dataWithoutId(document) });
-      if ((result.stats?.updated ?? result.updated) === 0) {
+      if ((result.stats?.updated ?? result.updated) === 0 && await this.get(collection, id) === null) {
         throw new CloudBaseDocumentNotFoundError(collection, id);
       }
     } catch (error) {

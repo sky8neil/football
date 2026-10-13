@@ -1,12 +1,16 @@
-import { describe, expect, it, vi } from "vitest";
+import { isDeepStrictEqual } from "node:util";
+import { describe, expect, it } from "vitest";
+import { SyncJobType } from "../domain/enums.js";
 import { CloudBaseDocumentNotFoundError } from "./cloudbase-db.js";
+import { CloudBaseProviderLeagueStateStore } from "./cloudbase-provider-league-state.js";
 import { CloudBaseWxDb, type CloudBaseSdkDatabase } from "./cloudbase-wx-db.js";
 
-function fakeDatabase() {
+function fakeDatabase(format: "nested" | "top-level" = "nested") {
   const docs = new Map<string, Record<string, unknown>>();
   const getSizes: number[] = [];
   let committed = 0;
   let rolledBack = 0;
+  const updateResult = (updated: number) => format === "nested" ? { stats: { updated } } : { updated };
   const command = {
     inc(value: number) { return { __operation: "inc", value }; },
     lt(value: number) { return { __operation: "lt", value }; },
@@ -57,9 +61,12 @@ function fakeDatabase() {
             },
             async update({ data }: { data: Record<string, unknown> }) {
               const key = `${name}/${id}`;
-              if (!docs.has(key)) return { stats: { updated: 0 } };
-              docs.set(key, { ...docs.get(key), ...data, _id: id });
-              return { stats: { updated: 1 } };
+              const existing = docs.get(key);
+              if (!existing) return updateResult(0);
+              const next = { ...existing, ...data, _id: id };
+              const updated = isDeepStrictEqual(existing, next) ? 0 : 1;
+              docs.set(key, next);
+              return updateResult(updated);
             },
             async remove() { docs.delete(`${name}/${id}`); return { stats: { removed: 1 } }; },
           };
@@ -87,7 +94,7 @@ function fakeDatabase() {
             }
             docs.set(key, updated);
           }
-          return { stats: { updated: matched.length } };
+          return updateResult(matched.length);
         },
       };
       return chain;
@@ -104,6 +111,31 @@ function fakeDatabase() {
 }
 
 describe("CloudBase wx-server-sdk database adapter", () => {
+  it.each(["nested", "top-level"] as const)("accepts same-value updates and rejects missing documents with %s statistics", async (format) => {
+    const fake = fakeDatabase(format);
+    const db = new CloudBaseWxDb(fake.db, "football_test");
+    const collection = "football_test_users";
+    const document = { _id: "user-1", nickname: "A" };
+    await db.add(collection, document._id, document);
+
+    await expect(db.update(collection, document._id, { ...document, nickname: "B" })).resolves.toBeUndefined();
+    await expect(db.update(collection, document._id, { ...document, nickname: "B" })).resolves.toBeUndefined();
+    await expect(db.get(collection, document._id)).resolves.toMatchObject({ nickname: "B" });
+    await expect(db.update(collection, "missing", { _id: "missing" })).rejects.toBeInstanceOf(CloudBaseDocumentNotFoundError);
+  });
+
+  it.each(["nested", "top-level"] as const)("records league success twice at the same task time with %s statistics", async (format) => {
+    const fake = fakeDatabase(format);
+    const db = new CloudBaseWxDb(fake.db, "football_test");
+    const store = new CloudBaseProviderLeagueStateStore(db, "football_test");
+    const now = new Date("2026-10-13T08:15:58.153Z");
+
+    await store.markSuccess("fd", "premier_league", SyncJobType.FutureSchedule, now);
+    await expect(store.markSuccess("fd", "premier_league", SyncJobType.FutureSchedule, new Date(now))).resolves.toBeUndefined();
+    await expect(store.get("fd", "premier_league", SyncJobType.FutureSchedule)).resolves.toMatchObject({ last_success_at: now });
+    expect(fake.docs.size).toBe(1);
+  });
+
   it("uses deterministic document ids and maps duplicate and missing records", async () => {
     const fake = fakeDatabase();
     const db = new CloudBaseWxDb(fake.db, "football_test");
@@ -135,8 +167,8 @@ describe("CloudBase wx-server-sdk database adapter", () => {
     expect(fake.rolledBack()).toBe(1);
   });
 
-  it("reserves a counter using CloudBase stats.updated results", async () => {
-    const fake = fakeDatabase();
+  it.each(["nested", "top-level"] as const)("reserves a counter using %s statistics and rejects exhausted capacity", async (format) => {
+    const fake = fakeDatabase(format);
     const db = new CloudBaseWxDb(fake.db, "football_test", false, fake.db.command);
     const initial = { _id: "provider_usage_fd_minute_202610130743", request_count: 0 };
 
