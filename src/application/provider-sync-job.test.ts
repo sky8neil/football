@@ -4,6 +4,7 @@ import { validationError } from "../domain/errors.js";
 import { newUuid } from "../domain/ids.js";
 import type { Match, SyncLog } from "../domain/types.js";
 import { InMemoryRepository } from "../infrastructure/repositories.js";
+import { ProviderBudgetDeniedError } from "../provider/budget.js";
 import { makeApiFixture } from "../provider/fixture-factory.js";
 import {
   ProviderDataError,
@@ -284,6 +285,7 @@ describe("ProviderFixtureSyncJobService", () => {
       { name: "HTTP 429", error: new ProviderHttpError(429, "rate limited"), retryable: false },
       { name: "Provider data", error: new ProviderDataError("invalid data"), retryable: false },
       { name: "Provider base error", error: new ProviderError("PROVIDER_ERROR", "failed"), retryable: false },
+      { name: "Provider budget denied", error: new ProviderBudgetDeniedError("minute_limit"), retryable: false },
       { name: "domain validation", error: validationError("invalid loader input"), retryable: false },
       { name: "ordinary network error", error: new Error("network down"), retryable: true },
     ] as const;

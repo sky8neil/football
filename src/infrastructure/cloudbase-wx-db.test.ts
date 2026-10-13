@@ -7,14 +7,26 @@ function fakeDatabase() {
   const getSizes: number[] = [];
   let committed = 0;
   let rolledBack = 0;
+  const command = {
+    inc(value: number) { return { __operation: "inc", value }; },
+    lt(value: number) { return { __operation: "lt", value }; },
+  };
   const makeDatabase = (transaction = false) => ({
+    command,
     collection(name: string) {
       let filter: Record<string, unknown> = {};
       let offset = 0;
       let limit = 1000;
       let order: { field: string; direction: "asc" | "desc" } | null = null;
+      const matches = (value: Record<string, unknown>) => Object.entries(filter).every(([key, expected]) => {
+        if (typeof expected === "object" && expected !== null && "__operation" in expected) {
+          const condition = expected as { __operation: string; value: number };
+          if (condition.__operation === "lt") return Number(value[key]) < condition.value;
+        }
+        return value[key] === expected;
+      });
       const rows = () => [...docs.entries()].filter(([key]) => key.startsWith(`${name}/`))
-        .map(([, value]) => value).filter((value) => Object.entries(filter).every(([key, expected]) => value[key] === expected));
+        .map(([, value]) => value).filter(matches);
       const chain = {
         where(value: Record<string, unknown>) { filter = value; return chain; },
         orderBy(field: string, direction: "asc" | "desc") { order = { field, direction }; return chain; },
@@ -45,11 +57,11 @@ function fakeDatabase() {
             },
             async update({ data }: { data: Record<string, unknown> }) {
               const key = `${name}/${id}`;
-              if (!docs.has(key)) return { updated: 0 };
+              if (!docs.has(key)) return { stats: { updated: 0 } };
               docs.set(key, { ...docs.get(key), ...data, _id: id });
-              return { updated: 1 };
+              return { stats: { updated: 1 } };
             },
-            async remove() { docs.delete(`${name}/${id}`); return { removed: 1 }; },
+            async remove() { docs.delete(`${name}/${id}`); return { stats: { removed: 1 } }; },
           };
         },
         async add({ data }: { data: Record<string, unknown> }) {
@@ -58,6 +70,24 @@ function fakeDatabase() {
           if (docs.has(key)) throw Object.assign(new Error("duplicate key"), { errCode: "DATABASE_DUPLICATE_KEY" });
           docs.set(key, { ...data, _id: id });
           return { _id: id };
+        },
+        async update({ data }: { data: Record<string, unknown> }) {
+          const matched = [...docs.entries()].filter(([key, value]) => key.startsWith(`${name}/`) && matches(value));
+          for (const [key, value] of matched) {
+            const updated = { ...value };
+            for (const [field, operation] of Object.entries(data)) {
+              if (typeof operation === "object" && operation !== null && "__operation" in operation) {
+                const command = operation as { __operation: string; value: number };
+                if (command.__operation === "inc") {
+                  updated[field] = (typeof updated[field] === "number" ? updated[field] as number : 0) + command.value;
+                  continue;
+                }
+              }
+              updated[field] = operation;
+            }
+            docs.set(key, updated);
+          }
+          return { stats: { updated: matched.length } };
         },
       };
       return chain;
@@ -103,5 +133,16 @@ describe("CloudBase wx-server-sdk database adapter", () => {
     expect(fake.committed()).toBe(1);
     await expect(db.transaction(async () => { throw new Error("transaction failed"); })).rejects.toThrow("transaction failed");
     expect(fake.rolledBack()).toBe(1);
+  });
+
+  it("reserves a counter using CloudBase stats.updated results", async () => {
+    const fake = fakeDatabase();
+    const db = new CloudBaseWxDb(fake.db, "football_test", false, fake.db.command);
+    const initial = { _id: "provider_usage_fd_minute_202610130743", request_count: 0 };
+
+    await expect(db.reserveCounter("football_test_provider_usage", initial._id, "request_count", 2, initial)).resolves.toBe(true);
+    await expect(db.reserveCounter("football_test_provider_usage", initial._id, "request_count", 2, initial)).resolves.toBe(true);
+    await expect(db.reserveCounter("football_test_provider_usage", initial._id, "request_count", 2, initial)).resolves.toBe(false);
+    expect(fake.docs.get(`football_test_provider_usage/${initial._id}`)).toMatchObject({ request_count: 2 });
   });
 });

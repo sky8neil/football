@@ -8,7 +8,11 @@ import {
 } from "./cloudbase-db.js";
 
 type SdkResult<T> = { data?: T };
-type SdkStats = { updated?: number; removed?: number };
+type SdkStats = {
+  updated?: number;
+  removed?: number;
+  stats?: { updated?: number; removed?: number };
+};
 type SdkCommand = { inc(value: number): unknown; lt(value: number): unknown };
 type SdkDocument = {
   get(): Promise<SdkResult<CloudBaseDocument>>;
@@ -110,7 +114,9 @@ export class CloudBaseWxDb implements CloudBaseDb {
   async update(collection: string, id: string, document: CloudBaseDocument): Promise<void> {
     try {
       const result = await this.db.collection(collection).doc(id).update({ data: dataWithoutId(document) });
-      if (result.updated === 0) throw new CloudBaseDocumentNotFoundError(collection, id);
+      if ((result.stats?.updated ?? result.updated) === 0) {
+        throw new CloudBaseDocumentNotFoundError(collection, id);
+      }
     } catch (error) {
       if (error instanceof CloudBaseDocumentNotFoundError) throw error;
       if (isMissingDocument(error)) throw new CloudBaseDocumentNotFoundError(collection, id);
@@ -167,7 +173,7 @@ export class CloudBaseWxDb implements CloudBaseDb {
     const result = await this.db.collection(collection)
       .where({ _id: id, [field]: this.command.lt(limit) })
       .update({ data: { [field]: this.command.inc(1) } });
-    return (result.updated ?? 0) > 0;
+    return ((result.stats?.updated ?? result.updated) ?? 0) > 0;
   }
 
   async adjustCounter(collection: string, id: string, field: string, delta: number): Promise<void> {

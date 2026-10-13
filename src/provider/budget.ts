@@ -1,4 +1,5 @@
 import { SyncJobType } from "../domain/enums.js";
+import { ProviderError } from "./http.js";
 import type { ProviderSource, ProviderSourceId } from "./sources.js";
 
 export type ProviderBudgetJob =
@@ -8,6 +9,13 @@ export type ProviderBudgetJob =
   | typeof SyncJobType.FutureSchedule
   | typeof SyncJobType.FullScheduleVerify;
 type BudgetLimitReason = "hour_limit" | "day_limit" | "month_limit";
+
+export class ProviderBudgetDeniedError extends ProviderError {
+  constructor(readonly reason: string) {
+    super("PROVIDER_BUDGET_DENIED", `provider budget denied: ${reason}`);
+    this.name = "ProviderBudgetDeniedError";
+  }
+}
 
 export interface ProviderUsageBucket {
   source_id: ProviderSourceId;

@@ -11,7 +11,7 @@ import { SportApiAdapter } from "./sportapi-adapter.js";
 import type { ProviderSource, ProviderSourceId, ProviderSourcesConfig } from "./sources.js";
 import type { ProviderResponseMetadata } from "./transport.js";
 import { FetchProviderHttpClient } from "./transport.js";
-import { ProviderBudget, type ProviderBudgetJob } from "./budget.js";
+import { ProviderBudget, ProviderBudgetDeniedError, type ProviderBudgetJob } from "./budget.js";
 import { KeyPool, InMemoryProviderKeyStateStore, type ProviderKeyStateStore } from "./key-pool.js";
 import { InMemoryProviderLeagueStateStore, type ProviderLeagueStateStore } from "./league-state.js";
 import { SyncJobType } from "../domain/enums.js";
@@ -34,10 +34,6 @@ export interface ProviderRegistryOptions {
   leagueStateStore?: ProviderLeagueStateStore;
   minimumGapMs?: number;
   log?: (entry: Record<string, unknown>) => void;
-}
-
-class ProviderBudgetDeniedError extends Error {
-  constructor(readonly reason: string) { super("provider budget denied"); }
 }
 
 class PooledProviderHttpClient implements ProviderHttpClient {
