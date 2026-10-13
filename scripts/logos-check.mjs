@@ -1,9 +1,14 @@
 import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
-import { createRequire } from "node:module";
+import { dirname, resolve } from "node:path";
+import { runInNewContext } from "node:vm";
+import { fileURLToPath } from "node:url";
 
-const require = createRequire(import.meta.url);
-const { getTeamLogo, PLACEHOLDER } = require("../miniprogram/utils/logo-registry.js");
+const scriptDirectory = dirname(fileURLToPath(import.meta.url));
+const registryPath = resolve(scriptDirectory, "../miniprogram/utils/logo-registry.js");
+const registrySource = await readFile(registryPath, "utf8");
+const registryModule = { exports: {} };
+runInNewContext(registrySource, { module: registryModule, exports: registryModule.exports });
+const { getTeamLogo, PLACEHOLDER } = registryModule.exports;
 const inputArg = process.argv.indexOf("--input");
 
 if (inputArg < 0 || !process.argv[inputArg + 1]) {

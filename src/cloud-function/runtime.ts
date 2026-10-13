@@ -231,7 +231,7 @@ function providerJobIntervalMs(
   return 3 * minute;
 }
 
-async function runDueProviderJobs(input: {
+export async function runDueProviderJobs(input: {
   cloudDb: ReturnType<typeof createCloudBaseWxDb>;
   dispatcher: ProviderSyncDispatcher;
   providerRegistry: ProviderRegistry;
@@ -433,31 +433,41 @@ async function providerDiagnostics(
     }
     return result;
   };
-  return Promise.all(sources.map(async (source) => ({
-    source_id: source.source_id,
-    key_configured: Boolean(source.api_key),
-    key_count: source.api_keys.length,
-    ...(source.source_id === "fd" ? { keys: await registry.keyDiagnostics(source.source_id, now) } : {}),
-    leagues: await Promise.all((await registry.leagueDiagnostics(source.source_id, [
-      SyncJobType.PostFinishVerify,
-      SyncJobType.LiveMatch,
-      SyncJobType.NearMatch,
-      SyncJobType.FutureSchedule,
-      SyncJobType.FullScheduleVerify,
-    ], now)).map(async (league) => {
-      const configuredLeague = SUPPORTED_LEAGUES.find((row) => row.league_id === league.league_id);
-      const localMatches = configuredLeague
-        ? (await loadSeason(configuredLeague.season_id)).filter((match) => match.league_id === league.league_id)
-        : [];
-      const activeMatchIds = new Set<string>();
-      for (const jobType of [SyncJobType.PostFinishVerify, SyncJobType.LiveMatch, SyncJobType.NearMatch]) {
-        for (const match of activeWindow(localMatches, now, jobType)) activeMatchIds.add(match.match_id);
-      }
-      return { ...league, window_match_count: activeMatchIds.size };
-    })),
-    base_url_host: new URL(source.base_url).host,
-    request_usage: sourceUsage[source.source_id],
-    last_request: registry.lastRequest(source.source_id),
-    cloudflare_blocked: source.source_id === "sp" && (registry.lastRequest(source.source_id)?.status === 403 || registry.lastRequest(source.source_id)?.provider_code === "1010"),
-  })));
+  return Promise.all(sources.map(async (source) => {
+    const lastRequest = registry.lastRequest(source.source_id);
+    return {
+      source_id: source.source_id,
+      key_configured: Boolean(source.api_key),
+      key_count: source.api_keys.length,
+      ...(source.source_id === "fd" ? { keys: await registry.keyDiagnostics(source.source_id, now) } : {}),
+      leagues: await Promise.all((await registry.leagueDiagnostics(source.source_id, [
+        SyncJobType.PostFinishVerify,
+        SyncJobType.LiveMatch,
+        SyncJobType.NearMatch,
+        SyncJobType.FutureSchedule,
+        SyncJobType.FullScheduleVerify,
+      ], now)).map(async (league) => {
+        const configuredLeague = SUPPORTED_LEAGUES.find((row) => row.league_id === league.league_id);
+        const localMatches = configuredLeague
+          ? (await loadSeason(configuredLeague.season_id)).filter((match) => match.league_id === league.league_id)
+          : [];
+        const activeMatchIds = new Set<string>();
+        for (const jobType of [SyncJobType.PostFinishVerify, SyncJobType.LiveMatch, SyncJobType.NearMatch]) {
+          for (const match of activeWindow(localMatches, now, jobType)) activeMatchIds.add(match.match_id);
+        }
+        return { ...league, window_match_count: activeMatchIds.size };
+      })),
+      base_url_host: new URL(source.base_url).host,
+      request_usage: sourceUsage[source.source_id],
+      last_request: lastRequest,
+      cloudflare_blocked: isSportApiCloudflareBlocked(source.source_id, lastRequest),
+    };
+  }));
+}
+
+export function isSportApiCloudflareBlocked(
+  sourceId: ProviderSourceId,
+  lastRequest: { status: number; provider_code?: string } | null,
+): boolean {
+  return sourceId === "sp" && (lastRequest?.status === 403 || lastRequest?.provider_code === "1010");
 }

@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
+import { SyncJobType } from "../domain/enums.js";
 import { COLLECTION_DEFINITIONS } from "../schema/collections.js";
 import type { CloudBaseSdkDatabase } from "../infrastructure/cloudbase-wx-db.js";
-import { createCloudFunctionRuntime } from "./runtime.js";
+import { createCloudFunctionRuntime, isSportApiCloudflareBlocked, runDueProviderJobs } from "./runtime.js";
 
 const ENV = {
   FOOTBALL_ENVIRONMENT: "test",
@@ -80,7 +81,49 @@ describe("Cloud Function runtime startup", () => {
   });
 });
 
+describe("Provider Timer scheduling", () => {
+  it("dispatches only the oldest due league for each schedule job in one Timer tick", async () => {
+    const now = new Date("2026-10-13T12:00:00.000Z");
+    const dueLeagues = vi.fn()
+      .mockResolvedValueOnce(["la_liga", "serie_a"])
+      .mockResolvedValueOnce(["bundesliga", "ligue_1"]);
+    const providerRegistry = { dueLeagues } as unknown as Parameters<typeof runDueProviderJobs>[0]["providerRegistry"];
+    const dispatchRun = vi.fn(async (..._args: unknown[]) => ({ kind: "completed" }));
+    const dispatcher = { run: dispatchRun } as unknown as Parameters<typeof runDueProviderJobs>[0]["dispatcher"];
+    const cloudDb = { query: vi.fn(async () => []) } as unknown as Parameters<typeof runDueProviderJobs>[0]["cloudDb"];
+    const reconcile = { run: vi.fn(async () => ({ kind: "completed" })) } as unknown as Parameters<typeof runDueProviderJobs>[0]["reconcile"];
+
+    const result = await runDueProviderJobs({
+      cloudDb,
+      dispatcher,
+      providerRegistry,
+      syncLeagueIds: ["la_liga", "serie_a", "bundesliga", "ligue_1"],
+      sourceIds: ["fd"],
+      profile: "test",
+      reconcile,
+      serverNow: now,
+      log: vi.fn(),
+    });
+
+    expect(dispatchRun).toHaveBeenCalledWith(SyncJobType.FutureSchedule, now, "la_liga");
+    expect(dispatchRun).toHaveBeenCalledWith(SyncJobType.FullScheduleVerify, now, "bundesliga");
+    expect(dispatchRun.mock.calls.filter(([job]) => job === SyncJobType.FutureSchedule)).toHaveLength(1);
+    expect(dispatchRun.mock.calls.filter(([job]) => job === SyncJobType.FullScheduleVerify)).toHaveLength(1);
+    expect(result.jobs_run).toEqual(expect.arrayContaining([
+      `${SyncJobType.FutureSchedule}:la_liga`, `${SyncJobType.FullScheduleVerify}:bundesliga`,
+    ]));
+  });
+});
+
 describe("Cloud Function diagnostic action", () => {
+  it("marks only sportapi 403 or provider code 1010 requests as Cloudflare blocked", () => {
+    expect(isSportApiCloudflareBlocked("sp", { status: 403 })).toBe(true);
+    expect(isSportApiCloudflareBlocked("sp", { status: 200, provider_code: "1010" })).toBe(true);
+    expect(isSportApiCloudflareBlocked("sp", { status: 429, provider_code: "429" })).toBe(false);
+    expect(isSportApiCloudflareBlocked("fd", { status: 403 })).toBe(false);
+    expect(isSportApiCloudflareBlocked("sp", null)).toBe(false);
+  });
+
   it("reports collection, environment, namespace, identity and transaction checks without exposing OPENID", async () => {
     const fake = fakeDatabase();
     const runtime = createCloudFunctionRuntime({ env: ENV, db: fake.db, sdkVersion: "4.0.2", nodeVersion: "v24.21.0", buildTime: "2026-10-11T01:02:03.000Z", log: vi.fn() });
