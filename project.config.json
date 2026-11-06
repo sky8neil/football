@@ -26,7 +26,24 @@
   "cloudfunctionRoot": "cloudfunctions/",
   "simulatorPluginLibVersion": {},
   "packOptions": {
-    "ignore": [],
+    "ignore": [
+      {
+        "type": "suffix",
+        "value": ".test.mjs"
+      },
+      {
+        "type": "suffix",
+        "value": ".test.ts"
+      },
+      {
+        "type": "filename",
+        "value": ".DS_Store"
+      },
+      {
+        "type": "suffix",
+        "value": ".md"
+      }
+    ],
     "include": []
   },
   "appid": "wxc94f506820248a52",
