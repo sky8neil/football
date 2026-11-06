@@ -228,7 +228,7 @@ B6. 反向验证(证明测试有效):临时把一个断言改成故意错误,确
 
 昨天申请的 SecretId / SecretKey 已被用于批量建集合和索引。是否还能配环境变量、部署云函数、建 Timer,取决于该密钥的 CAM 授权(需含云开发 TCB 与云函数 SCF 相关权限)。**让 AI 先试探权限,做不到的步骤退回 8.3 由你手动做,不要为此扩大授权。**
 
-**凭据交付方式**:新建本地文件 `/home/football/.env.cloud1.local`(已被 `.gitignore` 的 `.env.*` 覆盖,不会入库)。AI 只从该文件读取,不得把值打印到对话、日志、报告或提交里。
+**凭据交付方式**:新建本地文件 `/home/football/.env.cloudbase.local`(已被 `.gitignore` 的 `.env.*` 覆盖,不会入库)。AI 只从该文件读取,不得把值打印到对话、日志、报告或提交里。
 
 ```
 TENCENTCLOUD_SECRET_ID=
@@ -247,13 +247,13 @@ FOOTBALL_PROVIDER_KEY_SP=
 |---|---|---|
 | `FOOTBALL_ENVIRONMENT` | `test` | AI |
 | `FOOTBALL_REPOSITORY_BACKEND` | `cloudbase` | AI |
-| `FOOTBALL_CLOUD_ENVIRONMENT_ID` | `cloud1-d4ga6fvm0c6d4ec01`(开发计划 §16.9,环境 ID 不是密钥) | AI |
+| `FOOTBALL_CLOUD_ENVIRONMENT_ID` | `footballfree-d2gzh9xzve789c41a`(开发计划 §16.9,环境 ID 不是密钥) | AI |
 | `FOOTBALL_RESOURCE_NAMESPACE` | `football_test` | AI |
-| `FOOTBALL_MATCH_CURSOR_SECRET` | AI 本地生成随机串,存入 `.env.cloud1.local`,不入库。**一经使用不要随意更换**,否则已发出的分页游标失效 | AI |
+| `FOOTBALL_MATCH_CURSOR_SECRET` | AI 本地生成随机串,存入 `.env.cloudbase.local`,不入库。**一经使用不要随意更换**,否则已发出的分页游标失效 | AI |
 | `FOOTBALL_PROVIDER_SOURCES` | `fd,bsd,5d,of,sp` | AI |
 | `FOOTBALL_SYNC_PROFILE` | `test` | AI |
 | `FOOTBALL_SYNC_LEAGUES` | `premier_league,la_liga,serie_a,bundesliga,ligue_1,chinese_super_league` | AI |
-| `FOOTBALL_PROVIDER_KEY_FD_1/_FD_2/_BSD/_5D/_OF/_SP` | 你在各数据源官网申请的 key,**只写入 `.env.cloud1.local`**,AI 读取后写入云函数 | 你申请并放入文件;AI 写入 |
+| `FOOTBALL_PROVIDER_KEY_FD_1/_FD_2/_BSD/_5D/_OF/_SP` | 你在各数据源官网申请的 key,**只写入 `.env.cloudbase.local`**,AI 读取后写入云函数 | 你申请并放入文件;AI 写入 |
 | `FOOTBALL_MOCK_TRUSTED_OPENID` | 不设置(prod 非空会启动失败) | — |
 
 **其余配置步骤**:
@@ -268,13 +268,13 @@ FOOTBALL_PROVIDER_KEY_SP=
 | Timer 观察 | 至少观察一轮:联赛按最近成功时间轮转、同节拍请求错开、无活跃比赛窗口时零请求;AI 读取日志与 `provider_*` 集合核对 | AI |
 | 真实响应核对 | 用真实响应核对五源字段、额度头、key 独立额度、预算计数与回退;确认 `sp` 在 cloud1 出口可访问(403/1010)、304 是否计费、BSD / OpenFoot 剩余额度字段。不要为测试刻意耗尽额度 | AI 执行并出报告 |
 
-预期效果:你只需准备好 `.env.cloud1.local`,其余由 AI 完成,并交给你一份脱敏的 `diag` 输出、集合索引核对表和同步日志摘要。
+预期效果:你只需准备好 `.env.cloudbase.local`,其余由 AI 完成,并交给你一份脱敏的 `diag` 输出、集合索引核对表和同步日志摘要。
 
 ### 8.3 只能你来做(AI 无法代替)
 
 | 编号 | 事项 | 位置 / 做法 |
 |---|---|---|
-| H1 | 申请六个数据源 key 并放入 `.env.cloud1.local` | 各数据源官网账号;key 不要发给 AI 对话 |
+| H1 | 申请六个数据源 key 并放入 `.env.cloudbase.local` | 各数据源官网账号;key 不要发给 AI 对话 |
 | H2 | **仅当 8.2 中 API 授权不够时**:手动在控制台配环境变量、部署、建 Timer | AI 把需要粘贴的变量名与值(密钥值除外)整理成清单给你 |
 | H3 | 比赛日验证:`fd` 比赛中延迟、`5d?status=live` 是否覆盖所有联赛,按开发计划 §21.6 的 R1 / R2 决定 5d 角色 | 需要真实比赛日;AI 可事后读日志出对比表,但你要确认官方比分口径 |
 | H4 | 球队映射与队徽:确认 `(provider, provider_team_id)` → 本地球队 ID、别名、缺图项 | AI 跑 `providers:map-teams`、`logos:check` 出候选报告,你只做最终确认 |

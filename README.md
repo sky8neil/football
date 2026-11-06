@@ -214,6 +214,17 @@ npm run typecheck   # tsc --noEmit 全量类型检查
 npm test            # vitest run（全量测试）
 npm run build       # tsc -p tsconfig.build.json 产出 dist/
 
+# 云开发数据库结构（28 集合 / 47 索引）—— 幂等，可反复执行
+npm run cloudbase:provision                       # 打印计划，不连网
+npm run cloudbase:verify                          # 只读体检，缺失即退出码 1
+npm run cloudbase:provision -- --apply            # 补齐缺失的集合与索引（不删任何东西）
+
+# 云函数配置（超时 120s / 每分钟 Timer / diag）
+npm run cloudbase:function                        # 只读看配置差异
+npm run cloudbase:function -- --apply             # 收敛超时并补触发器
+npm run cloudbase:function -- --diag              # 调云端 diag 自检
+npm run cloudbase:deploy                          # 构建并上传云函数代码（COS 通道）
+
 # 首页视觉（Design System 母版页）—— 改 token / WXSS 后必须跑
 python3 docs/design/scripts/verify-home-migration.py                 # 结构 + 不变式 + 取值（无需浏览器）
 node    docs/design/scripts/home-view-model.mjs --out /tmp/hv        # 用真实页面代码生成各状态 data

@@ -5,7 +5,7 @@
 
 ## 范围与结论
 
-已为 §8.1 列出的 Provider 自动化测试缺口补充本地 Vitest 用例，并完成类型检查和全量测试。本轮全部使用固定、脱敏的内存 fixture；没有请求真实 Provider API、连接 cloud1、读写云端数据库或读取 `.env.cloud1.local`。
+已为 §8.1 列出的 Provider 自动化测试缺口补充本地 Vitest 用例，并完成类型检查和全量测试。本轮全部使用固定、脱敏的内存 fixture；没有请求真实 Provider API、连接 cloud1、读写云端数据库或读取 `.env.cloudbase.local`。
 
 ## 覆盖清单
 

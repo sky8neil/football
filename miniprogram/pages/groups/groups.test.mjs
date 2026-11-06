@@ -231,6 +231,8 @@ describe("group pages", () => {
       return { config, storeNickname };
     })();
     const page = instantiate(config);
+    // 会话页现在会先做本地非空校验；真实用户必先填昵称才能提交。
+    page.setData({ nickname: "Sky" });
     page.onSubmit();
     await flush();
     expect(wxStub.storage.has("pending_group_invite_code")).toBe(false);

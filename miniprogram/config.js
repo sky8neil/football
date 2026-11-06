@@ -2,7 +2,7 @@ module.exports = {
   // Local DevTools tests the deployed CloudBase function through wx.cloud.callFunction.
   transport: "cloud",
   gatewayOrigin: "http://127.0.0.1:8787",
-  cloudEnvId: "cloud1-d4ga6fvm0c6d4ec01",
+  cloudEnvId: "footballfree-d2gzh9xzve789c41a",
   cloudFunctionName: "api",
   rankingThinBoardThreshold: 20,
   rankingWeekWindow: 4,

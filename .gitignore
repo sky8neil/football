@@ -6,4 +6,5 @@ coverage/
 .env.*
 .codex-supervisor/
 .opencode-supervisor/
+.workbuddy/
 scripts/__pycache__/

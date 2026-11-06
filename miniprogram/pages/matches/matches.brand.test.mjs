@@ -159,7 +159,7 @@ function loadHomePage({ stored } = {}) {
 }
 
 /** 加载会话页，initSession 固定返回给定结果。 */
-function loadSessionPage({ result, stored } = {}) {
+function loadSessionPage({ result, stored, nickname = "Sky" } = {}) {
   const wxStub = installWxStub({ stored });
   const config = capturePageConfig(SESSION_JS, (id) => {
     if (id === "../../services/session.js") {
@@ -169,7 +169,10 @@ function loadSessionPage({ result, stored } = {}) {
     if (id === "../../utils/ui-layout.js") return { headerHeight: () => 88 };
     throw new Error(`Unexpected require: ${id}`);
   });
-  return { page: instantiate(config), ...wxStub };
+  const page = instantiate(config);
+  // 会话页对空昵称做本地拦截、不发请求；这里默认模拟「用户已填好昵称」。
+  page.setData({ nickname });
+  return { page, ...wxStub };
 }
 
 const flushMicrotasks = () => new Promise((resolve) => setTimeout(resolve, 0));

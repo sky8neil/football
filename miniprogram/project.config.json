@@ -21,7 +21,7 @@
     "enhance": true
   },
   "compileType": "miniprogram",
-  "appid": "wx58c61999e9b3f3d5",
+  "appid": "wxc94f506820248a52",
   "projectname": "football-v0",
   "miniprogramRoot": "./",
   "cloudfunctionRoot": "../cloudfunctions/",

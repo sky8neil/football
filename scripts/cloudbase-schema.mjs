@@ -1,5 +1,6 @@
 import { COLLECTION_DEFINITIONS } from "../dist/schema/collections.js";
 import { QUERY_INDEXES, UNIQUE_INDEXES } from "../dist/schema/indexes.js";
+import { cloudBaseCollectionName } from "../dist/infrastructure/cloudbase-db.js";
 
 const args = process.argv.slice(2);
 const namespaceIndex = args.indexOf("--namespace");
@@ -13,12 +14,12 @@ const collections = new Set([
   "diag",
   "rate_limits",
 ]);
-for (const collection of collections) console.log(`- ${namespace}_${collection}`);
+for (const collection of collections) console.log(`- ${cloudBaseCollectionName(namespace, collection)}`);
 console.log("Indexes (create manually in CloudBase console):");
 for (const index of [...UNIQUE_INDEXES, ...QUERY_INDEXES]) {
   const fields = index.fields.map((field) => {
     const [name, direction] = field.split(":");
     return `${name}:${direction ?? "asc"}`;
   }).join(", ");
-  console.log(`- ${namespace}_${index.collection} ${index.name} unique=${index.unique} fields=[${fields}]`);
+  console.log(`- ${cloudBaseCollectionName(namespace, index.collection)} ${index.name} unique=${index.unique} fields=[${fields}]`);
 }

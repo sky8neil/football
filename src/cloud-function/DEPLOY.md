@@ -1,6 +1,33 @@
 # Cloud Function Deployment (S16/S17)
 
-代码侧已实现云函数调用、CloudBase 仓储适配器与诊断动作。**尚未在微信开发者工具或真实 `cloud1` 环境部署验证**；SDK 行为、事务能力表与体验版登录流程仍待真环境验收。
+代码侧已实现云函数调用、CloudBase 仓储适配器与诊断动作。**尚未在微信开发者工具或真实 `footballfree` 环境部署验证**；SDK 行为、事务能力表与体验版登录流程仍待真环境验收。
+
+## Three Credential Types — Do Not Mix Them Up
+
+| Credential | Where it lives | What it can do |
+| --- | --- | --- |
+| Mini Program AppID `wxc94f506820248a52` | `project.config.json` and `miniprogram/project.config.json`. It is not a secret. | Identifies the mini program in the developer tools and binds it to a CloudBase environment. |
+| Mini Program AppSecret | `.env.cloudbase.local` as `WECHAT_APP_SECRET` (gitignored; never in client code, never in the repo) | Calls WeChat server APIs such as `access_token`, `code2Session`, and subscribe messages. This project does not need it: the openid comes from the cloud function runtime context. |
+| Tencent Cloud SecretId (`AKID…`) / SecretKey | `.env.cloudbase.local` as `TENCENTCLOUD_SECRET_ID` / `TENCENTCLOUD_SECRET_KEY` | Provisions CloudBase resources through `npm run cloudbase:provision`. The pair must belong to the account that owns `footballfree-d2gzh9xzve789c41a`. |
+
+An AppSecret cannot create or inspect CloudBase collections. A SecretKey without its matching SecretId fails with a signature error.
+
+## Function Configuration (timeout, trigger, diag)
+
+Function code can be uploaded from the developer tools, but two settings are easy to miss and both are fatal: the default timeout is **3 seconds** (provider sync dies instantly) and a missing timer means scheduled work never runs.
+
+`scripts/cloudbase-deploy-function.mjs` converges and checks them without touching code:
+
+| Command | Effect |
+| --- | --- |
+| `npm run cloudbase:function` | Read-only diff of the live function config against the expected one |
+| `npm run cloudbase:function -- --apply` | Sets timeout to 120 s and creates the every-minute timer if absent |
+| `npm run cloudbase:function -- --diag` | Invokes `{"action":"diag"}` and prints the result summary |
+| `npm run cloudbase:deploy` | Builds and uploads the function code (COS path; the 1.5 MB zip cap rules out direct zip upload) |
+
+Add `--sync-env` to merge the `FOOTBALL_*` values from `.env.cloudbase.local` into the function's environment variables (off by default so console-only values are never overwritten). Existing variables are preserved.
+
+`diag` invoked this way comes from the Tencent Cloud API rather than a mini program call, so `identity_available` is false and `environment_match.runtime_id` is null. That is expected; judge the environment by the environment-ID value, the 28 collections, and the read/write plus transaction probes.
 
 ## Build and Upload
 
@@ -24,11 +51,23 @@ The cloud entry calls `cloud.init({ env: cloud.DYNAMIC_CURRENT_ENV })`, gets the
 
 ## Schema and Diagnostics
 
-Run `npm run cloudbase:schema -- --namespace football_test` to print the business collections, diagnostic and shared rate-limit collections, and all unique/query indexes. The command does not connect to CloudBase. Create these manually in the console before deploying.
+Collection and index names are derived from `src/schema/` through `cloudBaseCollectionName()`, which also applies the 30-character collection-name aliases (`provider_key_state` → `provider_keys`, `user_season_stats` → `stats`, and so on). Never create collections from hand-written names: they will not match what the runtime reads.
 
-Run `{ "action": "diag" }` as a cloud-function test in `dev` or `test`. The report checks required environment keys, runtime environment ID, namespace suffix, collection availability, a read/write probe, transaction availability, identity presence, and versions. It does not reveal the OPENID or environment-variable values. It explicitly leaves index verification to the console. The action returns a generic 404 in `prod`.
+Three commands, all in `scripts/cloudbase-provision.mjs`:
 
-The diagnostic transaction probe only proves that a simple insert/commit works. The full transaction capability table in §17.8 remains **待实测** until tested in `cloud1`.
+| Command | Effect |
+| --- | --- |
+| `npm run cloudbase:provision` | Prints the 28 collections and 47 indexes (20 unique). No network access. |
+| `npm run cloudbase:verify` | Read-only check of the live environment; exits 1 on missing or drifted structure. |
+| `npm run cloudbase:provision -- --apply` | Creates missing collections and indexes. Idempotent: existing objects are never touched, nothing is ever dropped. |
+
+`--apply` reads `TENCENTCLOUD_SECRET_ID` / `TENCENTCLOUD_SECRET_KEY` plus `FOOTBALL_CLOUD_ENVIRONMENT_ID`, `FOOTBALL_RESOURCE_NAMESPACE`, and `FOOTBALL_ENVIRONMENT` from `.env.cloudbase.local` (override with `--env-file`) or from the process environment. It refuses to run against `FOOTBALL_ENVIRONMENT=prod` unless `--allow-prod` is passed. Index drift is reported but never rebuilt implicitly; add `--fix-index-drift` to drop and recreate a mismatched index.
+
+Collection permissions cannot be set by the manager SDK. After provisioning, set every collection to **仅管理端可读写 (ADMINONLY)** in the console.
+
+Run `{ "action": "diag" }` as a cloud-function test in `dev` or `test`. The report checks required environment keys, runtime environment ID, namespace suffix, collection availability, a read/write probe, transaction availability, identity presence, and versions. It does not reveal the OPENID or environment-variable values. Index verification stays with `npm run cloudbase:verify`; the diagnostic action does not check indexes. The action returns a generic 404 in `prod`.
+
+The diagnostic transaction probe only proves that a simple insert/commit works. The full transaction capability table in §17.8 remains **待实测** until tested in `footballfree`.
 
 ## Smoke Test
 
@@ -37,7 +76,7 @@ The diagnostic transaction probe only proves that a simple insert/commit works. 
 3. Through a WeChat client context, call `POST /v1/session/init` with `{ nickname }`; first use returns `201`, repeat use by the same WeChat identity returns `200` and keeps the same user.
 4. Call the same protected route without runtime identity; expect `401`. A client-supplied `openid` or `user_id` remains invalid.
 
-These checks are not represented as complete until run in the actual `cloud1` environment. Do not treat fake SDK tests as cloud deployment or login acceptance.
+These checks are not represented as complete until run in the actual `footballfree` environment. Do not treat fake SDK tests as cloud deployment or login acceptance.
 
 ## Provider Sync (S18-S21)
 
@@ -56,11 +95,11 @@ Set provider credentials in the CloudBase console only. The active-source config
 
 The defaults map five European leagues to `fd` and Chinese Super League to `bsd`; `5d`, `of`, and `sp` are secondary, fallback, or reconciliation sources according to the development plan. Optional source URLs, rate caps, and provider league references are listed in §18.6 and §20.9. Never put credential values in source files, sample JSON, or logs.
 
-Run `npm run cloudbase:schema -- --namespace football_test` after building. Create the listed collections and indexes in `cloud1`, including `provider_usage`, `provider_key_state`, and `provider_league_state`; the command prints the schema and does not apply it.
+Run `npm run cloudbase:provision -- --apply` after building to create every collection and index, including `provider_usage`, `provider_keys`, and `provider_leagues`. Verify with `npm run cloudbase:verify`.
 
 For source mapping work, `npm run providers:map-teams -- --input <file.json>` accepts exported local teams and sanitized provider team samples and prints a review report only. `npm run logos:check -- --input <file.json>` checks normalized fixture samples against packaged team logos. Neither command connects to a provider or writes database mappings.
 
-For cloud validation, invoke `{ "action": "diag" }`, then synchronize each league separately with `{ "action": "sync", "job": "future_schedule", "league": "<league_id>" }` when using the cloud-function test panel. A schedule sync without `league` selects the least recently successful configured league. Each scheduled future/full-season sync handles one league per call. Add a CloudBase timer trigger for every minute (`Type: Timer`) and observe the league rotation. Validate the source's real response shape, quota values, per-league daily request counts, and fixture writes before accepting the deployment. `sp` reachability, 304 quota behavior, `fd` live delay, and the all-leagues `5d` live response need live or `cloud1` confirmation.
+For cloud validation, invoke `{ "action": "diag" }`, then synchronize each league separately with `{ "action": "sync", "job": "future_schedule", "league": "<league_id>" }` when using the cloud-function test panel. A schedule sync without `league` selects the least recently successful configured league. Each scheduled future/full-season sync handles one league per call. `cloudfunctions/api/config.json` declares the every-minute timer trigger (`type: "timer"`, cron `0 * * * * * *`, seven fields: second minute hour day month weekday year); it is applied when the function is uploaded through the developer tools or CLI, and must be confirmed in the console afterwards. The runtime dispatches on `event.Type === "Timer"`. Observe the league rotation. Validate the source's real response shape, quota values, per-league daily request counts, and fixture writes before accepting the deployment. `sp` reachability, 304 quota behavior, `fd` live delay, and the all-leagues `5d` live response need live or `footballfree` confirmation.
 
 ## Logging and Rollback
 

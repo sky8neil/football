@@ -56,8 +56,20 @@ export const CLOUDBASE_REPOSITORY_ENV_KEYS = {
   resource_namespace: "FOOTBALL_RESOURCE_NAMESPACE",
 } as const;
 
+const COLLECTION_ALIASES: Readonly<Record<string, string>> = {
+  user_season_stats: "stats",
+  team_provider_mappings: "team_src_map",
+  match_provider_mappings: "match_src_map",
+  provider_snapshots: "provider_snaps",
+  provider_key_state: "provider_keys",
+  provider_league_state: "provider_leagues",
+  deleted_openid_mappings: "deleted_openids",
+};
+
 export function cloudBaseCollectionName(namespace: string, collection: string): string {
-  return `${namespace}_${collection}`;
+  const name = `${namespace}_${COLLECTION_ALIASES[collection] ?? collection}`;
+  if (name.length > 30) throw new Error(`CloudBase collection name exceeds 30 characters: ${name}`);
+  return name;
 }
 
 export function assertCloudBaseRepositoryConfig(config: {

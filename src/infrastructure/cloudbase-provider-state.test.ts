@@ -6,6 +6,7 @@ import { UNIQUE_INDEXES } from "../schema/indexes.js";
 import { CloudBaseProviderKeyStateStore } from "./cloudbase-provider-key-state.js";
 import { CloudBaseProviderLeagueStateStore } from "./cloudbase-provider-league-state.js";
 import { CloudBaseProviderUsageStore } from "./cloudbase-provider-usage.js";
+import { cloudBaseCollectionName } from "./cloudbase-db.js";
 import type { CloudBaseDb, CloudBaseDocument, CloudBaseQueryOptions } from "./cloudbase-db.js";
 
 const NOW = new Date("2026-10-12T12:30:00.000Z");
@@ -111,7 +112,7 @@ describe("CloudBase provider state stores", () => {
     await expect(first.read(bucket)).resolves.toBe(3);
     await second.release(bucket);
     await expect(first.read(bucket)).resolves.toBe(2);
-    const document = (await db.all(`${NAMESPACE}_provider_usage`))[0]!;
+    const document = (await db.all(cloudBaseCollectionName(NAMESPACE, "provider_usage")))[0]!;
     expect(document._id).toBe(id);
     expect(document).toMatchObject({
       source_id: "fd", bucket_type: "day", bucket_key: "2026-10-12", key_id: "fd#1",
@@ -137,7 +138,7 @@ describe("CloudBase provider state stores", () => {
       key_id: "fd#1", status: "cooldown", cooldown_until: cooldown, network_errors: 0, last_error_code: "429", updated_at: cooldown,
     });
     await expect(first.list(["fd#1", "fd#2"])).resolves.toHaveLength(1);
-    const document = (await db.all(`${NAMESPACE}_provider_key_state`))[0]!;
+    const document = (await db.all(cloudBaseCollectionName(NAMESPACE, "provider_key_state")))[0]!;
     expect(document._id).toBe("provider_key_state_fd1");
     expect(document).not.toHaveProperty("api_key");
     assertMatchesSchema("provider_key_state", document);
@@ -159,7 +160,7 @@ describe("CloudBase provider state stores", () => {
       source_id: "fd", league_id: "premier_league", job_type: SyncJobType.FutureSchedule, last_success_at: later,
     });
     await expect(first.get("fd", "premier_league", SyncJobType.LiveMatch)).resolves.toBeNull();
-    const documents = await db.all(`${NAMESPACE}_provider_league_state`);
+    const documents = await db.all(cloudBaseCollectionName(NAMESPACE, "provider_league_state"));
     expect(documents).toHaveLength(2);
     for (const document of documents) assertMatchesSchema("provider_league_state", document);
     expect(documents.find((document) => document.league_id === "premier_league")).toMatchObject({

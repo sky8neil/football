@@ -1159,10 +1159,11 @@ S1–S3 无外部影响，可连续合入；S5、S7、S10 是接口变更，必�
 
 > 环境 ID 不是密钥（它会出现在小程序客户端代码里），可以写进文档；**AppID、云函数环境变量里的密钥值、Provider key 仍然只存部署平台，不写入仓库**（沿用 `src/cloud-function/DEPLOY.md`）。
 > 三套环境的 `cloud_environment_id` 与 `resource_namespace` 必须互不相同（`assertEnvironmentIsolation`）。只追加、不覆盖：新增环境时在表里加一行。
+> **2026-11-06 变更**：AppID 与云环境已整体换新，旧环境 `cloud1-d4ga6fvm0c6d4ec01` 退役（其验收证据保留在 `MVP2.0__CLOUD1_ACCEPTANCE_RESULT__v1.0.md`）。本文后续出现的 `cloud1` 一律指当前测试环境 `footballfree-d2gzh9xzve789c41a`。
 
 | 环境 | 控制台名称 | `FOOTBALL_CLOUD_ENVIRONMENT_ID` | `FOOTBALL_RESOURCE_NAMESPACE` | 用途 | 状态 |
 |---|---|---|---|---|---|
-| `test` | cloud1 | `cloud1-d4ga6fvm0c6d4ec01` | `football_test`（用户已确认；集合名按 `cloudBaseCollectionName` 拼成 `football_test_users` 等） | 开发者工具真机调试、体验版、联调 | 已创建 |
+| `test` | footballfree（原 `cloud1` 已退役） | `footballfree-d2gzh9xzve789c41a` | `football_test`（用户已确认；集合名按 `cloudBaseCollectionName` 拼成 `football_test_users` 等） | 开发者工具真机调试、体验版、联调 | 环境已创建；集合/索引/云函数待按 §17.3 部署 |
 | `dev` | — | 待登记 | 待登记 | 如需单独的开发环境再开通；本地调试继续用内存网关，可不开通 | 未创建 |
 | `prod` | — | 待登记 | 待登记（不得与 `test` 相同） | 正式上线，独立全新环境，**不复用 `test` 的数据** | 未创建 |
 
@@ -1187,7 +1188,7 @@ S1–S3 无外部影响，可连续合入；S5、S7、S10 是接口变更，必�
 ## 17. S17 数据库接入（仅经云函数）与排错诊断
 
 > 决定（用户已确认）：**所有数据库访问都通过云函数**。小程序不直连云数据库，开发机也不直连（不使用 `@cloudbase/node-sdk`、不申请或保存 API 密钥）。
-> 已确认事实：真实 AppID 已与云开发环境 `cloud1`（`cloud1-d4ga6fvm0c6d4ec01`，登记见 §16.9）绑定；控制台已建一个名为 `test` 的集合（见 17.3，它只用作连通性探针）。
+> 已确认事实：真实 AppID 已与云开发环境 `cloud1`（`footballfree-d2gzh9xzve789c41a`，登记见 §16.9）绑定；控制台已建一个名为 `test` 的集合（见 17.3，它只用作连通性探针）。
 > 用户第一次做小程序，AppID、绑定、权限、环境变量都可能配错。**本节把「出了问题能在日志里一眼看出是哪个微信 / 云开发参数不对」作为硬性要求**（17.5–17.7）。
 > 依赖：S13 A 段（仓储适配器 + `CloudBaseDb` 端口）已完成；本节补上真实适配器。与 §16（S16 登录与调用方式）配套：S16 解决「小程序怎么调云函数、身份从哪来」，S17 解决「云函数怎么连库、出错怎么查」。
 
@@ -1223,16 +1224,16 @@ S1–S3 无外部影响，可连续合入；S5、S7、S10 是接口变更，必�
 | # | 做什么 | 怎么验证 |
 |---|---|---|
 | 1 | 小程序后台（mp.weixin.qq.com）→ 开发管理 → 开发设置，记下 **AppID**（`wx` 开头）；把它填进开发者工具的项目 AppID（本地替换，**不提交仓库**） | 开发者工具右上角详情里显示的是你的 AppID，不是 `touristappid` |
-| 2 | 在开发者工具点「云开发」，选择环境 `cloud1`（环境 ID `cloud1-d4ga6fvm0c6d4ec01`） | 云开发控制台能打开，左上角环境名对应 |
+| 2 | 在开发者工具点「云开发」，选择环境 `cloud1`（环境 ID `footballfree-d2gzh9xzve789c41a`） | 云开发控制台能打开，左上角环境名对应 |
 | 3 | 确认环境属于该 AppID：控制台「设置 → 环境设置」中的关联小程序是你的 AppID（你已说明绑定完成，仍建议核对一次） | 环境设置页能看到该 AppID |
 | 4 | 数据库 → 新建集合。按 D08 脚本输出的清单逐个创建，名称必须是 **`football_test_` + 集合名**（命名空间为 `football_test` 时）；你已建的 `test` 集合只是连通性探针，**业务代码不会使用它**，可以保留或删除 | 数据库页面能看到全部 `football_test_*` 集合 |
 | 5 | 为每个集合按清单创建索引，**唯一索引必须勾选「唯一」** | 抽查 `football_test_users` 有 `openid` 唯一索引 |
 | 6 | 集合权限保持默认（仅创建者可读写 / 客户端不可访问）。云函数访问不受此权限限制 | 在小程序里直接 `wx.cloud.database()` 读该集合应被拒绝（只用于验证权限，不写进业务代码） |
 | 7 | 云函数 → 新建云函数 `api`（名称必须与小程序 `config.js` 里的 `cloudFunctionName` 一致），运行环境选 Node.js 16 或以上，**超时时间调大**（建议 20 秒以上） | 云函数列表能看到 `api` |
-| 8 | 云函数 → `api` → 配置 → 环境变量：`FOOTBALL_ENVIRONMENT=test`、`FOOTBALL_REPOSITORY_BACKEND=cloudbase`、`FOOTBALL_CLOUD_ENVIRONMENT_ID=cloud1-d4ga6fvm0c6d4ec01`、`FOOTBALL_RESOURCE_NAMESPACE=football_test`、`FOOTBALL_MATCH_CURSOR_SECRET=<自己生成的长随机串>` | 控制台环境变量页能看到全部 5 项；密钥值不要发给任何人、不要写进仓库 |
+| 8 | 云函数 → `api` → 配置 → 环境变量：`FOOTBALL_ENVIRONMENT=test`、`FOOTBALL_REPOSITORY_BACKEND=cloudbase`、`FOOTBALL_CLOUD_ENVIRONMENT_ID=footballfree-d2gzh9xzve789c41a`、`FOOTBALL_RESOURCE_NAMESPACE=football_test`、`FOOTBALL_MATCH_CURSOR_SECRET=<自己生成的长随机串>` | 控制台环境变量页能看到全部 5 项；密钥值不要发给任何人、不要写进仓库 |
 | 9 | 上传部署云函数（开发者工具里右键云函数目录 → 上传并部署：云端安装依赖） | 部署状态为成功；云函数日志里无 `Cannot find module` |
 | 10 | 云函数 → `api` → 云端测试，输入 `{ "action": "diag" }` 运行 | 返回 17.7 的自检报告，所有项为通过；有失败项时按「提示」处理 |
-| 11 | 小程序 `miniprogram/config.js`：`transport: "cloud"`、`cloudEnvId: "cloud1-d4ga6fvm0c6d4ec01"`、`cloudFunctionName: "api"`（§16 L01） | 开发者工具控制台没有 `[diag]` 错误提示 |
+| 11 | 小程序 `miniprogram/config.js`：`transport: "cloud"`、`cloudEnvId: "footballfree-d2gzh9xzve789c41a"`、`cloudFunctionName: "api"`（§16 L01） | 开发者工具控制台没有 `[diag]` 错误提示 |
 
 ### 17.4 云函数版本与环境对不上的常见情形（先知道有这些坑）
 
@@ -2343,7 +2344,7 @@ cloud1 所需 provider 环境变量名称：`FOOTBALL_PROVIDER_KEY_FD_1`、`FOOT
 | 编号 | 事项(详见测试计划) | 状态 |
 |---|---|---|
 | S30-A | §8.1 补齐自动化测试:5d / OpenFoot / sportapi.ai 适配器、跨源匹配与赛果采信、Provider CloudBase 状态仓储、请求计划与轮转、诊断字段、映射与队徽命令 | 未补测试 |
-| S30-B | §8.2 AI 经腾讯云 API 配置 cloud1:环境变量、集合与索引核对、部署、`diag`、六联赛同步、Timer、真实响应核对 | 待执行;依赖 `.env.cloud1.local` 与 API 权限 |
+| S30-B | §8.2 AI 经腾讯云 API 配置 cloud1:环境变量、集合与索引核对、部署、`diag`、六联赛同步、Timer、真实响应核对 | 待执行;依赖 `.env.cloudbase.local` 与 API 权限 |
 | S30-C | §8.3 人工事项:H1 key 申请、H3 比赛日验证、H4 映射 / 队徽确认、H5 真机、H6 合规 | 待用户 |
 
 完成标准:状态以新增测试 / 脱敏日志 / 比赛日数据回填;本地 mock 和单测不能代替 cloud1 验收;凭据只存部署平台与本地不入库文件。

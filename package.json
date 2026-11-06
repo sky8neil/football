@@ -15,10 +15,15 @@
     "gateway:dev": "npm run build && node scripts/gateway-dev.mjs",
     "cloudfunction:build": "tsc -p tsconfig.cloudfunction.json && node scripts/write-cloudfunction-build-info.mjs",
     "cloudbase:schema": "npm run build && node scripts/cloudbase-schema.mjs",
+    "cloudbase:provision": "npm run build && node --no-deprecation scripts/cloudbase-provision.mjs",
+    "cloudbase:verify": "npm run build && node --no-deprecation scripts/cloudbase-provision.mjs --verify",
+    "cloudbase:function": "node --no-deprecation scripts/cloudbase-deploy-function.mjs",
+    "cloudbase:deploy": "npm run cloudfunction:build && node --no-deprecation scripts/cloudbase-deploy-function.mjs --apply --deploy-code",
     "logos:check": "node scripts/logos-check.mjs",
     "providers:map-teams": "node scripts/providers-map-teams.mjs"
   },
   "devDependencies": {
+    "@cloudbase/manager-node": "^5.10.2",
     "@types/node": "^20.14.0",
     "typescript": "^5.5.0",
     "vitest": "^2.1.0"

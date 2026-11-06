@@ -1,14 +1,54 @@
-<view class="page">
-  <input
-    class="nickname"
-    type="text"
-    value="{{nickname}}"
-    bindinput="onNicknameInput"
-    placeholder="sky8neil"
-    disabled="{{loading}}"
-  />
-  <button bindtap="onSubmit" disabled="{{loading}}" loading="{{loading}}">init</button>
-  <view wx:if="{{errorMessage}}" class="error">{{errorMessage}}</view>
-  <button wx:if="{{canRetry}}" bindtap="onRetry" disabled="{{loading}}">retry</button>
-  <button wx:if="{{canSkip}}" bindtap="onSkip">matches</button>
+<view class="session-page">
+  <image class="pitch" src="/assets/images/baseline-pitch.webp" mode="aspectFill" />
+  <view class="content">
+    <view class="mark">
+      <image class="mark-ball" src="/assets/icons/icon-ball.png" mode="aspectFit" />
+    </view>
+    <view class="title">先给自己取个名字</view>
+    <view class="subtitle">首页会用它问候你，也会出现在排行榜和群榜上。</view>
+
+    <view class="card">
+      <view class="field {{overflow ? 'is-over' : ''}}">
+        <input
+          class="nickname-input"
+          type="nickname"
+          value="{{nickname}}"
+          maxlength="32"
+          placeholder="点这里用微信昵称，或自己起一个"
+          placeholder-class="nickname-placeholder"
+          disabled="{{loading}}"
+          confirm-type="done"
+          aria-label="昵称"
+          bindinput="onNicknameInput"
+          bindblur="onNicknameInput"
+          bindconfirm="onSubmit"
+        />
+        <view
+          wx:if="{{nickname && !loading}}"
+          class="clear"
+          aria-role="button"
+          aria-label="清空昵称"
+          bindtap="onClear"
+        >×</view>
+      </view>
+
+      <view class="meta">
+        <text class="hint">之后可在「我的 · 个人资料设置」修改</text>
+        <text wx:if="{{lengthText}}" class="counter {{overflow ? 'is-over' : ''}}">{{lengthText}}</text>
+      </view>
+
+      <view wx:if="{{errorMessage}}" class="error">{{errorMessage}}</view>
+
+      <button
+        class="cta"
+        hover-class="cta-hover"
+        loading="{{loading}}"
+        disabled="{{loading}}"
+        bindtap="onSubmit"
+      >{{loading ? "正在进入…" : "开始预测"}}</button>
+    </view>
+
+    <button wx:if="{{canRetry}}" class="ghost" bindtap="onRetry" disabled="{{loading}}">重试</button>
+    <button wx:if="{{canSkip}}" class="ghost" bindtap="onSkip">先随便逛逛</button>
+  </view>
 </view>
