@@ -21,7 +21,7 @@
     <view wx:for="{{items}}" wx:key="unlock_code" class="card">
       <view>{{item.label}}</view>
       <view>{{item.threshold_points}}</view>
-      <view>{{item.unlocked_at}}</view>
+      <view>{{item.unlockedText}}</view>
       <view>{{item.progressText}}</view>
     </view>
   </view>

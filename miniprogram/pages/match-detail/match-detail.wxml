@@ -27,7 +27,7 @@
         </view>
       </view>
       <view wx:if="{{match.prediction_deadline_at && canSubmit}}" class="deadline">
-        预测截止 {{match.prediction_deadline_at}}
+        预测截止 {{deadlineText}}
       </view>
     </view>
 
@@ -41,7 +41,7 @@
         <text>{{predictionResultText}}</text>
         <text>{{predictionPointsText}}</text>
       </view>
-      <view wx:if="{{myPrediction.submitted_at}}" class="submitted-at">提交于 {{myPrediction.submitted_at}}</view>
+      <view wx:if="{{submittedText}}" class="submitted-at">提交于 {{submittedText}}</view>
     </view>
 
     <view wx:if="{{canSubmit}}" class="prediction-form">

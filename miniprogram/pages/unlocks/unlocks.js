@@ -60,16 +60,31 @@ function applyErrorState(page, result) {
   return false;
 }
 
+/** 云端 unlocked_at 是 ISO 字符串，直接插值会把 2026-11-06T19:50:00.000Z 甩给用户。 */
+function formatShanghaiDate(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleDateString("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+}
+
 function presentUnlock(item, careerPoints) {
   const code = item && item.unlock_code !== undefined ? String(item.unlock_code) : "";
   const mapped = Object.prototype.hasOwnProperty.call(UNLOCK_LABELS, code);
   const threshold = item && item.threshold_points !== undefined ? item.threshold_points : "";
+  const unlockedAt = item && item.unlocked_at !== undefined ? item.unlocked_at : "";
   return {
     unlock_code: code,
     label: mapped ? UNLOCK_LABELS[code] : code,
     mapped: mapped,
     threshold_points: threshold,
-    unlocked_at: item && item.unlocked_at !== undefined ? item.unlocked_at : "",
+    unlocked_at: unlockedAt,
+    unlockedText: formatShanghaiDate(unlockedAt),
     progressText: String(careerPoints) + "/" + String(threshold),
   };
 }

@@ -103,6 +103,7 @@ Page({
     awayScore: 0,
     derivedResultText: "平局",
     kickoffText: "",
+    deadlineText: "",
     statusText: "",
     homeLogo: "",
     awayLogo: "",
@@ -188,6 +189,8 @@ Page({
       match,
       regularScoreText: formatRegularScore(match),
       myPrediction,
+      // 同 deadlineText：submitted_at 是云端 ISO 字符串，必须格式化后再插值。
+      submittedText: myPrediction ? formatShanghaiTime(myPrediction.submitted_at) : "",
       myPredictionScore: myPrediction
         ? myPrediction.pred_home_score + " - " + myPrediction.pred_away_score
         : "",
@@ -214,6 +217,9 @@ Page({
       homeLogo: getTeamLogo(match.league_id, match.home_team),
       awayLogo: getTeamLogo(match.league_id, match.away_team),
       kickoffText: formatShanghaiTime(match.kickoff_at),
+      // 截止时间必须格式化后再上屏：云端返回的是 ISO 字符串，
+      // 直接在 WXML 里插值会把 2026-11-06T19:50:00.000Z 原样显示给用户。
+      deadlineText: formatShanghaiTime(match.prediction_deadline_at),
       statusText: STATUS_TEXT[match.match_status] || match.match_status,
       derivedResultText: derivedResult(this.data.homeScore, this.data.awayScore),
     });
