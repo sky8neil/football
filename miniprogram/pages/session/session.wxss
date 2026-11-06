@@ -186,3 +186,65 @@ button::after {
 .ghost[disabled] {
   opacity: .6;
 }
+
+/* ---- 隐私授权卡 ---- */
+.privacy-mask {
+  position: fixed;
+  z-index: 20;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 28px;
+  background: rgba(11, 26, 19, .46);
+}
+
+.privacy-card {
+  width: 100%;
+  padding: 22px 20px 16px;
+  border-radius: 18px;
+  background: var(--surface-solid-light, #ffffff);
+  box-shadow: var(--shadow-floating);
+}
+
+.privacy-title {
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.privacy-body {
+  margin: 12px 0 10px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.privacy-contract {
+  display: inline-block;
+  margin-bottom: 18px;
+  color: var(--green-600, #1f7a4d);
+  font-size: 13px;
+  text-decoration: underline;
+}
+
+.privacy-agree {
+  height: 44px;
+  border-radius: 12px;
+  background: var(--surface-solid-dark);
+  color: var(--white);
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 44px;
+}
+
+.privacy-reject {
+  margin-top: 10px;
+  height: 40px;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 40px;
+}

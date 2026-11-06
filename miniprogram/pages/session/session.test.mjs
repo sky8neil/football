@@ -36,13 +36,22 @@ function loadModule(filePath, requireShim) {
 }
 
 /** 会话页测试夹具：真实 nickname 工具 + 可断言的 wx / 服务桩。 */
-function loadSessionPage({ result, stored = {}, nickname } = {}) {
+function loadSessionPage({ result, stored = {}, nickname, privacy: privacyOptions } = {}) {
   const storage = new Map(Object.entries(stored));
   const writes = [];
   const navs = [];
   const calls = [];
+  const privacy = {
+    getCalls: 0,
+    openCalls: 0,
+    offCalls: [],
+    handler: null,
+    needAuthorization: privacyOptions?.needAuthorization,
+    contractName: privacyOptions?.contractName,
+    supported: privacyOptions?.supported !== false,
+  };
 
-  setGlobal("wx", {
+  const wxStub = {
     getStorageSync: (key) => storage.get(key),
     setStorageSync: (key, value) => {
       storage.set(key, value);
@@ -52,7 +61,28 @@ function loadSessionPage({ result, stored = {}, nickname } = {}) {
     switchTab: ({ url }) => navs.push(["switchTab", url]),
     reLaunch: ({ url }) => navs.push(["reLaunch", url]),
     navigateBack: ({ delta }) => navs.push(["navigateBack", delta]),
-  });
+    openPrivacyContract: (options) => {
+      privacy.openCalls += 1;
+      if (options && typeof options.success === "function") options.success({});
+    },
+  };
+  // 模拟低版本基础库：连隐私接口都不存在，页面不能因此报错。
+  if (privacy.supported) {
+    wxStub.getPrivacySetting = (options) => {
+      privacy.getCalls += 1;
+      const res = privacy.needAuthorization === undefined
+        ? {}
+        : { needAuthorization: privacy.needAuthorization, privacyContractName: privacy.contractName };
+      if (options && typeof options.success === "function") options.success(res);
+    };
+    wxStub.onNeedPrivacyAuthorization = (handler) => {
+      privacy.handler = handler;
+    };
+    wxStub.offNeedPrivacyAuthorization = (handler) => {
+      privacy.offCalls.push(handler);
+    };
+  }
+  setGlobal("wx", wxStub);
 
   const nicknameUtil = loadModule(NICKNAME_JS, () => {
     throw new Error("utils/nickname.js 不应再 require 其它模块");
@@ -81,7 +111,7 @@ function loadSessionPage({ result, stored = {}, nickname } = {}) {
     },
   });
   if (nickname !== undefined) page.setData({ nickname });
-  return { page, calls, navs, writes, storage };
+  return { page, calls, navs, writes, storage, privacy };
 }
 
 describe("会话页：昵称输入与本地校验", () => {
@@ -177,5 +207,83 @@ describe("会话页：缓存回填", () => {
     expect(page.data.returnTo).toBe("match-detail");
     page.onLoad({ return_to: "other" });
     expect(page.data.returnTo).toBe("");
+  });
+});
+
+describe("会话页：隐私授权", () => {
+  it("需要授权时主动弹卡，并用后台配置的协议名", () => {
+    const { page, privacy } = loadSessionPage({
+      result: undefined,
+      privacy: { needAuthorization: true, contractName: "《赛事预言家隐私保护指引》" },
+    });
+    page.onLoad({});
+    expect(privacy.getCalls).toBe(1);
+    expect(page.data.showPrivacy).toBe(true);
+    expect(page.data.privacyContractName).toBe("《赛事预言家隐私保护指引》");
+  });
+
+  it("已同意过就不再打扰", () => {
+    const { page } = loadSessionPage({ result: undefined, privacy: { needAuthorization: false } });
+    page.onLoad({});
+    expect(page.data.showPrivacy).toBe(false);
+  });
+
+  it("协议名缺失时回落到兜底名称，不出现空书名号", () => {
+    const { page } = loadSessionPage({ result: undefined, privacy: { needAuthorization: true } });
+    page.onLoad({});
+    expect(page.data.privacyContractName).toBe("《小程序用户隐私保护指引》");
+  });
+
+  it("低版本基础库没有隐私接口时不报错、不弹卡", () => {
+    const { page } = loadSessionPage({ result: undefined, privacy: { supported: false } });
+    expect(() => page.onLoad({})).not.toThrow();
+    expect(page.data.showPrivacy).toBe(false);
+  });
+
+  it("同意后关闭弹卡，并把 resolve 交还给微信", () => {
+    const { page, privacy } = loadSessionPage({ result: undefined, privacy: { needAuthorization: true } });
+    page.onLoad({});
+    const resolved = [];
+    privacy.handler((payload) => resolved.push(payload), { referrer: "input" });
+    page.onAgreePrivacy();
+    expect(page.data.showPrivacy).toBe(false);
+    expect(page.data.privacyRejected).toBe(false);
+    expect(resolved).toEqual([{ buttonId: "privacy-agree-btn", event: "agree" }]);
+  });
+
+  it("拒绝后关闭弹卡并记录状态，仍然允许手动输入昵称", () => {
+    const { page, privacy } = loadSessionPage({ result: undefined, privacy: { needAuthorization: true } });
+    page.onLoad({});
+    const resolved = [];
+    privacy.handler((payload) => resolved.push(payload), { referrer: "input" });
+    page.onRejectPrivacy();
+    expect(page.data.showPrivacy).toBe(false);
+    expect(page.data.privacyRejected).toBe(true);
+    expect(resolved[0].event).toBe("disagree");
+    page.onSubmit();
+    expect(page.data.errorMessage).toBe("先填个昵称，球友们才好认出你");
+  });
+
+  it("其它隐私接口触发时改用同一张卡承接", () => {
+    const { page, privacy } = loadSessionPage({ result: undefined, privacy: { needAuthorization: false } });
+    page.onLoad({});
+    expect(privacy.handler).toBeTypeOf("function");
+    privacy.handler(() => {}, { referrer: "getUserProfile" });
+    expect(page.data.showPrivacy).toBe(true);
+  });
+
+  it("页面卸载时注销监听，避免残留旧的 resolve", () => {
+    const { page, privacy } = loadSessionPage({ result: undefined, privacy: { needAuthorization: true } });
+    page.onLoad({});
+    page.onUnload();
+    expect(privacy.offCalls).toHaveLength(1);
+    expect(page._privacyResolve).toBeNull();
+  });
+
+  it("点协议链接走官方 openPrivacyContract", () => {
+    const { page, privacy } = loadSessionPage({ result: undefined, privacy: { needAuthorization: true } });
+    page.onLoad({});
+    page.onOpenPrivacyContract();
+    expect(privacy.openCalls).toBe(1);
   });
 });

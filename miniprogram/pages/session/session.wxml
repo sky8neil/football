@@ -33,7 +33,7 @@
       </view>
 
       <view class="meta">
-        <text class="hint">之后可在「我的 · 个人资料设置」修改</text>
+        <text class="hint">{{privacyRejected ? "未授权微信昵称，手动输入也可以" : "之后可在「我的 · 个人资料设置」修改"}}</text>
         <text wx:if="{{lengthText}}" class="counter {{overflow ? 'is-over' : ''}}">{{lengthText}}</text>
       </view>
 
@@ -50,5 +50,31 @@
 
     <button wx:if="{{canRetry}}" class="ghost" bindtap="onRetry" disabled="{{loading}}">重试</button>
     <button wx:if="{{canSkip}}" class="ghost" bindtap="onSkip">先随便逛逛</button>
+  </view>
+
+  <!--
+    隐私授权卡：必须由我们自己弹。
+    <input type="nickname"> 在未同意时不会触发 onNeedPrivacyAuthorization，
+    而是静默降级为普通文本框，用户根本看不到授权入口。
+    「同意」按钮必须用 open-type="agreePrivacyAuthorization"，
+    微信靠这个按钮完成同意同步，不能用普通 bindtap 代替。
+  -->
+  <view wx:if="{{showPrivacy}}" class="privacy-mask" catchtouchmove="noop">
+    <view class="privacy-card">
+      <view class="privacy-title">隐私保护提示</view>
+      <view class="privacy-body">
+        为了在首页问候语、排行榜和群榜里显示你的称呼，我们需要读取你在微信的昵称。昵称只用于展示，不会用于其他用途。
+      </view>
+      <view class="privacy-contract" bindtap="onOpenPrivacyContract">
+        查看{{privacyContractName}}
+      </view>
+      <button
+        id="privacy-agree-btn"
+        class="privacy-agree"
+        open-type="agreePrivacyAuthorization"
+        bindagreeprivacyauthorization="onAgreePrivacy"
+      >同意并继续</button>
+      <button class="privacy-reject" bindtap="onRejectPrivacy">不同意</button>
+    </view>
   </view>
 </view>

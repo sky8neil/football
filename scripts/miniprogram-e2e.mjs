@@ -146,6 +146,18 @@ async function main() {
     return sessionPage.path;
   });
 
+  await step("1.5 隐私授权卡（出现则同意放行）", async () => {
+    const data = await sessionPage.data();
+    if (!data.showPrivacy) return "未出现（后台已同步过同意，或未配置隐私指引）";
+    const agree = await sessionPage.$("#privacy-agree-btn");
+    assert(agree, "隐私卡出现但找不到同意按钮 #privacy-agree-btn");
+    await agree.tap();
+    await sleep(1000);
+    const after = await sessionPage.data();
+    assert(after.showPrivacy === false, "点同意后隐私卡没有关闭");
+    return `已同意，协议名 ${after.privacyContractName}`;
+  });
+
   await step("2. 空昵称被前端拦下（不发请求）", async () => {
     assert(sessionPage, "会话页未打开");
     const cta = await sessionPage.$(".cta");
