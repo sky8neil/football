@@ -8,3 +8,6 @@ coverage/
 .opencode-supervisor/
 .workbuddy/
 scripts/__pycache__/
+
+# 小程序端到端截图
+.e2e-screenshots/

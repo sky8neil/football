@@ -9,22 +9,24 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "cloudbase:deploy": "npm run cloudfunction:build && node --no-deprecation scripts/cloudbase-deploy-function.mjs --apply --deploy-code",
+    "cloudbase:function": "node --no-deprecation scripts/cloudbase-deploy-function.mjs",
+    "cloudbase:provision": "npm run build && node --no-deprecation scripts/cloudbase-provision.mjs",
+    "cloudbase:schema": "npm run build && node scripts/cloudbase-schema.mjs",
+    "cloudbase:verify": "npm run build && node --no-deprecation scripts/cloudbase-provision.mjs --verify",
+    "cloudfunction:build": "tsc -p tsconfig.cloudfunction.json && node scripts/write-cloudfunction-build-info.mjs",
+    "e2e:main": "node --no-deprecation scripts/miniprogram-e2e.mjs",
+    "gateway:dev": "npm run build && node scripts/gateway-dev.mjs",
+    "logos:check": "node scripts/logos-check.mjs",
+    "providers:map-teams": "node scripts/providers-map-teams.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
-    "gateway:dev": "npm run build && node scripts/gateway-dev.mjs",
-    "cloudfunction:build": "tsc -p tsconfig.cloudfunction.json && node scripts/write-cloudfunction-build-info.mjs",
-    "cloudbase:schema": "npm run build && node scripts/cloudbase-schema.mjs",
-    "cloudbase:provision": "npm run build && node --no-deprecation scripts/cloudbase-provision.mjs",
-    "cloudbase:verify": "npm run build && node --no-deprecation scripts/cloudbase-provision.mjs --verify",
-    "cloudbase:function": "node --no-deprecation scripts/cloudbase-deploy-function.mjs",
-    "cloudbase:deploy": "npm run cloudfunction:build && node --no-deprecation scripts/cloudbase-deploy-function.mjs --apply --deploy-code",
-    "logos:check": "node scripts/logos-check.mjs",
-    "providers:map-teams": "node scripts/providers-map-teams.mjs"
+    "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {
     "@cloudbase/manager-node": "^5.10.2",
     "@types/node": "^20.14.0",
+    "miniprogram-automator": "^0.13.0",
     "typescript": "^5.5.0",
     "vitest": "^2.1.0"
   }
