@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { SyncJobType } from "../domain/enums.js";
 import { COLLECTION_DEFINITIONS } from "../schema/collections.js";
+import { cloudBaseCollectionName } from "../infrastructure/cloudbase-db.js";
 import type { CloudBaseSdkDatabase } from "../infrastructure/cloudbase-wx-db.js";
 import { createCloudFunctionRuntime, isSportApiCloudflareBlocked, runDueProviderJobs } from "./runtime.js";
 
@@ -90,11 +91,13 @@ describe("Provider Timer scheduling", () => {
     const providerRegistry = { dueLeagues } as unknown as Parameters<typeof runDueProviderJobs>[0]["providerRegistry"];
     const dispatchRun = vi.fn(async (..._args: unknown[]) => ({ kind: "completed" }));
     const dispatcher = { run: dispatchRun } as unknown as Parameters<typeof runDueProviderJobs>[0]["dispatcher"];
-    const cloudDb = { query: vi.fn(async () => []) } as unknown as Parameters<typeof runDueProviderJobs>[0]["cloudDb"];
+    const querySpy = vi.fn(async () => []);
+    const cloudDb = { query: querySpy } as unknown as Parameters<typeof runDueProviderJobs>[0]["cloudDb"];
     const reconcile = { run: vi.fn(async () => ({ kind: "completed" })) } as unknown as Parameters<typeof runDueProviderJobs>[0]["reconcile"];
 
     const result = await runDueProviderJobs({
       cloudDb,
+      namespace: "football_test",
       dispatcher,
       providerRegistry,
       syncLeagueIds: ["la_liga", "serie_a", "bundesliga", "ligue_1"],
@@ -104,6 +107,9 @@ describe("Provider Timer scheduling", () => {
       serverNow: now,
       log: vi.fn(),
     });
+
+    // 底层适配器收物理集合名：查 sync_logs 必须带命名空间前缀，否则云端报「表不存在」。
+    expect(querySpy).toHaveBeenCalledWith("football_test_sync_logs", expect.anything(), expect.anything());
 
     expect(dispatchRun).toHaveBeenCalledWith(SyncJobType.FutureSchedule, now, "la_liga");
     expect(dispatchRun).toHaveBeenCalledWith(SyncJobType.FullScheduleVerify, now, "bundesliga");
@@ -141,7 +147,7 @@ describe("Cloud Function diagnostic action", () => {
       versions: { wx_server_sdk: "4.0.2", node: "v24.21.0", build: "2026-10-11T01:02:03.000Z" },
     });
     expect(Object.keys(body.data.collections)).toEqual(expect.arrayContaining([
-      ...COLLECTION_DEFINITIONS.map((definition) => `football_test_${definition.collection}`),
+      ...COLLECTION_DEFINITIONS.map((definition) => cloudBaseCollectionName("football_test", definition.collection)),
       "football_test_diag",
       "football_test_rate_limits",
     ]));

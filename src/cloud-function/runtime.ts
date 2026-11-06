@@ -23,6 +23,7 @@ import { ProviderFullScheduleVerifyService } from "../application/provider-full-
 import { ProviderNearMatchService } from "../application/provider-near-match.js";
 import { ProviderLiveMatchService } from "../application/provider-live-match.js";
 import { ProviderPostFinishVerifyService } from "../application/provider-post-finish.js";
+import type { ProviderFixtureFailureDiagnostic } from "../application/provider-sync-job.js";
 import { ProviderReconcileService } from "../application/provider-reconcile.js";
 import { ProviderSyncDispatcher, type ProviderSyncJobType } from "../application/provider-sync-dispatcher.js";
 import { SyncJobType } from "../domain/enums.js";
@@ -187,6 +188,7 @@ export function createCloudFunctionRuntime(options: CloudFunctionRuntimeOptions)
         return { result: { status: 200, body: { data: { kind: "skipped", reason: "no_configured_leagues" }, request_id: makeRequestId() } } };
       }
       const sync = await providerDispatcher.run(event.job, serverNow, scheduledLeague);
+      logProviderFixtureFailures(logger, event.job, sync);
       const data = { sync, settlements: await runSettlementTimer(repo, serverNow) };
       return { result: { status: 200, body: { data, request_id: makeRequestId() } } };
     }
@@ -194,6 +196,7 @@ export function createCloudFunctionRuntime(options: CloudFunctionRuntimeOptions)
       const serverNow = new Date();
       const providerData = await runDueProviderJobs({
         cloudDb,
+        namespace,
         dispatcher: providerDispatcher,
         providerRegistry,
         syncLeagueIds: [...providerSources.sync_leagues],
@@ -233,6 +236,8 @@ function providerJobIntervalMs(
 
 export async function runDueProviderJobs(input: {
   cloudDb: ReturnType<typeof createCloudBaseWxDb>;
+  /** 资源命名空间：底层适配器收的是物理集合名，这里必须自己拼前缀。 */
+  namespace: string;
   dispatcher: ProviderSyncDispatcher;
   providerRegistry: ProviderRegistry;
   syncLeagueIds: readonly string[];
@@ -262,12 +267,13 @@ export async function runDueProviderJobs(input: {
       const leagueId = dueLeagues[0];
       if (leagueId === undefined) continue;
       const outcome = await input.dispatcher.run(jobType, input.serverNow, leagueId);
+      logProviderFixtureFailures(input.log, jobType, outcome);
       input.log({ event: "provider_schedule", job_type: jobType, league_id: leagueId, outcome: "started" });
       ran.push(`${jobType}:${leagueId}`);
       void outcome;
       continue;
     }
-    const logs = await input.cloudDb.query("sync_logs", { job_type: jobType }, {
+    const logs = await input.cloudDb.query(cloudBaseCollectionName(input.namespace, "sync_logs"), { job_type: jobType }, {
       order_by: "started_at",
       direction: "desc",
       limit: 1,
@@ -279,11 +285,12 @@ export async function runDueProviderJobs(input: {
     const interval = providerJobIntervalMs(jobType, input.profile);
     if (Number.isFinite(lastStartedMs) && input.serverNow.getTime() - lastStartedMs < interval) continue;
     const outcome = await input.dispatcher.run(jobType, input.serverNow);
+    logProviderFixtureFailures(input.log, jobType, outcome);
     input.log({ event: "provider_schedule", job_type: jobType, outcome: "started" });
     ran.push(jobType);
     void outcome;
   }
-  const reconcileLogs = await input.cloudDb.query("sync_logs", { job_type: SyncJobType.ProviderReconcile }, {
+  const reconcileLogs = await input.cloudDb.query(cloudBaseCollectionName(input.namespace, "sync_logs"), { job_type: SyncJobType.ProviderReconcile }, {
     order_by: "started_at",
     direction: "desc",
     limit: 1,
@@ -298,6 +305,37 @@ export async function runDueProviderJobs(input: {
     input.log({ event: "provider_schedule", job_type: SyncJobType.ProviderReconcile, outcome: outcome.kind });
   }
   return { outcome: "completed", jobs_run: ran };
+}
+
+function logProviderFixtureFailures(
+  log: (entry: Record<string, unknown>) => void,
+  jobType: ProviderSyncJobType,
+  outcome: unknown,
+): void {
+  if (typeof outcome !== "object" || outcome === null || Array.isArray(outcome)) return;
+  const fixtures = (outcome as { fixtures?: unknown }).fixtures;
+  if (typeof fixtures !== "object" || fixtures === null || Array.isArray(fixtures)) return;
+  const diagnostics = (fixtures as { failure_diagnostics?: unknown }).failure_diagnostics;
+  if (!Array.isArray(diagnostics)) return;
+
+  for (const raw of diagnostics) {
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) continue;
+    const diagnostic = raw as ProviderFixtureFailureDiagnostic;
+    log({
+      event: "provider_fixture_failure",
+      job_type: jobType,
+      sync_job_id: diagnostic.sync_job_id,
+      provider: diagnostic.provider,
+      provider_fixture_id: diagnostic.provider_fixture_id,
+      stage: diagnostic.stage,
+      outcome: diagnostic.outcome,
+      error_code: diagnostic.error_code,
+      error_name: diagnostic.error_name,
+      error_message: diagnostic.error_message,
+      reason_codes: diagnostic.reason_codes,
+      match_id: diagnostic.match_id,
+    });
+  }
 }
 
 async function runDiagnostics(input: {
