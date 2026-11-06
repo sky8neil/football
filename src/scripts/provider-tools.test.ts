@@ -83,7 +83,7 @@ describe("cloudbase:schema command", () => {
     });
 
     expect(output).toContain("football_test_provider_usage");
-    expect(output).toContain("football_test_provider_key_state uk_provider_key_state_key_id unique=true fields=[key_id:asc]");
-    expect(output).toContain("football_test_provider_league_state uk_provider_league_state_source_job_league unique=true fields=[source_id:asc, job_type:asc, league_id:asc]");
+    expect(output).toContain("football_test_provider_keys uk_provider_key_state_key_id unique=true fields=[key_id:asc]");
+    expect(output).toContain("football_test_provider_leagues uk_provider_league_state_source_job_league unique=true fields=[source_id:asc, job_type:asc, league_id:asc]");
   });
 });

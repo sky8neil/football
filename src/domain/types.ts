@@ -380,9 +380,24 @@ export interface SyncLog extends BaseDoc {
   items_read: number;
   items_changed: number;
   items_failed: number;
+  failure_diagnostics?: SyncFailureDiagnostic[];
+  failure_diagnostics_omitted?: number;
   last_error_code: string | null;
   last_error_message: string | null;
   created_at: Date;
+}
+
+export interface SyncFailureDiagnostic {
+  sync_job_id: string;
+  provider?: string;
+  provider_fixture_id?: string | null;
+  stage: string;
+  outcome: string;
+  error_code: string;
+  error_name?: string | null;
+  error_message: string;
+  reason_codes?: string[];
+  match_id?: string | null;
 }
 
 export interface Anomaly extends BaseDoc {

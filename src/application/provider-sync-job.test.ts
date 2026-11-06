@@ -361,6 +361,16 @@ describe("ProviderFixtureSyncJobService", () => {
       items_read: 1,
       items_changed: 0,
       items_failed: 1,
+      failure_diagnostics: [expect.objectContaining({
+        provider: "api_football",
+        provider_fixture_id: "1100004",
+        stage: "apply_fixture",
+        outcome: "failed",
+        error_code: "INVALID_FINAL_SCORE",
+        reason_codes: ["INVALID_FINAL_SCORE"],
+        match_id: match.match_id,
+      })],
+      failure_diagnostics_omitted: 0,
     });
     await expect(repo.matches.findById(match.match_id)).resolves.toMatchObject({
       match_status: MatchStatus.Finished,

@@ -37,6 +37,22 @@ export interface ProviderFixtureSyncRetryOptions {
   random?: () => number;
 }
 
+export interface ProviderFixtureFailureDiagnostic {
+  sync_job_id: string;
+  provider: string;
+  provider_fixture_id: string | null;
+  stage: "apply_fixture";
+  outcome: "failed" | "conflict" | "exception";
+  error_code: string;
+  error_name: string | null;
+  error_message: string;
+  reason_codes: string[];
+  match_id: string | null;
+}
+
+const MAX_FAILURE_DIAGNOSTICS = 100;
+const MAX_DIAGNOSTIC_TEXT_LENGTH = 240;
+
 export type ProviderFixtureSyncJobOutcome =
   | {
       kind: "completed";
@@ -44,6 +60,8 @@ export type ProviderFixtureSyncJobOutcome =
       items_read: number;
       items_changed: number;
       items_failed: number;
+      failure_diagnostics?: ProviderFixtureFailureDiagnostic[];
+      failure_diagnostics_omitted?: number;
     }
   | {
       kind: "skipped";
@@ -79,11 +97,94 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "provider sync failed";
 }
 
+function safeDiagnosticText(value: string, maxLength = MAX_DIAGNOSTIC_TEXT_LENGTH): string {
+  return value
+    .replace(/https?:\/\/[^\s"'<>]+/gi, "[url]")
+    .replace(/\b(Bearer)\s+[^\s,;]+/gi, "$1 [REDACTED]")
+    .replace(/((?:authorization|cookie|set-cookie|x-api-key|api[_ -]?key|access[_ -]?token|refresh[_ -]?token|secret(?:key)?|password)\s*[:=]\s*)[^\s,;]+/gi, "$1[REDACTED]")
+    .replace(/\b[A-Za-z0-9_-]{32,}\b/g, "[REDACTED]")
+    .replace(/[\r\n\t]+/g, " ")
+    .slice(0, maxLength);
+}
+
+function safeErrorCode(error: unknown): string {
+  return safeDiagnosticText(errorCode(error), 80).replace(/[^A-Za-z0-9_.:-]/g, "_");
+}
+
+function providerFixtureId(item: ProviderFixtureBatchItem): string | null {
+  const id = item.fixture?.fixture?.id;
+  if (typeof id !== "string" && typeof id !== "number") return null;
+  const value = String(id);
+  // UUIDs are valid provider fixture identifiers and must remain actionable in diagnostics.
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)) {
+    return value;
+  }
+  return safeDiagnosticText(value, 100);
+}
+
+function failureReasonCodes(outcome: ProviderFixtureSyncOutcome): string[] {
+  if (outcome.kind === "failed") {
+    return outcome.anomaly_types.map((value) => safeDiagnosticText(value, 80));
+  }
+  if (outcome.kind === "conflict") {
+    return [safeDiagnosticText(outcome.anomaly_type, 80)];
+  }
+  return [];
+}
+
+function diagnosticBase(
+  syncJobId: string,
+  item: ProviderFixtureBatchItem,
+): Pick<ProviderFixtureFailureDiagnostic, "sync_job_id" | "provider" | "provider_fixture_id" | "stage"> {
+  return {
+    sync_job_id: syncJobId,
+    provider: safeDiagnosticText(item.fixture?.provider ?? "api_football", 40),
+    provider_fixture_id: providerFixtureId(item),
+    stage: "apply_fixture",
+  };
+}
+
+function outcomeFailureDiagnostic(
+  syncJobId: string,
+  item: ProviderFixtureBatchItem,
+  outcome: ProviderFixtureSyncOutcome,
+): ProviderFixtureFailureDiagnostic | null {
+  if (!isFailed(outcome)) return null;
+  const reasonCodes = failureReasonCodes(outcome);
+  return {
+    ...diagnosticBase(syncJobId, item),
+    outcome: outcome.kind,
+    error_code: reasonCodes[0] ?? outcome.kind.toUpperCase(),
+    error_name: null,
+    error_message: `fixture sync returned ${outcome.kind}`,
+    reason_codes: reasonCodes,
+    match_id: outcome.match_id,
+  };
+}
+
+function exceptionFailureDiagnostic(
+  syncJobId: string,
+  item: ProviderFixtureBatchItem,
+  error: unknown,
+): ProviderFixtureFailureDiagnostic {
+  return {
+    ...diagnosticBase(syncJobId, item),
+    outcome: "exception",
+    error_code: safeErrorCode(error),
+    error_name: error instanceof Error ? safeDiagnosticText(error.name, 80) : null,
+    error_message: safeDiagnosticText(errorMessage(error)) || "provider fixture sync failed",
+    reason_codes: [],
+    match_id: null,
+  };
+}
+
 function isChanged(outcome: ProviderFixtureSyncOutcome): boolean {
   return outcome.kind === "applied";
 }
 
-function isFailed(outcome: ProviderFixtureSyncOutcome): boolean {
+function isFailed(
+  outcome: ProviderFixtureSyncOutcome,
+): outcome is Extract<ProviderFixtureSyncOutcome, { kind: "failed" | "conflict" }> {
   return outcome.kind === "failed" || outcome.kind === "conflict";
 }
 
@@ -256,6 +357,16 @@ export class ProviderFixtureSyncJobService {
 
         let changed = 0;
         let failed = 0;
+        const failureDiagnostics: ProviderFixtureFailureDiagnostic[] = [];
+        let failureDiagnosticsOmitted = 0;
+
+        const recordFailure = (diagnostic: ProviderFixtureFailureDiagnostic) => {
+          if (failureDiagnostics.length < MAX_FAILURE_DIAGNOSTICS) {
+            failureDiagnostics.push(diagnostic);
+          } else {
+            failureDiagnosticsOmitted += 1;
+          }
+        };
 
         for (const item of items) {
           lockRenewal.assertHealthy();
@@ -270,10 +381,17 @@ export class ProviderFixtureSyncJobService {
             }
             if (isFailed(outcome)) {
               failed += 1;
+              const diagnostic = outcomeFailureDiagnostic(
+                runningLog.sync_job_id,
+                item,
+                outcome,
+              );
+              if (diagnostic !== null) recordFailure(diagnostic);
             }
-          } catch {
+          } catch (error) {
             // 单个实体失败不影响同一批次其他实体；其事务已由 fixture service 回滚。
             failed += 1;
+            recordFailure(exceptionFailureDiagnostic(runningLog.sync_job_id, item, error));
           }
         }
 
@@ -286,6 +404,10 @@ export class ProviderFixtureSyncJobService {
           items_read: items.length,
           items_changed: changed,
           items_failed: failed,
+          ...(failureDiagnostics.length > 0 ? {
+            failure_diagnostics: failureDiagnostics,
+            failure_diagnostics_omitted: failureDiagnosticsOmitted,
+          } : {}),
         });
         return {
           kind: "completed",
@@ -293,6 +415,10 @@ export class ProviderFixtureSyncJobService {
           items_read: items.length,
           items_changed: changed,
           items_failed: failed,
+          ...(failureDiagnostics.length > 0 ? {
+            failure_diagnostics: failureDiagnostics,
+            failure_diagnostics_omitted: failureDiagnosticsOmitted,
+          } : {}),
         };
       } catch (error) {
         await syncLogs.update({
