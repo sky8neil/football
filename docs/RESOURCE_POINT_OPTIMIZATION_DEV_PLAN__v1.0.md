@@ -202,7 +202,7 @@
 - [x] RP04 失败分类及主要异常修复 —— `0036e58`（分类已落地；异常修复留待观测后处理）
 - [x] RP05 待办结算、版本校验与兜底 —— `5641e47`
 - [x] RP06 同轮联赛状态复用 —— `50ab356`
-- [ ] RP07 延期重试与恢复
+- [x] RP07 延期重试与恢复 —— `e38dedf` + `380d2c3`
 - [ ] RP08 锁申请和续租优化
 - [ ] RP09 比赛窗口及数据库候选查询
 - [ ] RP10 到期调度与唤醒策略
@@ -312,4 +312,28 @@
   - 验证：`typecheck` 通过；`vitest` 182 文件 / 1694 用例全通过；`build`、`cloudfunction:build` 通过。
 - **已知测试覆盖局限**：「`markSuccess` 后同轮缓存失效」这条只在 `withRequest` 内部触发（需要真实 HTTP 拉取），当前用例覆盖的是「同轮复用 + 结束后重读」，未直接断言缓存删除。若后续想补，可给 registry 增加一个可注入的请求钩子或在测试里注入 `fetchImpl`。
 - 下一步：P2（RP07 持久化延期重试 → RP08 锁只覆盖实际工作），仍按「一轮一个提案、写一个文件就停」的节奏推进。
+
+### 11.9 RP07 实施记录（2026-11-10）
+
+**做法**
+- **不再在函数内 sleep 重试**：`provider-sync-job.ts` 遇到可重试的 loader 错误时，写一条 `status = "deferred"` 的 sync_log（含 `next_attempt_at`、`retry_attempt`、`finished_at`、`last_error_*`）后直接 `return { kind: "deferred" }`，本轮结束、锁立即释放。这同时去掉了「sleep 期间锁续租」的开销。
+- **重试序号跨轮累计**：延期时读上一条 deferred 日志的 `retry_attempt + 1`，用 `nextRetryDelayMinutes(序号)` 取退避档位；取不到（超过 `SYNC_MAX_RETRIES`）时抛 `DomainError("PROVIDER_RETRY_EXHAUSTED")`，由外层 catch 写 `failed` 日志 —— 达到「明确最大尝试次数 + 暴露待处理状态」。
+- **调度门**：`runDueProviderJobs` 读到上一轮是 `deferred` 时只看 `next_attempt_at`（未到 → `skipped.reason = "deferred_not_due"`；已到 → 照常执行，不再叠加常规间隔）；其它情况仍按原间隔判断。
+- **5 个 provider service** 透传 `deferred`，`ProviderSyncDispatcher` 的 outcome 联合类型相应扩展。
+- **修复一个真缺陷**：`executeHeldByCaller()` 在尝试 load 之前就插入了本轮的 `running` 日志，导致「上一条 deferred」查询读到自己 → 退避永远从第 0 档重来、最大次数永远达不到。修法：`findLatestByJobType(jobType, { excludeSyncJobId })` 排除本轮日志（CloudBase 实现取 5 条后跳过本轮）。
+
+**schema 变化（只声明，未部署）**：`sync_logs.status` 增加 `deferred`；新增 `next_attempt_at`（date, nullable）、`retry_attempt`（int, nullable）。
+
+**验证**：`typecheck` 通过；`vitest` 184 文件 / 1702 用例全通过（新增 8 例：跨轮序号累计、退避序列、次数用尽、调度门未到期/已到期）；`build`、`cloudfunction:build` 通过。
+
+**渲染/行为变化需要知道的点**
+- 同一轮内 loader 只尝试 **1 次**（原来是 1+5 次）；失败后的恢复依赖下一次调度，所以 `near_match` / `live_match` / `post_finish_verify` 的实际重试间隔取决于它们的调度间隔与退避档位取较大者。
+- 配额/鉴权类错误本来就走 `isRetryableLoaderError=false`，不会被延期，行为不变。
+
+### 11.10 主机异常记录（2026-11-10 21:00-21:45）
+
+- 现象：`8c12g` 负载从 ~3 冲到 28+，终端命令普遍 120–300 秒超时，vitest 跑不完，opencode 卡住。
+- 排查结论：**不是磁盘故障** —— `vmstat` 的 `wa` = 0、`bi/bo` 极小，`dmesg` 无 IO 错误，无长期 D 状态进程；`avahi-daemon` 常驻 ~23% CPU（已知空转问题）；`dmesg` 显示容器 veth 每隔几十秒反复创建/销毁。
+- 处置：停掉卡住的 opencode 进程后负载自行回落到 3.19，随后全量测试与构建正常完成。
+- 建议：后续若再现，先看 `ps -eo stat` 是否有 D 状态与 `vmstat` 的 `wa` 列，再看是否有容器反复重启；`avahi-daemon` 空转可考虑 `systemctl disable --now avahi-daemon`（本机不需要 mDNS 时）。
 
