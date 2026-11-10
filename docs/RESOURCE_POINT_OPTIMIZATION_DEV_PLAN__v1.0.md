@@ -203,7 +203,7 @@
 - [x] RP05 待办结算、版本校验与兜底 —— `5641e47`
 - [x] RP06 同轮联赛状态复用 —— `50ab356`
 - [x] RP07 延期重试与恢复 —— `e38dedf` + `380d2c3`
-- [ ] RP08 锁申请和续租优化
+- [x] RP08 锁申请和续租优化（`9c013ed` + `816d2b9`）
 - [ ] RP09 比赛窗口及数据库候选查询
 - [ ] RP10 到期调度与唤醒策略
 - [ ] RP11 批量读取与映射复用
@@ -337,3 +337,36 @@
 - 处置：停掉卡住的 opencode 进程后负载自行回落到 3.19，随后全量测试与构建正常完成。
 - 建议：后续若再现，先看 `ps -eo stat` 是否有 D 状态与 `vmstat` 的 `wa` 列，再看是否有容器反复重启；`avahi-daemon` 空转可考虑 `systemctl disable --now avahi-daemon`（本机不需要 mDNS 时）。
 
+
+### 11.11 RP08 实施记录（2026-11-10）
+
+**问题定位（先纠正一个误判）**
+读代码后确认：生产链路的到期判断本来就在锁外（`runDueProviderJobs` 先算间隔，再调 `dispatcher`），所以「无任务时不反复申请业务锁」这条验收要求此前已成立。真正缺的是两条：
+
+1. **锁前判断会过期**：实例 A 通过到期判断并拿到锁，跑了几分钟才释放；实例 B 在 t0 也通过了判断，排队等锁，A 释放后 B 立刻拿到锁把同一任务再跑一遍 → 重复拉上游、重复写 sync_logs。
+2. **锁丢了还继续写**：续租失败只在进程内存里立一个标志（`assertHealthy`），进程被挂起、时钟跳变、renew 异常被吞时，旧 worker 会继续写业务数据和 success 日志，与新 owner 撞车。
+
+另外确认 `SchedulerTick`（`src/scheduler/tick.ts`）在生产链路里**没有被接线**，只有测试在用；生产是 `runtime.ts` 的 `runDueProviderJobs`。所以 RP08 的改动落在 `ProviderFixtureSyncJobService`，不动 tick。
+
+**RP08-1 锁内二次资格确认（`9c013ed`）**
+- 把 `providerJobIntervalMs` 从 `runtime.ts` 提到 `sync/config.ts`，锁前判断与锁内复核共用同一间隔来源，避免两处数值漂移。
+- `ProviderFixtureSyncJobService` 新增 `lockOptions.dueIntervalMs`；`executeHeldByCaller` 拿到锁后先复核：上一条日志在间隔内（或 deferred 且 `next_attempt_at` 未到）→ 返回 `skipped / not_due_after_lock`，**不写 sync_log、不调 loader**，锁在 finally 立即释放。
+- `runtime.ts` 按 profile 给 5 个 service 注入真实间隔。
+- 8 个用例（锁内资格 7 + 间隔数值 1）。
+
+**RP08-2 租约围栏（`816d2b9`）**
+- `JobLockRepository` 新增 `isHeldBy(lockKey, ownerId, asOf)`，内存与 CloudBase 双实现。
+- `startJobLockRenewal` 重写：`inFlight` 防重入（续租耗时超过半个租约时不再叠加请求）、`stopped` 后不再续租、时钟与租约时长可注入。
+- 新增 `assertHeld()`：写 running / success / deferred 日志前、以及**每条 fixture 之前**确认锁仍属于自己；失败抛 `PROVIDER_SYNC_LEASE_LOST`，catch 分支仅在仍持锁时才写 `failed` 日志。
+- **关键权衡**：如果每条 fixture 都回查一次 `job_locks`，会在本项目的核心指标（读次数）上倒扣。因此引入 `proofTtlMs`（默认 `leaseMs/2`）：**续租成功本身就是一次所有权证明**（renew 只对 owner 生效），窗口内 `assertHeld` 只查内存标志。正常批次（短于半个租约）回查次数为 0，已用测试锁住这个性质。
+- 7 个用例（围栏 4 + 不逐条回查 1 + 续租防重入/stop 2）。
+
+**行为变化需要知道的点**
+- 续租失败或租约被抢后，本轮**不再写 failed 日志**（原来是写的）。代价是该轮在 DB 里只留一条 `running` 日志；错误本身仍会抛给调用方并由 runtime 记录，进度判断只看 `started_at`，不影响下一轮调度。
+- `provider-sync-job.test.ts` 里两条旧断言（续租失败时写 failed 日志）随之改为「不写」，错误码断言保留。
+
+**验证**：`typecheck` 通过；`vitest` 186 文件 / 1717 用例全通过（基线 1633，累计 +84）；`build`、`cloudfunction:build` 通过。
+
+**未做（原方案里评估后放弃的部分）**
+- 按联赛粒度拆锁（`sync:{job_type}:{league}`）：当前每轮只处理 `dueLeagues[0]` 一个联赛，拆锁没有并发收益，只会让锁记录变多。
+- 真·fencing token（把 token 写进业务数据、写入时校验单调递增）：需要改所有业务集合的写路径，超出本项范围，留作后续若出现真实重复入账再评估。
