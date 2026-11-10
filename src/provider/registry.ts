@@ -13,7 +13,7 @@ import type { ProviderResponseMetadata } from "./transport.js";
 import { FetchProviderHttpClient } from "./transport.js";
 import { ProviderBudget, ProviderBudgetDeniedError, type ProviderBudgetJob } from "./budget.js";
 import { KeyPool, InMemoryProviderKeyStateStore, type ProviderKeyStateStore } from "./key-pool.js";
-import { InMemoryProviderLeagueStateStore, type ProviderLeagueStateStore } from "./league-state.js";
+import { InMemoryProviderLeagueStateStore, type ProviderLeagueState, type ProviderLeagueStateStore } from "./league-state.js";
 import { SyncJobType } from "../domain/enums.js";
 import { planRequests } from "./strategy.js";
 
@@ -172,6 +172,8 @@ export class ProviderRegistry {
   private readonly minimumGapMs: number;
   private readonly leagueStateStore: ProviderLeagueStateStore;
   private liveRequestCache: { key: string; value: Promise<readonly ApiFootballFixture[]> } | null = null;
+  /** RP06：按轮（tick）缓存联赛状态，仅在 beginTickCache()..endTickCache() 之间生效。 */
+  private tickStateCache: Map<string, ProviderLeagueState | null> | null = null;
 
   constructor(options: ProviderRegistryOptions) {
     this.legacyClient = options.legacyClient;
@@ -244,6 +246,32 @@ export class ProviderRegistry {
     }));
   }
 
+  beginTickCache(): void { this.tickStateCache = new Map(); }
+  endTickCache(): void { this.tickStateCache = null; }
+  get tickCacheActive(): boolean { return this.tickStateCache !== null; }
+
+  /** 唯一的状态读取入口：缓存生效时复用本轮已读结果，未生效时直连数据库且不缓存。 */
+  private async loadLeagueStates(
+    leagueId: string,
+    jobType: ProviderBudgetJob,
+  ): Promise<Array<ProviderLeagueState | null>> {
+    const role = roleForJob(jobType);
+    const entries = (this.sourceLeagues.get(leagueId) ?? []).filter((entry) =>
+      entry.roles[role] === "primary" || entry.roles[role] === "secondary" || entry.roles[role] === "fallback",
+    );
+    const cache = this.tickStateCache;
+    if (cache === null) {
+      return Promise.all(entries.map((entry) => this.leagueStateStore.get(entry.source.source_id, leagueId, jobType)));
+    }
+    return Promise.all(entries.map(async (entry) => {
+      const key = `${entry.source.source_id}|${leagueId}|${jobType}`;
+      if (cache.has(key)) return cache.get(key) ?? null;
+      const state = await this.leagueStateStore.get(entry.source.source_id, leagueId, jobType);
+      cache.set(key, state); // null 也回填，表示"确认无记录"
+      return state;
+    }));
+  }
+
   async orderLeagues(leagueIds: readonly string[], jobType: ProviderBudgetJob, now: Date): Promise<string[]> {
     const records = await Promise.all(leagueIds.map(async (leagueId, index) => {
       const role = roleForJob(jobType);
@@ -251,7 +279,7 @@ export class ProviderRegistry {
         entry.roles[role] === "primary" || entry.roles[role] === "secondary" || entry.roles[role] === "fallback",
       );
       const primary = entries.find((entry) => entry.roles[role] === "primary") ?? entries[0];
-      const states = await Promise.all(entries.map((entry) => this.leagueStateStore.get(entry.source.source_id, leagueId, jobType)));
+      const states = await this.loadLeagueStates(leagueId, jobType);
       const lastSuccess = states.reduce((latest, state) => Math.max(latest, state?.last_success_at.getTime() ?? Number.NEGATIVE_INFINITY), Number.NEGATIVE_INFINITY);
       return { leagueId, index, sourceId: primary?.source.source_id ?? "", lastSuccess };
     }));
@@ -270,15 +298,9 @@ export class ProviderRegistry {
     intervalMs: number,
   ): Promise<string[]> {
     const ordered = await this.orderLeagues(leagueIds, jobType, now);
-    const role = roleForJob(jobType);
     const due: string[] = [];
     for (const leagueId of ordered) {
-      const entries = (this.sourceLeagues.get(leagueId) ?? []).filter((entry) =>
-        entry.roles[role] === "primary" || entry.roles[role] === "secondary" || entry.roles[role] === "fallback",
-      );
-      const states = await Promise.all(entries.map((entry) =>
-        this.leagueStateStore.get(entry.source.source_id, leagueId, jobType),
-      ));
+      const states = await this.loadLeagueStates(leagueId, jobType);
       const lastSuccess = states.reduce(
         (latest, state) => Math.max(latest, state?.last_success_at.getTime() ?? Number.NEGATIVE_INFINITY),
         Number.NEGATIVE_INFINITY,
@@ -381,6 +403,8 @@ export class ProviderRegistry {
         }
         primaryFixtures = allLive.filter((fixture) => String(fixture.league.id) === selected.league.source_league_ref);
         await this.leagueStateStore.markSuccess(selected.source.source_id, league.league_id, jobType, now);
+        // 删除而非改写，避免猜错 store 内部字段语义。
+        this.tickStateCache?.delete(`${selected.source.source_id}|${league.league_id}|${jobType}`);
         if (this.budget) await this.budget.recordLeagueRequest(selected.source.source_id, league.league_id, now);
       } else {
         primaryFixtures = await this.withRequest(selected.source.source_id, jobType, now, fetch, league.league_id);
@@ -570,7 +594,11 @@ export class ProviderRegistry {
       try {
         const value = await fn();
         this.lastRequestsByJob.set(`${sourceId}:${jobType}`, now.getTime());
-        if (leagueId) await this.leagueStateStore.markSuccess(sourceId, leagueId, jobType, now);
+        if (leagueId) {
+          await this.leagueStateStore.markSuccess(sourceId, leagueId, jobType, now);
+          // 删除而非改写，避免猜错 store 内部字段语义。
+          this.tickStateCache?.delete(`${sourceId}|${leagueId}|${jobType}`);
+        }
         this.lastRequests.set(sourceId, this.requestInfo(sourceId, 200, Date.now() - startedAt, now));
         this.log?.({ event: "provider_request", source_id: sourceId, ...this.lastRequests.get(sourceId) });
         return value;

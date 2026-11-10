@@ -210,6 +210,7 @@ export function createCloudFunctionRuntime(options: CloudFunctionRuntimeOptions)
     }
     if (event.Type === "Timer") {
       counted.counter.begin();
+      providerRegistry.beginTickCache();
       const startedAt = Date.now();
       const errors: unknown[] = [];
       const serverNow = new Date();
@@ -234,6 +235,7 @@ export function createCloudFunctionRuntime(options: CloudFunctionRuntimeOptions)
         errors.push(error);
         throw error;
       } finally {
+        providerRegistry.endTickCache();
         try {
           const dbOps = counted.counter.end();
           const jobs_run = Array.isArray(providerData.jobs_run)
