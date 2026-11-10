@@ -27,6 +27,11 @@ export type ProviderNearMatchOutcome =
   | {
       kind: "skipped";
       fixtures: Extract<ProviderFixtureSyncJobOutcome, { kind: "skipped" }>;
+    }
+  | {
+      /** RP07：本轮因可重试错误延后，下一次调度到期再跑。 */
+      kind: "deferred";
+      fixtures: Extract<ProviderFixtureSyncJobOutcome, { kind: "deferred" }>;
     };
 
 /** 贯通 32.3 的 T-24h 到 T-2h 任务入口；Provider client 由调用方注入。 */
@@ -56,6 +61,9 @@ export class ProviderNearMatchService {
     );
     if (fixtures.kind === "skipped") {
       return { kind: "skipped", fixtures };
+    }
+    if (fixtures.kind === "deferred") {
+      return { kind: "deferred", fixtures };
     }
     return {
       kind: "completed",

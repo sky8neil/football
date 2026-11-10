@@ -332,9 +332,8 @@ export async function runDueProviderJobs(input: {
       }
       const outcome = await input.dispatcher.run(jobType, input.serverNow, leagueId);
       logProviderFixtureFailures(input.log, jobType, outcome);
-      input.log({ event: "provider_schedule", job_type: jobType, league_id: leagueId, outcome: "started" });
+      input.log({ event: "provider_schedule", job_type: jobType, league_id: leagueId, outcome: outcome.kind });
       ran.push(`${jobType}:${leagueId}`);
-      void outcome;
       continue;
     }
     const logs = await input.cloudDb.query(cloudBaseCollectionName(input.namespace, "sync_logs"), { job_type: jobType }, {
@@ -342,20 +341,30 @@ export async function runDueProviderJobs(input: {
       direction: "desc",
       limit: 1,
     });
-    const lastStartedAt = logs[0]?.started_at;
+    const last = logs[0];
+    const lastStartedAt = last?.started_at;
     const lastStartedMs = lastStartedAt instanceof Date
       ? lastStartedAt.getTime()
       : typeof lastStartedAt === "string" ? Date.parse(lastStartedAt) : Number.NaN;
     const interval = providerJobIntervalMs(jobType, input.profile);
-    if (Number.isFinite(lastStartedMs) && input.serverNow.getTime() - lastStartedMs < interval) {
+    // RP07：上一轮是延期，则只看 next_attempt_at，不再叠加常规间隔
+    if (last?.status === "deferred") {
+      const nextAttemptAt = last.next_attempt_at;
+      const nextAtMs = nextAttemptAt instanceof Date
+        ? nextAttemptAt.getTime()
+        : typeof nextAttemptAt === "string" ? Date.parse(nextAttemptAt) : Number.NaN;
+      if (Number.isFinite(nextAtMs) && input.serverNow.getTime() < nextAtMs) {
+        skipped.push({ task: jobType, reason: "deferred_not_due" });
+        continue;
+      }
+    } else if (Number.isFinite(lastStartedMs) && input.serverNow.getTime() - lastStartedMs < interval) {
       skipped.push({ task: jobType, reason: "interval_not_due" });
       continue;
     }
     const outcome = await input.dispatcher.run(jobType, input.serverNow);
     logProviderFixtureFailures(input.log, jobType, outcome);
-    input.log({ event: "provider_schedule", job_type: jobType, outcome: "started" });
+    input.log({ event: "provider_schedule", job_type: jobType, outcome: outcome.kind });
     ran.push(jobType);
-    void outcome;
   }
   const reconcileLogs = await input.cloudDb.query(cloudBaseCollectionName(input.namespace, "sync_logs"), { job_type: SyncJobType.ProviderReconcile }, {
     order_by: "started_at",

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { FIXED_CONFIG_V1 } from "../domain/config.js";
 import { MatchStatus, SettlementStatus, SyncJobType } from "../domain/enums.js";
 import { validationError } from "../domain/errors.js";
 import { newUuid } from "../domain/ids.js";
@@ -13,6 +14,7 @@ import {
   ProviderQuotaExceededError,
 } from "../provider/http.js";
 import type { ApiFootballFixture } from "../provider/types.js";
+import { applyJitter } from "../sync/config.js";
 import { ProviderFixtureSyncService } from "./provider-fixture-sync.js";
 import {
   ProviderFixtureSyncJobService,
@@ -80,6 +82,28 @@ function recordingSyncLogs() {
   return {
     insert: vi.fn(async (_log: SyncLog) => undefined),
     update: vi.fn(async (_log: SyncLog) => undefined),
+  };
+}
+
+function makeDeferredLog(overrides: Partial<SyncLog> = {}): SyncLog {
+  const startedAt = new Date(NOW.getTime() - 60_000);
+  return {
+    schema_version: 1,
+    sync_job_id: newUuid(),
+    job_type: SyncJobType.LiveMatch,
+    status: "deferred",
+    started_at: startedAt,
+    finished_at: startedAt,
+    attempt_count: 1,
+    items_read: 0,
+    items_changed: 0,
+    items_failed: 0,
+    last_error_code: "INTERNAL_ERROR",
+    last_error_message: "temporary failure",
+    retry_attempt: 0,
+    next_attempt_at: new Date(NOW.getTime() - 1_000),
+    created_at: startedAt,
+    ...overrides,
   };
 }
 
@@ -154,61 +178,82 @@ describe("ProviderFixtureSyncJobService", () => {
     const service = new ProviderFixtureSyncJobService(
       { jobLocks: repo.jobLocks, syncLogs },
       new ProviderFixtureSyncService(repo),
-      { sleep: async () => undefined },
+      { random: () => 0.5 },
+    );
+
+    await expect(service.run(SyncJobType.LiveMatch, load, NOW)).resolves.toMatchObject({
+      kind: "deferred",
+      job_type: SyncJobType.LiveMatch,
+      retry_attempt: 0,
+    });
+    expect(await repo.matches.findById(match.match_id)).toEqual(match);
+    expect(await repo.jobLocks.isHeld("sync:live_match", NOW)).toBe(false);
+    expect(syncLogs.update).toHaveBeenCalledWith(expect.objectContaining({
+      status: "deferred",
+      next_attempt_at: new Date(NOW.getTime() + 60_000),
+      last_error_code: "INTERNAL_ERROR",
+      last_error_message: "provider network unavailable",
+    }));
+  });
+
+  it("N127 Provider 数据错误不可重试时记录 failed log、释放锁且不改变比赛状态", async () => {
+    const repo = new InMemoryRepository();
+    const match = makeMatch();
+    await seedMatch(repo, match, "1100003");
+    const syncLogs = recordingSyncLogs();
+    const failure = new ProviderDataError("invalid data");
+    const load = vi.fn(async () => Promise.reject(failure));
+    const service = new ProviderFixtureSyncJobService(
+      { jobLocks: repo.jobLocks, syncLogs },
+      new ProviderFixtureSyncService(repo),
     );
 
     await expect(service.run(SyncJobType.LiveMatch, load, NOW)).rejects.toBe(failure);
     expect(await repo.matches.findById(match.match_id)).toEqual(match);
+    expect(await repo.jobLocks.isHeld("sync:live_match", NOW)).toBe(false);
     expect(syncLogs.update).toHaveBeenCalledWith(expect.objectContaining({
       status: "failed",
       items_failed: 1,
-      last_error_code: "INTERNAL_ERROR",
-      last_error_message: "provider network unavailable",
+      last_error_code: "PROVIDER_DATA_ERROR",
+      last_error_message: "invalid data",
     }));
   });
 
   it("暂时 loader 失败按 32.8 的首次退避重试后继续完成任务", async () => {
     const repo = new InMemoryRepository();
     const syncLogs = recordingSyncLogs();
-    const sleep = vi.fn(async (_delayMs: number) => undefined);
-    const load = vi.fn()
-      .mockRejectedValueOnce(new Error("temporary network failure"))
-      .mockResolvedValueOnce([]);
+    const load = vi.fn().mockRejectedValueOnce(new Error("temporary network failure"));
     const service = new ProviderFixtureSyncJobService(
       { jobLocks: repo.jobLocks, syncLogs },
       new ProviderFixtureSyncService(repo),
-      { sleep, random: () => 0.5 },
+      { random: () => 0.5 },
     );
 
     await expect(service.run(SyncJobType.LiveMatch, load, NOW)).resolves.toEqual({
-      kind: "completed",
+      kind: "deferred",
       job_type: SyncJobType.LiveMatch,
-      items_read: 0,
-      items_changed: 0,
-      items_failed: 0,
+      retry_attempt: 0,
+      next_attempt_at: new Date(NOW.getTime() + 60_000),
+      last_error_code: "INTERNAL_ERROR",
     });
-    expect(load).toHaveBeenCalledTimes(2);
-    expect(sleep).toHaveBeenCalledWith(60_000);
+    expect(load).toHaveBeenCalledTimes(1);
     expect(syncLogs.update).toHaveBeenCalledWith(expect.objectContaining({
-      status: "success",
-      attempt_count: 2,
+      status: "deferred",
+      attempt_count: 1,
     }));
   });
 
-  it("loader 重试边界固定为 5 次 retry，等待序列按 jitter 下界注入且不真实等待", async () => {
+  it("上一轮 deferred 到期后本轮 load 成功则完成任务", async () => {
     const repo = new InMemoryRepository();
-    const syncLogs = recordingSyncLogs();
-    const sleep = vi.fn(async (_delayMs: number) => undefined);
-    const load = vi.fn(async () => {
-      if (load.mock.calls.length <= 5) {
-        throw new Error(`temporary failure ${load.mock.calls.length}`);
-      }
-      return [];
-    });
+    await repo.syncLogs.insert(makeDeferredLog({
+      retry_attempt: 0,
+      next_attempt_at: new Date(NOW.getTime() - 1_000),
+    }));
+    const load = vi.fn(async () => []);
     const service = new ProviderFixtureSyncJobService(
-      { jobLocks: repo.jobLocks, syncLogs },
+      { jobLocks: repo.jobLocks, syncLogs: repo.syncLogs },
       new ProviderFixtureSyncService(repo),
-      { sleep, random: () => 0 },
+      { random: () => 0.5 },
     );
 
     await expect(service.run(SyncJobType.LiveMatch, load, NOW)).resolves.toEqual({
@@ -218,64 +263,79 @@ describe("ProviderFixtureSyncJobService", () => {
       items_changed: 0,
       items_failed: 0,
     });
-    expect(load).toHaveBeenCalledTimes(6);
-    expect(sleep.mock.calls.map(([delayMs]) => delayMs)).toEqual([
-      48_000,
-      96_000,
-      240_000,
-      480_000,
-      1_440_000,
-    ]);
-
-    const updates = syncLogs.update.mock.calls.map(([log]) => log);
-    expect(updates).toHaveLength(6);
-    expect(updates.slice(0, 5)).toEqual(
-      [1, 2, 3, 4, 5].map((attemptCount) =>
-        expect.objectContaining({
-          status: "running",
-          attempt_count: attemptCount,
-          finished_at: null,
-          items_read: 0,
-          items_changed: 0,
-          items_failed: 0,
-          last_error_code: "INTERNAL_ERROR",
-        }),
-      ),
-    );
-    expect(updates[5]).toEqual(expect.objectContaining({
+    expect(load).toHaveBeenCalledTimes(1);
+    const latest = await repo.syncLogs.findLatestByJobType!(SyncJobType.LiveMatch);
+    expect(latest).toMatchObject({
       status: "success",
-      attempt_count: 6,
+      attempt_count: 1,
+      items_read: 0,
+      items_changed: 0,
+      items_failed: 0,
       finished_at: NOW,
-      last_error_code: null,
-      last_error_message: null,
-    }));
+    });
+  });
+
+  it("loader 重试边界固定为 5 次 retry，等待序列按 jitter 下界注入且不真实等待", async () => {
+    const expectedDelaysMs = FIXED_CONFIG_V1.SYNC_RETRY_DELAYS_MINUTES.map((minutes) =>
+      applyJitter(minutes * 60_000, FIXED_CONFIG_V1.SYNC_RETRY_JITTER_PERCENT, () => 0),
+    );
+
+    for (const retryAttempt of [0, 1, 2, 3, 4] as const) {
+      const repo = new InMemoryRepository();
+      if (retryAttempt > 0) {
+        await repo.syncLogs.insert(makeDeferredLog({
+          retry_attempt: retryAttempt - 1,
+          started_at: new Date(NOW.getTime() - (retryAttempt + 1) * 60_000),
+        }));
+      }
+      const load = vi.fn(async () => {
+        throw new Error(`temporary failure ${retryAttempt}`);
+      });
+      const service = new ProviderFixtureSyncJobService(
+        { jobLocks: repo.jobLocks, syncLogs: repo.syncLogs },
+        new ProviderFixtureSyncService(repo),
+        { random: () => 0 },
+      );
+
+      const outcome = await service.run(SyncJobType.LiveMatch, load, NOW);
+      expect(load).toHaveBeenCalledTimes(1);
+      expect(outcome).toMatchObject({
+        kind: "deferred",
+        job_type: SyncJobType.LiveMatch,
+        retry_attempt: retryAttempt,
+      });
+      if (outcome.kind !== "deferred") {
+        throw new Error(`expected deferred for retry_attempt ${retryAttempt}`);
+      }
+      expect(outcome.next_attempt_at.getTime() - NOW.getTime()).toBe(expectedDelaysMs[retryAttempt]);
+    }
   });
 
   it("第五次 retry 后仍失败时不再等待，sync_log 记录第六次最终尝试", async () => {
     const repo = new InMemoryRepository();
-    const syncLogs = recordingSyncLogs();
-    const sleep = vi.fn(async () => undefined);
+    await repo.syncLogs.insert(makeDeferredLog({
+      retry_attempt: 4,
+      started_at: new Date(NOW.getTime() - 60_000),
+    }));
     const failure = new Error("provider unavailable");
     const load = vi.fn(async () => {
       throw failure;
     });
     const service = new ProviderFixtureSyncJobService(
-      { jobLocks: repo.jobLocks, syncLogs },
+      { jobLocks: repo.jobLocks, syncLogs: repo.syncLogs },
       new ProviderFixtureSyncService(repo),
-      { sleep, random: () => 0.5 },
+      { random: () => 0.5 },
     );
 
-    await expect(service.run(SyncJobType.LiveMatch, load, NOW)).rejects.toBe(failure);
-    expect(load).toHaveBeenCalledTimes(6);
-    expect(sleep).toHaveBeenCalledTimes(5);
-    expect(syncLogs.update).toHaveBeenLastCalledWith(expect.objectContaining({
+    await expect(service.run(SyncJobType.LiveMatch, load, NOW)).rejects.toMatchObject({
+      code: "PROVIDER_RETRY_EXHAUSTED",
+    });
+    expect(load).toHaveBeenCalledTimes(1);
+    const latest = await repo.syncLogs.findLatestByJobType!(SyncJobType.LiveMatch);
+    expect(latest).toMatchObject({
       status: "failed",
-      attempt_count: 6,
-      finished_at: NOW,
-      items_failed: 1,
-      last_error_code: "INTERNAL_ERROR",
-      last_error_message: "provider unavailable",
-    }));
+      last_error_code: "PROVIDER_RETRY_EXHAUSTED",
+    });
   });
 
   it("按现有 Provider/domain 错误分类决定是否重试", async () => {
@@ -293,29 +353,29 @@ describe("ProviderFixtureSyncJobService", () => {
     for (const testCase of cases) {
       const repo = new InMemoryRepository();
       const syncLogs = recordingSyncLogs();
-      const sleep = vi.fn(async (_delayMs: number) => undefined);
       const load = vi.fn(async () => {
-        if (load.mock.calls.length === 1) {
-          throw testCase.error;
-        }
-        return [];
+        throw testCase.error;
       });
       const service = new ProviderFixtureSyncJobService(
         { jobLocks: repo.jobLocks, syncLogs },
         new ProviderFixtureSyncService(repo),
-        { sleep, random: () => 0.5 },
+        { random: () => 0.5 },
       );
 
       if (testCase.retryable) {
         await expect(service.run(SyncJobType.LiveMatch, load, NOW)).resolves.toMatchObject({
-          kind: "completed",
+          kind: "deferred",
         });
-        expect(load, testCase.name).toHaveBeenCalledTimes(2);
-        expect(sleep, testCase.name).toHaveBeenCalledTimes(1);
+        expect(load, testCase.name).toHaveBeenCalledTimes(1);
+        expect(syncLogs.update).toHaveBeenLastCalledWith(expect.objectContaining({
+          status: "deferred",
+        }));
       } else {
         await expect(service.run(SyncJobType.LiveMatch, load, NOW)).rejects.toBe(testCase.error);
         expect(load, testCase.name).toHaveBeenCalledTimes(1);
-        expect(sleep, testCase.name).not.toHaveBeenCalled();
+        expect(syncLogs.update).toHaveBeenLastCalledWith(expect.objectContaining({
+          status: "failed",
+        }));
       }
     }
   });

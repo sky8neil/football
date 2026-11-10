@@ -250,14 +250,14 @@ export class CloudBaseAppRepository implements AppRepository {
     this.syncLogs = {
       insert: async (log) => this.add("sync_logs", log.sync_job_id, log),
       update: async (log) => this.update("sync_logs", log.sync_job_id, log),
-      /** RP07：取该 job_type 最近一条日志（按 started_at 倒序，取 1 条）。 */
-      findLatestByJobType: async (jobType) => {
+      /** RP07：取该 job_type 最近一条日志（按 started_at 倒序，排除本轮后取 1 条）。 */
+      findLatestByJobType: async (jobType, options) => {
         const rows = await this.where<SyncLog>(
           "sync_logs",
           { job_type: jobType },
-          { order_by: "started_at", direction: "desc", limit: 1 },
+          { order_by: "started_at", direction: "desc", limit: 5 },
         );
-        return rows[0] ?? null;
+        return rows.find((log) => log.sync_job_id !== options?.excludeSyncJobId) ?? null;
       },
     };
     this.matches = {

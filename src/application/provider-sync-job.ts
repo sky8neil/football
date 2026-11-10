@@ -33,6 +33,7 @@ export type ProviderFixtureBatchLoader = (
 ) => Promise<readonly ProviderFixtureBatchItem[]>;
 
 export interface ProviderFixtureSyncRetryOptions {
+  /** @deprecated 已改为写 deferred 日志并返回，不再在函数内等待。 */
   sleep?: (delayMs: number) => Promise<void>;
   random?: () => number;
 }
@@ -67,6 +68,13 @@ export type ProviderFixtureSyncJobOutcome =
       kind: "skipped";
       job_type: SyncJobType;
       reason: "lock_held";
+    }
+  | {
+      kind: "deferred";
+      job_type: SyncJobType;
+      next_attempt_at: Date;
+      retry_attempt: number;
+      last_error_code: string | null;
     };
 
 function requireSyncLogs(
@@ -188,10 +196,6 @@ function isFailed(
   return outcome.kind === "failed" || outcome.kind === "conflict";
 }
 
-function defaultSleep(delayMs: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, delayMs));
-}
-
 function isRetryableLoaderError(error: unknown): boolean {
   if (
     error instanceof DomainError ||
@@ -251,7 +255,6 @@ function startJobLockRenewal(
  * 连接外部网络，只协调既有单 fixture 同步、lease 和 sync_logs。
  */
 export class ProviderFixtureSyncJobService {
-  private readonly sleep: (delayMs: number) => Promise<void>;
   private readonly random: () => number;
 
   constructor(
@@ -259,8 +262,14 @@ export class ProviderFixtureSyncJobService {
     private readonly fixtureSync: Pick<ProviderFixtureSyncService, "applyFixture">,
     retryOptions: ProviderFixtureSyncRetryOptions = {},
   ) {
-    this.sleep = retryOptions.sleep ?? defaultSleep;
     this.random = retryOptions.random ?? Math.random;
+  }
+
+  /** RP07：跨轮累计重试序号。上一条 deferred 日志的 retry_attempt + 1；无则 0。 */
+  private async priorRetryAttempt(jobType: SyncJobType, excludeSyncJobId: string): Promise<number> {
+    const latest = await this.repo.syncLogs?.findLatestByJobType?.(jobType, { excludeSyncJobId });
+    if (!latest || latest.status !== SyncJobStatus.Deferred) return 0;
+    return (latest.retry_attempt ?? 0) + 1;
   }
 
   async run(
@@ -323,7 +332,6 @@ export class ProviderFixtureSyncJobService {
       let attemptCount = 0;
       try {
         let items: readonly ProviderFixtureBatchItem[];
-        let retryIndex = 0;
         while (true) {
           lockRenewal.assertHealthy();
           attemptCount += 1;
@@ -331,27 +339,38 @@ export class ProviderFixtureSyncJobService {
             items = await load(serverNow);
             break;
           } catch (error) {
-            const delayMinutes = isRetryableLoaderError(error)
-              ? nextRetryDelayMinutes(retryIndex)
-              : null;
+            if (!isRetryableLoaderError(error)) throw error;
+            const retryAttempt = await this.priorRetryAttempt(jobType, runningLog.sync_job_id);
+            const delayMinutes = nextRetryDelayMinutes(retryAttempt);
             if (delayMinutes === null) {
-              throw error;
+              throw new DomainError(
+                "PROVIDER_RETRY_EXHAUSTED",
+                `Provider 同步连续失败 ${attemptCount} 次（重试序号 ${retryAttempt}），已停止自动重试`,
+              );
             }
-
-            await syncLogs.update({
-              ...runningLog,
-              status: SyncJobStatus.Running,
-              attempt_count: attemptCount,
-              last_error_code: errorCode(error),
-              last_error_message: errorMessage(error),
-            });
             const delayMs = applyJitter(
               delayMinutes * 60_000,
               SYNC_RETRY_V1.jitterPercent,
               this.random,
             );
-            await this.sleep(delayMs);
-            retryIndex += 1;
+            const nextAttemptAt = new Date(serverNow.getTime() + delayMs);
+            await syncLogs.update({
+              ...runningLog,
+              status: SyncJobStatus.Deferred,
+              attempt_count: attemptCount,
+              finished_at: serverNow,
+              retry_attempt: retryAttempt,
+              next_attempt_at: nextAttemptAt,
+              last_error_code: errorCode(error),
+              last_error_message: errorMessage(error),
+            });
+            return {
+              kind: "deferred",
+              job_type: jobType,
+              next_attempt_at: nextAttemptAt,
+              retry_attempt: retryAttempt,
+              last_error_code: errorCode(error),
+            };
           }
         }
 

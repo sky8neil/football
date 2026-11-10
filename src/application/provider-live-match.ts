@@ -27,6 +27,11 @@ export type ProviderLiveMatchOutcome =
   | {
       kind: "skipped";
       fixtures: Extract<ProviderFixtureSyncJobOutcome, { kind: "skipped" }>;
+    }
+  | {
+      /** RP07：本轮因可重试错误延后，下一次调度到期再跑。 */
+      kind: "deferred";
+      fixtures: Extract<ProviderFixtureSyncJobOutcome, { kind: "deferred" }>;
     };
 
 /** 贯通 32.4 的 T-2h 到 finished 任务入口；Provider client 由调用方注入。 */
@@ -57,6 +62,9 @@ export class ProviderLiveMatchService {
     );
     if (fixtures.kind === "skipped") {
       return { kind: "skipped", fixtures };
+    }
+    if (fixtures.kind === "deferred") {
+      return { kind: "deferred", fixtures };
     }
     // P0-1（33.1）：批次完成后巡检库内仍为 live 的 match，覆盖本批未触达的 stale。
     await this.fixtureSync.patrolLiveMatches(serverNow);

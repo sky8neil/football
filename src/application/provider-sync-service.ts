@@ -31,6 +31,11 @@ export type ProviderFutureScheduleOutcome =
   | {
       kind: "skipped";
       fixtures: Extract<ProviderFixtureSyncJobOutcome, { kind: "skipped" }>;
+    }
+  | {
+      /** RP07：本轮因可重试错误延后，下一次调度到期再跑。 */
+      kind: "deferred";
+      fixtures: Extract<ProviderFixtureSyncJobOutcome, { kind: "deferred" }>;
     };
 
 /**
@@ -71,6 +76,9 @@ export class ProviderFutureScheduleService {
     );
     if (fixtures.kind === "skipped") {
       return { kind: "skipped", fixtures };
+    }
+    if (fixtures.kind === "deferred") {
+      return { kind: "deferred", fixtures };
     }
     if (teams === null) {
       throw internalError("future_schedule 已完成但未记录球队同步结果");
