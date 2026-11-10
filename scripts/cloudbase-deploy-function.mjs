@@ -24,7 +24,14 @@ const DEFAULT_ENV_FILE = ".env.cloudbase.local";
 const FUNCTION_NAME = "api";
 const DESIRED_TIMEOUT = 120;
 const DESIRED_MEMORY = 256;
-const TRIGGER = { name: "everyMinuteProviderSync", type: "timer", config: "0 * * * * * *" };
+/**
+ * Timer 调度声明（RP01：开发阶段临时降频 1 分钟 → 10 分钟，减少空跑读写）。
+ * CloudBase cron 为 7 段：秒 分 时 日 月 周 年。
+ * 触发器名称沿用历史值 everyMinuteProviderSync，避免重命名后线上新旧触发器并存。
+ */
+const TIMER_INTERVAL_MINUTES = 10;
+const TIMER_CRON = "0 */10 * * * * *";
+const TRIGGER = { name: "everyMinuteProviderSync", type: "timer", config: TIMER_CRON };
 
 const REQUIRED_ENV_KEYS = [
   "FOOTBALL_ENVIRONMENT",
@@ -125,7 +132,12 @@ function printDifferences(cfg) {
   const diff = [];
   if (cfg.Timeout !== DESIRED_TIMEOUT) diff.push(`超时 ${cfg.Timeout}s → ${DESIRED_TIMEOUT}s`);
   if (cfg.MemorySize !== DESIRED_MEMORY) diff.push(`内存 ${cfg.MemorySize}MB → ${DESIRED_MEMORY}MB（仅提示，脚本不改）`);
-  if (triggers.length === 0) diff.push(`缺每分钟 Timer 触发器 ${TRIGGER.name}`);
+  if (triggers.length === 0) diff.push(`缺每十分钟 Timer 触发器 ${TRIGGER.name}`);
+  else {
+    const timer = triggers.find((t) => (t.Type ?? t.type) === "timer") ?? triggers[0];
+    const onlineCron = timer.Config ?? timer.config ?? timer.TriggerDesc ?? "";
+    if (onlineCron !== TIMER_CRON) diff.push(`Timer cron ${onlineCron} → ${TIMER_CRON}`);
+  }
   console.log("");
   if (diff.length === 0) console.log("配置已符合预期。");
   else {
