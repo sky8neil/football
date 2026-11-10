@@ -9,6 +9,7 @@ import {
   isQuotaExceededError,
   jobLockKey,
   nextRetryDelayMinutes,
+  providerJobIntervalMs,
 } from "./config.js";
 
 describe("SYNC_TASKS_V1（规范 32.1-32.6）", () => {
@@ -112,6 +113,24 @@ describe("重试策略（规范 32.8）", () => {
     expect(SYNC_RETRY_V1.quotaExceededStopsAutoRetry).toBe(true);
     expect(isQuotaExceededError(new ProviderQuotaExceededError(null))).toBe(true);
     expect(isQuotaExceededError(new Error("network down"))).toBe(false);
+  });
+});
+
+describe("providerJobIntervalMs（RP08 锁前/锁内共用间隔）", () => {
+  const minute = 60_000;
+  const hour = 60 * minute;
+
+  it("5 个 job_type × test/prod 数值", () => {
+    expect(providerJobIntervalMs(SyncJobType.FutureSchedule, "test")).toBe(12 * hour);
+    expect(providerJobIntervalMs(SyncJobType.FutureSchedule, "prod")).toBe(6 * hour);
+    expect(providerJobIntervalMs(SyncJobType.FullScheduleVerify, "test")).toBe(24 * hour);
+    expect(providerJobIntervalMs(SyncJobType.FullScheduleVerify, "prod")).toBe(24 * hour);
+    expect(providerJobIntervalMs(SyncJobType.NearMatch, "test")).toBe(30 * minute);
+    expect(providerJobIntervalMs(SyncJobType.NearMatch, "prod")).toBe(30 * minute);
+    expect(providerJobIntervalMs(SyncJobType.PostFinishVerify, "test")).toBe(5 * minute);
+    expect(providerJobIntervalMs(SyncJobType.PostFinishVerify, "prod")).toBe(3 * minute);
+    expect(providerJobIntervalMs(SyncJobType.LiveMatch, "test")).toBe(3 * minute);
+    expect(providerJobIntervalMs(SyncJobType.LiveMatch, "prod")).toBe(3 * minute);
   });
 });
 

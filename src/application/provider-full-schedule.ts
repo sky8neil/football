@@ -7,6 +7,7 @@ import {
   ProviderFixtureSyncJobService,
   type ProviderFixtureBatchLoader,
   type ProviderFixtureSyncJobOutcome,
+  type ProviderFixtureSyncLockOptions,
   type ProviderFixtureSyncRetryOptions,
 } from "./provider-sync-job.js";
 import { ProviderFixtureSyncService } from "./provider-fixture-sync.js";
@@ -46,6 +47,7 @@ export class ProviderFullScheduleVerifyService {
     private readonly repo: AppRepository,
     client: ProviderFullScheduleVerifyClient,
     retryOptions: ProviderFixtureSyncRetryOptions = {},
+    lockOptions: ProviderFixtureSyncLockOptions = {},
   ) {
     this.client = client;
     this.teamSync = new ProviderTeamSyncService(repo, client);
@@ -53,6 +55,7 @@ export class ProviderFullScheduleVerifyService {
       repo,
       new ProviderFixtureSyncService(repo),
       retryOptions,
+      lockOptions,
     );
   }
 

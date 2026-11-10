@@ -6,7 +6,7 @@
  * - quota 超限停止高频自动重试，等 Provider 明确 reset 或下一正常 scheduled run（32.8）。
  */
 import { FIXED_CONFIG_V1 } from "../domain/config.js";
-import type { SyncJobType } from "../domain/enums.js";
+import { SyncJobType } from "../domain/enums.js";
 import { ProviderQuotaExceededError } from "../provider/http.js";
 
 export interface SyncTaskConfig {
@@ -108,4 +108,17 @@ export function isQuotaExceededError(
 /** 同类任务锁 key（32.7）：`sync:{job_type}`。 */
 export function jobLockKey(jobType: SyncJobType): string {
   return `sync:${jobType}`;
+}
+
+export type ProviderJobProfile = "test" | "prod";
+
+/** 各 job_type 的常规执行间隔（毫秒）。RP08：锁前/锁内资格判断共用同一来源。 */
+export function providerJobIntervalMs(jobType: SyncJobType, profile: ProviderJobProfile): number {
+  const minute = 60_000;
+  const hour = 60 * minute;
+  if (jobType === SyncJobType.FutureSchedule) return (profile === "test" ? 12 : 6) * hour;
+  if (jobType === SyncJobType.FullScheduleVerify) return 24 * hour;
+  if (jobType === SyncJobType.NearMatch) return 30 * minute;
+  if (jobType === SyncJobType.PostFinishVerify) return (profile === "test" ? 5 : 3) * minute;
+  return 3 * minute;
 }

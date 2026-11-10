@@ -38,6 +38,11 @@ export interface ProviderFixtureSyncRetryOptions {
   random?: () => number;
 }
 
+export interface ProviderFixtureSyncLockOptions {
+  /** RP08：锁内二次资格确认的周期间隔；不传则不做二次确认（保持旧行为）。 */
+  dueIntervalMs?: number;
+}
+
 export interface ProviderFixtureFailureDiagnostic {
   sync_job_id: string;
   provider: string;
@@ -67,7 +72,7 @@ export type ProviderFixtureSyncJobOutcome =
   | {
       kind: "skipped";
       job_type: SyncJobType;
-      reason: "lock_held";
+      reason: "lock_held" | "not_due_after_lock";
     }
   | {
       kind: "deferred";
@@ -256,13 +261,37 @@ function startJobLockRenewal(
  */
 export class ProviderFixtureSyncJobService {
   private readonly random: () => number;
+  private readonly lockOptions: ProviderFixtureSyncLockOptions;
 
   constructor(
     private readonly repo: Pick<AppRepository, "jobLocks" | "syncLogs">,
     private readonly fixtureSync: Pick<ProviderFixtureSyncService, "applyFixture">,
     retryOptions: ProviderFixtureSyncRetryOptions = {},
+    lockOptions: ProviderFixtureSyncLockOptions = {},
   ) {
     this.random = retryOptions.random ?? Math.random;
+    this.lockOptions = lockOptions;
+  }
+
+  /** RP08 锁内二次资格确认：锁前判断可能已过期（拿到锁时上一实例刚跑完），这里再核一次。 */
+  private async isStillDue(jobType: SyncJobType, serverNow: Date, dueIntervalMs: number): Promise<boolean> {
+    const latest = await this.repo.syncLogs?.findLatestByJobType?.(jobType);
+    if (!latest) return true;
+    const startedAt = latest.started_at as Date | string;
+    const startedMs = startedAt instanceof Date
+      ? startedAt.getTime()
+      : typeof startedAt === "string" ? Date.parse(startedAt) : Number.NaN;
+    if (!Number.isFinite(startedMs)) return true;
+    if (latest.status === "deferred") {
+      const nextAttemptAt = latest.next_attempt_at as Date | string | null | undefined;
+      const nextAtMs = nextAttemptAt instanceof Date
+        ? nextAttemptAt.getTime()
+        : typeof nextAttemptAt === "string" ? Date.parse(nextAttemptAt) : Number.NaN;
+      if (Number.isFinite(nextAtMs) && serverNow.getTime() < nextAtMs) return false;
+      return true;
+    }
+    if (serverNow.getTime() - startedMs < dueIntervalMs) return false;
+    return true;
   }
 
   /** RP07：跨轮累计重试序号。上一条 deferred 日志的 retry_attempt + 1；无则 0。 */
@@ -289,6 +318,7 @@ export class ProviderFixtureSyncJobService {
     }
 
     try {
+      // RP08：锁内二次资格确认在 executeHeldByCaller 内部完成，这里不重复查询。
       return await this.executeHeldByCaller(jobType, load, serverNow, ownerId);
     } finally {
       await this.repo.jobLocks.release(lockKey, ownerId);
@@ -307,6 +337,10 @@ export class ProviderFixtureSyncJobService {
     ownerId: string,
   ): Promise<ProviderFixtureSyncJobOutcome> {
     assertValidServerNow(serverNow);
+    const dueIntervalMs = this.lockOptions.dueIntervalMs;
+    if (dueIntervalMs !== undefined && !(await this.isStillDue(jobType, serverNow, dueIntervalMs))) {
+      return { kind: "skipped", job_type: jobType, reason: "not_due_after_lock" };
+    }
     const syncLogs = requireSyncLogs(this.repo);
     const lockKey = jobLockKey(jobType);
 

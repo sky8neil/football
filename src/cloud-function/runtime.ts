@@ -29,6 +29,7 @@ import type { ProviderFixtureFailureDiagnostic } from "../application/provider-s
 import { ProviderReconcileService } from "../application/provider-reconcile.js";
 import { ProviderSyncDispatcher, type ProviderSyncJobType } from "../application/provider-sync-dispatcher.js";
 import { SyncJobType } from "../domain/enums.js";
+import { providerJobIntervalMs } from "../sync/config.js";
 import { SUPPORTED_LEAGUES } from "../domain/config.js";
 import { runSettlementTimer } from "../application/settlement-timer.js";
 import { activeWindow } from "../application/provider-active-window.js";
@@ -132,12 +133,23 @@ export function createCloudFunctionRuntime(options: CloudFunctionRuntimeOptions)
     log: logger,
   });
   const providerClient = providerRegistry.asClient();
+  const profile = providerSources.sync_profile;
   const providerDispatcher = new ProviderSyncDispatcher({
-    [SyncJobType.FutureSchedule]: (now, leagueId) => new ProviderFutureScheduleService(repo, providerClient).run(now, leagueId),
-    [SyncJobType.FullScheduleVerify]: (now, leagueId) => new ProviderFullScheduleVerifyService(repo, providerClient).run(now, leagueId),
-    [SyncJobType.NearMatch]: (now) => new ProviderNearMatchService(repo, providerClient).run(now),
-    [SyncJobType.LiveMatch]: (now) => new ProviderLiveMatchService(repo, providerClient).run(now),
-    [SyncJobType.PostFinishVerify]: (now) => new ProviderPostFinishVerifyService(repo, providerClient).run(now),
+    [SyncJobType.FutureSchedule]: (now, leagueId) => new ProviderFutureScheduleService(repo, providerClient, {}, {
+      dueIntervalMs: providerJobIntervalMs(SyncJobType.FutureSchedule, profile),
+    }).run(now, leagueId),
+    [SyncJobType.FullScheduleVerify]: (now, leagueId) => new ProviderFullScheduleVerifyService(repo, providerClient, {}, {
+      dueIntervalMs: providerJobIntervalMs(SyncJobType.FullScheduleVerify, profile),
+    }).run(now, leagueId),
+    [SyncJobType.NearMatch]: (now) => new ProviderNearMatchService(repo, providerClient, {}, {
+      dueIntervalMs: providerJobIntervalMs(SyncJobType.NearMatch, profile),
+    }).run(now),
+    [SyncJobType.LiveMatch]: (now) => new ProviderLiveMatchService(repo, providerClient, {}, {
+      dueIntervalMs: providerJobIntervalMs(SyncJobType.LiveMatch, profile),
+    }).run(now),
+    [SyncJobType.PostFinishVerify]: (now) => new ProviderPostFinishVerifyService(repo, providerClient, {}, {
+      dueIntervalMs: providerJobIntervalMs(SyncJobType.PostFinishVerify, profile),
+    }).run(now),
   });
   const providerReconcile = new ProviderReconcileService(repo, providerClient);
   const schedulerState = new CloudBaseSchedulerStateStore(cloudDb, namespace);
@@ -275,19 +287,6 @@ function isProviderSyncJobType(value: unknown): value is ProviderSyncJobType {
     value === SyncJobType.NearMatch ||
     value === SyncJobType.LiveMatch ||
     value === SyncJobType.PostFinishVerify;
-}
-
-function providerJobIntervalMs(
-  job: ProviderSyncJobType,
-  profile: "test" | "prod",
-): number {
-  const minute = 60_000;
-  const hour = 60 * minute;
-  if (job === SyncJobType.FutureSchedule) return (profile === "test" ? 12 : 6) * hour;
-  if (job === SyncJobType.FullScheduleVerify) return 24 * hour;
-  if (job === SyncJobType.NearMatch) return 30 * minute;
-  if (job === SyncJobType.PostFinishVerify) return (profile === "test" ? 5 : 3) * minute;
-  return 3 * minute;
 }
 
 export async function runDueProviderJobs(input: {
