@@ -21,7 +21,7 @@ function mappedMatch(leagueId: string, kickoffAt: Date): Match {
 function repository(match: Match | null, provider: Provider, providerMatchId: string): AppRepository {
   const matchId = "match-id";
   return {
-    matches: { findBySeason: async () => match ? [match] : [] },
+    matches: { findActiveWindow: async () => (match ? [match] : []) },
     matchProviderMappings: {
       findByMatchId: async () => match ? [{ match_id: matchId, provider, provider_match_id: providerMatchId }] : [],
       findByProviderAndExternalId: async () => match ? { match_id: matchId } : null,
@@ -35,6 +35,30 @@ describe("loadActiveWindowFixtures", () => {
     const repo = repository(null, Provider.FootballData, "fd-1");
     await expect(loadActiveWindowFixtures(repo, client, SyncJobType.LiveMatch, NOW)).resolves.toEqual([]);
     expect(client.getFixtures).not.toHaveBeenCalled();
+  });
+
+  it("不再整赛季读取，改为 findActiveWindow", async () => {
+    const localMatch = mappedMatch("premier_league", new Date(NOW.getTime() - 60 * 60_000));
+    const findBySeason = vi.fn(async () => [localMatch]);
+    const findActiveWindow = vi.fn(async () => [localMatch]);
+    const repo = {
+      matches: { findBySeason, findActiveWindow },
+      matchProviderMappings: {
+        findByMatchId: async () => [{ match_id: "match-id", provider: Provider.FootballData, provider_match_id: "external-1" }],
+        findByProviderAndExternalId: async () => ({ match_id: "match-id" }),
+      },
+    } as unknown as AppRepository;
+    const client = { getFixtures: vi.fn(async () => [{ fixture: { id: "external-1" } } as any]) };
+
+    await loadActiveWindowFixtures(repo, client, SyncJobType.LiveMatch, NOW);
+
+    expect(findBySeason).toHaveBeenCalledTimes(0);
+    expect(findActiveWindow).toHaveBeenCalledTimes(1);
+    expect(findActiveWindow).toHaveBeenCalledWith({
+      jobType: SyncJobType.LiveMatch,
+      now: NOW,
+      limit: 500,
+    });
   });
 
   it.each([

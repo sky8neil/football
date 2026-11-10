@@ -126,6 +126,12 @@ describe("第 22 节数据库索引定义", () => {
       },
       {
         collection: "matches",
+        name: "ix_matches_settlement_kickoff",
+        fields: ["settlement_status", "kickoff_at"],
+        unique: false,
+      },
+      {
+        collection: "matches",
         name: "ix_matches_settlement_status_finish",
         fields: ["settlement_status", "finish_detected_at"],
         unique: false,

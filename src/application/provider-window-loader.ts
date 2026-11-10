@@ -1,14 +1,18 @@
 import { SUPPORTED_LEAGUES, findSupportedLeagueById } from "../domain/config.js";
 import type { SyncJobType } from "../domain/enums.js";
-import type { Match } from "../domain/types.js";
 import type { AppRepository } from "../infrastructure/repositories.js";
 import type { ApiFootballFixturesQuery } from "../provider/http.js";
 import type { ApiFootballFixture } from "../provider/types.js";
 import type { Provider } from "../domain/enums.js";
 import { normalizeFixture } from "../provider/fixture-mapper.js";
-import { activeWindow } from "./provider-active-window.js";
 import type { ProviderFixtureBatchItem } from "./provider-sync-job.js";
 import { ensureCrossSourceMatchMapping } from "./provider-cross-source.js";
+
+/**
+ * 单轮候选上限。三种窗口任务每轮真正要处理的比赛是几十场量级；设上限是为了在
+ * 异常数据（大量滞留待结算）时不会把整表拉进内存。超出的部分由后续轮次补齐。
+ */
+const WINDOW_CANDIDATE_LIMIT = 500;
 
 type ProviderWindowJob = typeof import("../domain/enums.js").SyncJobType.NearMatch |
   typeof import("../domain/enums.js").SyncJobType.LiveMatch |
@@ -25,10 +29,11 @@ export async function loadActiveWindowFixtures(
   jobType: ProviderWindowJob,
   serverNow: Date,
 ): Promise<ProviderFixtureBatchItem[]> {
-  const seasonIds = new Set(SUPPORTED_LEAGUES.map((league) => league.season_id));
-  const allMatches: Match[] = [];
-  for (const seasonId of seasonIds) allMatches.push(...await repo.matches.findBySeason(seasonId));
-  const matches = activeWindow(allMatches, serverNow, jobType);
+  const matches = await repo.matches.findActiveWindow({
+    jobType,
+    now: serverNow,
+    limit: WINDOW_CANDIDATE_LIMIT,
+  });
   const mappings = repo.matchProviderMappings;
   if (mappings === undefined) return [];
 
@@ -41,7 +46,11 @@ export async function loadActiveWindowFixtures(
     candidateMatchIds.set(league.league_id, ids);
   }
 
-  const from = new Date(Math.min(serverNow.getTime() - 24 * 60 * 60_000, ...matches.map(match => match.kickoff_at.getTime()))).toISOString().slice(0, 10);
+  const earliestKickoffMs = matches.reduce(
+    (acc, match) => Math.min(acc, match.kickoff_at.getTime()),
+    serverNow.getTime() - 24 * 60 * 60_000,
+  );
+  const from = new Date(earliestKickoffMs).toISOString().slice(0, 10);
   const to = new Date(serverNow.getTime() + 24 * 60 * 60_000).toISOString().slice(0, 10);
   const result: ProviderFixtureBatchItem[] = [];
   const orderedIds = client.orderLeagues
