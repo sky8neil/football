@@ -201,7 +201,7 @@
 - [x] RP03 每任务调用与有效工作计数 —— `2b207af`
 - [x] RP04 失败分类及主要异常修复 —— `0036e58`（分类已落地；异常修复留待观测后处理）
 - [x] RP05 待办结算、版本校验与兜底 —— `5641e47`
-- [ ] RP06 同轮联赛状态复用
+- [x] RP06 同轮联赛状态复用 —— `50ab356`
 - [ ] RP07 延期重试与恢复
 - [ ] RP08 锁申请和续租优化
 - [ ] RP09 比赛窗口及数据库候选查询
@@ -300,4 +300,16 @@
 
 - 本轮多文件开发由 `opencode` CLI + `sub2api-grok/grok-4.6` 完成（配置在 `~/.config/opencode/opencode.json`，模型 `sub2api-grok/grok-4.6`，网关 `subapi.803866.xyz`）。
 - 经验：单个任务如果一次包含 3 个以上子项，模型会长时间只读不写；改成「一个提案一轮 + 明确必读文件清单 + 要求每步落盘」后稳定产出。每个提案完成后由主 agent 复核 diff、跑四条命令、再提交。
+- 进一步经验（2026-11-10 迁移到 8c12g 后验证）：即便单个提案，**一次写大文件也可能被上游连接中断**（表现为长时间无输出、进程仍在）。有效的做法是再把提案切成「只改 1 个文件就停」和「接线 + 测试 + 跑命令」两轮，每轮产物都能被独立复核。
+
+### 11.8 续做记录（2026-11-10，迁移到 8c12g 之后）
+
+- 环境：主机 `8c12g`，node v24.21.0，opencode 1.19.5，grok-4.6 连通（7.3s）；仓库与分支状态随迁移完整保留。
+- **RP06 已完成并提交 `50ab356`**：
+  - `src/provider/registry.ts`：新增 `beginTickCache()` / `endTickCache()` / `tickCacheActive`，私有 `loadLeagueStates()` 成为唯一状态读取入口；`orderLeagues()` 与 `dueLeagues()` 共用同一轮结果，`dueLeagues` 不再二次读库；`markSuccess()` 成功后删除对应缓存 key。到期判定与排序语义逐字未改。
+  - `src/cloud-function/runtime.ts`：Timer 分支开/关 tick 缓存（`sync` 动作与普通请求路径不开）。
+  - 测试：新增 `src/provider/registry-league-cache.test.ts` 5 例（同轮只读一次 / 未开缓存保持原行为 / `endTickCache` 后重读 / `null` 也缓存）。
+  - 验证：`typecheck` 通过；`vitest` 182 文件 / 1694 用例全通过；`build`、`cloudfunction:build` 通过。
+- **已知测试覆盖局限**：「`markSuccess` 后同轮缓存失效」这条只在 `withRequest` 内部触发（需要真实 HTTP 拉取），当前用例覆盖的是「同轮复用 + 结束后重读」，未直接断言缓存删除。若后续想补，可给 registry 增加一个可注入的请求钩子或在测试里注入 `fetchImpl`。
+- 下一步：P2（RP07 持久化延期重试 → RP08 锁只覆盖实际工作），仍按「一轮一个提案、写一个文件就停」的节奏推进。
 
