@@ -18,7 +18,12 @@ function fakeDatabase(missing: string[] = []) {
   let collectionReads = 0;
   const collection = (name: string) => {
     collectionReads += 1;
-    return {
+    const chain = {
+      where() { return chain; },
+      orderBy() { return chain; },
+      skip() { return chain; },
+      limit() { return chain; },
+      async get() { return { data: [] as Record<string, unknown>[] }; },
       async count() {
         if (missing.includes(name)) throw Object.assign(new Error(`collection ${name} not found`), { errCode: "COLLECTION_NOT_FOUND" });
         return { total: 0 };
@@ -28,6 +33,7 @@ function fakeDatabase(missing: string[] = []) {
         documents.set(`${name}/${id}`, { ...data });
         return { _id: id };
       },
+      async update() { return { updated: 0, stats: { updated: 0 } }; },
       doc(id: string) {
         return {
           async get() {
@@ -35,6 +41,7 @@ function fakeDatabase(missing: string[] = []) {
             if (!data) throw Object.assign(new Error("document not exist"), { errCode: "DOCUMENT_NOT_FOUND" });
             return { data };
           },
+          async update() { return { updated: 0, stats: { updated: 0 } }; },
           async remove() {
             documents.delete(`${name}/${id}`);
             return { removed: 1 };
@@ -42,6 +49,7 @@ function fakeDatabase(missing: string[] = []) {
         };
       },
     };
+    return chain;
   };
   const db = {
     collection,
@@ -79,6 +87,27 @@ describe("Cloud Function runtime startup", () => {
     })).toThrow("cannot configure mock identity");
     expect(log).toHaveBeenCalledWith(expect.objectContaining({ event: "startup_error", diag_code: "DIAG_PROD_MOCK_IDENTITY" }));
     expect(JSON.stringify(log.mock.calls)).not.toContain("private-openid");
+  });
+});
+
+describe("Timer summary observation", () => {
+  it("emits exactly one timer_summary log after a Timer event", async () => {
+    const log = vi.fn();
+    const runtime = createCloudFunctionRuntime({
+      env: ENV,
+      db: fakeDatabase().db,
+      sdkVersion: "4.0.2",
+      nodeVersion: "v24",
+      log,
+    });
+    await runtime({ Type: "Timer" }, {});
+    const summaries = log.mock.calls
+      .map(([entry]) => entry as Record<string, unknown>)
+      .filter((entry) => entry.event === "timer_summary");
+    expect(summaries).toHaveLength(1);
+    const dbOps = summaries[0]!.db_ops as { read: number };
+    expect(typeof dbOps.read).toBe("number");
+    expect(dbOps.read).toBeGreaterThanOrEqual(0);
   });
 });
 

@@ -1,0 +1,91 @@
+import { describe, expect, it } from "vitest";
+import { ProviderDataError } from "../provider/http.js";
+import { buildTimerSummary } from "./timer-summary.js";
+
+const TASK_TYPES = ["post_finish_verify", "live_match", "near_match", "future_schedule", "full_schedule_verify", "provider_reconcile", "settlement"] as const;
+
+function assertNoSensitiveKeys(summary: Record<string, unknown>): void {
+  expect(JSON.stringify(summary)).not.toMatch(/"(openid|api_key|apikey|token)"/i);
+}
+
+describe("buildTimerSummary", () => {
+  it("summarizes a normal round as ok", () => {
+    const summary = buildTimerSummary({
+      taskTypes: TASK_TYPES,
+      provider: { outcome: "completed", jobs_run: ["live_match", "future_schedule:la_liga"] },
+      settlements: [
+        { match_id: "m1", outcome: { kind: "settled" } },
+        { match_id: "m2", outcome: { kind: "started" } },
+      ],
+      dbOps: { read: 4, write: 2 },
+      durationMs: 12,
+      errors: [],
+    });
+    expect(summary.outcome).toBe("ok");
+    expect(summary.settlements).toEqual({ attempted: 2, settled: 2, failed: 0 });
+    expect(summary.error_categories).toEqual({});
+    expect(summary.db_ops).toEqual({ read: 4, write: 2 });
+    expect(summary.ran).toEqual(["live_match", "future_schedule:la_liga"]);
+    expect(summary.benign_skips).toBe(0);
+    assertNoSensitiveKeys(summary);
+  });
+
+  it("summarizes an all-skipped round as ok", () => {
+    const summary = buildTimerSummary({
+      taskTypes: TASK_TYPES,
+      provider: {
+        outcome: "skipped",
+        skipped: [
+          { task: "live_match", reason: "no_provider_sources" },
+          { task: "provider_reconcile", reason: "no_provider_sources" },
+        ],
+      },
+      settlements: [],
+      dbOps: { read: 0, write: 0 },
+      durationMs: 3,
+      errors: [],
+    });
+    expect(summary.outcome).toBe("ok");
+    expect(summary.settlements).toEqual({ attempted: 0, settled: 0, failed: 0 });
+    expect(summary.skipped).toEqual([
+      { task: "live_match", reason: "no_provider_sources" },
+      { task: "provider_reconcile", reason: "no_provider_sources" },
+    ]);
+    expect(summary.error_categories).toEqual({});
+    assertNoSensitiveKeys(summary);
+  });
+
+  it("classifies one transient error as partial", () => {
+    const summary = buildTimerSummary({
+      taskTypes: TASK_TYPES,
+      provider: { outcome: "completed", jobs_run: ["near_match"] },
+      settlements: [
+        { match_id: "m1", outcome: { kind: "settled" } },
+        { match_id: "m2", outcome: { kind: "failed" } },
+      ],
+      dbOps: { read: 1, write: 0 },
+      durationMs: 8,
+      errors: [Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" })],
+    });
+    expect(summary.outcome).toBe("partial");
+    expect(summary.settlements).toEqual({ attempted: 2, settled: 1, failed: 1 });
+    expect(summary.error_categories).toEqual({ transient: 1 });
+    expect(summary.benign_skips).toBe(0);
+    assertNoSensitiveKeys(summary);
+  });
+
+  it("classifies a data_format error with no successes as failed", () => {
+    const summary = buildTimerSummary({
+      taskTypes: TASK_TYPES,
+      provider: { outcome: "skipped", skipped: [{ task: "live_match", reason: "interval_not_due" }] },
+      settlements: [{ match_id: "m1", outcome: { kind: "failed" } }],
+      dbOps: { read: 2, write: 0 },
+      durationMs: 5,
+      errors: [new ProviderDataError("invalid provider envelope")],
+    });
+    expect(summary.outcome).toBe("failed");
+    expect(summary.settlements).toEqual({ attempted: 1, settled: 0, failed: 1 });
+    expect(summary.error_categories).toEqual({ data_format: 1 });
+    assertNoSensitiveKeys(summary);
+  });
+});

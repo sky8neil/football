@@ -11,7 +11,8 @@ import { createCloudBaseWxDb, type CloudBaseSdkDatabase } from "../infrastructur
 import { handleGatewayRequest } from "../gateway/assemble.js";
 import { makeRequestId } from "../api/v1/validation.js";
 import { classifyCloudError, missingCloudEnvironmentKeys } from "../infrastructure/cloud-diagnostics.js";
-import { cloudBaseCollectionName } from "../infrastructure/cloudbase-db.js";
+import { cloudBaseCollectionName, type CloudBaseDb } from "../infrastructure/cloudbase-db.js";
+import { createCountingDb } from "../infrastructure/db-op-counter.js";
 import { CloudBaseProviderUsageStore } from "../infrastructure/cloudbase-provider-usage.js";
 import { CloudBaseProviderKeyStateStore } from "../infrastructure/cloudbase-provider-key-state.js";
 import { CloudBaseProviderLeagueStateStore } from "../infrastructure/cloudbase-provider-league-state.js";
@@ -32,6 +33,17 @@ import { runSettlementTimer } from "../application/settlement-timer.js";
 import { activeWindow } from "../application/provider-active-window.js";
 import type { Match } from "../domain/types.js";
 import { createCloudFunctionHandler, type CloudFunctionContextLike, type CloudFunctionEvent } from "./index.js";
+import { buildTimerSummary } from "./timer-summary.js";
+
+const TIMER_TASK_TYPES = [
+  SyncJobType.PostFinishVerify,
+  SyncJobType.LiveMatch,
+  SyncJobType.NearMatch,
+  SyncJobType.FutureSchedule,
+  SyncJobType.FullScheduleVerify,
+  SyncJobType.ProviderReconcile,
+  "settlement",
+] as const;
 
 export interface CloudFunctionRuntimeOptions {
   env: Record<string, string | undefined>;
@@ -74,7 +86,8 @@ export function createCloudFunctionRuntime(options: CloudFunctionRuntimeOptions)
     throw error;
   }
   const namespace = config.cloudbase_repository!.resource_namespace;
-  const cloudDb = createCloudBaseWxDb(db, namespace);
+  const counted = createCountingDb(createCloudBaseWxDb(db, namespace));
+  const cloudDb = counted.db;
   const repo = createGatewayRepository(config, cloudDb);
   if (repo instanceof InMemoryRepository) throw new Error("CloudBase runtime cannot use the memory repository");
   let providerSources: ReturnType<typeof loadProviderSources>;
@@ -193,21 +206,59 @@ export function createCloudFunctionRuntime(options: CloudFunctionRuntimeOptions)
       return { result: { status: 200, body: { data, request_id: makeRequestId() } } };
     }
     if (event.Type === "Timer") {
+      counted.counter.begin();
+      const startedAt = Date.now();
+      const errors: unknown[] = [];
       const serverNow = new Date();
-      const providerData = await runDueProviderJobs({
-        cloudDb,
-        namespace,
-        dispatcher: providerDispatcher,
-        providerRegistry,
-        syncLeagueIds: [...providerSources.sync_leagues],
-        sourceIds: providerSources.sources.map((source) => source.source_id),
-        profile: providerSources.sync_profile,
-        reconcile: providerReconcile,
-        serverNow,
-        log: logger,
-      });
-      const data = { ...providerData, settlements: await runSettlementTimer(repo, serverNow) };
-      return { result: { status: 200, body: { data, request_id: makeRequestId() } } };
+      let providerData: Record<string, unknown> = { outcome: "failed" };
+      let settlements: { match_id: string; outcome: unknown }[] = [];
+      try {
+        providerData = await runDueProviderJobs({
+          cloudDb,
+          namespace,
+          dispatcher: providerDispatcher,
+          providerRegistry,
+          syncLeagueIds: [...providerSources.sync_leagues],
+          sourceIds: providerSources.sources.map((source) => source.source_id),
+          profile: providerSources.sync_profile,
+          reconcile: providerReconcile,
+          serverNow,
+          log: logger,
+        });
+        settlements = await runSettlementTimer(repo, serverNow);
+        return { result: { status: 200, body: { data: { ...providerData, settlements }, request_id: makeRequestId() } } };
+      } catch (error) {
+        errors.push(error);
+        throw error;
+      } finally {
+        try {
+          const dbOps = counted.counter.end();
+          const jobs_run = Array.isArray(providerData.jobs_run)
+            ? providerData.jobs_run.filter((value): value is string => typeof value === "string")
+            : undefined;
+          const skipped = Array.isArray(providerData.skipped)
+            ? providerData.skipped.flatMap((row) => {
+                if (typeof row !== "object" || row === null) return [];
+                const task = (row as { task?: unknown }).task;
+                const reason = (row as { reason?: unknown }).reason;
+                return typeof task === "string" && typeof reason === "string" ? [{ task, reason }] : [];
+              })
+            : undefined;
+          const summary = buildTimerSummary({
+            taskTypes: TIMER_TASK_TYPES,
+            provider: {
+              outcome: typeof providerData.outcome === "string" ? providerData.outcome : "failed",
+              ...(jobs_run === undefined ? {} : { jobs_run }),
+              ...(skipped === undefined ? {} : { skipped }),
+            },
+            settlements,
+            dbOps,
+            durationMs: Date.now() - startedAt,
+            errors,
+          });
+          logger({ event: "timer_summary", ...summary });
+        } catch {}
+      }
     }
     return handler(event, context);
   };
@@ -235,7 +286,7 @@ function providerJobIntervalMs(
 }
 
 export async function runDueProviderJobs(input: {
-  cloudDb: ReturnType<typeof createCloudBaseWxDb>;
+  cloudDb: CloudBaseDb;
   /** 资源命名空间：底层适配器收的是物理集合名，这里必须自己拼前缀。 */
   namespace: string;
   dispatcher: ProviderSyncDispatcher;
@@ -254,7 +305,12 @@ export async function runDueProviderJobs(input: {
     SyncJobType.FutureSchedule,
     SyncJobType.FullScheduleVerify,
   ];
-  if (input.sourceIds.length === 0) return { outcome: "skipped", reason: "no_provider_sources" };
+  const skipped: { task: string; reason: string }[] = [];
+  if (input.sourceIds.length === 0) {
+    for (const jobType of jobs) skipped.push({ task: jobType, reason: "no_provider_sources" });
+    skipped.push({ task: SyncJobType.ProviderReconcile, reason: "no_provider_sources" });
+    return { outcome: "skipped", reason: "no_provider_sources", skipped };
+  }
   const ran: string[] = [];
   for (const jobType of jobs) {
     if (jobType === SyncJobType.FutureSchedule || jobType === SyncJobType.FullScheduleVerify) {
@@ -265,7 +321,10 @@ export async function runDueProviderJobs(input: {
         providerJobIntervalMs(jobType, input.profile),
       );
       const leagueId = dueLeagues[0];
-      if (leagueId === undefined) continue;
+      if (leagueId === undefined) {
+        skipped.push({ task: jobType, reason: "no_due_league" });
+        continue;
+      }
       const outcome = await input.dispatcher.run(jobType, input.serverNow, leagueId);
       logProviderFixtureFailures(input.log, jobType, outcome);
       input.log({ event: "provider_schedule", job_type: jobType, league_id: leagueId, outcome: "started" });
@@ -283,7 +342,10 @@ export async function runDueProviderJobs(input: {
       ? lastStartedAt.getTime()
       : typeof lastStartedAt === "string" ? Date.parse(lastStartedAt) : Number.NaN;
     const interval = providerJobIntervalMs(jobType, input.profile);
-    if (Number.isFinite(lastStartedMs) && input.serverNow.getTime() - lastStartedMs < interval) continue;
+    if (Number.isFinite(lastStartedMs) && input.serverNow.getTime() - lastStartedMs < interval) {
+      skipped.push({ task: jobType, reason: "interval_not_due" });
+      continue;
+    }
     const outcome = await input.dispatcher.run(jobType, input.serverNow);
     logProviderFixtureFailures(input.log, jobType, outcome);
     input.log({ event: "provider_schedule", job_type: jobType, outcome: "started" });
@@ -303,8 +365,10 @@ export async function runDueProviderJobs(input: {
     const outcome = await input.reconcile.run(input.serverNow);
     if (outcome.kind === "completed") ran.push(SyncJobType.ProviderReconcile);
     input.log({ event: "provider_schedule", job_type: SyncJobType.ProviderReconcile, outcome: outcome.kind });
+  } else {
+    skipped.push({ task: SyncJobType.ProviderReconcile, reason: "interval_not_due" });
   }
-  return { outcome: "completed", jobs_run: ran };
+  return { outcome: "completed", jobs_run: ran, skipped };
 }
 
 function logProviderFixtureFailures(
