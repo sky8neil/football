@@ -204,7 +204,7 @@
 - [x] RP06 同轮联赛状态复用 —— `50ab356`
 - [x] RP07 延期重试与恢复 —— `e38dedf` + `380d2c3`
 - [x] RP08 锁申请和续租优化（`9c013ed` + `816d2b9`）
-- [ ] RP09 比赛窗口及数据库候选查询
+- [x] RP09 比赛窗口及数据库候选查询（`f4915f3` + `37d8c65`）
 - [ ] RP10 到期调度与唤醒策略
 - [ ] RP11 批量读取与映射复用
 - [ ] RP12 不变数据避免重复写入
@@ -370,3 +370,38 @@
 **未做（原方案里评估后放弃的部分）**
 - 按联赛粒度拆锁（`sync:{job_type}:{league}`）：当前每轮只处理 `dueLeagues[0]` 一个联赛，拆锁没有并发收益，只会让锁记录变多。
 - 真·fencing token（把 token 写进业务数据、写入时校验单调递增）：需要改所有业务集合的写路径，超出本项范围，留作后续若出现真实重复入账再评估。
+
+### 11.12 RP09 实施记录（2026-11-10）
+
+**问题确认**
+`provider-window-loader.ts` 原来这样取候选：把每个联赛**整赛季**的比赛全部读进内存（`findBySeason` × 联赛数），再在内存里用 `activeWindow()` 筛。这是同步链路里单次读量最大的一处。
+
+**端口限制（决定了实现方式）**
+`CloudBaseDb.query(collection, filter, options)` 的 filter 只能表达**等值**条件，`findSettlementTodos` 的注释也明确写了「CloudBase query 只支持等值 filter，不能 `$in` / 字段间比较」。但 wx-server-sdk 的 `db.command` 实际已透传进适配器（`reserveCounter` 就在用 `command.lt`），所以范围查询可做，只是端口没暴露。
+
+**关键设计：每种窗口只需要一个上界**
+不需要 `and` 组合两个范围条件，因此端口只需暴露单操作符构造器（`lteFilter`）：
+
+| 任务 | 查询片段 |
+| --- | --- |
+| `near_match` | `status=scheduled` + `kickoff_at <= now+24h`（下界 now+2h 交给内存筛） |
+| `live_match` | `status=live`；`status=scheduled` + `kickoff_at <= now+2h` |
+| `post_finish_verify` | `finished` × `{pending,waiting}`；`{pending,waiting}` + `kickoff_at <= now` |
+
+片段的并集是 `activeWindow()` 的**超集**，最终仍由未改动的 `activeWindow()` 裁决，所以窗口语义零改动。
+
+**修复一个会导致静默漏更新的缺陷**
+`post_finish` 片段最初按 `kickoff_at <= now-105min` 截断（照着 `elapsed >= 105min` 那条 due 条件写）。但 `activeWindow` 的 due 还有一条「`finish_detected_at != null`」：赛事可能已置完场时间、`match_status` 尚未转 `finished`、开球不足 105 分钟。这类比赛会被查询漏掉，要等 105 分钟才被捡回。上界改为 `now` 后覆盖全部已开球情形（待结算集合本身很小）。已补一条专门的反例测试，并验证过「改回旧上界该测试立刻失败」。
+
+**改动**
+- 新增 `src/infrastructure/active-window-query.ts`：`buildActiveWindowFilters` / `selectActiveWindow`
+- `CloudBaseDb.lteFilter?` + `CloudBaseWxDb` 用 `db.command.lte` 实现（`command` 缺省时返回 `undefined`，调用方退化为纯等值查询）
+- `MatchRepository.findActiveWindow(query)`：内存实现走 `selectActiveWindow`；CloudBase 实现按片段各发一次 `limit` 内的 `order_by kickoff_at desc` 查询，合并去重后再走 `selectActiveWindow`
+- `provider-window-loader.ts` 改调 `findActiveWindow`，单轮候选上限 500；`from` 的兜底从 `Math.min(...spread)` 改为 `reduce`（避免候选多时展开爆栈）
+- 索引：新增 `ix_matches_settlement_kickoff [settlement_status, kickoff_at]`（`post_finish` 的两个片段没有 `match_status` 前缀，既有索引覆盖不到范围列）。既有 `ix_matches_status_kickoff` 可直接服务 `near_match` / `live_match`，已核对复用
+
+**验证**：`typecheck` 通过；`vitest` 188 文件 / 1737 用例全通过（基线 1633，累计 +104）；`build`、`cloudfunction:build` 通过。
+
+**已知取舍**
+- 候选超过 500 条时单轮只处理前 500（按开球时间升序）。正常比赛日三种任务各只有几十场；若线上真出现大量滞留待结算，需要看 `timer_summary` 是否出现持续满额再决定是否调大或加分页游标。
+- 新索引只写了声明，**未部署**；未部署前 `post_finish` 的两个片段会走全表扫描（结果正确，只是不快）。
