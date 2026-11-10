@@ -21,6 +21,7 @@ import {
   SCHEMA_VERSION,
   SettlementItemStatus,
   type SettlementDocStatus,
+  type SyncJobType,
 } from "../domain/enums.js";
 import {
   selectSettlementFallbackPage,
@@ -237,6 +238,8 @@ export interface AnomalyRepository {
 export interface SyncLogRepository {
   insert(log: SyncLog): Promise<void>;
   update(log: SyncLog): Promise<void>;
+  /** RP07：取某 job_type 最近一条日志。实现可选，调用方必须处理 undefined。 */
+  findLatestByJobType?(jobType: SyncJobType): Promise<SyncLog | null>;
 }
 
 export interface MatchRepository {
@@ -689,6 +692,7 @@ export class InMemoryRepository implements AppRepository {
     return {
       insert: (log) => self.insertSyncLog(log),
       update: (log) => self.updateSyncLog(log),
+      findLatestByJobType: (jobType) => self.findLatestSyncLogByJobType(jobType),
     };
   }
 
@@ -2187,6 +2191,26 @@ export class InMemoryRepository implements AppRepository {
         this.store.syncLogsById.set(log.sync_job_id, old);
       }
     });
+  }
+
+  private async findLatestSyncLogByJobType(jobType: SyncJobType): Promise<SyncLog | null> {
+    const matched = [...this.store.syncLogsById.values()].filter(
+      (log) => log.job_type === jobType,
+    );
+    if (matched.length === 0) {
+      return null;
+    }
+    matched.sort((a, b) => {
+      const byStarted = b.started_at.getTime() - a.started_at.getTime();
+      if (byStarted !== 0) {
+        return byStarted;
+      }
+      if (a.sync_job_id === b.sync_job_id) {
+        return 0;
+      }
+      return a.sync_job_id < b.sync_job_id ? 1 : -1;
+    });
+    return matched[0] ?? null;
   }
 
   // ---- job locks ----

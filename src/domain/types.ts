@@ -384,6 +384,8 @@ export interface SyncLog extends BaseDoc {
   failure_diagnostics_omitted?: number;
   last_error_code: string | null;
   last_error_message: string | null;
+  next_attempt_at?: Date | null;
+  retry_attempt?: number | null;
   created_at: Date;
 }
 

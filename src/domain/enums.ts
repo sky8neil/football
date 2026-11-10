@@ -174,6 +174,8 @@ export const SyncJobStatus = {
   Running: "running",
   Success: "success",
   Failed: "failed",
+  /** 本轮因可重试错误延后，下次调度到期再跑，不等于业务成功 */
+  Deferred: "deferred",
 } as const;
 export type SyncJobStatus = (typeof SyncJobStatus)[keyof typeof SyncJobStatus];
 
