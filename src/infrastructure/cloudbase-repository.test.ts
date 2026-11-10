@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { GroupStatus } from "../domain/enums.js";
-import type { BoardSnapshot, Group, User } from "../domain/types.js";
+import { GroupStatus, MatchStatus, SettlementStatus } from "../domain/enums.js";
+import type { BoardSnapshot, Group, Match, User } from "../domain/types.js";
 import { defaultLevelState } from "../domain/types.js";
 import { GroupsService } from "../application/groups.js";
 import { COLLECTION_DEFINITIONS } from "../schema/collections.js";
@@ -44,6 +44,22 @@ function equal(a: unknown, b: unknown): boolean {
   return a === b;
 }
 
+function isLteOp(value: unknown): value is { __lte: unknown } {
+  return typeof value === "object" && value !== null && !Array.isArray(value) && !(value instanceof Date) && "__lte" in value;
+}
+
+function toMs(value: unknown): number {
+  if (value instanceof Date) {
+    const ms = value.getTime();
+    return Number.isFinite(ms) ? ms : Number.NaN;
+  }
+  if (typeof value === "string" || typeof value === "number") {
+    const ms = new Date(value).getTime();
+    return Number.isFinite(ms) ? ms : Number.NaN;
+  }
+  return Number.NaN;
+}
+
 class MemoryCloudBaseDb implements CloudBaseDb {
   private documents = new Map<string, CloudBaseDocument>();
   private transactionTail: Promise<void> = Promise.resolve();
@@ -85,7 +101,10 @@ class MemoryCloudBaseDb implements CloudBaseDb {
     let result = [...this.documents.entries()]
       .filter(([key]) => key.startsWith(`${collection}/`))
       .map(([, document]) => cloneValue(document))
-      .filter((document) => Object.entries(filter).every(([field, value]) => equal(document[field], value)));
+      .filter((document) => Object.entries(filter).every(([field, value]) => {
+        if (isLteOp(value)) return toMs(document[field]) <= toMs(value.__lte);
+        return equal(document[field], value);
+      }));
     if (options.order_by) {
       const direction = options.direction === "desc" ? -1 : 1;
       const field = options.order_by;
@@ -234,6 +253,46 @@ function makeSeasonSnapshot(overrides: Partial<BoardSnapshot> = {}): BoardSnapsh
 
 function createCloudBaseRepository(db = new MemoryCloudBaseDb()): CloudBaseAppRepository {
   return new CloudBaseAppRepository(CONFIG, db);
+}
+
+class RangeAwareMemoryCloudBaseDb extends MemoryCloudBaseDb {
+  lteFilter(field: string, value: unknown): Record<string, unknown> {
+    return { [field]: { __lte: value } };
+  }
+}
+
+function makeWindowMatch(overrides: Partial<Match> = {}): Match {
+  return {
+    schema_version: 1,
+    match_id: "m1",
+    league_id: "premier_league",
+    season_id: "2026_2027",
+    round_id: "01",
+    home_team_id: "home",
+    away_team_id: "away",
+    kickoff_at: NOW,
+    kickoff_confirmed: true,
+    prediction_deadline_at: NOW,
+    prediction_closed_at: null,
+    period_anchor_at: null,
+    match_status: MatchStatus.Scheduled,
+    settlement_status: SettlementStatus.Pending,
+    regular_home_score: null,
+    regular_away_score: null,
+    extra_home_score: null,
+    extra_away_score: null,
+    penalty_home_score: null,
+    penalty_away_score: null,
+    result_version: 0,
+    settled_result_version: 0,
+    result_source: null,
+    scoring_rule_version: "scoring_v1",
+    finish_detected_at: null,
+    settled_at: null,
+    created_at: NOW,
+    updated_at: NOW,
+    ...overrides,
+  } as Match;
 }
 
 describe("CloudBase repository configuration", () => {
@@ -400,6 +459,65 @@ describe("CloudBaseAppRepository", () => {
     await expect(service.getGroup(USER_ID, created.group_id)).resolves.toMatchObject({ member_count: 2 });
     expect(await repo.groupMembers.findByGroup(created.group_id)).toHaveLength(2);
     expect(await db.count("football-test_groups")).toBe(1);
+  });
+});
+
+describe("CloudBaseAppRepository.findActiveWindow", () => {
+  const hour = 60 * 60_000;
+  const minute = 60_000;
+  const windowMatches: Match[] = [
+    makeWindowMatch({ match_id: "sched-3d", kickoff_at: new Date(NOW.getTime() + 3 * 24 * hour) }),
+    makeWindowMatch({ match_id: "sched-12h", kickoff_at: new Date(NOW.getTime() + 12 * hour) }),
+    makeWindowMatch({ match_id: "sched-3h", kickoff_at: new Date(NOW.getTime() + 3 * hour) }),
+    makeWindowMatch({ match_id: "sched-1h", kickoff_at: new Date(NOW.getTime() + hour) }),
+    makeWindowMatch({ match_id: "sched-106m-ago", kickoff_at: new Date(NOW.getTime() - 106 * minute) }),
+    makeWindowMatch({ match_id: "live-now", match_status: MatchStatus.Live, kickoff_at: NOW }),
+    makeWindowMatch({
+      match_id: "fin-pending",
+      match_status: MatchStatus.Finished,
+      settlement_status: SettlementStatus.Pending,
+      kickoff_at: new Date(NOW.getTime() - 12 * hour),
+      finish_detected_at: new Date(NOW.getTime() - 10 * hour),
+    }),
+    makeWindowMatch({
+      match_id: "fin-waiting",
+      match_status: MatchStatus.Finished,
+      settlement_status: SettlementStatus.Waiting,
+      kickoff_at: new Date(NOW.getTime() - 6 * hour),
+      finish_detected_at: new Date(NOW.getTime() - 4 * hour),
+    }),
+    makeWindowMatch({
+      match_id: "fin-settled",
+      match_status: MatchStatus.Finished,
+      settlement_status: SettlementStatus.Settled,
+      kickoff_at: new Date(NOW.getTime() - 12 * hour),
+      finish_detected_at: new Date(NOW.getTime() - 10 * hour),
+    }),
+  ];
+
+  async function seed(repo: InMemoryRepository | CloudBaseAppRepository): Promise<void> {
+    for (const match of windowMatches) await repo.matches.insert(match);
+  }
+
+  async function expectSameAsMemory(db: MemoryCloudBaseDb): Promise<void> {
+    const memory = new InMemoryRepository();
+    const cloud = createCloudBaseRepository(db);
+    await seed(memory);
+    await seed(cloud);
+    for (const jobType of ["near_match", "live_match", "post_finish_verify"] as const) {
+      const query = { jobType, now: NOW, limit: 50 };
+      const memoryIds = (await memory.matches.findActiveWindow(query)).map((row) => row.match_id);
+      const cloudIds = (await cloud.matches.findActiveWindow(query)).map((row) => row.match_id);
+      expect(cloudIds).toEqual(memoryIds);
+    }
+  }
+
+  it("不支持范围查询时退化为等值条件 + 内存筛选，结果与内存仓储一致", async () => {
+    await expectSameAsMemory(new MemoryCloudBaseDb());
+  });
+
+  it("支持 lteFilter 时结果仍与内存仓储一致", async () => {
+    await expectSameAsMemory(new RangeAwareMemoryCloudBaseDb());
   });
 });
 

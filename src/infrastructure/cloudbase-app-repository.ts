@@ -57,6 +57,11 @@ import {
   type SettlementTodoQuery,
 } from "./settlement-todo-query.js";
 import {
+  buildActiveWindowFilters,
+  selectActiveWindow,
+  type ActiveWindowQuery,
+} from "./active-window-query.js";
+import {
   DocumentNotFoundError,
   StaleResultVersionError,
   UniqueConstraintError,
@@ -267,6 +272,7 @@ export class CloudBaseAppRepository implements AppRepository {
       findLive: async () => this.where<Match>("matches", { match_status: "live" }),
       findSettlementTodos: async (query) => this.findSettlementTodos(query),
       findSettlementFallbackPage: async (query) => this.findSettlementFallbackPage(query),
+      findActiveWindow: async (query) => this.findActiveWindow(query),
       insert: async (match) => {
         assertMatchResultVersionInvariants(match);
         await this.add("matches", match.match_id, match);
@@ -501,6 +507,27 @@ export class CloudBaseAppRepository implements AppRepository {
     options?: CloudBaseQueryOptions,
   ): Promise<T[]> {
     return (await this.db.query(this.collection(name), filter, options)).map((doc) => withoutId<T>(doc));
+  }
+
+  /**
+   * RP09：按窗口片段分别等值查询，可选 kickoff_at 上界；合并去重后再走 selectActiveWindow。
+   */
+  private async findActiveWindow(query: ActiveWindowQuery): Promise<Match[]> {
+    const collected = new Map<string, Match>();
+    for (const fragment of buildActiveWindowFilters(query)) {
+      const filter: Record<string, unknown> = { ...fragment.equals };
+      if (fragment.kickoffAtLte !== undefined) {
+        const range = this.db.lteFilter?.("kickoff_at", fragment.kickoffAtLte);
+        if (range !== undefined) Object.assign(filter, range);
+      }
+      const page = await this.where<Match>("matches", filter, {
+        order_by: "kickoff_at",
+        direction: "desc",
+        limit: query.limit,
+      });
+      for (const match of page) collected.set(match.match_id, match);
+    }
+    return selectActiveWindow(collected.values(), query);
   }
 
   /**

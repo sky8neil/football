@@ -29,6 +29,10 @@ import {
   type SettlementTodoQuery,
 } from "./settlement-todo-query.js";
 import {
+  selectActiveWindow,
+  type ActiveWindowQuery,
+} from "./active-window-query.js";
+import {
   assertMatchResultVersionInvariants,
   assertFinishDetectedImmutable,
   assertPeriodAnchorImmutable,
@@ -73,7 +77,7 @@ import type {
 } from "../domain/types.js";
 import type { AnomalyStatus } from "../domain/enums.js";
 
-export type { SettlementTodoQuery };
+export type { SettlementTodoQuery, ActiveWindowQuery };
 
 /** 唯一约束冲突（模拟数据库唯一索引冲突）。 */
 export class UniqueConstraintError extends Error {
@@ -259,6 +263,8 @@ export interface MatchRepository {
   findSettlementTodos(query: SettlementTodoQuery): Promise<Match[]>;
   /** RP05 兜底：finished 且非 voided 的分页页，用于漏标扫描。 */
   findSettlementFallbackPage(query: SettlementTodoQuery): Promise<Match[]>;
+  /** RP09：按比赛窗口在数据库侧筛选候选，避免整赛季读入内存。 */
+  findActiveWindow(query: ActiveWindowQuery): Promise<Match[]>;
   insert(match: Match): Promise<void>;
   update(match: Match): Promise<void>;
   updateSettlementProgress(matchId: string, resultVersion: number, settledAt: Date): Promise<void>;
@@ -711,6 +717,7 @@ export class InMemoryRepository implements AppRepository {
       findLive: () => self.findLiveMatches(),
       findSettlementTodos: (query) => self.findSettlementTodos(query),
       findSettlementFallbackPage: (query) => self.findSettlementFallbackPage(query),
+      findActiveWindow: (query) => self.findActiveWindow(query),
       insert: (match) => self.insertMatch(match),
       update: (match) => self.updateMatch(match),
       updateSettlementProgress: async (matchId, resultVersion, settledAt) => {
@@ -1178,6 +1185,10 @@ export class InMemoryRepository implements AppRepository {
 
   private async findSettlementFallbackPage(query: SettlementTodoQuery): Promise<Match[]> {
     return selectSettlementFallbackPage(this.store.matchesById.values(), query);
+  }
+
+  private async findActiveWindow(query: ActiveWindowQuery): Promise<Match[]> {
+    return selectActiveWindow(this.store.matchesById.values(), query);
   }
 
   private async insertMatch(match: Match): Promise<void> {

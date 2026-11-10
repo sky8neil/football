@@ -13,7 +13,7 @@ type SdkStats = {
   removed?: number;
   stats?: { updated?: number; removed?: number };
 };
-type SdkCommand = { inc(value: number): unknown; lt(value: number): unknown };
+type SdkCommand = { inc(value: number): unknown; lt(value: number): unknown; lte(value: number | Date): unknown };
 type SdkDocument = {
   get(): Promise<SdkResult<CloudBaseDocument>>;
   create(options: { data: CloudBaseDocument }): Promise<unknown>;
@@ -186,6 +186,11 @@ export class CloudBaseWxDb implements CloudBaseDb {
   async getCounter(collection: string, id: string, field: string): Promise<number> {
     const document = await this.get(collection, id);
     return typeof document?.[field] === "number" ? document[field] as number : 0;
+  }
+
+  lteFilter(field: string, value: unknown): Record<string, unknown> | undefined {
+    if (this.command?.lte === undefined) return undefined;
+    return { [field]: this.command.lte(value as number) };
   }
 
   async transaction<T>(work: (transactionDb: CloudBaseDb) => Promise<T>): Promise<T> {

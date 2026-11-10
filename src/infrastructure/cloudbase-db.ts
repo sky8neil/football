@@ -22,6 +22,11 @@ export interface CloudBaseDb {
     options?: CloudBaseQueryOptions,
   ): Promise<CloudBaseDocument[]>;
   count(collection: string, filter?: Record<string, unknown>): Promise<number>;
+  /**
+   * 构造「字段 <= 值」范围条件，返回可直接并入 query filter 的对象。
+   * 适配器不支持范围查询时返回 undefined（调用方退化为不带该条件）。
+   */
+  lteFilter?(field: string, value: unknown): Record<string, unknown> | undefined;
   reserveCounter?(collection: string, id: string, field: string, limit: number, initial: CloudBaseDocument): Promise<boolean>;
   adjustCounter?(collection: string, id: string, field: string, delta: number): Promise<void>;
   getCounter?(collection: string, id: string, field: string): Promise<number>;

@@ -14,6 +14,7 @@ function fakeDatabase(format: "nested" | "top-level" = "nested") {
   const command = {
     inc(value: number) { return { __operation: "inc", value }; },
     lt(value: number) { return { __operation: "lt", value }; },
+    lte(value: number | Date) { return { __operation: "lte", value }; },
   };
   const makeDatabase = (transaction = false) => ({
     command,
@@ -24,8 +25,13 @@ function fakeDatabase(format: "nested" | "top-level" = "nested") {
       let order: { field: string; direction: "asc" | "desc" } | null = null;
       const matches = (value: Record<string, unknown>) => Object.entries(filter).every(([key, expected]) => {
         if (typeof expected === "object" && expected !== null && "__operation" in expected) {
-          const condition = expected as { __operation: string; value: number };
-          if (condition.__operation === "lt") return Number(value[key]) < condition.value;
+          const condition = expected as { __operation: string; value: number | Date };
+          if (condition.__operation === "lt") return Number(value[key]) < Number(condition.value);
+          if (condition.__operation === "lte") {
+            const left = value[key] instanceof Date ? (value[key] as Date).getTime() : Number(value[key]);
+            const right = condition.value instanceof Date ? condition.value.getTime() : Number(condition.value);
+            return left <= right;
+          }
         }
         return value[key] === expected;
       });
@@ -176,5 +182,16 @@ describe("CloudBase wx-server-sdk database adapter", () => {
     await expect(db.reserveCounter("football_test_provider_usage", initial._id, "request_count", 2, initial)).resolves.toBe(true);
     await expect(db.reserveCounter("football_test_provider_usage", initial._id, "request_count", 2, initial)).resolves.toBe(false);
     expect(fake.docs.get(`football_test_provider_usage/${initial._id}`)).toMatchObject({ request_count: 2 });
+  });
+
+  it("lteFilter 在 command.lte 可用时返回范围条件，缺省时退化为 undefined", () => {
+    const fake = fakeDatabase();
+    const withCommand = new CloudBaseWxDb(fake.db, "football_test", false, fake.db.command);
+    const bound = new Date("2026-08-09T12:00:00.000Z");
+    expect(withCommand.lteFilter("kickoff_at", bound)).toEqual({
+      kickoff_at: { __operation: "lte", value: bound },
+    });
+    const withoutCommand = new CloudBaseWxDb(fake.db, "football_test");
+    expect(withoutCommand.lteFilter("kickoff_at", bound)).toBeUndefined();
   });
 });
