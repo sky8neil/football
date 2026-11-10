@@ -194,11 +194,13 @@
 
 ## 9. 实施记录清单
 
-- [ ] RP01 临时频率及部署声明一致
-- [ ] RP02 同窗口账单和全部集合统计
-- [ ] RP03 每任务调用与有效工作计数
-- [ ] RP04 失败分类及主要异常修复
-- [ ] RP05 待办结算、版本校验与兜底
+> 状态标记：`[x]` 已完成并提交、`[ ]` 未开始。每项右侧为提交号（分支 `feat/resource-point-opt`）。
+
+- [x] RP01 临时频率及部署声明一致 —— `77f86eb`
+- [ ] RP02 同窗口账单和全部集合统计（人工统计，无代码；见 §11.4）
+- [x] RP03 每任务调用与有效工作计数 —— `2b207af`
+- [x] RP04 失败分类及主要异常修复 —— `0036e58`（分类已落地；异常修复留待观测后处理）
+- [x] RP05 待办结算、版本校验与兜底 —— `5641e47`
 - [ ] RP06 同轮联赛状态复用
 - [ ] RP07 延期重试与恢复
 - [ ] RP08 锁申请和续租优化
@@ -218,4 +220,84 @@
 
 - [腾讯云 CloudBase 计费说明](https://cloud.tencent.com/document/product/876/127357)：SDK/API 计费项、函数计算资源及统计更新说明；实际费率以目标环境的账单和适用数据库类型为准。
 - [CloudBase 查询环境监控曲线 API](https://cloud.tencent.com/document/api/876/129258)：可用于补齐相同窗口的监控数据，执行前核对指标定义和资源维度。
+
+## 11. 实施进度记录（2026-11-10 暂停点）
+
+> 本节记录实际开发状态，供恢复开发时直接续做。**代码全部在本地分支，未部署、未合并 main。**
+
+### 11.1 分支与提交
+
+- 分支：`feat/resource-point-opt`（基线 `e9b3425`，未 push、未合并）
+- 提交顺序（每个阶段独立提交，符合 §8.1）：
+
+| 提交 | 内容 |
+| --- | --- |
+| `77f86eb` | RP01 Timer 降频声明 + 两处声明一致性测试 |
+| `0036e58` | RP04 失败分类纯函数 |
+| `2b207af` | RP03 每轮任务摘要 + 数据库调用计数 |
+| `5641e47` | RP05 结算改查待办 + 12 小时兜底扫描 |
+| （本文档） | 进度记录 |
+
+### 11.2 已完成项的实际做法
+
+**RP01（Timer 降频）**
+- `scripts/cloudbase-deploy-function.mjs`：cron 收敛为 `TIMER_CRON = "0 */10 * * * * *"` 与 `TIMER_INTERVAL_MINUTES = 10`；触发器名称沿用 `everyMinuteProviderSync`（改名会造成线上新旧触发器并存）。
+- `cloudfunctions/api/config.json`：`triggers[0].config` 同步为每十分钟。
+- `--plan` 增加「线上 cron 与期望值不一致」的差异输出；`--apply` 行为不变（缺则补、已有不重复创建）。
+- 测试：`scripts/timer-trigger.test.mjs`（4 例），断言两处声明字面一致、cron 为 7 段且分钟段 `*/10`。
+
+**RP03（每轮摘要与调用计数）**
+- 新增 `src/infrastructure/db-op-counter.ts`：`begin()/end()` 窗口内统计 `read`（get/query/count/getCounter）与 `write`（add/update/remove/adjustCounter/reserveCounter），事务内调用同样计数；不在窗口内的调用不计（小程序正常请求不会混入）。文件头注明「本地口径，不等于平台账单」。
+- 新增 `src/cloud-function/timer-summary.ts`：把一轮的 ran/skipped/db_ops/settlements/error_categories/outcome 聚合成一条摘要。
+- `runtime.ts`：整个运行时改用计数包装后的 db；Timer 分支在 `finally` 中输出**一条** `event: "timer_summary"`，摘要异常被吞掉，不影响函数返回体。
+- `runDueProviderJobs` 补记录跳过原因（`interval_not_due` / `no_due_league` / `no_provider_sources`），返回值新增 `skipped`，原有字段保留。
+
+**RP04（失败分类）**
+- 新增 `src/cloud-function/failure-taxonomy.ts`：`classifyFailure` / `isBenignSkip`，判定优先级为「错误码 → 真实错误类 → 消息正则」；类别 `transient / data_format / quota_auth / lock_contention / not_due / no_match_window / unknown`；输入为任意 throw 值时不抛异常。
+- `not_due` / `no_match_window` 标记为正常跳过，避免把「没活干」算成失败。
+
+**RP05（结算改查待办）**
+- `MatchRepository` 新增 `findSettlementTodos` 与 `findSettlementFallbackPage`，内存与 CloudBase 双实现。
+- `src/infrastructure/settlement-todo-query.ts`：待办条件（`finished` 且状态 ∈ pending/waiting/settling/failed/correcting）与排序（`kickoff_at` → `match_id`）的纯函数，`settled` / `voided` 被排除。
+- `settlement-timer.ts`：不再 `findBySeason` 全量读；每轮上限默认 50（`FOOTBALL_SETTLEMENT_TODO_BATCH` 可覆盖）；保留 `Running`/`Failed` 的租约恢复路径；新增「已追平则跳过」与处理前复核。
+- 兜底：每 12 小时最多启动一轮，按 `kickoff_at` 游标分页、每轮只处理一页；游标存于新集合 `scheduler_state`（`_id = settlement_fallback`）。兜底命中的漏标仍走原有 service，不直接改比赛状态。
+- schema：新增 `scheduler_state` 集合、`ix_matches_status_settlement_kickoff`（match_status + settlement_status + kickoff_at）与 `ix_scheduler_state_updated` 索引声明（**仅声明，未 provision**）。
+- 测试：新增 30 例（待办查询、批量参数、定时器流程、游标存储、CloudBase 待办查询的 5 次状态查询与合并去重）。
+- 顺带修正：`scripts/cloudbase-provision.test.mjs` 里硬编码的集合/索引数量改为从 `src/schema` 编译产物派生，避免以后加集合就假失败。
+
+### 11.3 验证状态（2026-11-10）
+
+| 命令 | 结果 |
+| --- | --- |
+| `npm run typecheck` | 通过 |
+| `npx vitest run` | 181 个测试文件 / 1689 用例全通过（基线 1633，新增 56） |
+| `npm run build` | 通过 |
+| `npm run cloudfunction:build` | 通过 |
+
+未做：任何云端部署、线上触发器改动、真实小程序端到端验证、资源点对比。
+
+### 11.4 未完成项与恢复方式
+
+- **RP02**：纯人工统计（云控制台同窗口导出），无代码可写；需要时按 §7.2 口径导出后再对比。
+- **RP06**：**未开始**。工作区干净，没有任何半成品代码；恢复时按 §4 P1 的 RP06 要求做（`orderLeagues()` 与 `dueLeagues()` 共用同轮状态、`markSuccess` 后更新缓存、领取任务与预算检查仍以数据库为准，并用计数断言证明同轮只读一次）。
+- **RP07–RP13**：未开始。建议顺序 P2（RP07 持久化延期重试、RP08 锁范围）→ P3（RP09 候选查询、RP10 到期调度）→ P4（RP11–RP13）。
+
+### 11.5 上线前必须完成、需单独批准的部署动作
+
+1. 执行 `npm run cloudbase:function -- --plan` 回读线上触发器，确认线上 cron 与声明一致（RP01 生效的前提）。
+2. `npm run cloudbase:provision` 创建 `scheduler_state` 集合与两条新索引；不然兜底扫描会因集合不存在报错。
+3. 部署函数代码（`npm run cloudbase:deploy`）后，用一次真实 Timer 触发核对 `timer_summary` 摘要中的 `db_ops` 与 `settlements` 计数是否合理。
+4. 以上四步均未执行，需要时逐项确认后进行；回滚只需回退分支，不涉及数据删除。
+
+### 11.6 已知风险与待决策点
+
+1. **兜底扫描的 offset 成本**：`findSettlementFallbackPage` 用 offset 推进游标（`CloudBaseDb.query` 只支持等值 filter，无法按 `kickoff_at` 做范围过滤），因此游标越深，单轮需要跳过的页越多。按当前规模（数千场、每 12 小时一轮、每轮一页）影响很小；若后续比赛量上升，需要在 `CloudBaseDb` 增加范围查询能力或改用专用游标字段。
+2. **摘要口径**：`settlements.attempted` 包含被跳过的比赛，`settled/failed` 只统计真实结算动作，统计时需要按这两个字段区分，不要直接相减。
+3. **降频带来的延迟**：Timer 每十分钟一次意味着比分、完场核对和结算最多延迟十分钟；比赛日实时性测试需按约定窗口临时恢复频率。
+4. **观察期**：上线后先对照 §7.2 的口径观察一个完整比赛日 + 一个无比赛时段，再判断是否需要继续做 P2/P3。
+
+### 11.7 工具链备注
+
+- 本轮多文件开发由 `opencode` CLI + `sub2api-grok/grok-4.6` 完成（配置在 `~/.config/opencode/opencode.json`，模型 `sub2api-grok/grok-4.6`，网关 `subapi.803866.xyz`）。
+- 经验：单个任务如果一次包含 3 个以上子项，模型会长时间只读不写；改成「一个提案一轮 + 明确必读文件清单 + 要求每步落盘」后稳定产出。每个提案完成后由主 agent 复核 diff、跑四条命令、再提交。
 
