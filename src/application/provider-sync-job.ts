@@ -41,6 +41,8 @@ export interface ProviderFixtureSyncRetryOptions {
 export interface ProviderFixtureSyncLockOptions {
   /** RP08：锁内二次资格确认的周期间隔；不传则不做二次确认（保持旧行为）。 */
   dueIntervalMs?: number;
+  /** RP08-2：续租/围栏参数；生产用默认值，测试注入时钟与校验窗口。 */
+  renewal?: JobLockRenewalOptions;
 }
 
 export interface ProviderFixtureFailureDiagnostic {
@@ -218,40 +220,94 @@ function isRetryableLoaderError(error: unknown): boolean {
   return error instanceof Error;
 }
 
-function startJobLockRenewal(
+export interface JobLockRenewalOptions {
+  /** 墙钟，默认 Date.now；测试注入。 */
+  now?: () => number;
+  leaseMs?: number;
+  /**
+   * 「所有权仍在」结论的复用窗口，默认 leaseMs/2。窗口内 assertHeld 只查内存标志，
+   * 不回查 job_locks，避免逐条 fixture 多一次读；0 表示每次都回查（测试用）。
+   */
+  proofTtlMs?: number;
+}
+
+export function startJobLockRenewal(
   repo: Pick<AppRepository, "jobLocks">,
   lockKey: string,
   ownerId: string,
-): { assertHealthy: () => void; stop: () => void } {
+  options: JobLockRenewalOptions = {},
+): {
+  /** 同步：内存里已记录的续租失败，立即抛。 */
+  assertHealthy: () => void;
+  /** 异步围栏：确认数据库里锁仍属于自己；失败或不持有都抛。 */
+  assertHeld: () => Promise<void>;
+  stop: () => void;
+} {
   let renewalFailure: DomainError | undefined;
-  const leaseMs = FIXED_CONFIG_V1.JOB_LEASE_MINUTES * 60_000;
+  let inFlight = false;
+  let stopped = false;
+  const clock = options.now ?? Date.now;
+  const leaseMs = options.leaseMs ?? FIXED_CONFIG_V1.JOB_LEASE_MINUTES * 60_000;
+  /**
+   * 最近一次「所有权已证实」的时间点。acquire 成功即视为已证实；此后每次成功续租
+   * 也是一次证实（renew 只对 owner 生效）。窗口内不必逐条回查数据库，避免为了围栏
+   * 把每处理一条 fixture 就多读一次 job_locks。
+   */
+  let lastProvenAtMs = clock();
+  const proofTtlMs = options.proofTtlMs ?? leaseMs / 2;
   const timer = setInterval(() => {
+    if (stopped || inFlight) return;
+    inFlight = true;
     void Promise.resolve()
       .then(() =>
         repo.jobLocks.renew(
           lockKey,
           ownerId,
-          new Date(Date.now() + leaseMs),
+          new Date(clock() + leaseMs),
         ),
       )
       .then((renewed) => {
+        if (stopped) return;
         if (!renewed) {
           renewalFailure ??= internalError("Provider 同步锁续租失败");
           clearInterval(timer);
+          return;
         }
+        lastProvenAtMs = clock();
       }, () => {
+        if (stopped) return;
         renewalFailure ??= internalError("Provider 同步锁续租失败");
         clearInterval(timer);
+      })
+      .finally(() => {
+        inFlight = false;
       });
   }, leaseMs / 2);
 
+  const assertHealthy = () => {
+    if (renewalFailure !== undefined) {
+      throw renewalFailure;
+    }
+  };
+
   return {
-    assertHealthy: () => {
-      if (renewalFailure !== undefined) {
-        throw renewalFailure;
+    assertHealthy,
+    assertHeld: async () => {
+      assertHealthy();
+      if (clock() - lastProvenAtMs < proofTtlMs) return;
+      const held = await repo.jobLocks.isHeldBy(lockKey, ownerId, new Date(clock()));
+      if (!held) {
+        throw new DomainError(
+          "PROVIDER_SYNC_LEASE_LOST",
+          "Provider 同步锁已失效，停止写入",
+        );
       }
+      lastProvenAtMs = clock();
     },
-    stop: () => clearInterval(timer),
+    stop: () => {
+      stopped = true;
+      clearInterval(timer);
+    },
   };
 }
 
@@ -360,14 +416,15 @@ export class ProviderFixtureSyncJobService {
       created_at: serverNow,
     };
 
-    const lockRenewal = startJobLockRenewal(this.repo, lockKey, ownerId);
+    const lockRenewal = startJobLockRenewal(this.repo, lockKey, ownerId, this.lockOptions.renewal);
     try {
+      await lockRenewal.assertHeld();
       await syncLogs.insert(runningLog);
       let attemptCount = 0;
       try {
         let items: readonly ProviderFixtureBatchItem[];
         while (true) {
-          lockRenewal.assertHealthy();
+          await lockRenewal.assertHeld();
           attemptCount += 1;
           try {
             items = await load(serverNow);
@@ -388,6 +445,7 @@ export class ProviderFixtureSyncJobService {
               this.random,
             );
             const nextAttemptAt = new Date(serverNow.getTime() + delayMs);
+            await lockRenewal.assertHeld();
             await syncLogs.update({
               ...runningLog,
               status: SyncJobStatus.Deferred,
@@ -422,7 +480,7 @@ export class ProviderFixtureSyncJobService {
         };
 
         for (const item of items) {
-          lockRenewal.assertHealthy();
+          await lockRenewal.assertHeld();
           try {
             const outcome = await this.fixtureSync.applyFixture(
               item.fixture,
@@ -448,7 +506,7 @@ export class ProviderFixtureSyncJobService {
           }
         }
 
-        lockRenewal.assertHealthy();
+        await lockRenewal.assertHeld();
         await syncLogs.update({
           ...runningLog,
           status: SyncJobStatus.Success,
@@ -474,15 +532,18 @@ export class ProviderFixtureSyncJobService {
           } : {}),
         };
       } catch (error) {
-        await syncLogs.update({
-          ...runningLog,
-          status: SyncJobStatus.Failed,
-          attempt_count: attemptCount,
-          finished_at: serverNow,
-          items_failed: 1,
-          last_error_code: errorCode(error),
-          last_error_message: errorMessage(error),
-        });
+        const stillHeld = await lockRenewal.assertHeld().then(() => true, () => false);
+        if (stillHeld) {
+          await syncLogs.update({
+            ...runningLog,
+            status: SyncJobStatus.Failed,
+            attempt_count: attemptCount,
+            finished_at: serverNow,
+            items_failed: 1,
+            last_error_code: errorCode(error),
+            last_error_message: errorMessage(error),
+          });
+        }
         throw error;
       }
     } finally {

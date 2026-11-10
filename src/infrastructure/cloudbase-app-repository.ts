@@ -354,6 +354,10 @@ export class CloudBaseAppRepository implements AppRepository {
         const lock = await this.byId<JobLock>("job_locks", lockKey);
         return lock !== null && lock.lease_until.getTime() > asOf.getTime();
       },
+      isHeldBy: async (lockKey, ownerId, asOf) => {
+        const lock = await this.byId<JobLock>("job_locks", lockKey);
+        return lock !== null && lock.owner_id === ownerId && lock.lease_until.getTime() > asOf.getTime();
+      },
       renew: async (lockKey, ownerId, leaseUntil) => this.db.transaction(async (txDb) => {
         const repo = new CloudBaseAppRepository(this.config, txDb);
         const current = await repo.byId<JobLock>("job_locks", lockKey);

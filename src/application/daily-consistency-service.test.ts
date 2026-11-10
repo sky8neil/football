@@ -23,6 +23,7 @@ function makeLockRepository(acquired: boolean) {
       async (_lockKey: string, _ownerId: string, _leaseUntil: Date) => acquired,
     ),
     isHeld: vi.fn(async () => false),
+    isHeldBy: vi.fn(async () => false),
     renew: vi.fn(
       async (_lockKey: string, _ownerId: string, _leaseUntil: Date) => true,
     ),

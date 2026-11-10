@@ -487,6 +487,7 @@ describe("ProviderFixtureSyncJobService", () => {
           jobLocks: {
             acquire,
             isHeld: vi.fn(async () => false),
+            isHeldBy: vi.fn(async () => true),
             renew: vi.fn(async () => true),
             release,
           },
@@ -529,6 +530,7 @@ describe("ProviderFixtureSyncJobService", () => {
           jobLocks: {
             acquire,
             isHeld: vi.fn(async () => false),
+            isHeldBy: vi.fn(async () => true),
             renew,
             release: vi.fn(async () => undefined),
           },
@@ -574,6 +576,7 @@ describe("ProviderFixtureSyncJobService", () => {
       const jobLocks = {
         acquire: vi.fn(async () => true),
         isHeld: vi.fn(async () => false),
+        isHeldBy: vi.fn(async () => true),
         renew: vi.fn(async () => false),
         release: vi.fn(async () => undefined),
       };
@@ -591,10 +594,7 @@ describe("ProviderFixtureSyncJobService", () => {
       releaseLoad?.([item(makeApiFixture({ fixtureId: 1100005, statusShort: "TBD" }))]);
       await expect(runPromise).rejects.toMatchObject({ code: "INTERNAL_ERROR" });
       expect(applyFixture).not.toHaveBeenCalled();
-      expect(syncLogs.update).toHaveBeenLastCalledWith(expect.objectContaining({
-        status: "failed",
-        last_error_code: "INTERNAL_ERROR",
-      }));
+      expect(syncLogs.update).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }
@@ -614,6 +614,7 @@ describe("ProviderFixtureSyncJobService", () => {
       const jobLocks = {
         acquire: vi.fn(async () => true),
         isHeld: vi.fn(async () => false),
+        isHeldBy: vi.fn(async () => true),
         renew: vi.fn(async () => {
           throw renewError;
         }),
@@ -639,10 +640,7 @@ describe("ProviderFixtureSyncJobService", () => {
         code: "INTERNAL_ERROR",
         message: "Provider 同步锁续租失败",
       });
-      expect(syncLogs.update).toHaveBeenLastCalledWith(expect.objectContaining({
-        status: "failed",
-        last_error_code: "INTERNAL_ERROR",
-      }));
+      expect(syncLogs.update).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }
@@ -660,6 +658,7 @@ describe("ProviderFixtureSyncJobService", () => {
         jobLocks: {
           acquire,
           isHeld: vi.fn(async () => false),
+          isHeldBy: vi.fn(async () => true),
           renew: vi.fn(async () => true),
           release,
         },
@@ -693,6 +692,7 @@ describe("ProviderFixtureSyncJobService", () => {
     const jobLocks = {
       acquire: vi.fn(async () => true),
       isHeld: vi.fn(async () => false),
+      isHeldBy: vi.fn(async () => true),
       renew: vi.fn(async () => true),
       release: vi.fn(async () => undefined),
     };

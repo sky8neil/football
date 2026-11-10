@@ -800,6 +800,7 @@ describe("FirstSettlementService.start - 并发锁", () => {
         jobLocks: {
           acquire: baseLocks.acquire,
           isHeld: baseLocks.isHeld,
+          isHeldBy: baseLocks.isHeldBy,
           renew: async () => false,
           release: baseLocks.release,
         },

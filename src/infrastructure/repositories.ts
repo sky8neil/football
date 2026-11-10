@@ -292,6 +292,8 @@ export interface JobLockRepository {
   /** 原子 compare-and-set：仅在空闲或 lease 过期时获得锁。 */
   acquire(lockKey: string, ownerId: string, leaseUntil: Date): Promise<boolean>;
   isHeld(lockKey: string, asOf: Date): Promise<boolean>;
+  /** 是否仍由该 owner 持有且未过期（围栏用：写入前确认自己还持有锁）。 */
+  isHeldBy(lockKey: string, ownerId: string, asOf: Date): Promise<boolean>;
   /** 仅 owner 且未过期时可续租。 */
   renew(lockKey: string, ownerId: string, leaseUntil: Date): Promise<boolean>;
   /** 仅 owner 可释放；非 owner 调用为空操作。 */
@@ -859,6 +861,7 @@ export class InMemoryRepository implements AppRepository {
     return {
       acquire: (lockKey, ownerId, leaseUntil) => self.acquireLock(lockKey, ownerId, leaseUntil),
       isHeld: (lockKey, asOf) => self.isLockHeld(lockKey, asOf),
+      isHeldBy: (lockKey, ownerId, asOf) => self.isLockHeldBy(lockKey, ownerId, asOf),
       renew: (lockKey, ownerId, leaseUntil) => self.renewLock(lockKey, ownerId, leaseUntil),
       release: (lockKey, ownerId) => self.releaseLock(lockKey, ownerId),
     };
@@ -2246,6 +2249,15 @@ export class InMemoryRepository implements AppRepository {
   private async isLockHeld(lockKey: string, asOf: Date): Promise<boolean> {
     const existing = this.store.jobLocks.get(lockKey);
     return existing !== undefined && existing.lease_until.getTime() > asOf.getTime();
+  }
+
+  private async isLockHeldBy(lockKey: string, ownerId: string, asOf: Date): Promise<boolean> {
+    const existing = this.store.jobLocks.get(lockKey);
+    return (
+      existing !== undefined &&
+      existing.owner_id === ownerId &&
+      existing.lease_until.getTime() > asOf.getTime()
+    );
   }
 
   private async renewLock(
