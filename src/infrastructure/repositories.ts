@@ -23,6 +23,11 @@ import {
   type SettlementDocStatus,
 } from "../domain/enums.js";
 import {
+  selectSettlementFallbackPage,
+  selectSettlementTodos,
+  type SettlementTodoQuery,
+} from "./settlement-todo-query.js";
+import {
   assertMatchResultVersionInvariants,
   assertFinishDetectedImmutable,
   assertPeriodAnchorImmutable,
@@ -66,6 +71,8 @@ import type {
   UserSeasonStats,
 } from "../domain/types.js";
 import type { AnomalyStatus } from "../domain/enums.js";
+
+export type { SettlementTodoQuery };
 
 /** 唯一约束冲突（模拟数据库唯一索引冲突）。 */
 export class UniqueConstraintError extends Error {
@@ -242,6 +249,10 @@ export interface MatchRepository {
   ): Promise<Match[]>;
   /** 当前 match_status = live 的比赛（33.1 job 级 live 巡检用）。 */
   findLive(): Promise<Match[]>;
+  /** RP05：按数据库条件取「待结算/待更正/待恢复」比赛，不再全量遍历赛季。 */
+  findSettlementTodos(query: SettlementTodoQuery): Promise<Match[]>;
+  /** RP05 兜底：finished 且非 voided 的分页页，用于漏标扫描。 */
+  findSettlementFallbackPage(query: SettlementTodoQuery): Promise<Match[]>;
   insert(match: Match): Promise<void>;
   update(match: Match): Promise<void>;
   updateSettlementProgress(matchId: string, resultVersion: number, settledAt: Date): Promise<void>;
@@ -689,6 +700,8 @@ export class InMemoryRepository implements AppRepository {
       findByLeagueSeasonRound: (leagueId, seasonId, roundId) =>
         self.findMatchesByLeagueSeasonRound(leagueId, seasonId, roundId),
       findLive: () => self.findLiveMatches(),
+      findSettlementTodos: (query) => self.findSettlementTodos(query),
+      findSettlementFallbackPage: (query) => self.findSettlementFallbackPage(query),
       insert: (match) => self.insertMatch(match),
       update: (match) => self.updateMatch(match),
       updateSettlementProgress: async (matchId, resultVersion, settledAt) => {
@@ -1147,6 +1160,14 @@ export class InMemoryRepository implements AppRepository {
     return [...this.store.matchesById.values()].filter(
       (match) => match.match_status === MatchStatus.Live,
     );
+  }
+
+  private async findSettlementTodos(query: SettlementTodoQuery): Promise<Match[]> {
+    return selectSettlementTodos(this.store.matchesById.values(), query);
+  }
+
+  private async findSettlementFallbackPage(query: SettlementTodoQuery): Promise<Match[]> {
+    return selectSettlementFallbackPage(this.store.matchesById.values(), query);
   }
 
   private async insertMatch(match: Match): Promise<void> {

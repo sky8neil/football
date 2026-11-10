@@ -64,6 +64,7 @@ const COLLECTION_ALIASES: Readonly<Record<string, string>> = {
   provider_key_state: "provider_keys",
   provider_league_state: "provider_leagues",
   deleted_openid_mappings: "deleted_openids",
+  scheduler_state: "sched_state",
 };
 
 export function cloudBaseCollectionName(namespace: string, collection: string): string {

@@ -281,9 +281,25 @@ describe("sanitize", () => {
 describe("loadSchemaPlan：与 src/schema 同源", () => {
   it("命名空间前缀与别名都来自 cloudBaseCollectionName", async () => {
     const plan = await loadSchemaPlan("football_test");
-    expect(plan.collections).toHaveLength(28);
-    expect(plan.indexes).toHaveLength(47);
-    expect(plan.indexes.filter((index) => index.unique)).toHaveLength(20);
+    // 期望值直接对齐 src/schema 的编译产物，避免 schema 增长后"硬编码数量"假失败。
+    const distCollections = await import(
+      new URL("../dist/schema/collections.js", import.meta.url).href
+    );
+    const distIndexes = await import(
+      new URL("../dist/schema/indexes.js", import.meta.url).href
+    );
+    const expectedCollections = new Set([
+      ...distCollections.COLLECTION_DEFINITIONS.map((definition) => definition.collection),
+      "diag",
+      "rate_limits",
+    ]);
+    expect(plan.collections).toHaveLength(expectedCollections.size);
+    expect(plan.indexes).toHaveLength(
+      distIndexes.UNIQUE_INDEXES.length + distIndexes.QUERY_INDEXES.length,
+    );
+    expect(plan.indexes.filter((index) => index.unique)).toHaveLength(
+      distIndexes.UNIQUE_INDEXES.length,
+    );
     // 别名：逻辑名 provider_key_state → 集合名 provider_keys
     expect(plan.collections.map((item) => item.name)).toContain("football_test_provider_keys");
     expect(plan.collections.map((item) => item.name)).not.toContain("football_test_provider_key_state");

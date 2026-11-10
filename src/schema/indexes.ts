@@ -141,6 +141,18 @@ export const QUERY_INDEXES: readonly IndexDef[] = [
     unique: false,
   },
   {
+    collection: "matches",
+    name: "ix_matches_status_settlement_kickoff",
+    fields: ["match_status", "settlement_status", "kickoff_at"],
+    unique: false,
+  },
+  {
+    collection: "scheduler_state",
+    name: "ix_scheduler_state_updated",
+    fields: ["updated_at"],
+    unique: false,
+  },
+  {
     collection: "predictions",
     name: "ix_predictions_user_submitted",
     fields: ["user_id", "submitted_at:desc"],

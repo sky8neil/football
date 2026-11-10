@@ -1,4 +1,4 @@
-import { SCHEMA_VERSION, SettlementItemStatus } from "../domain/enums.js";
+import { MatchStatus, SCHEMA_VERSION, SettlementItemStatus } from "../domain/enums.js";
 import { internalError } from "../domain/errors.js";
 import type {
   Admin,
@@ -47,8 +47,15 @@ import {
   cloudBaseCollectionName,
   type CloudBaseDb,
   type CloudBaseDocument,
+  type CloudBaseQueryOptions,
   type CloudBaseRepositoryConfig,
 } from "./cloudbase-db.js";
+import {
+  SETTLEMENT_TODO_STATUSES,
+  selectSettlementFallbackPage,
+  selectSettlementTodos,
+  type SettlementTodoQuery,
+} from "./settlement-todo-query.js";
 import {
   DocumentNotFoundError,
   StaleResultVersionError,
@@ -249,6 +256,8 @@ export class CloudBaseAppRepository implements AppRepository {
       findBySeason: async (seasonId) => this.where<Match>("matches", { season_id: seasonId }),
       findByLeagueSeasonRound: async (leagueId, seasonId, roundId) => this.where<Match>("matches", { league_id: leagueId, season_id: seasonId, round_id: roundId }),
       findLive: async () => this.where<Match>("matches", { match_status: "live" }),
+      findSettlementTodos: async (query) => this.findSettlementTodos(query),
+      findSettlementFallbackPage: async (query) => this.findSettlementFallbackPage(query),
       insert: async (match) => {
         assertMatchResultVersionInvariants(match);
         await this.add("matches", match.match_id, match);
@@ -473,8 +482,69 @@ export class CloudBaseAppRepository implements AppRepository {
     return (await this.db.query(this.collection(name))).map((doc) => withoutId<T>(doc));
   }
 
-  private async where<T>(name: string, filter: Record<string, unknown>): Promise<T[]> {
-    return (await this.db.query(this.collection(name), filter)).map((doc) => withoutId<T>(doc));
+  private async where<T>(
+    name: string,
+    filter: Record<string, unknown>,
+    options?: CloudBaseQueryOptions,
+  ): Promise<T[]> {
+    return (await this.db.query(this.collection(name), filter, options)).map((doc) => withoutId<T>(doc));
+  }
+
+  /**
+   * CloudBase query 只支持等值 filter，不能 $in / 字段间比较。
+   * 按每个非终态 settlement_status 各发一次有上限的小查询，远小于原来的全量赛季读取。
+   * kickoff_at 可能落库为 Date 或可比较时间串，合并后再按 kickoff_at/match_id 排序裁剪。
+   * after 非空时用 offset 推进，避免游标前的历史页把本页挤空。
+   */
+  private async findSettlementTodos(query: SettlementTodoQuery): Promise<Match[]> {
+    const collected = new Map<string, Match>();
+    await Promise.all(
+      SETTLEMENT_TODO_STATUSES.map(async (status) => {
+        const pageSize = Math.max(query.limit, 1);
+        let offset = 0;
+        for (;;) {
+          const page = await this.where<Match>(
+            "matches",
+            { match_status: MatchStatus.Finished, settlement_status: status },
+            { order_by: "kickoff_at", limit: pageSize, offset },
+          );
+          if (page.length === 0) break;
+          for (const match of page) collected.set(match.match_id, match);
+          const selected = selectSettlementTodos(collected.values(), query);
+          if (selected.length >= query.limit || page.length < pageSize) return;
+          offset += page.length;
+        }
+      }),
+    );
+    return selectSettlementTodos(collected.values(), query);
+  }
+
+  /**
+   * 兜底扫描：finished 且非 voided。等值查询只能按 match_status=finished 取页，
+   * 再用 offset 推进直到凑齐 after 之后的 limit 条，避免把游标前的历史页当成空尾。
+   */
+  private async findSettlementFallbackPage(query: SettlementTodoQuery): Promise<Match[]> {
+    const collected: Match[] = [];
+    const seen = new Set<string>();
+    const pageSize = Math.max(query.limit, 1);
+    let offset = 0;
+    for (;;) {
+      const page = await this.where<Match>(
+        "matches",
+        { match_status: MatchStatus.Finished },
+        { order_by: "kickoff_at", limit: pageSize, offset },
+      );
+      if (page.length === 0) break;
+      for (const match of page) {
+        if (seen.has(match.match_id)) continue;
+        seen.add(match.match_id);
+        collected.push(match);
+      }
+      const selected = selectSettlementFallbackPage(collected, query);
+      if (selected.length >= query.limit || page.length < pageSize) return selected;
+      offset += page.length;
+    }
+    return selectSettlementFallbackPage(collected, query);
   }
 
   private async one<T>(name: string, filter: Record<string, unknown>): Promise<T | null> {

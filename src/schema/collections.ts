@@ -625,4 +625,14 @@ export const COLLECTION_DEFINITIONS: readonly CollectionDef[] = [
     },
     note: "UNIQUE(group_id, user_id)",
   },
+  {
+    collection: "scheduler_state",
+    fields: {
+      cursor_kickoff_at: { type: "date", nullable: true },
+      cursor_match_id: { type: "string", nullable: true },
+      last_run_at: { type: "date", nullable: true },
+      updated_at: { type: "date", required: true },
+    },
+    note: "_id = settlement_fallback；RP05 结算兜底扫描游标，只改声明不部署",
+  },
 ] as const;

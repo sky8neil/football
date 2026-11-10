@@ -16,6 +16,7 @@ import { createCountingDb } from "../infrastructure/db-op-counter.js";
 import { CloudBaseProviderUsageStore } from "../infrastructure/cloudbase-provider-usage.js";
 import { CloudBaseProviderKeyStateStore } from "../infrastructure/cloudbase-provider-key-state.js";
 import { CloudBaseProviderLeagueStateStore } from "../infrastructure/cloudbase-provider-league-state.js";
+import { CloudBaseSchedulerStateStore } from "../infrastructure/cloudbase-scheduler-state.js";
 import { ProviderBudget } from "../provider/budget.js";
 import { ProviderRegistry } from "../provider/registry.js";
 import { loadProviderSources, type ProviderSourceId } from "../provider/sources.js";
@@ -139,6 +140,8 @@ export function createCloudFunctionRuntime(options: CloudFunctionRuntimeOptions)
     [SyncJobType.PostFinishVerify]: (now) => new ProviderPostFinishVerifyService(repo, providerClient).run(now),
   });
   const providerReconcile = new ProviderReconcileService(repo, providerClient);
+  const schedulerState = new CloudBaseSchedulerStateStore(cloudDb, namespace);
+  const settlementTimerOptions = { env, schedulerState };
   const services = {
     session: new SessionService(repo),
     matches: new MatchQueryService(repo, config.match_cursor_secret),
@@ -202,7 +205,7 @@ export function createCloudFunctionRuntime(options: CloudFunctionRuntimeOptions)
       }
       const sync = await providerDispatcher.run(event.job, serverNow, scheduledLeague);
       logProviderFixtureFailures(logger, event.job, sync);
-      const data = { sync, settlements: await runSettlementTimer(repo, serverNow) };
+      const data = { sync, settlements: await runSettlementTimer(repo, serverNow, settlementTimerOptions) };
       return { result: { status: 200, body: { data, request_id: makeRequestId() } } };
     }
     if (event.Type === "Timer") {
@@ -225,7 +228,7 @@ export function createCloudFunctionRuntime(options: CloudFunctionRuntimeOptions)
           serverNow,
           log: logger,
         });
-        settlements = await runSettlementTimer(repo, serverNow);
+        settlements = await runSettlementTimer(repo, serverNow, settlementTimerOptions);
         return { result: { status: 200, body: { data: { ...providerData, settlements }, request_id: makeRequestId() } } };
       } catch (error) {
         errors.push(error);
