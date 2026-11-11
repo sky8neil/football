@@ -1,3 +1,4 @@
+import type { DbOpCollectionCount } from "../infrastructure/db-op-counter.js";
 import { classifyFailure, isBenignSkip } from "./failure-taxonomy.js";
 
 const SETTLED_KINDS = new Set(["settled", "already_settled", "started"]);
@@ -6,7 +7,7 @@ export function buildTimerSummary(input: {
   taskTypes: readonly string[];
   provider: { outcome: string; jobs_run?: readonly string[]; skipped?: readonly { task: string; reason: string }[] };
   settlements: readonly { match_id: string; outcome: unknown }[];
-  dbOps: { read: number; write: number };
+  dbOps: { read: number; write: number; by_collection?: readonly DbOpCollectionCount[] };
   durationMs: number;
   errors: readonly unknown[];
 }): Record<string, unknown> {
@@ -44,6 +45,11 @@ export function buildTimerSummary(input: {
     ran,
     skipped,
     db_ops: { read: input.dbOps.read, write: input.dbOps.write },
+    db_ops_by_collection: (input.dbOps.by_collection ?? []).map((row) => ({
+      collection: row.collection,
+      read: row.read,
+      write: row.write,
+    })),
     settlements: {
       attempted: input.settlements.length,
       settled,

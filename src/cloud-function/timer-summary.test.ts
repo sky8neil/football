@@ -88,4 +88,42 @@ describe("buildTimerSummary", () => {
     expect(summary.error_categories).toEqual({ data_format: 1 });
     assertNoSensitiveKeys(summary);
   });
+
+  it("maps by_collection onto db_ops_by_collection", () => {
+    const summary = buildTimerSummary({
+      taskTypes: TASK_TYPES,
+      provider: { outcome: "completed", jobs_run: ["live_match"] },
+      settlements: [],
+      dbOps: {
+        read: 5,
+        write: 3,
+        by_collection: [
+          { collection: "ns_provider_usage", read: 3, write: 2 },
+          { collection: "ns_provider_keys", read: 2, write: 1 },
+        ],
+      },
+      durationMs: 9,
+      errors: [],
+    });
+    expect(summary.db_ops).toEqual({ read: 5, write: 3 });
+    expect(summary.db_ops_by_collection).toEqual([
+      { collection: "ns_provider_usage", read: 3, write: 2 },
+      { collection: "ns_provider_keys", read: 2, write: 1 },
+    ]);
+    assertNoSensitiveKeys(summary);
+  });
+
+  it("emits empty db_ops_by_collection when by_collection is omitted", () => {
+    const summary = buildTimerSummary({
+      taskTypes: TASK_TYPES,
+      provider: { outcome: "completed" },
+      settlements: [],
+      dbOps: { read: 1, write: 0 },
+      durationMs: 1,
+      errors: [],
+    });
+    expect(summary.db_ops).toEqual({ read: 1, write: 0 });
+    expect(summary.db_ops_by_collection).toEqual([]);
+    assertNoSensitiveKeys(summary);
+  });
 });
