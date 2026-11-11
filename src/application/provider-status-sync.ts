@@ -11,7 +11,7 @@ import { decidePredictionClosedAt } from "../domain/prediction-deadline.js";
 import { validateMatchTransition } from "../domain/match-state-machine.js";
 import { shouldVoidOnCancel, validateSettlementTransition } from "../domain/settlement-state-machine.js";
 import { computePredictionDeadline } from "../domain/time.js";
-import type { Match, ProviderSnapshot } from "../domain/types.js";
+import type { Match, ProviderSnapshot, TeamProviderMapping } from "../domain/types.js";
 import type { AppRepository, UnitOfWork } from "../infrastructure/repositories.js";
 import {
   tryParseProviderRoundId,
@@ -385,6 +385,11 @@ export class ProviderStatusSyncService {
     fixture: NormalizedFixture,
     payload: Record<string, unknown>,
     serverNow: Date,
+    /** RP11：调用方已解析出的球队映射，避免同一批次内重复查询。 */
+    preloaded?: {
+      homeMapping: TeamProviderMapping;
+      awayMapping: TeamProviderMapping;
+    } | null,
   ): Promise<ProviderTeamChangeOutcome> {
     assertValidServerNow(serverNow);
     return this.repo.withTransaction(async (tx) => {
@@ -404,7 +409,9 @@ export class ProviderStatusSyncService {
 
       await recordImmutableRoundConflict(tx, match, fixture, payload, serverNow);
 
-      const [homeMapping, awayMapping] = await Promise.all([
+      const [homeMapping, awayMapping] = preloaded
+        ? [preloaded.homeMapping, preloaded.awayMapping]
+        : await Promise.all([
         tx.teamProviderMappings.findByProviderAndExternalId(
           fixture.provider ?? "api_football",
           fixture.homeTeamProviderId,

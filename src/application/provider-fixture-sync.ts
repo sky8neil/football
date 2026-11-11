@@ -303,7 +303,10 @@ export class ProviderFixtureSyncService {
       return null;
     }
 
-    return this.statusSync.applyTeamChange(fixture, payload, serverNow);
+    return this.statusSync.applyTeamChange(fixture, payload, serverNow, {
+      homeMapping,
+      awayMapping,
+    });
   }
 
   async applyFixture(

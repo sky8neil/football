@@ -216,6 +216,37 @@ describe("ProviderFixtureSyncService", () => {
     await expect(repo.anomalies.findByKey(`${match.match_id}:${AnomalyType.LiveSyncStale}`)).resolves.toBeNull();
   });
 
+  it("RP11：同一 fixture 的球队映射只查一轮，不在事务内重复查询", async () => {
+    const repo = new InMemoryRepository();
+    const match = makeMatch();
+    await seedMatch(repo, match, "1100042");
+    await seedChangedTeams(repo);
+
+    // 事务内会新建一个共享 store 的仓储实例，所以直接在 store 的 Map 上计读取次数。
+    const store = (repo as unknown as {
+      store: { teamProviderMappingsByKey: Map<string, TeamProviderMapping> };
+    }).store;
+    const inner = store.teamProviderMappingsByKey;
+    let lookups = 0;
+    store.teamProviderMappingsByKey = new Proxy(inner, {
+      get(target, property) {
+        if (property === "get") lookups += 1;
+        const value = Reflect.get(target, property) as unknown;
+        // Map 方法要求 receiver 是真实 Map，否则报 incompatible receiver。
+        return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+      },
+    });
+
+    await new ProviderFixtureSyncService(repo).applyFixture(
+      makeFixture("1100042", "NS"),
+      { fixture: { id: 1100042, teams_changed: true } },
+      NOW,
+    );
+
+    // 预检读 home/away 各一次；applyTeamChange 复用预加载结果，不再重复查。
+    expect(lookups).toBe(2);
+  });
+
   it("主入口同步 scheduled fixture 时应用 Provider 主客队变更保护", async () => {
     const repo = new InMemoryRepository();
     const match = makeMatch();
