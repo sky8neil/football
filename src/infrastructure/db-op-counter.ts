@@ -105,6 +105,12 @@ export function createCountingDb(db: CloudBaseDb): { db: CloudBaseDb; counter: D
         return inner.reserveCounter!(collection, id, field, limit, initial);
       };
     }
+    if (inner.inFilter) {
+      wrapped.inFilter = (field, values) => inner.inFilter!(field, values);
+    }
+    if (inner.lteFilter) {
+      wrapped.lteFilter = (field, value) => inner.lteFilter!(field, value);
+    }
     return wrapped;
   }
 
