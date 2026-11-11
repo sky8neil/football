@@ -258,6 +258,18 @@ export class CloudBaseAppRepository implements AppRepository {
     this.providerSnapshots = {
       findByEntity: async (entityType, entityId) => this.where<ProviderSnapshot>("provider_snapshots", { entity_type: entityType, entity_id: entityId }),
       findLatestSuccessByEntity: async (entityType, entityId) => {
+        // RP13：把 event_type 集合与 created_at 排序下推到数据库，
+        // 命中 ix_snapshots_entity(entity_type, entity_id, created_at:desc) 只读 1 条；
+        // 适配器不支持 in 查询时退化为读取该实体全部快照后在内存里过滤。
+        const inClause = this.db.inFilter?.("event_type", [...PROVIDER_SUCCESS_EVENTS]);
+        if (inClause !== undefined) {
+          const rows = await this.where<ProviderSnapshot>(
+            "provider_snapshots",
+            { entity_type: entityType, entity_id: entityId, ...inClause },
+            { order_by: "created_at", direction: "desc", limit: 1 },
+          );
+          return rows[0] ?? null;
+        }
         const snapshots = await this.providerSnapshots.findByEntity(entityType, entityId);
         return snapshots.filter((item) => PROVIDER_SUCCESS_EVENTS.has(item.event_type)).sort(compareDateDesc<ProviderSnapshot>("created_at"))[0] ?? null;
       },
