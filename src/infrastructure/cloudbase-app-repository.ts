@@ -152,6 +152,18 @@ function assertSchemaVersionOne(doc: EntityDoc): void {
   }
 }
 
+const MAPPING_IN_CHUNK = 50;
+
+function uniqueIds(ids: readonly string[]): string[] {
+  return [...new Set(ids)];
+}
+
+function chunksOf(ids: readonly string[], size: number): string[][] {
+  const chunks: string[][] = [];
+  for (let i = 0; i < ids.length; i += size) chunks.push(ids.slice(i, i + size) as string[]);
+  return chunks;
+}
+
 /** 所有 collection 字段沿用 schema 的 snake_case；这里只映射 CloudBase `_id`。 */
 export class CloudBaseAppRepository implements AppRepository {
   readonly users: UserRepository;
@@ -221,11 +233,25 @@ export class CloudBaseAppRepository implements AppRepository {
     };
     this.teamProviderMappings = {
       findByProviderAndExternalId: async (provider, externalId) => this.one<TeamProviderMapping>("team_provider_mappings", { provider, provider_team_id: externalId }),
+      findByProviderAndExternalIds: async (provider, providerTeamIds) =>
+        this.findMappingsByExternalIds<TeamProviderMapping>(
+          "team_provider_mappings",
+          "provider_team_id",
+          provider,
+          providerTeamIds,
+        ),
       findByTeamId: async (teamId) => this.where<TeamProviderMapping>("team_provider_mappings", { team_id: teamId }),
       insert: async (mapping) => this.add("team_provider_mappings", compositeId(mapping.provider, mapping.provider_team_id), mapping),
     };
     this.matchProviderMappings = {
       findByProviderAndExternalId: async (provider, externalId) => this.one<MatchProviderMapping>("match_provider_mappings", { provider, provider_match_id: externalId }),
+      findByProviderAndExternalIds: async (provider, providerMatchIds) =>
+        this.findMappingsByExternalIds<MatchProviderMapping>(
+          "match_provider_mappings",
+          "provider_match_id",
+          provider,
+          providerMatchIds,
+        ),
       findByMatchId: async (matchId) => this.where<MatchProviderMapping>("match_provider_mappings", { match_id: matchId }),
       insert: async (mapping) => this.add("match_provider_mappings", compositeId(mapping.provider, mapping.provider_match_id), mapping),
     };
@@ -589,6 +615,38 @@ export class CloudBaseAppRepository implements AppRepository {
 
   private async one<T>(name: string, filter: Record<string, unknown>): Promise<T | null> {
     return (await this.where<T>(name, filter))[0] ?? null;
+  }
+
+  private async findMappingsByExternalIds<T extends { provider_match_id?: string; provider_team_id?: string }>(
+    collection: "match_provider_mappings" | "team_provider_mappings",
+    idField: "provider_match_id" | "provider_team_id",
+    provider: string,
+    externalIds: readonly string[],
+  ): Promise<Map<string, T>> {
+    const found = new Map<string, T>();
+    const ids = uniqueIds(externalIds);
+    if (ids.length === 0) return found;
+    const loadOne = async (id: string): Promise<void> => {
+      const row = await this.one<T>(collection, { provider, [idField]: id });
+      if (row !== null) found.set(id, row);
+    };
+    if (this.db.inFilter === undefined) {
+      for (const id of ids) await loadOne(id);
+      return found;
+    }
+    for (const chunk of chunksOf(ids, MAPPING_IN_CHUNK)) {
+      const inClause = this.db.inFilter(idField, chunk);
+      if (inClause === undefined) {
+        for (const id of chunk) await loadOne(id);
+        continue;
+      }
+      const rows = await this.where<T>(collection, { provider, ...inClause });
+      for (const row of rows) {
+        const key = row[idField];
+        if (typeof key === "string") found.set(key, row);
+      }
+    }
+    return found;
   }
 
   private async add<T extends EntityDoc>(name: string, id: string, value: T): Promise<void> {

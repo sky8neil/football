@@ -159,6 +159,11 @@ export interface TeamProviderMappingRepository {
     provider: TeamProviderMapping["provider"],
     providerTeamId: string,
   ): Promise<TeamProviderMapping | null>;
+  /** RP11：按外部 ID 批量取映射，避免逐场查询。key 为 provider_team_id。 */
+  findByProviderAndExternalIds(
+    provider: TeamProviderMapping["provider"],
+    providerTeamIds: readonly string[],
+  ): Promise<Map<string, TeamProviderMapping>>;
   findByTeamId(teamId: string): Promise<TeamProviderMapping[]>;
   insert(mapping: TeamProviderMapping): Promise<void>;
 }
@@ -169,6 +174,11 @@ export interface MatchProviderMappingRepository {
     provider: MatchProviderMapping["provider"],
     providerMatchId: string,
   ): Promise<MatchProviderMapping | null>;
+  /** RP11：按外部 ID 批量取映射，避免逐场查询。key 为 provider_match_id。 */
+  findByProviderAndExternalIds(
+    provider: MatchProviderMapping["provider"],
+    providerMatchIds: readonly string[],
+  ): Promise<Map<string, MatchProviderMapping>>;
   findByMatchId(matchId: string): Promise<MatchProviderMapping[]>;
   insert(mapping: MatchProviderMapping): Promise<void>;
 }
@@ -646,6 +656,8 @@ export class InMemoryRepository implements AppRepository {
     return {
       findByProviderAndExternalId: (provider, providerTeamId) =>
         self.findTeamProviderMappingByExternalId(provider, providerTeamId),
+      findByProviderAndExternalIds: (provider, providerTeamIds) =>
+        self.findTeamProviderMappingsByExternalIds(provider, providerTeamIds),
       findByTeamId: (teamId) => self.findTeamProviderMappingsByTeamId(teamId),
       insert: (mapping) => self.insertTeamProviderMapping(mapping),
     };
@@ -656,6 +668,8 @@ export class InMemoryRepository implements AppRepository {
     return {
       findByProviderAndExternalId: (provider, providerMatchId) =>
         self.findMatchProviderMappingByExternalId(provider, providerMatchId),
+      findByProviderAndExternalIds: (provider, providerMatchIds) =>
+        self.findMatchProviderMappingsByExternalIds(provider, providerMatchIds),
       findByMatchId: (matchId) => self.findMatchProviderMappingsByMatchId(matchId),
       insert: (mapping) => self.insertMatchProviderMapping(mapping),
     };
@@ -1054,6 +1068,21 @@ export class InMemoryRepository implements AppRepository {
     );
   }
 
+  private async findTeamProviderMappingsByExternalIds(
+    provider: TeamProviderMapping["provider"],
+    providerTeamIds: readonly string[],
+  ): Promise<Map<string, TeamProviderMapping>> {
+    const found = new Map<string, TeamProviderMapping>();
+    if (providerTeamIds.length === 0) return found;
+    for (const providerTeamId of providerTeamIds) {
+      const mapping = this.store.teamProviderMappingsByKey.get(
+        providerMappingKey(provider, providerTeamId),
+      );
+      if (mapping !== undefined) found.set(providerTeamId, mapping);
+    }
+    return found;
+  }
+
   private async findTeamProviderMappingsByTeamId(
     teamId: string,
   ): Promise<TeamProviderMapping[]> {
@@ -1087,6 +1116,21 @@ export class InMemoryRepository implements AppRepository {
         providerMappingKey(provider, providerMatchId),
       ) ?? null
     );
+  }
+
+  private async findMatchProviderMappingsByExternalIds(
+    provider: MatchProviderMapping["provider"],
+    providerMatchIds: readonly string[],
+  ): Promise<Map<string, MatchProviderMapping>> {
+    const found = new Map<string, MatchProviderMapping>();
+    if (providerMatchIds.length === 0) return found;
+    for (const providerMatchId of providerMatchIds) {
+      const mapping = this.store.matchProviderMappingsByKey.get(
+        providerMappingKey(provider, providerMatchId),
+      );
+      if (mapping !== undefined) found.set(providerMatchId, mapping);
+    }
+    return found;
   }
 
   private async findMatchProviderMappingsByMatchId(

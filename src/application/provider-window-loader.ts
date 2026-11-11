@@ -1,5 +1,6 @@
 import { SUPPORTED_LEAGUES, findSupportedLeagueById } from "../domain/config.js";
 import type { SyncJobType } from "../domain/enums.js";
+import type { MatchProviderMapping } from "../domain/types.js";
 import type { AppRepository } from "../infrastructure/repositories.js";
 import type { ApiFootballFixturesQuery } from "../provider/http.js";
 import type { ApiFootballFixture } from "../provider/types.js";
@@ -21,6 +22,29 @@ type ProviderWindowJob = typeof import("../domain/enums.js").SyncJobType.NearMat
 export interface ProviderWindowFixtureClient {
   getFixtures(query: ApiFootballFixturesQuery): Promise<readonly ApiFootballFixture[]>;
   orderLeagues?(leagueIds: readonly string[], jobType: SyncJobType, now: Date): Promise<string[]>;
+}
+
+async function loadMappingsByExternalId(
+  mappings: NonNullable<AppRepository["matchProviderMappings"]>,
+  fixtures: readonly ApiFootballFixture[],
+): Promise<Map<string, MatchProviderMapping> | null> {
+  const findBatch = (mappings as Partial<typeof mappings>).findByProviderAndExternalIds;
+  if (findBatch === undefined) return null;
+  const byProvider = new Map<Provider, string[]>();
+  for (const fixture of fixtures) {
+    const fixtureId = fixture.fixture?.id;
+    if (fixtureId === undefined || String(fixtureId).length === 0) continue;
+    const provider = (fixture.provider ?? "api_football") as Provider;
+    const ids = byProvider.get(provider) ?? [];
+    ids.push(String(fixtureId));
+    byProvider.set(provider, ids);
+  }
+  const mappingByExternalId = new Map<string, MatchProviderMapping>();
+  for (const [provider, externalIds] of byProvider) {
+    const batch = await findBatch(provider, externalIds);
+    for (const [id, mapping] of batch) mappingByExternalId.set(id, mapping);
+  }
+  return mappingByExternalId;
 }
 
 export async function loadActiveWindowFixtures(
@@ -69,6 +93,8 @@ export async function loadActiveWindowFixtures(
       jobType,
       serverNow,
     });
+    // RP11：一次批量取回本联赛所有外部 ID 的映射，避免逐场查询
+    const mappingByExternalId = await loadMappingsByExternalId(mappings, fixtures);
     for (const fixture of fixtures) {
       const fixtureId = fixture.fixture?.id;
       if (fixtureId === undefined || String(fixtureId).length === 0) {
@@ -76,7 +102,9 @@ export async function loadActiveWindowFixtures(
         continue;
       }
       const provider = (fixture.provider ?? "api_football") as Provider;
-      const mapping = await mappings.findByProviderAndExternalId(provider, String(fixtureId));
+      const mapping = mappingByExternalId === null
+        ? await mappings.findByProviderAndExternalId(provider, String(fixtureId))
+        : mappingByExternalId.get(String(fixtureId)) ?? null;
       if (mapping && ids.has(mapping.match_id)) {
         result.push({ fixture, payload: { fixture } });
         continue;

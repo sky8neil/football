@@ -13,7 +13,12 @@ type SdkStats = {
   removed?: number;
   stats?: { updated?: number; removed?: number };
 };
-type SdkCommand = { inc(value: number): unknown; lt(value: number): unknown; lte(value: number | Date): unknown };
+type SdkCommand = {
+  inc(value: number): unknown;
+  lt(value: number): unknown;
+  lte(value: number | Date): unknown;
+  in(values: readonly string[]): unknown;
+};
 type SdkDocument = {
   get(): Promise<SdkResult<CloudBaseDocument>>;
   create(options: { data: CloudBaseDocument }): Promise<unknown>;
@@ -191,6 +196,12 @@ export class CloudBaseWxDb implements CloudBaseDb {
   lteFilter(field: string, value: unknown): Record<string, unknown> | undefined {
     if (this.command?.lte === undefined) return undefined;
     return { [field]: this.command.lte(value as number) };
+  }
+
+  inFilter(field: string, values: readonly string[]): Record<string, unknown> | undefined {
+    if (this.command?.in === undefined) return undefined;
+    if (values.length === 0) return undefined;
+    return { [field]: this.command.in(values as string[]) };
   }
 
   async transaction<T>(work: (transactionDb: CloudBaseDb) => Promise<T>): Promise<T> {
