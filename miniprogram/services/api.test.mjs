@@ -34,11 +34,13 @@ describe("mini program request URL compatibility", () => {
       module: { exports: {} },
       require(id) {
         if (id === "./api.js") return api;
+        if (id === "./auth.js") return { ensureAuth: () => Promise.resolve({ statusCode: 200 }) };
         throw new Error(`Unexpected require: ${id}`);
       },
     };
     runInNewContext(readFileSync(join(HERE, "session.js"), "utf8"), context, { filename: "session.js" });
     const pending = context.module.exports.initSession("球友");
+    await Promise.resolve();
     const options = wxRequest.mock.calls[0][0];
     expect(options).toMatchObject({
       url: "http://127.0.0.1:8787/v1/session/init",
@@ -157,9 +159,9 @@ describe("mini program request URL compatibility", () => {
     expect(warn).not.toHaveBeenCalled();
   });
 
-  it("rejects HTTP in trial and release and blocks client supplied identity keys", () => {
+  it("rejects HTTP without a valid https domain in trial and release and blocks client supplied identity keys", () => {
     const releaseHttp = loadApi({ envVersion: "release" });
-    expect(() => releaseHttp.api.request({ method: "GET", path: "/v1/matches" })).toThrow("must use cloud transport");
+    expect(() => releaseHttp.api.request({ method: "GET", path: "/v1/matches" })).toThrow("HTTP transport requires a valid https:// domain");
     const { api, callFunction } = loadApi({ transport: "cloud" });
     expect(() => api.request({ method: "POST", path: "/v1/session/init", data: { nickname: "Sky", nested: { openid: "fake" } } })).toThrow("identity field is forbidden");
     expect(callFunction).not.toHaveBeenCalled();
@@ -168,5 +170,159 @@ describe("mini program request URL compatibility", () => {
   it("requires cloud environment and function configuration", () => {
     expect(() => loadApi({ transport: "cloud", cloudEnvId: "" }).api.request({ method: "GET", path: "/v1/matches" })).toThrow("cloudEnvId is required");
     expect(() => loadApi({ transport: "cloud", cloudFunctionName: "" }).api.request({ method: "GET", path: "/v1/matches" })).toThrow("cloudFunctionName is required");
+  });
+});
+
+describe("mini program dual transport and HTTP bearer", () => {
+  it.each(["trial", "release"])("allows HTTPS HTTP transport in %s", (envVersion) => {
+    const { api, wxRequest, callFunction } = loadApi({
+      envVersion,
+      gatewayOrigin: "https://api.example.com",
+    });
+    api.request({ method: "GET", path: "/v1/matches" });
+    expect(wxRequest.mock.calls[0][0].url).toBe("https://api.example.com/v1/matches");
+    expect(callFunction).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["http://api.example.com", "trial"],
+    ["https://127.0.0.1", "release"],
+    ["https://localhost", "trial"],
+    ["https://192.168.0.1", "release"],
+    ["https://api.example.com:443", "trial"],
+    ["https://api.example.com/v1", "release"],
+  ])("rejects %s as a trial/release HTTP origin", (gatewayOrigin, envVersion) => {
+    const { api, wxRequest } = loadApi({ envVersion, gatewayOrigin });
+    expect(() => api.request({ method: "GET", path: "/v1/matches" })).toThrow("HTTP transport requires a valid https:// domain");
+    expect(wxRequest).not.toHaveBeenCalled();
+  });
+
+  it("rejects unknown transport in trial and release", () => {
+    const { api } = loadApi({ envVersion: "release", transport: "ftp", gatewayOrigin: "https://api.example.com" });
+    expect(() => api.request({ method: "GET", path: "/v1/matches" })).toThrow("must use cloud transport");
+  });
+
+  it("keeps CloudBase dispatch without Authorization or HTTP origin checks", () => {
+    const provider = vi.fn(() => "opaque-token");
+    const { api, callFunction, wxRequest } = loadApi({ transport: "cloud", envVersion: "release" });
+    api.setAccessTokenProvider(provider);
+    api.request({ method: "GET", path: "/v1/matches" });
+    expect(callFunction).toHaveBeenCalledTimes(1);
+    expect(wxRequest).not.toHaveBeenCalled();
+    expect(provider).not.toHaveBeenCalled();
+    expect(callFunction.mock.calls[0][0].data).not.toHaveProperty("authorization");
+    expect(callFunction.mock.calls[0][0].data).not.toHaveProperty("header");
+  });
+
+  it("attaches Bearer on HTTP methods and keeps POST JSON content-type", () => {
+    const { api, wxRequest } = loadApi({ gatewayOrigin: "https://api.example.com" });
+    api.setAccessTokenProvider(() => "opaque-token");
+    api.request({ method: "GET", path: "/v1/matches" });
+    expect(wxRequest.mock.calls[0][0].header).toEqual({ Authorization: "Bearer opaque-token" });
+    api.request({ method: "POST", path: "/v1/session/init", data: { nickname: "球友" } });
+    expect(wxRequest.mock.calls[1][0]).toMatchObject({
+      method: "POST",
+      data: { nickname: "球友" },
+      header: {
+        "content-type": "application/json",
+        Authorization: "Bearer opaque-token",
+      },
+    });
+  });
+
+  it("does not call the token provider for auth login requests", () => {
+    const provider = vi.fn(() => "opaque-token");
+    const { api, wxRequest } = loadApi();
+    api.setAccessTokenProvider(provider);
+    api.request({ method: "POST", path: "/v1/auth/wechat", data: { code: "wx-code" } });
+    expect(provider).not.toHaveBeenCalled();
+    expect(wxRequest.mock.calls[0][0]).toMatchObject({
+      url: "http://127.0.0.1:8787/v1/auth/wechat",
+      method: "POST",
+      data: { code: "wx-code" },
+      header: { "content-type": "application/json" },
+    });
+    expect(wxRequest.mock.calls[0][0].header.Authorization).toBeUndefined();
+  });
+
+  it("waits for the HTTP auth preparer before sending a business request", async () => {
+    let resolveAuth;
+    const ready = new Promise((resolve) => { resolveAuth = resolve; });
+    const { api, wxRequest } = loadApi();
+    wxRequest.mockImplementation((options) => {
+      options.success({ statusCode: 200, data: { data: { items: [] }, request_id: "matches-auth" } });
+    });
+    api.setAuthPreparer(() => ready);
+    const pending = api.request({ method: "GET", path: "/v1/matches" });
+    expect(wxRequest).not.toHaveBeenCalled();
+    resolveAuth();
+    await expect(pending).resolves.toMatchObject({ statusCode: 200, data: { items: [] } });
+    expect(wxRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns the auth failure and does not dispatch when restore fails", async () => {
+    const { api, wxRequest } = loadApi();
+    api.setAuthPreparer(() => Promise.resolve({
+      statusCode: 401,
+      code: "UNAUTHORIZED",
+      message: "需要重新登录",
+      data: undefined,
+      request_id: undefined,
+      details: undefined,
+    }));
+    await expect(api.request({ method: "GET", path: "/v1/matches" })).resolves.toEqual({
+      statusCode: 401,
+      code: "UNAUTHORIZED",
+      message: "需要重新登录",
+      data: undefined,
+      request_id: undefined,
+      details: undefined,
+    });
+    expect(wxRequest).not.toHaveBeenCalled();
+  });
+
+  it("still dispatches public HTTP requests when the auth preparer skips with no session", async () => {
+    const { api, wxRequest } = loadApi();
+    wxRequest.mockImplementation((options) => {
+      options.success({ statusCode: 200, data: { data: { items: [] }, request_id: "public-1" } });
+    });
+    api.setAuthPreparer(() => Promise.resolve({ statusCode: 200, data: undefined }));
+    await expect(api.request({ method: "GET", path: "/v1/matches" })).resolves.toMatchObject({
+      statusCode: 200,
+      data: { items: [] },
+    });
+    expect(wxRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not invoke the auth preparer for login or CloudBase requests", () => {
+    const preparer = vi.fn(() => Promise.resolve());
+    const { api, wxRequest } = loadApi();
+    api.setAuthPreparer(preparer);
+    api.request({ method: "POST", path: "/v1/auth/wechat", data: { code: "wx-code" } });
+    expect(preparer).not.toHaveBeenCalled();
+    expect(wxRequest).toHaveBeenCalledTimes(1);
+    const cloud = loadApi({ transport: "cloud" });
+    cloud.api.setAuthPreparer(preparer);
+    cloud.api.request({ method: "GET", path: "/v1/matches" });
+    expect(preparer).not.toHaveBeenCalled();
+    expect(cloud.callFunction).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves the HTTP success envelope after attaching Authorization", async () => {
+    const { api, wxRequest } = loadApi();
+    api.setAccessTokenProvider(() => "opaque-token");
+    const pending = api.request({ method: "GET", path: "/v1/matches" });
+    wxRequest.mock.calls[0][0].success({
+      statusCode: 200,
+      data: { data: { items: [] }, request_id: "matches-request" },
+    });
+    await expect(pending).resolves.toEqual({
+      statusCode: 200,
+      data: { items: [] },
+      code: undefined,
+      message: undefined,
+      details: undefined,
+      request_id: "matches-request",
+    });
   });
 });

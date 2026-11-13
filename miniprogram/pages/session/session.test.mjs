@@ -136,6 +136,21 @@ describe("会话页：昵称输入与本地校验", () => {
     expect(page.data.errorMessage).toBe("先填个昵称，球友们才好认出你");
   });
 
+  it("账号已注销时展示 USER_DELETED 文案，可跳过且不写入昵称", async () => {
+    const { page, calls, navs, writes } = loadSessionPage({
+      result: { statusCode: 409, code: "USER_DELETED" },
+      nickname: "Sky",
+    });
+    page.onSubmit();
+    await Promise.resolve();
+    expect(calls).toEqual(["Sky"]);
+    expect(navs).toEqual([]);
+    expect(writes).toEqual([]);
+    expect(page.data.errorMessage).toBe("账号已注销");
+    expect(page.data.canSkip).toBe(true);
+    expect(page.data.canRetry).toBe(false);
+  });
+
   it("超过 32 个字符在本地拦截，不发请求", async () => {
     const { page, calls } = loadSessionPage({
       result: { statusCode: 201, data: { nickname: "Sky" } },

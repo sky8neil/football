@@ -1,19 +1,20 @@
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import { describe, it, expect, vi } from "vitest";
-function load() {
+function load({ transport = "http" } = {}) {
   let definition;
   const getMyProfile = vi.fn(async () => ({ statusCode: 200, data: { nickname: "球友", favorite_team_id: null } }));
   const updateMyProfile = vi.fn(async () => ({ statusCode: 200, data: { nickname: "新昵称" } }));
   const listMatches = vi.fn(async () => ({ statusCode: 200, data: { items: [{ league_id: "premier_league", home_team: { team_id: "a", name: "Arsenal" }, away_team: { team_id: "b", name: "Chelsea" } }], page: { next_cursor: "next" } } }));
   const storeNickname = vi.fn();
-  const wx = { getStorageSync: vi.fn(), setStorageSync: vi.fn(), navigateBack: vi.fn(), showToast: vi.fn() };
+  const clearAuth = vi.fn();
+  const wx = { getStorageSync: vi.fn(), setStorageSync: vi.fn(), navigateBack: vi.fn(), showToast: vi.fn(), showModal: vi.fn(), reLaunch: vi.fn() };
   runInNewContext(readFileSync(new URL("./settings.js", import.meta.url), "utf8"), {
     Page: value => { definition = value; }, wx,
-    require: name => name.includes("profile") ? { getMyProfile, updateMyProfile } : name.includes("matches") ? { listMatches } : name.includes("nickname") ? { storeNickname } : { getTeamLogo: () => "logo.png" },
+    require: name => name.includes("profile") ? { getMyProfile, updateMyProfile } : name.includes("matches") ? { listMatches } : name.includes("nickname") ? { storeNickname } : name.includes("auth") ? { clearAuth } : name.includes("config") ? { transport } : { getTeamLogo: () => "logo.png" },
   });
   const page = { ...definition, data: structuredClone(definition.data), setData(value) { Object.assign(this.data, value); } };
-  return { page, getMyProfile, updateMyProfile, listMatches, storeNickname, wx };
+  return { page, getMyProfile, updateMyProfile, listMatches, storeNickname, clearAuth, wx };
 }
 describe("personal profile settings", () => {
   it("routes both profile entry points to settings instead of session initialization", () => {
@@ -67,5 +68,31 @@ describe("personal profile settings", () => {
     await page.loadProfile(); page.setData({ originalTeamId: "a", favoriteTeamId: "a" });
     page.onTeamPick({ currentTarget: { dataset: {} } }); await page.onSave();
     expect(updateMyProfile).toHaveBeenCalledWith({ favorite_team_id: null });
+  });
+  it("shows the self-hosted logout action only for HTTP transport", () => {
+    expect(load().page.data.showLogout).toBe(true);
+    expect(load({ transport: "cloud" }).page.data.showLogout).toBe(false);
+  });
+  it("clears the local session and returns to login after confirmed logout", () => {
+    const { page, clearAuth, wx } = load();
+    wx.showModal.mockImplementation((options) => options.success({ confirm: true }));
+    page.onLogout();
+    expect(wx.showModal).toHaveBeenCalledWith(expect.objectContaining({ title: "确认退出登录？" }));
+    expect(clearAuth).toHaveBeenCalledTimes(1);
+    expect(wx.reLaunch).toHaveBeenCalledWith({ url: "/pages/session/session" });
+  });
+  it("does not clear the session when logout is cancelled", () => {
+    const { page, clearAuth, wx } = load();
+    wx.showModal.mockImplementation((options) => options.success({ confirm: false }));
+    page.onLogout();
+    expect(clearAuth).not.toHaveBeenCalled();
+    expect(wx.reLaunch).not.toHaveBeenCalled();
+  });
+  it("keeps CloudBase identity unchanged when logout is invoked", () => {
+    const { page, clearAuth, wx } = load({ transport: "cloud" });
+    page.onLogout();
+    expect(wx.showModal).not.toHaveBeenCalled();
+    expect(clearAuth).not.toHaveBeenCalled();
+    expect(wx.reLaunch).not.toHaveBeenCalled();
   });
 });

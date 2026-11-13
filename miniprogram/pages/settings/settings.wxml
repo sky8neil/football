@@ -19,5 +19,6 @@
       <view wx:if="{{saveErrorMessage}}" class="save-error">{{saveErrorMessage}}</view>
       <button class="save" bindtap="onSave" loading="{{saving}}" disabled="{{saving}}">保存</button>
     </block>
+    <button wx:if="{{showLogout}}" class="logout" bindtap="onLogout">退出登录</button>
   </view>
 </view>

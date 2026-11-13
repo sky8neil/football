@@ -1,10 +1,16 @@
+const config = require("../../config.js");
 const { getMyProfile, updateMyProfile } = require("../../services/profile.js");
 const { listMatches } = require("../../services/matches.js");
 const { storeNickname } = require("../../utils/nickname.js");
 const { getTeamLogo } = require("../../utils/logo-registry.js");
+const { clearAuth } = require("../../services/auth.js");
+
+function isHttpTransport() {
+  return (config.transport || "http") === "http";
+}
 
 Page({
-  data: { loading: true, saving: false, saveErrorMessage: "", errorMessage: "", nickname: "", originalNickname: "", favoriteTeamId: null, originalTeamId: null, favoriteTeamName: "未设置", showTeams: false, teams: [], visibleTeams: [], search: "", teamsLoading: false, teamsError: "", nextCursor: null, hasMore: false },
+  data: { loading: true, saving: false, saveErrorMessage: "", errorMessage: "", nickname: "", originalNickname: "", favoriteTeamId: null, originalTeamId: null, favoriteTeamName: "未设置", showTeams: false, teams: [], visibleTeams: [], search: "", teamsLoading: false, teamsError: "", nextCursor: null, hasMore: false, showLogout: isHttpTransport() },
   onLoad(query) {
     this.setData({ showTeams: !!(query && query.section === "team") });
     this.loadProfile();
@@ -87,5 +93,18 @@ Page({
       console.warn("[profile-save]", message);
     }
     finally { this.setData({ saving: false }); }
+  },
+  onLogout() {
+    if (!isHttpTransport()) return;
+    wx.showModal({
+      title: "确认退出登录？",
+      content: "退出后需重新登录才能查看个人资料和预测。",
+      confirmText: "确认退出",
+      success(res) {
+        if (!res || !res.confirm) return;
+        clearAuth();
+        wx.reLaunch({ url: "/pages/session/session" });
+      },
+    });
   },
 });

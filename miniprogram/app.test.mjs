@@ -13,7 +13,10 @@ describe("cloud transport startup", () => {
     const source = readFileSync(join(HERE, "app.js"), "utf8");
     runInNewContext(source, {
       App: (definition) => { app = definition; },
-      require: () => ({ transport: "cloud", cloudEnvId: "cloud-test" }),
+      require: (id) => {
+        if (id === "./config.js") return { transport: "cloud", cloudEnvId: "cloud-test" };
+        throw new Error(`Unexpected require: ${id}`);
+      },
       wx: { cloud: { init } },
     });
     app.onLaunch();
@@ -28,5 +31,44 @@ describe("cloud transport startup", () => {
       wx: { cloud: { init: vi.fn() } },
     });
     expect(() => app.onLaunch()).toThrow("cloudEnvId is required");
+  });
+
+  it("does not initialize WeChat cloud for HTTP transport", () => {
+    let app;
+    const init = vi.fn();
+    const restoreAuth = vi.fn(() => Promise.resolve({ statusCode: 200 }));
+    runInNewContext(readFileSync(join(HERE, "app.js"), "utf8"), {
+      App: (definition) => { app = definition; },
+      require(id) {
+        if (id === "./config.js") return { transport: "http", gatewayOrigin: "https://api.example.com", cloudEnvId: "" };
+        if (id === "./services/auth.js") return { restoreAuth };
+        throw new Error(`Unexpected require: ${id}`);
+      },
+      wx: { cloud: { init } },
+    });
+    app.onLaunch();
+    expect(init).not.toHaveBeenCalled();
+    expect(restoreAuth).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not restore a self-hosted session for CloudBase transport", () => {
+    let app;
+    const init = vi.fn();
+    const restoreAuth = vi.fn();
+    const required = [];
+    runInNewContext(readFileSync(join(HERE, "app.js"), "utf8"), {
+      App: (definition) => { app = definition; },
+      require(id) {
+        required.push(id);
+        if (id === "./config.js") return { transport: "cloud", cloudEnvId: "cloud-test" };
+        if (id === "./services/auth.js") return { restoreAuth };
+        throw new Error(`Unexpected require: ${id}`);
+      },
+      wx: { cloud: { init } },
+    });
+    app.onLaunch();
+    expect(init).toHaveBeenCalledWith({ env: "cloud-test", traceUser: true });
+    expect(required).toEqual(["./config.js"]);
+    expect(restoreAuth).not.toHaveBeenCalled();
   });
 });

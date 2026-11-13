@@ -1,7 +1,8 @@
 module.exports = {
-  // Local DevTools tests the deployed CloudBase function through wx.cloud.callFunction.
-  transport: "cloud",
-  gatewayOrigin: "http://127.0.0.1:8787",
+  // 自建 VPS 网关（PostgreSQL 持久化）。小程序端经 HTTPS 域名直连网关。
+  // 切回 CloudBase 时把 transport 改为 "cloud"，其余键保持不变。
+  transport: "http",
+  gatewayOrigin: "https://football.803866.xyz",
   cloudEnvId: "footballfree-d2gzh9xzve789c41a",
   cloudFunctionName: "api",
   rankingThinBoardThreshold: 20,

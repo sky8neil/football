@@ -9,5 +9,6 @@ button { padding:0;margin:0;background:transparent;font-size:14px;line-height:1.
 .team-toggle { display:flex;align-items:center;justify-content:space-between;text-align:left;gap:12px; }.team-toggle>text:last-child { color:#52665b; }
 .team-row { display:flex;align-items:center;gap:12px;padding:14px 8px;text-align:left;border-bottom:1px solid rgba(31,77,54,.08); }.team-row image { width:28px;height:28px;flex:none; }.team-name { flex:1; }.selected { color:#2f8a3a;font-weight:700;background:rgba(47,138,58,.07);border-radius:10px; }
 .hint { display:block;font-size:12px;color:#52665b;margin-top:14px; }.more { color:#2f8a3a;padding:14px; }.save { background:linear-gradient(135deg,#1f4d36,#0e2d20);color:white;font-weight:700;border-radius:14px;padding:15px; }.save[disabled] { opacity:.6;color:white; }
+.logout { margin-top:12px;color:#9b392c;font-weight:700;padding:15px;border-radius:14px;background:rgba(255,255,255,.76);border:1px solid rgba(155,57,44,.2); }
 
 .save-error { margin:12px 0;padding:12px 14px;background:#fff0ec;color:#9b392c;border-radius:10px;font-size:13px;line-height:1.6; }

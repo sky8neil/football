@@ -1,6 +1,20 @@
 const config = require("../config.js");
 const { classifyCloudClientError } = require("./cloud-diagnostics.js");
 
+const AUTH_LOGIN_PATH = "/v1/auth/wechat";
+const WRITE_METHODS = ["POST", "PATCH", "PUT"];
+
+let accessTokenProvider = null;
+let authPreparer = null;
+
+function setAccessTokenProvider(provider) {
+  accessTokenProvider = typeof provider === "function" ? provider : null;
+}
+
+function setAuthPreparer(provider) {
+  authPreparer = typeof provider === "function" ? provider : null;
+}
+
 function buildUrl(path, query) {
   const joined = /^https?:\/\//i.test(path)
     ? path
@@ -63,6 +77,62 @@ function accountVersion() {
   }
 }
 
+function requestPathname(path) {
+  const withoutHash = String(path || "").split("#")[0];
+  const withoutQuery = withoutHash.split("?")[0];
+  const withSlash = withoutQuery.charAt(0) === "/" ? withoutQuery : "/" + withoutQuery;
+  return withSlash.replace(/\/+$/, "") || "/";
+}
+
+function isAuthLoginRequest(path) {
+  return requestPathname(path) === AUTH_LOGIN_PATH;
+}
+
+function isIpv4Hostname(hostname) {
+  return /^(?:\d{1,3}\.){3}\d{1,3}$/.test(hostname);
+}
+
+function isValidHttpsDomainOrigin(origin) {
+  if (typeof origin !== "string") return false;
+  const match = /^https:\/\/([^/:?#]+)\/?$/i.exec(origin.trim());
+  if (!match) return false;
+  const hostname = match[1].toLowerCase();
+  if (!hostname || hostname === "localhost" || hostname.endsWith(".localhost")) return false;
+  if (isIpv4Hostname(hostname) || hostname.indexOf(".") === -1) return false;
+  if (hostname.charAt(0) === "." || hostname.charAt(hostname.length - 1) === ".") return false;
+  return hostname.split(".").every((label) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label));
+}
+
+function assertTrialReleaseTransport(envVersion, transport) {
+  if (envVersion !== "trial" && envVersion !== "release") return;
+  if (transport === "cloud") return;
+  if (transport === "http" && isValidHttpsDomainOrigin(config.gatewayOrigin)) return;
+  if (transport === "http") {
+    throw new Error(`${envVersion} mini program HTTP transport requires a valid https:// domain`);
+  }
+  throw new Error(`${envVersion} mini program must use cloud transport`);
+}
+
+function resolveAccessToken() {
+  if (typeof accessTokenProvider !== "function") return undefined;
+  const token = accessTokenProvider();
+  if (typeof token !== "string") return undefined;
+  const trimmed = token.trim();
+  return trimmed || undefined;
+}
+
+function buildHttpHeaders(method, path) {
+  const header = {};
+  if (WRITE_METHODS.includes(method)) {
+    header["content-type"] = "application/json";
+  }
+  if (!isAuthLoginRequest(path)) {
+    const token = resolveAccessToken();
+    if (token) header.Authorization = "Bearer " + token;
+  }
+  return header;
+}
+
 function failResult() {
   return { data: undefined, request_id: undefined, statusCode: 0, code: undefined, message: undefined, details: undefined };
 }
@@ -87,18 +157,7 @@ function fromGatewayResponse(response, cloudTransport) {
   };
 }
 
-function request({ method, path, data, query }) {
-  const transport = config.transport || "http";
-  const envVersion = accountVersion();
-  if ((envVersion === "trial" || envVersion === "release") && transport !== "cloud") {
-    throw new Error(`${envVersion} mini program must use cloud transport`);
-  }
-  if (transport === "cloud") {
-    if (!config.cloudEnvId) throw new Error("cloudEnvId is required when transport is cloud");
-    if (!config.cloudFunctionName) throw new Error("cloudFunctionName is required when transport is cloud");
-    if (!wx.cloud || typeof wx.cloud.callFunction !== "function") throw new Error("wx.cloud.callFunction is unavailable");
-  }
-  assertNoClientIdentity({ data, query });
+function dispatchRequest({ method, path, data, query, transport, envVersion }) {
   return new Promise((resolve) => {
     if (transport === "cloud") {
       wx.cloud.callFunction({
@@ -120,8 +179,8 @@ function request({ method, path, data, query }) {
     wx.request({
       url: buildUrl(path, query),
       method,
-      data: ["POST", "PATCH", "PUT"].includes(method) ? data : undefined,
-      header: ["POST", "PATCH", "PUT"].includes(method) ? { "content-type": "application/json" } : {},
+      data: WRITE_METHODS.includes(method) ? data : undefined,
+      header: buildHttpHeaders(method, path),
       success(res) {
         const body = res.data && typeof res.data === "object" ? res.data : {};
         resolve({ data: body.data, request_id: body.request_id, statusCode: res.statusCode, code: body.code, message: body.message, details: body.details });
@@ -131,4 +190,24 @@ function request({ method, path, data, query }) {
   });
 }
 
-module.exports = { request };
+function request({ method, path, data, query }) {
+  const transport = config.transport || "http";
+  const envVersion = accountVersion();
+  assertTrialReleaseTransport(envVersion, transport);
+  if (transport === "cloud") {
+    if (!config.cloudEnvId) throw new Error("cloudEnvId is required when transport is cloud");
+    if (!config.cloudFunctionName) throw new Error("cloudFunctionName is required when transport is cloud");
+    if (!wx.cloud || typeof wx.cloud.callFunction !== "function") throw new Error("wx.cloud.callFunction is unavailable");
+  }
+  assertNoClientIdentity({ data, query });
+  const dispatch = () => dispatchRequest({ method, path, data, query, transport, envVersion });
+  if (transport === "cloud" || isAuthLoginRequest(path) || typeof authPreparer !== "function") {
+    return dispatch();
+  }
+  return Promise.resolve(authPreparer()).then((authResult) => {
+    if (authResult && authResult.statusCode !== 200) return authResult;
+    return dispatch();
+  });
+}
+
+module.exports = { request, setAccessTokenProvider, setAuthPreparer };
