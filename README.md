@@ -13,6 +13,7 @@
 
 - **业务唯一规范**：[`docs/MVP__v2.0.md`](docs/MVP__v2.0.md)（v1.0 归档只读：[`docs/MVP__v1.0.md`](docs/MVP__v1.0.md)）
 - **文档索引**：[`docs/INDEX.md`](docs/INDEX.md)；需求、决策、开发计划与过程记录统一收录于 [`docs/`](docs/)
+- **双部署模板**：[`ops/vps/`](ops/vps/)（VPS systemd / Caddy / 配置示例）；合同与步骤见 [`docs/VPS_SELF_HOSTED_DEPLOYMENT_DEV_PLAN__v1.0.md`](docs/VPS_SELF_HOSTED_DEPLOYMENT_DEV_PLAN__v1.0.md)。CloudBase 说明：[`src/cloud-function/DEPLOY.md`](src/cloud-function/DEPLOY.md)。模板与本地构建入口对齐，不代表生产已部署或云端已验收。
 - **API 合同**：[`src/api/v1/openapi.yaml`](src/api/v1/openapi.yaml)（接口字段、状态码与 envelope 的唯一实现依据）
 - **小程序代码**：[`miniprogram/`](miniprogram/)
 - **视觉事实来源（V1 起）**：**小程序实现本身**——`miniprogram/pages/matches/`（母版页）＋ `miniprogram/styles/design-tokens.wxss`（tokens）；设计稿 HTML 为参考稿。Design System 文档：[`docs/UI_DESIGN_SYSTEM.md`](docs/UI_DESIGN_SYSTEM.md)
@@ -214,12 +215,17 @@ npm run typecheck   # tsc --noEmit 全量类型检查
 npm test            # vitest run（全量测试）
 npm run build       # tsc -p tsconfig.build.json 产出 dist/
 
-# 云开发数据库结构（28 集合 / 47 索引）—— 幂等，可反复执行
+# 自建 VPS（模板 ops/vps/；API 入口 dist/gateway/http.js，任务 dist/jobs/tick.js）
+npm run vps:db -- --plan
+npm run vps:admin -- --openid <wechat-openid>
+npm run jobs:tick -- --dry-run
+
+# 云开发数据库结构（集合/索引数量以 provision 当前输出为准）—— 幂等，可反复执行
 npm run cloudbase:provision                       # 打印计划，不连网
 npm run cloudbase:verify                          # 只读体检，缺失即退出码 1
 npm run cloudbase:provision -- --apply            # 补齐缺失的集合与索引（不删任何东西）
 
-# 云函数配置（超时 120s / 每分钟 Timer / diag）
+# 云函数配置（超时 120s / 每 10 分钟 Timer / diag）
 npm run cloudbase:function                        # 只读看配置差异
 npm run cloudbase:function -- --apply             # 收敛超时并补触发器
 npm run cloudbase:function -- --diag              # 调云端 diag 自检

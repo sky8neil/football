@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Football jobs every ten minutes
+
+[Timer]
+OnCalendar=*-*-* *:00/10:00
+Persistent=true
+Unit=football-jobs.service
+
+[Install]
+WantedBy=timers.target

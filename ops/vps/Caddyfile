@@ -1,0 +1,9 @@
+# Placeholder site fragment. Replace api.example.com before use.
+# Host-local Caddy must proxy to the API loopback listener in src/gateway/http.ts
+# (GATEWAY_LISTEN_HOST=127.0.0.1, GATEWAY_LISTEN_PORT=8787).
+# If Caddy runs in Docker, 127.0.0.1 inside the container is not the host;
+# use a reachable host/bridge address instead of copying this upstream.
+
+api.example.com {
+	reverse_proxy 127.0.0.1:8787
+}

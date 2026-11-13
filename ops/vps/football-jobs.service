@@ -1,0 +1,12 @@
+[Unit]
+Description=Football scheduled jobs
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=neilxu
+WorkingDirectory=/home/neilxu/football/current
+EnvironmentFile=/home/neilxu/football/shared/football.env
+ExecStart=/usr/bin/node /home/neilxu/football/current/dist/jobs/tick.js
+TimeoutStartSec=1800

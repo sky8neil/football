@@ -1,0 +1,16 @@
+[Unit]
+Description=Football API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=neilxu
+WorkingDirectory=/home/neilxu/football/current
+EnvironmentFile=/home/neilxu/football/shared/football.env
+ExecStart=/usr/bin/node /home/neilxu/football/current/dist/gateway/http.js
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

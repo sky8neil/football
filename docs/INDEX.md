@@ -20,6 +20,7 @@
 - `DEV_PLAN_SEC49__v1.0.md`、`DEV_PLAN_SEC49_FIX__v1.0.md`：第 49 节冻结决策实施与修复计划。
 - `DEV_PLAN_B3_C2__v1.0.md`、`DEV_PLAN_B3_C2_V0__v1.1.md`：真实平台接线与前端切片计划。
 - `H4_AUTH_OPENAPI_DEV_PLAN__v1.0.md`：可信运行时身份与 OpenAPI 计划。
+- `VPS_SELF_HOSTED_DEPLOYMENT_DEV_PLAN__v1.0.md`：自建 VPS 与 CloudBase 双部署开发合同；模板在 [`ops/vps/`](../ops/vps/)，CloudBase 操作说明在 [`src/cloud-function/DEPLOY.md`](../src/cloud-function/DEPLOY.md)。
 
 ## Review、迁移与复核
 
@@ -35,6 +36,7 @@
 2. `PROJECT_REQUIREMENTS__v1.0.md`
 3. `C0_H5_MINIMUM_USER_SCOPE_DECISION__v1.0.md` → `C1_PLATFORM_NEUTRAL_WIREFRAME_ACCEPTANCE__v1.0.md`
 4. `DEVELOPMENT_PLAN.md` 与对应阶段开发计划
-5. Review/迁移文档
+5. 双部署：`VPS_SELF_HOSTED_DEPLOYMENT_DEV_PLAN__v1.0.md` → `ops/vps/`、`src/cloud-function/DEPLOY.md`
+6. Review/迁移文档
 
 README 是面向开发者的入口；本索引和各文档保留完整合同内容，不替代业务规范。

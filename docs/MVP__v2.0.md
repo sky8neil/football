@@ -8,7 +8,7 @@
 >
 > 目标：在暂不开发前端 UI 的前提下，冻结 MVP 核心后端的产品边界、领域规则、数据库 Schema、索引、状态机、时间、幂等、异常、赛果修正、等级与排行榜、API Contract、数据源适配、运维与验收测试。本规范不含实现建议、文件路径或代码片段；「机器可执行」指规则、数值、公式、枚举、状态机、Schema、API 合同、验收用例、不变量均明确到可直接照做。
 >
-> 技术基线：微信小程序 + 微信云开发（云函数、云数据库、定时触发器）+ API-Football。
+> 技术基线：同一份代码按配置选择自建 VPS（HTTPS API、PostgreSQL、systemd 调度）或腾讯云 CloudBase（云函数、云数据库、定时触发器）。数据源沿用现有 Provider 配置。
 >
 > MVP 联赛：英超、西甲、意甲、德甲、法甲、中超（六联赛，见第 1.4 节）；等级赛季与排行榜采用独立于联赛赛季的平台口径（见第 6 节、第 17 节）。
 
@@ -437,7 +437,7 @@ user_id
 
 ## 4.2 用户创建
 
-可信微信运行环境提供 `openid` 后：
+可信运行环境提供 `openid` 后（CloudBase：云函数 `context.OPENID`；自建 VPS：网关校验会话后注入）：
 
 1. 按 `openid` 查询 active 用户。
 2. 存在则返回已有 `user_id`。
@@ -573,17 +573,20 @@ favorite_team_id = null
 
 ### 鉴权边界（不变）
 
-- 不修改 H4 / OpenAPI security scheme。
-- 不引入 JWT、Bearer、Cookie 或服务端 session token 作为登录凭证。
-- 身份只来自网关/运行时注入的可信 openid；禁止信任客户端传 openid。
+- 业务层身份只来自网关/运行时注入的可信 openid；禁止信任客户端传 openid / user_id。
+- 不引入 JWT 或 Cookie 作为登录凭证。
+- CloudBase 继续从云函数 `context.OPENID` 注入。自建 VPS / HTTP 由服务端签发不透明 Bearer 会话，网关校验后再注入 `trusted_openid`。合同见第 4.6 节与 [VPS 自托管部署开发文档](VPS_SELF_HOSTED_DEPLOYMENT_DEV_PLAN__v1.0.md)。
 
 ## 4.6 鉴权与会话
 
 ### 身份来源
 
-- 网关/运行环境注入**可信** `openid`（或等价字段）。
-- 后端**不**自行签发 JWT / Cookie / session token 作为登录凭证。
+- 业务层身份一律由网关/运行环境注入**可信** `openid`（或等价字段）后再进入 handler。
+- CloudBase：从云函数 `context.OPENID` 注入；不签发、不校验自建会话 token。
+- 自建 VPS / HTTP：小程序 `wx.login` 得到一次性 code，`POST /v1/auth/wechat` 换取服务端不透明会话凭证；后续请求由网关校验 `Authorization: Bearer <access_token>` 后注入 `trusted_openid`。
+- 后端**不**签发 JWT 或 Cookie 作为登录凭证。
 - 后端**不**信任客户端 body/query 中的 `openid` / `user_id` 作为鉴权依据。
+- 自建模式不提供 `/v1/auth/logout`；退出登录只清客户端本地缓存，服务端会话按 `FOOTBALL_SESSION_TTL_SECONDS` 过期。
 - 已注销身份的解析顺序、重注册隔离与 HTTP 行为见第 4.5.1 节。
 
 ### 请求身份绑定
@@ -614,9 +617,10 @@ favorite_team_id = null
 
 ### 认证方式的 OpenAPI 表达
 
-- OpenAPI 不声明 `BearerAuth`、`bearerFormat: JWT` 或任何 Bearer/Cookie/客户端可填写的身份 Header security scheme。
+- OpenAPI 不声明 `BearerAuth` 或 `bearerFormat: JWT`，也不声明客户端可填写的 openid / user_id Header、Cookie、query security scheme。
 - 文档根级固定 `x-trusted-runtime-openid`：身份字段为 `openid`，由 `gateway_or_runtime` 注入，`client_supply_forbidden: true`。
-- 所有 Auth required operation（含 `POST /v1/session/init`）固定 `x-requires-trusted-openid: true`；公开读接口不写该标记。该标记只表达可信运行时依赖，不是客户端请求参数。
+- 自建 VPS / HTTP 在 `components.securitySchemes` 声明外部不透明 Bearer（`VpsSessionBearer`，`bearerFormat: Opaque`）。该凭证必须经后端校验后才能成为 `trusted_openid`；CloudBase 不使用该 scheme。
+- 所有 Auth required operation（含 `POST /v1/session/init`）固定 `x-requires-trusted-openid: true`；公开读接口与 `POST /v1/auth/wechat` 不写该标记。该标记只表达可信运行时依赖，不是客户端请求参数。
 - 401 只表示缺少可信身份并使用 `UNAUTHORIZED`；已注销用户保持 409 `USER_DELETED`；非 active 管理员保持 403 `FORBIDDEN`。
 
 ---
@@ -3362,18 +3366,51 @@ rankings:
 
 ## 23.9 认证声明
 
-OpenAPI 的认证 security scheme 表达按第 4.6 节「认证方式的 OpenAPI 表达」执行：不声明 Bearer/Cookie/客户端可填写的身份 Header；使用 `x-trusted-runtime-openid` 与 `x-requires-trusted-openid` 标记表达可信运行时注入模型。
+OpenAPI 的认证表达按第 4.6 节执行：业务层使用 `x-trusted-runtime-openid` 与 `x-requires-trusted-openid`；禁止客户端自报 `openid` / `user_id`；自建 VPS / HTTP 的不透明 Bearer 必须经后端校验；CloudBase 继续使用运行时 openid 注入。
 
 ---
 
 # 24. 身份与用户 API
 
+## 24.0 POST /v1/auth/wechat
+
+仅自建 VPS / HTTP 使用的公开登录交换。CloudBase 不调用本接口。
+
+权限：无需已有可信 openid。
+
+Request：
+
+```json
+{
+  "code": "一次性微信登录code"
+}
+```
+
+`code` required。body 禁止 `openid` / `user_id` / token。
+
+行为：
+
+- 服务端用 `code` 调用微信 `jscode2session`。
+- 成功后签发不透明随机 `access_token`，不把 AppSecret / session_key 下发。
+- 微信返回 errcode、超时或网络异常时不创建会话，统一 401 `UNAUTHORIZED`。
+
+Response data：
+
+```json
+{
+  "access_token": "opaque-session",
+  "token_type": "Bearer",
+  "expires_at": "2026-01-08T00:00:00.000Z"
+}
+```
+
+有效期由 `FOOTBALL_SESSION_TTL_SECONDS` 配置。不实现 refresh token、会话撤销或多设备管理。不提供 `/v1/auth/logout`。
+
 ## 24.1 POST /v1/session/init
 
 权限：
 
-- 需要可信微信运行环境。
-- openid 必须从服务端微信上下文获取。
+- 需要可信 `openid`（CloudBase：云函数上下文；自建 VPS：网关校验会话后注入）。
 - body 禁止传 openid。
 
 Request：
@@ -4989,14 +5026,14 @@ career_exact_hits =
 - unlocks。
 - admin logs。
 
-所有核心写入通过云函数 / API。
+所有核心写入通过云函数或自建 HTTP API。
 
 ## 36.2 用户只能代表自己
 
 用户 API 身份必须：
 
 ```text
-trusted 微信上下文 -> openid -> user_id
+trusted 微信身份（CloudBase context.OPENID 或自建会话校验） -> openid -> user_id
 ```
 
 禁止客户端传 `user_id` 作为“本人身份”。
@@ -5083,12 +5120,12 @@ prod
 
 完全隔离：
 
-- 云数据库。
-- 云环境 ID。
+- 持久化存储（CloudBase 云数据库，或自建 PostgreSQL schema / resource namespace）。
+- CloudBase 云环境 ID（仅 CloudBase 模式）。
 - Provider API key。
 - 配置。
 - admins。
-- 定时任务。
+- 定时任务（CloudBase Timer 或 VPS systemd timer）。
 - job locks。
 - 日志。
 

@@ -4,6 +4,8 @@
 > 角色：规范/合同层切片；本文件是执行说明书，不是实现提交。
 > 基线：现有未提交 A1–A4 改动受保护，不得 stash/reset/restore/checkout。
 > 禁止：启动 B/C；发明 Header / JWT / Cookie / session token / 登录 token / 新用户字段 / 新 endpoint；读取凭证与真实环境。
+>
+> **VPS 双部署替代合同（当前有效）：** 旧 H4「后端不签发 session token」仅适用于 CloudBase 可信运行时。自建 VPS / HTTP 需要外部不透明 Bearer 会话；CloudBase 继续使用 `context.OPENID`，不签发、不校验自建 token。业务层仍禁止客户端自报 `openid` / `user_id` / JWT，handler 只接收 `trusted_openid`。合同见 [VPS 自托管部署开发文档](VPS_SELF_HOSTED_DEPLOYMENT_DEV_PLAN__v1.0.md) 与 `src/api/v1/openapi.yaml`。`openapi-auth-h4.test.ts` 现核验「客户端不能自报身份、VPS 凭证必须经后端验证」。下文保留 H4 历史范围，不覆盖 v2.0 业务基线。
 
 产品裁决（已授权，直接执行）：
 
