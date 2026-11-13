@@ -59,22 +59,95 @@ describe("loadGatewayRuntimeConfig", () => {
       public_source: LOCAL_PUBLIC_SOURCE,
       repository_backend: "memory",
       cloudbase_repository: null,
+      postgres_repository: null,
+      vps_auth: null,
     });
     expect(config.public_source).toBe("local_v0");
   });
 
-  it("requires CloudBase settings when CloudBase is selected", () => {
+  it("requires CloudBase settings when CloudBase is selected and ignores VPS keys", () => {
     expect(() => loadGatewayRuntimeConfig({
       FOOTBALL_ENVIRONMENT: "prod",
       FOOTBALL_MATCH_CURSOR_SECRET: "test-match-cursor-secret",
       FOOTBALL_REPOSITORY_BACKEND: "cloudbase",
     })).toThrow("FOOTBALL_CLOUD_ENVIRONMENT_ID is required");
-    expect(loadGatewayRuntimeConfig({
+    const config = loadGatewayRuntimeConfig({
       FOOTBALL_ENVIRONMENT: "prod",
       FOOTBALL_MATCH_CURSOR_SECRET: "test-match-cursor-secret",
       FOOTBALL_REPOSITORY_BACKEND: "cloudbase",
       FOOTBALL_CLOUD_ENVIRONMENT_ID: "env",
       FOOTBALL_RESOURCE_NAMESPACE: "football",
-    }).cloudbase_repository).toEqual({ cloud_environment_id: "env", resource_namespace: "football" });
+      FOOTBALL_DATABASE_URL: "postgres://ignored",
+      FOOTBALL_WECHAT_APP_SECRET: "ignored-secret",
+    });
+    expect(config.cloudbase_repository).toEqual({
+      cloud_environment_id: "env",
+      resource_namespace: "football",
+    });
+    expect(config.postgres_repository).toBeNull();
+    expect(config.vps_auth).toBeNull();
+  });
+
+  it("loads postgres and VPS auth without CloudBase keys", () => {
+    const config = loadGatewayRuntimeConfig({
+      FOOTBALL_ENVIRONMENT: "prod",
+      FOOTBALL_MATCH_CURSOR_SECRET: "test-match-cursor-secret",
+      FOOTBALL_REPOSITORY_BACKEND: "postgres",
+      FOOTBALL_DATABASE_URL: "postgres://football:secret@127.0.0.1:5432/football",
+      FOOTBALL_DATABASE_SCHEMA: "football_prod",
+      FOOTBALL_RESOURCE_NAMESPACE: "football_prod",
+      FOOTBALL_WECHAT_APP_ID: "wx-test-appid",
+      FOOTBALL_WECHAT_APP_SECRET: "wx-test-secret",
+      FOOTBALL_SESSION_TTL_SECONDS: "604800",
+      FOOTBALL_CLOUD_ENVIRONMENT_ID: "must-not-be-required",
+    });
+    expect(config.repository_backend).toBe("postgres");
+    expect(config.cloudbase_repository).toBeNull();
+    expect(config.postgres_repository).toEqual({
+      database_url: "postgres://football:secret@127.0.0.1:5432/football",
+      database_schema: "football_prod",
+      resource_namespace: "football_prod",
+    });
+    expect(config.vps_auth).toEqual({
+      wechat_app_id: "wx-test-appid",
+      wechat_app_secret: "wx-test-secret",
+      session_ttl_seconds: 604800,
+    });
+  });
+
+  it("rejects postgres without its own keys even if CloudBase keys are present", () => {
+    expect(() => loadGatewayRuntimeConfig({
+      FOOTBALL_ENVIRONMENT: "prod",
+      FOOTBALL_MATCH_CURSOR_SECRET: "test-match-cursor-secret",
+      FOOTBALL_REPOSITORY_BACKEND: "postgres",
+      FOOTBALL_CLOUD_ENVIRONMENT_ID: "env",
+      FOOTBALL_RESOURCE_NAMESPACE: "football_prod",
+      FOOTBALL_DATABASE_SCHEMA: "football_prod",
+      FOOTBALL_WECHAT_APP_ID: "wx-test-appid",
+      FOOTBALL_WECHAT_APP_SECRET: "wx-test-secret",
+      FOOTBALL_SESSION_TTL_SECONDS: "604800",
+    })).toThrow("FOOTBALL_DATABASE_URL is required");
+  });
+
+  it("rejects a blank VPS secret without echoing it", () => {
+    const distinctive = "must-not-appear-in-error";
+    try {
+      loadGatewayRuntimeConfig({
+        FOOTBALL_ENVIRONMENT: "prod",
+        FOOTBALL_MATCH_CURSOR_SECRET: "test-match-cursor-secret",
+        FOOTBALL_REPOSITORY_BACKEND: "postgres",
+        FOOTBALL_DATABASE_URL: "postgres://football:secret@127.0.0.1:5432/football",
+        FOOTBALL_DATABASE_SCHEMA: "football_prod",
+        FOOTBALL_RESOURCE_NAMESPACE: "football_prod",
+        FOOTBALL_WECHAT_APP_ID: "wx-test-appid",
+        FOOTBALL_WECHAT_APP_SECRET: distinctive,
+        FOOTBALL_SESSION_TTL_SECONDS: "0",
+      });
+      throw new Error("expected Fail Closed");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      expect(message).toBe("FOOTBALL_SESSION_TTL_SECONDS must be a positive integer");
+      expect(message).not.toContain(distinctive);
+    }
   });
 });

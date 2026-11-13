@@ -288,12 +288,15 @@ describe("loadSchemaPlan：与 src/schema 同源", () => {
     const distIndexes = await import(
       new URL("../dist/schema/indexes.js", import.meta.url).href
     );
+    const distDb = await import(
+      new URL("../dist/infrastructure/cloudbase-db.js", import.meta.url).href
+    );
     const expectedCollections = new Set([
       ...distCollections.COLLECTION_DEFINITIONS.map((definition) => definition.collection),
-      "diag",
-      "rate_limits",
+      ...distDb.CLOUDBASE_RUNTIME_COLLECTIONS,
     ]);
     expect(plan.collections).toHaveLength(expectedCollections.size);
+    expect(plan.collections.map((item) => item.logical).sort()).toEqual([...expectedCollections].sort());
     expect(plan.indexes).toHaveLength(
       distIndexes.UNIQUE_INDEXES.length + distIndexes.QUERY_INDEXES.length,
     );
@@ -303,6 +306,16 @@ describe("loadSchemaPlan：与 src/schema 同源", () => {
     // 别名：逻辑名 provider_key_state → 集合名 provider_keys
     expect(plan.collections.map((item) => item.name)).toContain("football_test_provider_keys");
     expect(plan.collections.map((item) => item.name)).not.toContain("football_test_provider_key_state");
+    expect(plan.collections.map((item) => item.logical)).toEqual(expect.arrayContaining([
+      "admins",
+      "scheduler_state",
+      "provider_key_state",
+      "diag",
+      "rate_limits",
+    ]));
+    expect(plan.collections.map((item) => item.name)).toContain("football_test_sched_state");
+    expect(plan.indexes.some((index) => index.logical === "scheduler_state" && index.name === "ix_scheduler_state_updated")).toBe(true);
+    expect(plan.indexes.some((index) => index.logical === "admins" && index.name === "uk_admin_openid")).toBe(true);
   });
 
   it("field:desc 映射为 CloudBase 的 -1 方向", async () => {

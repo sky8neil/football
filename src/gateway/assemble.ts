@@ -50,8 +50,11 @@ import { AdminRebuildRankingsService } from "../application/admin-rebuild-rankin
 import { UserStatus } from "../domain/enums.js";
 import { conflictError, validationError } from "../domain/errors.js";
 import type { AppRepository } from "../infrastructure/repositories.js";
-import { LOCAL_PUBLIC_SOURCE, type GatewayRuntimeConfig } from "./config.js";
-import { resolveTrustedOpenid } from "./identity.js";
+import type { AuthSessionStore } from "../infrastructure/postgres-auth-sessions.js";
+import { issueWechatSession } from "./auth.js";
+import type { GatewayRuntimeConfig } from "./config.js";
+import { resolveRequestTrustedOpenid } from "./identity.js";
+import type { WechatCode2SessionHttp } from "./wechat-login.js";
 
 export interface GatewayRequestInput {
   method: string;
@@ -60,10 +63,13 @@ export interface GatewayRequestInput {
   body: unknown;
   server_now: Date;
   config: GatewayRuntimeConfig;
-  /** 可选：运行时注入的可信 openid（云函数）；缺省回退 resolveTrustedOpenid(config)。 */
+  /** 可选：运行时注入的可信 openid（云函数）；缺省回退 HTTP Bearer 或 mock。 */
   trusted_openid?: string | null;
   /** 可选：外部注入的 request_id（云函数）；缺省由网关生成。 */
   request_id?: string;
+  authorization?: unknown;
+  sessions?: AuthSessionStore;
+  wechat_http?: WechatCode2SessionHttp;
   services: {
     session: Pick<SessionService, "init">;
     matches: Pick<MatchQueryService, "list" | "get">;
@@ -240,10 +246,36 @@ export async function handleGatewayRequest(
   const path = normalizePath(input.path);
   const method = normalizeMethod(input.method);
   try {
-    const trustedOpenid =
-      input.trusted_openid !== undefined
-        ? input.trusted_openid
-        : resolveTrustedOpenid(input.config);
+    if (method === "POST" && path === "/v1/auth/wechat") {
+      const body = resolveJsonObjectBody(input.body);
+      assertUnknownFields(body, new Set(["code"]));
+      const auth = input.config.vps_auth;
+      const sessions = input.sessions;
+      const wechatHttp = input.wechat_http;
+      if (auth === null || sessions === undefined || wechatHttp === undefined) {
+        throw conflictError("UNAUTHORIZED", "需要重新登录");
+      }
+      const issued = await issueWechatSession({
+        code: typeof body.code === "string" ? body.code : "",
+        auth,
+        http: wechatHttp,
+        sessions,
+        now: input.server_now,
+      });
+      logGateway(requestId, path, 200, undefined);
+      return {
+        status: 200,
+        body: { data: issued, request_id: requestId },
+      };
+    }
+
+    const trustedOpenid = await resolveRequestTrustedOpenid({
+      config: input.config,
+      now: input.server_now,
+      ...(input.trusted_openid !== undefined ? { trusted_openid: input.trusted_openid } : {}),
+      ...(input.authorization !== undefined ? { authorization: input.authorization } : {}),
+      ...(input.sessions !== undefined ? { sessions: input.sessions } : {}),
+    });
 
     if (method === "POST" && path === "/v1/session/init") {
       const body = resolveJsonObjectBody(input.body);

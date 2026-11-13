@@ -51,7 +51,7 @@ export interface WeeklyLevelEvalOutcome {
   skipped_count: number;
 }
 
-function weeklyEvalAsOf(serverNow: Date): Date {
+export function weeklyEvalAsOf(serverNow: Date): Date {
   const cutoff = new Date(serverNow.getTime() - LEVEL_EVAL_START_DELAY_MILLISECONDS);
   const candidate = nextMondayEvalAt(cutoff);
   return candidate.getTime() <= cutoff.getTime()
@@ -67,11 +67,10 @@ function seasonStartAt(levelSeasonId: string): Date {
   return new Date(Date.UTC(Number(match[1]), 6, 1) - 8 * 60 * 60 * 1000);
 }
 
-async function generateDueSeasonFinals(
+export async function listDueSeasonFinalIds(
   repo: AppRepository,
   asOf: Date,
-  serverNow: Date,
-): Promise<void> {
+): Promise<string[]> {
   if (repo.userSeasonStats === undefined || repo.boardSnapshots === undefined) {
     throw internalError("weekly level eval 缺少赛季统计或快照 repository");
   }
@@ -81,10 +80,24 @@ async function generateDueSeasonFinals(
       seasonIds.add(stats.level_season_id);
     }
   }
-  const snapshots = new BoardSnapshotService(repo);
+  const due: string[] = [];
   for (const seasonId of [...seasonIds].sort()) {
     if (asOf.getTime() < seasonFinalEvalAsOf(seasonId).getTime()) continue;
     if ((await repo.boardSnapshots.findFinalBySeason(seasonId)).length > 0) continue;
+    const stats = await repo.userSeasonStats.findByLevelSeason(seasonId);
+    if (stats.length === 0 || stats.some((row) => row.is_level_frozen !== true)) continue;
+    due.push(seasonId);
+  }
+  return due;
+}
+
+async function generateDueSeasonFinals(
+  repo: AppRepository,
+  asOf: Date,
+  serverNow: Date,
+): Promise<void> {
+  const snapshots = new BoardSnapshotService(repo);
+  for (const seasonId of await listDueSeasonFinalIds(repo, asOf)) {
     await snapshots.generateSeasonFinal(seasonId, serverNow);
   }
 }

@@ -69,6 +69,24 @@ describe("InMemoryRepository - admins and admin_audit_logs", () => {
     } satisfies Partial<UniqueConstraintError>);
   });
 
+  it("可以按 admin_id 更新 status，openid 冲突仍拒绝", async () => {
+    const repo = new InMemoryRepository();
+    const admin = makeAdmin();
+    await repo.admins.insert(admin);
+    await repo.admins.update({ ...admin, status: AdminStatus.Disabled, updated_at: NOW });
+    expect(await repo.admins.findByOpenid("admin-openid")).toMatchObject({
+      admin_id: admin.admin_id,
+      status: AdminStatus.Disabled,
+    });
+    await repo.admins.insert(makeAdmin({
+      admin_id: "00000000-0000-4000-8000-000000000099",
+      openid: "other-admin",
+    }));
+    await expect(
+      repo.admins.update({ ...admin, openid: "other-admin", updated_at: NOW }),
+    ).rejects.toMatchObject({ collection: "admins", indexName: "uk_admin_openid" });
+  });
+
   it("审计日志只追加并可按实体读取", async () => {
     const repo = new InMemoryRepository();
     const first = makeAudit();

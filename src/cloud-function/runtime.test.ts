@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { SyncJobType } from "../domain/enums.js";
+import { defaultLevelState } from "../domain/types.js";
 import { COLLECTION_DEFINITIONS } from "../schema/collections.js";
-import { cloudBaseCollectionName } from "../infrastructure/cloudbase-db.js";
+import { CLOUDBASE_RUNTIME_COLLECTIONS, cloudBaseCollectionName } from "../infrastructure/cloudbase-db.js";
 import type { CloudBaseSdkDatabase } from "../infrastructure/cloudbase-wx-db.js";
 import { createCloudFunctionRuntime, isSportApiCloudflareBlocked, runDueProviderJobs } from "./runtime.js";
+import { runDueProviderJobs as sharedRunDueProviderJobs, WIRED_PERIODIC_TASKS, UNWIRED_PERIODIC_TASKS } from "../runtime/scheduled-jobs.js";
 
 const ENV = {
   FOOTBALL_ENVIRONMENT: "test",
@@ -18,12 +20,47 @@ function fakeDatabase(missing: string[] = []) {
   let collectionReads = 0;
   const collection = (name: string) => {
     collectionReads += 1;
+    let filter: Record<string, unknown> = {};
+    let orderBy: { field: string; direction: "asc" | "desc" } | undefined;
+    let offset = 0;
+    let limit = Number.POSITIVE_INFINITY;
     const chain = {
-      where() { return chain; },
-      orderBy() { return chain; },
-      skip() { return chain; },
-      limit() { return chain; },
-      async get() { return { data: [] as Record<string, unknown>[] }; },
+      where(next: Record<string, unknown> = {}) {
+        filter = next;
+        return chain;
+      },
+      orderBy(field: string, direction: "asc" | "desc" = "asc") {
+        orderBy = { field, direction };
+        return chain;
+      },
+      skip(count: number) {
+        offset = count;
+        return chain;
+      },
+      limit(count: number) {
+        limit = count;
+        return chain;
+      },
+      async get() {
+        let rows = [...documents.entries()]
+          .filter(([key]) => key.startsWith(`${name}/`))
+          .map(([, document]) => ({ ...document }));
+        if (Object.keys(filter).length > 0) {
+          rows = rows.filter((document) => Object.entries(filter).every(([field, value]) => document[field] === value));
+        }
+        if (orderBy) {
+          rows.sort((a, b) => {
+            const left = a[orderBy!.field];
+            const right = b[orderBy!.field];
+            const compare = left instanceof Date && right instanceof Date
+              ? left.getTime() - right.getTime()
+              : String(left ?? "").localeCompare(String(right ?? ""));
+            return compare * (orderBy!.direction === "desc" ? -1 : 1);
+          });
+        }
+        const end = Number.isFinite(limit) ? offset + limit : undefined;
+        return { data: rows.slice(offset, end) };
+      },
       async count() {
         if (missing.includes(name)) throw Object.assign(new Error(`collection ${name} not found`), { errCode: "COLLECTION_NOT_FOUND" });
         return { total: 0 };
@@ -41,7 +78,12 @@ function fakeDatabase(missing: string[] = []) {
             if (!data) throw Object.assign(new Error("document not exist"), { errCode: "DOCUMENT_NOT_FOUND" });
             return { data };
           },
-          async update() { return { updated: 0, stats: { updated: 0 } }; },
+          async update({ data }: { data?: Record<string, unknown> } = {}) {
+            const existing = documents.get(`${name}/${id}`);
+            if (!existing) throw Object.assign(new Error("document not exist"), { errCode: "DOCUMENT_NOT_FOUND" });
+            documents.set(`${name}/${id}`, { ...existing, ...(data ?? {}), _id: id });
+            return { updated: 1, stats: { updated: 1 } };
+          },
           async remove() {
             documents.delete(`${name}/${id}`);
             return { removed: 1 };
@@ -61,7 +103,7 @@ function fakeDatabase(missing: string[] = []) {
       };
     },
   } as unknown as CloudBaseSdkDatabase;
-  return { db, collectionReads: () => collectionReads };
+  return { db, documents, collectionReads: () => collectionReads };
 }
 
 describe("Cloud Function runtime startup", () => {
@@ -90,7 +132,7 @@ describe("Cloud Function runtime startup", () => {
   });
 });
 
-describe("Timer summary observation", () => {
+describe("Timer summary observation (simulated CloudBase SDK, not a real cloud database)", () => {
   it("emits exactly one timer_summary log after a Timer event", async () => {
     const log = vi.fn();
     const runtime = createCloudFunctionRuntime({
@@ -99,6 +141,7 @@ describe("Timer summary observation", () => {
       sdkVersion: "4.0.2",
       nodeVersion: "v24",
       log,
+      now: () => new Date("2026-08-09T16:00:00.000Z"),
     });
     await runtime({ Type: "Timer" }, {});
     const summaries = log.mock.calls
@@ -108,6 +151,381 @@ describe("Timer summary observation", () => {
     const dbOps = summaries[0]!.db_ops as { read: number };
     expect(typeof dbOps.read).toBe("number");
     expect(dbOps.read).toBeGreaterThanOrEqual(0);
+    expect(summaries[0]).toEqual(expect.objectContaining({
+      fifteen_items_complete: true,
+      wired_periodic_tasks: WIRED_PERIODIC_TASKS,
+      unwired_periodic_tasks: UNWIRED_PERIODIC_TASKS,
+    }));
+    expect(summaries[0]?.ran).toEqual(expect.arrayContaining([
+      SyncJobType.PeriodFinalize,
+      SyncJobType.DailyConsistency,
+      SyncJobType.WeeklyLevelEval,
+      SyncJobType.BoardSnapshotCareer,
+      SyncJobType.BoardSnapshotSeason,
+    ]));
+    expect(summaries[0]?.ran ?? []).not.toContain(SyncJobType.BoardSnapshotStrength);
+    expect(summaries[0]?.ran ?? []).not.toContain(SyncJobType.BoardSnapshotSeasonFinal);
+    expect(summaries[0]?.skipped).toEqual(expect.arrayContaining([
+      { task: SyncJobType.BoardSnapshotStrength, reason: "inline_weekly_refresh" },
+      { task: SyncJobType.BoardSnapshotSeasonFinal, reason: "inline_weekly_refresh" },
+    ]));
+    expect(summaries[0]?.task_types).toEqual(expect.arrayContaining([
+      SyncJobType.PeriodFinalize,
+      SyncJobType.DailyConsistency,
+      SyncJobType.WeeklyLevelEval,
+      SyncJobType.BoardSnapshotCareer,
+      SyncJobType.BoardSnapshotStrength,
+      SyncJobType.BoardSnapshotSeason,
+      SyncJobType.BoardSnapshotSeasonFinal,
+    ]));
+  });
+
+  it("skips period_finalize and daily_consistency on a simulated Timer when the cycle is not due", async () => {
+    const fake = fakeDatabase();
+    let now = new Date("2026-08-09T16:00:00.000Z");
+    const log = vi.fn();
+    const runtime = createCloudFunctionRuntime({
+      env: ENV,
+      db: fake.db,
+      sdkVersion: "4.0.2",
+      nodeVersion: "v24",
+      log,
+      now: () => now,
+    });
+    await runtime({ Type: "Timer" }, {});
+    now = new Date("2026-08-09T16:30:00.000Z");
+    await runtime({ Type: "Timer" }, {});
+    const summaries = log.mock.calls
+      .map(([entry]) => entry as Record<string, unknown>)
+      .filter((entry) => entry.event === "timer_summary");
+    expect(summaries).toHaveLength(2);
+    expect(summaries[1]?.skipped).toEqual(expect.arrayContaining([
+      { task: SyncJobType.PeriodFinalize, reason: "interval_not_due" },
+      { task: SyncJobType.DailyConsistency, reason: "interval_not_due" },
+      { task: SyncJobType.WeeklyLevelEval, reason: "interval_not_due" },
+      { task: SyncJobType.BoardSnapshotCareer, reason: "interval_not_due" },
+      { task: SyncJobType.BoardSnapshotSeason, reason: "interval_not_due" },
+      { task: SyncJobType.BoardSnapshotStrength, reason: "interval_not_due" },
+      { task: SyncJobType.BoardSnapshotSeasonFinal, reason: "no_due_season" },
+    ]));
+  });
+
+  it("simulated Timer waits until Monday 02:10 UTC, refreshes strength inline, and skips the repeat tick (not a real cloud acceptance)", async () => {
+    const fake = fakeDatabase();
+    fake.documents.set("football_test_sched_state/weekly_level_eval", {
+      _id: "weekly_level_eval",
+      job_type: SyncJobType.WeeklyLevelEval,
+      completed_cycle_at: new Date("2026-08-03T02:00:00.000Z"),
+      updated_at: new Date("2026-08-03T02:00:00.000Z"),
+    });
+    fake.documents.set("football_test_sched_state/board_snapshot_strength", {
+      _id: "board_snapshot_strength",
+      job_type: SyncJobType.BoardSnapshotStrength,
+      completed_cycle_at: new Date("2026-08-09T03:00:00.000Z"),
+      updated_at: new Date("2026-08-09T03:00:00.000Z"),
+    });
+    let now = new Date("2026-08-10T02:09:00.000Z");
+    const log = vi.fn();
+    const runtime = createCloudFunctionRuntime({
+      env: ENV,
+      db: fake.db,
+      sdkVersion: "4.0.2",
+      nodeVersion: "v24",
+      log,
+      now: () => now,
+    });
+    await runtime({ Type: "Timer" }, {});
+    now = new Date("2026-08-10T02:10:00.000Z");
+    await runtime({ Type: "Timer" }, {});
+    now = new Date("2026-08-10T02:20:00.000Z");
+    await runtime({ Type: "Timer" }, {});
+    const summaries = log.mock.calls
+      .map(([entry]) => entry as Record<string, unknown>)
+      .filter((entry) => entry.event === "timer_summary");
+    expect(summaries).toHaveLength(3);
+    expect(summaries[0]?.ran ?? []).not.toContain(SyncJobType.WeeklyLevelEval);
+    expect(summaries[0]?.skipped).toEqual(expect.arrayContaining([
+      { task: SyncJobType.WeeklyLevelEval, reason: "interval_not_due" },
+    ]));
+    expect(summaries[1]?.ran).toEqual(expect.arrayContaining([SyncJobType.WeeklyLevelEval]));
+    expect(summaries[1]?.ran ?? []).not.toContain(SyncJobType.BoardSnapshotStrength);
+    expect(summaries[1]?.skipped).toEqual(expect.arrayContaining([
+      { task: SyncJobType.BoardSnapshotStrength, reason: "inline_weekly_refresh" },
+      { task: SyncJobType.BoardSnapshotSeasonFinal, reason: "inline_weekly_refresh" },
+    ]));
+    expect(summaries[2]?.ran ?? []).not.toContain(SyncJobType.WeeklyLevelEval);
+    expect(summaries[2]?.ran ?? []).not.toContain(SyncJobType.BoardSnapshotStrength);
+    expect(summaries[2]?.skipped).toEqual(expect.arrayContaining([
+      { task: SyncJobType.WeeklyLevelEval, reason: "interval_not_due" },
+      { task: SyncJobType.BoardSnapshotStrength, reason: "interval_not_due" },
+      { task: SyncJobType.BoardSnapshotSeasonFinal, reason: "no_due_season" },
+    ]));
+    const snapshots = [...fake.documents.values()].filter((row) => row.board === "strength");
+    expect(snapshots).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        board: "strength",
+        snapshot_kind: "head",
+        snapshot_at: new Date("2026-08-10T02:10:00.000Z"),
+      }),
+    ]));
+    expect(snapshots).toHaveLength(1);
+    expect(fake.documents.get("football_test_sched_state/weekly_level_eval")).toEqual(
+      expect.objectContaining({
+        job_type: SyncJobType.WeeklyLevelEval,
+        completed_cycle_at: new Date("2026-08-10T02:00:00.000Z"),
+      }),
+    );
+    expect(fake.documents.get("football_test_sched_state/board_snapshot_strength")).toEqual(
+      expect.objectContaining({
+        job_type: SyncJobType.BoardSnapshotStrength,
+        completed_cycle_at: new Date("2026-08-10T02:10:00.000Z"),
+      }),
+    );
+  });
+
+  it("simulated Timer updates career/season hourly and strength daily, skipping a repeat tick (not a real cloud acceptance)", async () => {
+    const fake = fakeDatabase();
+    const t0 = new Date("2026-08-11T12:00:00.000Z");
+    fake.documents.set("football_test_sched_state/weekly_level_eval", {
+      _id: "weekly_level_eval",
+      job_type: SyncJobType.WeeklyLevelEval,
+      completed_cycle_at: new Date("2026-08-10T02:00:00.000Z"),
+      updated_at: t0,
+    });
+    let now = t0;
+    const log = vi.fn();
+    const runtime = createCloudFunctionRuntime({
+      env: ENV,
+      db: fake.db,
+      sdkVersion: "4.0.2",
+      nodeVersion: "v24",
+      log,
+      now: () => now,
+    });
+    await runtime({ Type: "Timer" }, {});
+    now = new Date(t0.getTime() + 30 * 60_000);
+    await runtime({ Type: "Timer" }, {});
+    now = new Date(t0.getTime() + 60 * 60_000);
+    await runtime({ Type: "Timer" }, {});
+    now = new Date(t0.getTime() + 24 * 60 * 60_000);
+    await runtime({ Type: "Timer" }, {});
+    const summaries = log.mock.calls
+      .map(([entry]) => entry as Record<string, unknown>)
+      .filter((entry) => entry.event === "timer_summary");
+    expect(summaries).toHaveLength(4);
+    expect(summaries[0]?.ran).toEqual(expect.arrayContaining([
+      SyncJobType.BoardSnapshotCareer,
+      SyncJobType.BoardSnapshotSeason,
+      SyncJobType.BoardSnapshotStrength,
+    ]));
+    expect(summaries[0]?.ran ?? []).not.toContain(SyncJobType.WeeklyLevelEval);
+    expect(summaries[1]?.skipped).toEqual(expect.arrayContaining([
+      { task: SyncJobType.BoardSnapshotCareer, reason: "interval_not_due" },
+      { task: SyncJobType.BoardSnapshotSeason, reason: "interval_not_due" },
+      { task: SyncJobType.BoardSnapshotStrength, reason: "interval_not_due" },
+    ]));
+    expect(summaries[2]?.ran).toEqual(expect.arrayContaining([
+      SyncJobType.BoardSnapshotCareer,
+      SyncJobType.BoardSnapshotSeason,
+    ]));
+    expect(summaries[2]?.ran ?? []).not.toContain(SyncJobType.BoardSnapshotStrength);
+    expect(summaries[3]?.ran).toEqual(expect.arrayContaining([
+      SyncJobType.BoardSnapshotCareer,
+      SyncJobType.BoardSnapshotSeason,
+      SyncJobType.BoardSnapshotStrength,
+    ]));
+    const career = [...fake.documents.values()].filter((row) => row.board === "career");
+    const season = [...fake.documents.values()].filter((row) => row.board === "season");
+    const strength = [...fake.documents.values()].filter((row) => row.board === "strength");
+    expect(career).toEqual(expect.arrayContaining([
+      expect.objectContaining({ snapshot_kind: "head", snapshot_at: t0 }),
+      expect.objectContaining({ snapshot_kind: "head", snapshot_at: new Date(t0.getTime() + 60 * 60_000) }),
+      expect.objectContaining({ snapshot_kind: "head", snapshot_at: new Date(t0.getTime() + 24 * 60 * 60_000) }),
+    ]));
+    expect(season).toEqual(expect.arrayContaining([
+      expect.objectContaining({ snapshot_kind: "head", snapshot_at: t0 }),
+      expect.objectContaining({ snapshot_kind: "head", snapshot_at: new Date(t0.getTime() + 60 * 60_000) }),
+      expect.objectContaining({ snapshot_kind: "head", snapshot_at: new Date(t0.getTime() + 24 * 60 * 60_000) }),
+    ]));
+    expect(strength).toEqual(expect.arrayContaining([
+      expect.objectContaining({ snapshot_kind: "head", snapshot_at: t0 }),
+      expect.objectContaining({ snapshot_kind: "head", snapshot_at: new Date(t0.getTime() + 24 * 60 * 60_000) }),
+    ]));
+    expect(career).toHaveLength(3);
+    expect(season).toHaveLength(3);
+    expect(strength).toHaveLength(2);
+  });
+
+  it("simulated Timer does not freeze before season-final eval, then writes is_final rows and stays idempotent (not a real cloud acceptance)", async () => {
+    const fake = fakeDatabase();
+    const beforeStart = new Date("2026-06-29T02:20:00.000Z");
+    const start = new Date("2026-07-06T02:10:00.000Z");
+    const asOf = new Date("2026-07-06T02:00:00.000Z");
+    const repeatAt = new Date("2026-07-06T02:20:00.000Z");
+    const catchUpAt = new Date("2026-08-11T13:00:00.000Z");
+    const userId = "00000000-0000-4000-8000-000000000220";
+    const missedUserId = "00000000-0000-4000-8000-000000000221";
+    const statsId = `key_${Buffer.from(JSON.stringify([userId, "2025_2026"]), "utf8").toString("base64url")}`;
+    const missedStatsId = `key_${Buffer.from(JSON.stringify([missedUserId, "2024_2025"]), "utf8").toString("base64url")}`;
+    fake.documents.set("football_test_sched_state/weekly_level_eval", {
+      _id: "weekly_level_eval",
+      job_type: SyncJobType.WeeklyLevelEval,
+      completed_cycle_at: new Date("2026-06-29T02:00:00.000Z"),
+      updated_at: beforeStart,
+    });
+    fake.documents.set(`football_test_users/${userId}`, {
+      _id: userId,
+      schema_version: 1,
+      user_id: userId,
+      openid: "openid_season_final",
+      unionid: null,
+      nickname: "SeasonFinal",
+      favorite_team_id: null,
+      status: "active",
+      career_points: 0,
+      career_valid_predictions: 0,
+      career_wdl_hits: 0,
+      career_exact_hits: 0,
+      career_last_scoring_match_at: null,
+      career_level: 1,
+      career_best_level: 1,
+      career_level_state: defaultLevelState(),
+      deleted_at: null,
+      created_at: beforeStart,
+      updated_at: beforeStart,
+    });
+    fake.documents.set(`football_test_stats/${statsId}`, {
+      _id: statsId,
+      schema_version: 1,
+      user_id: userId,
+      level_season_id: "2025_2026",
+      points: 48,
+      valid_predictions: 4,
+      wdl_hits: 3,
+      exact_hits: 2,
+      last_scoring_match_at: new Date("2026-06-28T10:00:00.000Z"),
+      level: 1,
+      best_level: 1,
+      level_state: defaultLevelState(),
+      is_level_frozen: false,
+      created_at: beforeStart,
+      updated_at: beforeStart,
+    });
+    let now = beforeStart;
+    const log = vi.fn();
+    const runtime = createCloudFunctionRuntime({
+      env: ENV,
+      db: fake.db,
+      sdkVersion: "4.0.2",
+      nodeVersion: "v24",
+      log,
+      now: () => now,
+    });
+    await runtime({ Type: "Timer" }, {});
+    now = start;
+    await runtime({ Type: "Timer" }, {});
+    const firstFinals = [...fake.documents.values()].filter((row) =>
+      row.board === "season" && row.level_season_id === "2025_2026" && row.is_final === true && row.snapshot_kind !== "head",
+    );
+    expect(firstFinals).toEqual([
+      expect.objectContaining({
+        is_final: true,
+        user_id: userId,
+        season_points: 48,
+        snapshot_at: asOf,
+      }),
+    ]);
+    fake.documents.get(`football_test_stats/${statsId}`)!.points = 60;
+    now = repeatAt;
+    await runtime({ Type: "Timer" }, {});
+    now = catchUpAt;
+    fake.documents.set("football_test_sched_state/weekly_level_eval", {
+      _id: "weekly_level_eval",
+      job_type: SyncJobType.WeeklyLevelEval,
+      completed_cycle_at: new Date("2026-08-10T02:00:00.000Z"),
+      updated_at: catchUpAt,
+    });
+    fake.documents.set(`football_test_users/${missedUserId}`, {
+      _id: missedUserId,
+      schema_version: 1,
+      user_id: missedUserId,
+      openid: "openid_season_final_missed",
+      unionid: null,
+      nickname: "MissedFinal",
+      favorite_team_id: null,
+      status: "active",
+      career_points: 0,
+      career_valid_predictions: 0,
+      career_wdl_hits: 0,
+      career_exact_hits: 0,
+      career_last_scoring_match_at: null,
+      career_level: 1,
+      career_best_level: 1,
+      career_level_state: defaultLevelState(),
+      deleted_at: null,
+      created_at: catchUpAt,
+      updated_at: catchUpAt,
+    });
+    fake.documents.set(`football_test_stats/${missedStatsId}`, {
+      _id: missedStatsId,
+      schema_version: 1,
+      user_id: missedUserId,
+      level_season_id: "2024_2025",
+      points: 24,
+      valid_predictions: 4,
+      wdl_hits: 3,
+      exact_hits: 2,
+      last_scoring_match_at: new Date("2025-06-28T10:00:00.000Z"),
+      level: 1,
+      best_level: 1,
+      level_state: defaultLevelState(),
+      is_level_frozen: true,
+      created_at: catchUpAt,
+      updated_at: catchUpAt,
+    });
+    await runtime({ Type: "Timer" }, {});
+    const summaries = log.mock.calls
+      .map(([entry]) => entry as Record<string, unknown>)
+      .filter((entry) => entry.event === "timer_summary");
+    expect(summaries).toHaveLength(4);
+    expect(summaries[0]?.ran ?? []).not.toContain(SyncJobType.BoardSnapshotSeasonFinal);
+    expect(summaries[0]?.skipped).toEqual(expect.arrayContaining([
+      { task: SyncJobType.BoardSnapshotSeasonFinal, reason: "no_due_season" },
+    ]));
+    expect(summaries[1]?.ran).toEqual(expect.arrayContaining([SyncJobType.WeeklyLevelEval]));
+    expect(summaries[1]?.ran ?? []).not.toContain(SyncJobType.BoardSnapshotSeasonFinal);
+    expect(summaries[1]?.skipped).toEqual(expect.arrayContaining([
+      { task: SyncJobType.BoardSnapshotSeasonFinal, reason: "inline_weekly_refresh" },
+    ]));
+    expect(summaries[2]?.skipped).toEqual(expect.arrayContaining([
+      { task: SyncJobType.BoardSnapshotSeasonFinal, reason: "no_due_season" },
+    ]));
+    expect(summaries[3]?.ran).toEqual(expect.arrayContaining([SyncJobType.BoardSnapshotSeasonFinal]));
+    const laterFinals = [...fake.documents.values()].filter((row) =>
+      row.board === "season" && row.is_final === true && row.snapshot_kind !== "head",
+    );
+    expect(laterFinals).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        level_season_id: "2025_2026",
+        is_final: true,
+        season_points: 48,
+        snapshot_at: asOf,
+      }),
+      expect.objectContaining({
+        level_season_id: "2024_2025",
+        is_final: true,
+        user_id: missedUserId,
+        season_points: 24,
+        snapshot_at: new Date("2025-07-07T02:00:00.000Z"),
+      }),
+    ]));
+    expect(laterFinals.filter((row) => row.level_season_id === "2025_2026")).toHaveLength(1);
+  });
+});
+
+describe("shared scheduled-jobs reuse", () => {
+  it("re-exports the shared runDueProviderJobs instead of wrapping a cloud handler", () => {
+    expect(runDueProviderJobs).toBe(sharedRunDueProviderJobs);
   });
 });
 
@@ -175,11 +593,12 @@ describe("Cloud Function diagnostic action", () => {
       identity_available: true,
       versions: { wx_server_sdk: "4.0.2", node: "v24.21.0", build: "2026-10-11T01:02:03.000Z" },
     });
-    expect(Object.keys(body.data.collections)).toEqual(expect.arrayContaining([
-      ...COLLECTION_DEFINITIONS.map((definition) => cloudBaseCollectionName("football_test", definition.collection)),
-      "football_test_diag",
-      "football_test_rate_limits",
-    ]));
+    expect(Object.keys(body.data.collections).sort()).toEqual([
+      ...new Set([
+        ...COLLECTION_DEFINITIONS.map((definition) => cloudBaseCollectionName("football_test", definition.collection)),
+        ...CLOUDBASE_RUNTIME_COLLECTIONS.map((collection) => cloudBaseCollectionName("football_test", collection)),
+      ]),
+    ].sort());
     expect(body.data.indexes).toContain("人工核对");
     expect(JSON.stringify(body)).not.toContain("wx-private-openid");
     expect(fake.collectionReads()).toBeGreaterThan(COLLECTION_DEFINITIONS.length);

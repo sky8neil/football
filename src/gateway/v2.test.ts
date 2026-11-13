@@ -51,6 +51,8 @@ function makeConfig(overrides: Partial<GatewayRuntimeConfig> = {}): GatewayRunti
     public_source: LOCAL_PUBLIC_SOURCE,
     repository_backend: "memory",
     cloudbase_repository: null,
+    postgres_repository: null,
+    vps_auth: null,
     ...overrides,
   };
 }

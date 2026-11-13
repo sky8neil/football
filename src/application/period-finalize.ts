@@ -30,3 +30,17 @@ export function finalizeRankingEntry(
     is_final: true,
   };
 }
+
+export function listDueWeekPeriodKeys(
+  entries: readonly RankingEntry[],
+  serverNow: Date,
+): string[] {
+  assertValidServerNow(serverNow);
+  const keys = new Set<string>();
+  for (const entry of entries) {
+    if (entry.period_type !== PeriodType.Week || entry.is_final) continue;
+    const endAt = periodEndAt(entry.period_type, entry.period_key);
+    if (serverNow.getTime() >= endAt.getTime()) keys.add(entry.period_key);
+  }
+  return [...keys].sort();
+}

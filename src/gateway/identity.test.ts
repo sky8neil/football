@@ -9,8 +9,9 @@ import {
   loadGatewayRuntimeConfig,
   type GatewayRuntimeConfig,
 } from "./config.js";
-import { resolveTrustedOpenid } from "./identity.js";
+import { resolveRequestTrustedOpenid, resolveTrustedOpenid } from "./identity.js";
 import { defaultLevelState } from "../domain/types.js";
+import type { AuthSessionStore } from "../infrastructure/postgres-auth-sessions.js";
 
 const TEST_CURSOR_SECRET = "test-match-cursor-secret";
 const MOCK_OPENID = "mock-openid-identity";
@@ -21,10 +22,12 @@ function makeConfig(overrides: Partial<GatewayRuntimeConfig> = {}): GatewayRunti
     environment: "test",
     mock_trusted_openid: null,
     match_cursor_secret: TEST_CURSOR_SECRET,
-    public_source: LOCAL_PUBLIC_SOURCE,
-    repository_backend: "memory",
-    cloudbase_repository: null,
-    ...overrides,
+      public_source: LOCAL_PUBLIC_SOURCE,
+      repository_backend: "memory",
+      cloudbase_repository: null,
+      postgres_repository: null,
+      vps_auth: null,
+      ...overrides,
   };
 }
 
@@ -67,6 +70,61 @@ describe("resolveTrustedOpenid", () => {
         mock_trusted_openid: MOCK_OPENID,
       })),
     ).toBeNull();
+  });
+
+  it("keeps an explicit CloudBase trusted_openid and does not read Authorization", async () => {
+    const sessions: AuthSessionStore = {
+      create: async () => {
+        throw new Error("must not create");
+      },
+      findActiveByToken: async () => {
+        throw new Error("must not read bearer");
+      },
+    };
+    await expect(resolveRequestTrustedOpenid({
+      config: makeConfig({ environment: "prod", mock_trusted_openid: MOCK_OPENID }),
+      now: NOW,
+      trusted_openid: "cloud-context-openid",
+      authorization: "Bearer attacker-token",
+      sessions,
+    })).resolves.toBe("cloud-context-openid");
+    await expect(resolveRequestTrustedOpenid({
+      config: makeConfig({ environment: "prod" }),
+      now: NOW,
+      trusted_openid: null,
+      authorization: "Bearer attacker-token",
+      sessions,
+    })).resolves.toBeNull();
+  });
+
+  it("resolves an unexpired bearer when HTTP sessions are wired", async () => {
+    const sessions: AuthSessionStore = {
+      create: async () => {
+        throw new Error("must not create");
+      },
+      findActiveByToken: async (input) => {
+        const expiresAt = new Date(NOW.getTime() + 1000);
+        if (input.token !== "opaque-token" || expiresAt.getTime() <= input.now.getTime()) return null;
+        return { token: input.token, openid: MOCK_OPENID, expires_at: expiresAt };
+      },
+    };
+    await expect(resolveRequestTrustedOpenid({
+      config: makeConfig({ environment: "prod", mock_trusted_openid: "must-not-use-mock" }),
+      now: NOW,
+      authorization: "Bearer opaque-token",
+      sessions,
+    })).resolves.toBe(MOCK_OPENID);
+    await expect(resolveRequestTrustedOpenid({
+      config: makeConfig({ environment: "prod" }),
+      now: NOW,
+      sessions,
+    })).resolves.toBeNull();
+    await expect(resolveRequestTrustedOpenid({
+      config: makeConfig({ environment: "prod" }),
+      now: new Date(NOW.getTime() + 2000),
+      authorization: "Bearer opaque-token",
+      sessions,
+    })).rejects.toMatchObject({ code: "UNAUTHORIZED" });
   });
 
   it("loads mock openid from env only in dev/test and never in prod", () => {

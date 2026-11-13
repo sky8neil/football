@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { SyncJobType } from "../domain/enums.js";
-import { runDueProviderJobs } from "./runtime.js";
+import { runDueProviderJobs } from "../runtime/scheduled-jobs.js";
 
 const NOW = new Date("2026-08-09T00:00:00.000Z");
 

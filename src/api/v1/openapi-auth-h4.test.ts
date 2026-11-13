@@ -22,8 +22,8 @@ const operationBlock = (
   return nextOperation === -1 ? remaining : remaining.slice(0, nextOperation);
 };
 
-describe("H4 trusted runtime openid OpenAPI contract", () => {
-  it("does not declare JWT bearer or client-supplied identity schemes", async () => {
+describe("H4 dual-deploy identity OpenAPI contract", () => {
+  it("forbids JWT bearer and client-supplied identity schemes", async () => {
     const specification = await readFile(new URL("./openapi.yaml", import.meta.url), "utf8");
     const securitySchemes = specification.match(
       /^  securitySchemes:\n((?: {4,}.*(?:\n|$))*)/m,
@@ -31,14 +31,24 @@ describe("H4 trusted runtime openid OpenAPI contract", () => {
 
     expect(specification).not.toMatch(/BearerAuth/);
     expect(specification).not.toMatch(/bearerFormat:\s*JWT/);
-    expect(specification).not.toMatch(/scheme:\s*bearer/);
     expect(securitySchemes).not.toMatch(/type:\s*(?:apiKey|oauth2|openIdConnect)/i);
-    expect(securitySchemes).not.toMatch(
-      /(?:x[-_])?(?:openid|user_id|jwt|token|authorization)/i,
-    );
     expect(specification).not.toMatch(
       /(?:name:\s*(?:x[-_])?(?:openid|user_id|jwt|token|authorization)\b[\s\S]{0,300}?in:\s*(?:header|query|cookie)\b|in:\s*(?:header|query|cookie)\b[\s\S]{0,300}?name:\s*(?:x[-_])?(?:openid|user_id|jwt|token|authorization)\b)/i,
     );
+  });
+
+  it("declares an opaque VPS bearer that the backend must verify", async () => {
+    const specification = await readFile(new URL("./openapi.yaml", import.meta.url), "utf8");
+    const securitySchemes = specification.match(
+      /^  securitySchemes:\n((?: {4,}.*(?:\n|$))*)/m,
+    )?.[1] ?? "";
+
+    expect(securitySchemes).toMatch(/VpsSessionBearer:/);
+    expect(securitySchemes).toMatch(/scheme:\s*bearer/);
+    expect(securitySchemes).toMatch(/bearerFormat:\s*Opaque/);
+    expect(securitySchemes).toMatch(/网关必须校验后再注入 trusted_openid/);
+    expect(securitySchemes).toMatch(/不是 JWT/);
+    expect(securitySchemes).toMatch(/CloudBase 继续使用云函数 context\.OPENID/);
   });
 
   it("declares the trusted runtime identity model at the document level", async () => {
@@ -51,6 +61,8 @@ describe("H4 trusted runtime openid OpenAPI contract", () => {
     expect(trustedRuntime).toContain("identity_field: openid");
     expect(trustedRuntime).toContain("injection: gateway_or_runtime");
     expect(trustedRuntime).toContain("client_supply_forbidden: true");
+    expect(trustedRuntime).toContain("CloudBase 从云函数 context.OPENID 注入");
+    expect(trustedRuntime).toContain("自建 VPS / HTTP 签发不透明 Bearer 会话");
   });
 
   it("marks every auth-required operation as depending on trusted openid", async () => {
@@ -81,9 +93,10 @@ describe("H4 trusted runtime openid OpenAPI contract", () => {
     }
   });
 
-  it("keeps public reads free of a required identity marker", async () => {
+  it("keeps public reads and wechat login free of a required identity marker", async () => {
     const specification = await readFile(new URL("./openapi.yaml", import.meta.url), "utf8");
     const publicReads = [
+      ["/auth/wechat", "post"],
       ["/matches", "get"],
       ["/matches/{match_id}", "get"],
       ["/profiles/{user_id}", "get"],
@@ -106,5 +119,21 @@ describe("H4 trusted runtime openid OpenAPI contract", () => {
     expect(sessionInit).toContain("x-requires-trusted-openid: true");
     expect(sessionInit).toMatch(/'401':\n          \$ref: '#\/components\/responses\/Unauthorized'/);
     expect(sessionInitRequest).not.toMatch(/^        (?:openid|user_id):/m);
+  });
+
+  it("declares POST /auth/wechat as a public code exchange with 401", async () => {
+    const specification = await readFile(new URL("./openapi.yaml", import.meta.url), "utf8");
+    const wechatAuth = operationBlock(specification, "/auth/wechat", "post");
+    const wechatAuthRequest = specification.match(
+      /^    WechatAuthRequest:\n((?: {6,}.*(?:\n|$))*)/m,
+    )?.[1] ?? "";
+
+    expect(wechatAuth).not.toContain("security:");
+    expect(wechatAuth).toMatch(/'401':\n          \$ref: '#\/components\/responses\/Unauthorized'/);
+    expect(wechatAuth).not.toMatch(/'429':/);
+    expect(wechatAuth).not.toMatch(/'422':/);
+    expect(wechatAuthRequest).toMatch(/^        code:/m);
+    expect(wechatAuthRequest).not.toMatch(/^        (?:openid|user_id|token):/m);
+    expect(wechatAuthRequest).toContain("additionalProperties: false");
   });
 });

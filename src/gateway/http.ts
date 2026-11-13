@@ -7,8 +7,10 @@ import { SessionService } from "../application/session.js";
 import { MatchQueryService } from "../application/match-query.js";
 import { validationError } from "../domain/errors.js";
 import type { CloudBaseDb } from "../infrastructure/cloudbase-db.js";
+import type { AuthSessionStore } from "../infrastructure/postgres-auth-sessions.js";
 import { InMemoryRepository } from "../infrastructure/repositories.js";
-import { createGatewayRepository } from "./repository-factory.js";
+import { createVpsRuntime } from "../runtime/vps-runtime.js";
+import { createGatewayRepositoryHandle } from "./repository-factory.js";
 import { handleGatewayRequest } from "./assemble.js";
 import {
   LOCAL_PUBLIC_SOURCE,
@@ -20,6 +22,7 @@ import {
   seedGatewayRepository,
   seedRankingLeaderboard,
 } from "./seed.js";
+import type { WechatCode2SessionHttp } from "./wechat-login.js";
 
 export const GATEWAY_LISTEN_HOST = "127.0.0.1";
 export const GATEWAY_LISTEN_PORT = 8787;
@@ -69,6 +72,7 @@ export async function startGatewayServer(options: {
   env?: Record<string, string | undefined>;
   cloudbase_db?: CloudBaseDb;
   port?: number;
+  wechat_http?: WechatCode2SessionHttp;
 } = {}): Promise<http.Server> {
   let config: GatewayRuntimeConfig;
   try {
@@ -85,11 +89,38 @@ export async function startGatewayServer(options: {
   }
 
   let repo;
-  try {
-    repo = createGatewayRepository(config, options.cloudbase_db);
-  } catch (err) {
-    console.error(err instanceof Error ? err.message : "repository configuration failed");
-    process.exit(1);
+  let sessions: AuthSessionStore | undefined;
+  let wechatHttp: WechatCode2SessionHttp | undefined;
+  let healthCheck: () => Promise<boolean> = async () => true;
+  let closeHandle: () => Promise<void>;
+
+  if (config.repository_backend === "postgres") {
+    if (config.postgres_repository === null) {
+      console.error("PostgreSQL repository configuration is required");
+      process.exit(1);
+    }
+    const runtime = createVpsRuntime({
+      postgres: config.postgres_repository,
+      ...(options.wechat_http !== undefined ? { wechatHttp: options.wechat_http } : {}),
+    });
+    repo = runtime.repo;
+    sessions = runtime.sessions;
+    wechatHttp = runtime.wechatHttp;
+    healthCheck = () => runtime.healthCheck();
+    closeHandle = () => runtime.close();
+  } else {
+    let handle;
+    try {
+      handle = createGatewayRepositoryHandle(config, options.cloudbase_db);
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : "repository configuration failed");
+      process.exit(1);
+    }
+    repo = handle.repo;
+    closeHandle = () => handle.close();
+    if (options.wechat_http !== undefined) {
+      wechatHttp = options.wechat_http;
+    }
   }
   if (repo instanceof InMemoryRepository) {
     const seedNow = new Date();
@@ -112,9 +143,15 @@ export async function startGatewayServer(options: {
     void (async () => {
       const requestUrl = new URL(req.url ?? "/", `http://${GATEWAY_LISTEN_HOST}`);
       const query = parseQuery(requestUrl.searchParams);
+      const method = (req.method ?? "").toUpperCase();
       try {
+        if (method === "GET" && requestUrl.pathname === "/health") {
+          const ok = await healthCheck();
+          writeJson(res, ok ? 200 : 503, { ok });
+          return;
+        }
         let body: unknown = {};
-        if (["POST", "PATCH", "PUT"].includes((req.method ?? "").toUpperCase())) {
+        if (["POST", "PATCH", "PUT"].includes(method)) {
           body = await readJsonBody(req);
         }
         const result = await handleGatewayRequest({
@@ -127,6 +164,11 @@ export async function startGatewayServer(options: {
           services: { session, matches },
           repo,
           rate_limiter: rateLimiter,
+          ...(req.headers.authorization !== undefined
+            ? { authorization: req.headers.authorization }
+            : {}),
+          ...(sessions !== undefined ? { sessions } : {}),
+          ...(wechatHttp !== undefined ? { wechat_http: wechatHttp } : {}),
         });
         writeJson(res, result.status, result.body);
       } catch (err) {
@@ -136,15 +178,30 @@ export async function startGatewayServer(options: {
     })();
   });
 
-  await new Promise<void>((resolveListen, rejectListen) => {
-    server.once("error", rejectListen);
-    server.listen(options.port ?? GATEWAY_LISTEN_PORT, GATEWAY_LISTEN_HOST, () => {
-      server.off("error", rejectListen);
-      const address = server.address();
-      console.log(`listening ${GATEWAY_LISTEN_HOST}:${address && typeof address !== "string" ? address.port : options.port ?? GATEWAY_LISTEN_PORT}`);
-      resolveListen();
-    });
+  let closed = false;
+  const closeResources = async () => {
+    if (closed) return;
+    closed = true;
+    await closeHandle();
+  };
+  server.on("close", () => {
+    void closeResources();
   });
+
+  try {
+    await new Promise<void>((resolveListen, rejectListen) => {
+      server.once("error", rejectListen);
+      server.listen(options.port ?? GATEWAY_LISTEN_PORT, GATEWAY_LISTEN_HOST, () => {
+        server.off("error", rejectListen);
+        const address = server.address();
+        console.log(`listening ${GATEWAY_LISTEN_HOST}:${address && typeof address !== "string" ? address.port : options.port ?? GATEWAY_LISTEN_PORT}`);
+        resolveListen();
+      });
+    });
+  } catch (err) {
+    await closeResources();
+    throw err;
+  }
 
   return server;
 }
@@ -158,5 +215,9 @@ function isDirectRun(): boolean {
 }
 
 if (isDirectRun()) {
-  void startGatewayServer();
+  void startGatewayServer().then((server) => {
+    process.once("SIGTERM", () => {
+      server.close();
+    });
+  });
 }

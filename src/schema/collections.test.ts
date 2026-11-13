@@ -68,8 +68,13 @@ describe("S0 Collection schema（规范 §21）", () => {
     expect(collection("matches").fields.season_id?.default).toBeUndefined();
   });
 
-  it("rankings.period_type 仅 week", () => {
+  it("rankings.period_type 仅 week，含 is_final", () => {
     expect(collection("rankings").fields.period_type?.enum).toEqual(["week"]);
+    expect(collection("rankings").fields.is_final).toMatchObject({
+      type: "bool",
+      required: true,
+      default: false,
+    });
   });
 
   it("level_history 改为 v3 截面字段，reason 三值", () => {
@@ -117,5 +122,14 @@ describe("S0 Collection schema（规范 §21）", () => {
       "board_snapshot_season",
       "board_snapshot_season_final",
     ]);
+  });
+
+  it("scheduler_state 覆盖结算兜底游标与周期任务完成点", () => {
+    const fields = collection("scheduler_state").fields;
+    expect(fields.cursor_kickoff_at).toMatchObject({ type: "date", nullable: true });
+    expect(fields.cursor_match_id).toMatchObject({ type: "string", nullable: true });
+    expect(fields.job_type).toMatchObject({ type: "string", nullable: true });
+    expect(fields.completed_cycle_at).toMatchObject({ type: "date", nullable: true });
+    expect(fields.updated_at).toMatchObject({ type: "date", required: true });
   });
 });

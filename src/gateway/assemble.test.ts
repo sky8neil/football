@@ -1,12 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { InMemoryRateLimiter } from "../api/v1/rate-limit.js";
 import type { RateLimiter } from "../api/v1/rate-limit.js";
 import { SessionService } from "../application/session.js";
 import { MatchQueryService } from "../application/match-query.js";
+import type { AuthSessionRecord, AuthSessionStore } from "../infrastructure/postgres-auth-sessions.js";
 import { InMemoryRepository } from "../infrastructure/repositories.js";
 import { handleGatewayRequest, type GatewayRequestInput } from "./assemble.js";
 import { LOCAL_PUBLIC_SOURCE, type GatewayRuntimeConfig } from "./config.js";
 import { seedGatewayRepository } from "./seed.js";
+import type { WechatCode2SessionHttp } from "./wechat-login.js";
 
 const TEST_CURSOR_SECRET = "test-match-cursor-secret";
 const MOCK_OPENID = "mock-openid-assemble";
@@ -20,6 +22,8 @@ function makeConfig(overrides: Partial<GatewayRuntimeConfig> = {}): GatewayRunti
     public_source: LOCAL_PUBLIC_SOURCE,
     repository_backend: "memory",
     cloudbase_repository: null,
+    postgres_repository: null,
+    vps_auth: null,
     ...overrides,
   };
 }
@@ -52,8 +56,145 @@ function request(
     services: { session: harness.session, matches: harness.matches },
     repo: harness.repo,
     rate_limiter: harness.rateLimiter,
+    ...(input.trusted_openid !== undefined ? { trusted_openid: input.trusted_openid } : {}),
+    ...(input.authorization !== undefined ? { authorization: input.authorization } : {}),
+    ...(input.sessions !== undefined ? { sessions: input.sessions } : {}),
+    ...(input.wechat_http !== undefined ? { wechat_http: input.wechat_http } : {}),
   });
 }
+
+function memorySessions(seed: AuthSessionRecord[] = []): AuthSessionStore & { records: AuthSessionRecord[] } {
+  const records = [...seed];
+  return {
+    records,
+    async create(input) {
+      const record = {
+        token: `opaque-${records.length + 1}`,
+        openid: input.openid,
+        expires_at: new Date(input.now.getTime() + input.ttlSeconds * 1000),
+      };
+      records.push(record);
+      return record;
+    },
+    async findActiveByToken(input) {
+      return records.find((item) => item.token === input.token && item.expires_at.getTime() > input.now.getTime()) ??
+        null;
+    },
+  };
+}
+
+function wechatHttp(payload: unknown = { openid: MOCK_OPENID }): WechatCode2SessionHttp {
+  return { getJson: vi.fn(async () => payload) };
+}
+
+describe("handleGatewayRequest wechat login", () => {
+  const auth = {
+    wechat_app_id: "wx-test-appid",
+    wechat_app_secret: "wx-test-secret-must-not-leak",
+    session_ttl_seconds: 120,
+  };
+  const loginCode = "wx-one-time-code-must-not-leak";
+
+  it("issues an opaque bearer without requiring trusted openid", async () => {
+    const sessions = memorySessions();
+    const http = wechatHttp();
+    const harness = makeHarness(makeConfig({ vps_auth: auth }));
+    const response = await request(harness, {
+      method: "POST",
+      path: "/v1/auth/wechat",
+      body: { code: loginCode },
+      sessions,
+      wechat_http: http,
+    });
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      data: {
+        access_token: "opaque-1",
+        token_type: "Bearer",
+        expires_at: "2026-08-09T12:02:00.000Z",
+      },
+      request_id: expect.any(String),
+    });
+    expect(JSON.stringify(response.body)).not.toContain(auth.wechat_app_secret);
+    expect(JSON.stringify(response.body)).not.toContain(loginCode);
+    expect(sessions.records).toEqual([
+      { token: "opaque-1", openid: MOCK_OPENID, expires_at: new Date("2026-08-09T12:02:00.000Z") },
+    ]);
+  });
+
+  it("maps wechat failure to 401 and does not create a session", async () => {
+    const sessions = memorySessions();
+    const harness = makeHarness(makeConfig({ vps_auth: auth }));
+    const response = await request(harness, {
+      method: "POST",
+      path: "/v1/auth/wechat",
+      body: { code: loginCode },
+      sessions,
+      wechat_http: wechatHttp({ errcode: 40029, errmsg: "invalid code" }),
+    });
+    expect(response.status).toBe(401);
+    expect(response.body).toEqual(expect.objectContaining({ code: "UNAUTHORIZED" }));
+    expect(sessions.records).toEqual([]);
+  });
+
+  it("injects bearer openid into session init", async () => {
+    const sessions = memorySessions([{
+      token: "opaque-live",
+      openid: MOCK_OPENID,
+      expires_at: new Date(NOW.getTime() + 1000),
+    }]);
+    const harness = makeHarness(makeConfig({ environment: "prod", mock_trusted_openid: "must-not-use-mock" }));
+    const created = await request(harness, {
+      method: "POST",
+      path: "/v1/session/init",
+      body: { nickname: "Sky" },
+      authorization: "Bearer opaque-live",
+      sessions,
+    });
+    expect(created.status).toBe(201);
+    expect(await harness.repo.users.findByOpenid(MOCK_OPENID)).not.toBeNull();
+    expect(await harness.repo.users.findByOpenid("must-not-use-mock")).toBeNull();
+  });
+
+  it("returns 401 after the bearer expires", async () => {
+    const sessions = memorySessions([{
+      token: "opaque-live",
+      openid: MOCK_OPENID,
+      expires_at: NOW,
+    }]);
+    const harness = makeHarness(makeConfig({ environment: "prod" }));
+    const response = await request(harness, {
+      method: "POST",
+      path: "/v1/session/init",
+      body: { nickname: "Sky" },
+      authorization: "Bearer opaque-live",
+      sessions,
+    });
+    expect(response.status).toBe(401);
+    expect(response.body).toEqual(expect.objectContaining({ code: "UNAUTHORIZED" }));
+    expect(await harness.repo.users.findAll()).toEqual([]);
+  });
+
+  it("keeps an explicit CloudBase trusted_openid over bearer", async () => {
+    const sessions = memorySessions([{
+      token: "opaque-live",
+      openid: MOCK_OPENID,
+      expires_at: new Date(NOW.getTime() + 1000),
+    }]);
+    const harness = makeHarness(makeConfig({ environment: "prod" }));
+    const created = await request(harness, {
+      method: "POST",
+      path: "/v1/session/init",
+      body: { nickname: "Cloud" },
+      trusted_openid: "cloud-context-openid",
+      authorization: "Bearer opaque-live",
+      sessions,
+    });
+    expect(created.status).toBe(201);
+    expect(await harness.repo.users.findByOpenid("cloud-context-openid")).not.toBeNull();
+    expect(await harness.repo.users.findByOpenid(MOCK_OPENID)).toBeNull();
+  });
+});
 
 describe("handleGatewayRequest session init", () => {
   it("returns 401 UNAUTHORIZED without a mock openid and does not write a user", async () => {
@@ -416,6 +557,7 @@ describe("handleGatewayRequest S7 routes", () => {
     ["DELETE", "/v1/groups/00000000-0000-4000-8000-000000000001", undefined, 401],
     ["GET", "/v1/groups/me", undefined, 401],
     ["GET", "/v1/groups/00000000-0000-4000-8000-000000000001", undefined, 401],
+    ["POST", "/v1/auth/wechat", { code: "wx-code" }, 401],
   ] as const)("routes %s %s", async (method, path, body, status) => {
     const harness = makeHarness();
     const response = await request(harness, { method, path, body });

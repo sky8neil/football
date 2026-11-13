@@ -13,6 +13,7 @@ import { CloudBaseAppRepository } from "./cloudbase-app-repository.js";
 
 export {
   CLOUDBASE_REPOSITORY_ENV_KEYS,
+  CLOUDBASE_RUNTIME_COLLECTIONS,
   assertCloudBaseRepositoryConfig,
   cloudBaseCollectionName,
   loadCloudBaseRepositoryConfig,

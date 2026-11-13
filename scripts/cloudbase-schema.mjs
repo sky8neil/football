@@ -1,6 +1,6 @@
 import { COLLECTION_DEFINITIONS } from "../dist/schema/collections.js";
 import { QUERY_INDEXES, UNIQUE_INDEXES } from "../dist/schema/indexes.js";
-import { cloudBaseCollectionName } from "../dist/infrastructure/cloudbase-db.js";
+import { CLOUDBASE_RUNTIME_COLLECTIONS, cloudBaseCollectionName } from "../dist/infrastructure/cloudbase-db.js";
 
 const args = process.argv.slice(2);
 const namespaceIndex = args.indexOf("--namespace");
@@ -11,8 +11,7 @@ console.log(`CloudBase resource namespace: ${namespace}`);
 console.log("Collections (create manually in CloudBase console):");
 const collections = new Set([
   ...COLLECTION_DEFINITIONS.map((definition) => definition.collection),
-  "diag",
-  "rate_limits",
+  ...CLOUDBASE_RUNTIME_COLLECTIONS,
 ]);
 for (const collection of collections) console.log(`- ${cloudBaseCollectionName(namespace, collection)}`);
 console.log("Indexes (create manually in CloudBase console):");

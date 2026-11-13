@@ -23,7 +23,7 @@ import type {
 } from "../domain/types.js";
 import { defaultLevelState } from "../domain/types.js";
 import { InMemoryRepository } from "../infrastructure/repositories.js";
-import { WeeklyLevelEvalService } from "./weekly-level-eval.js";
+import { listDueSeasonFinalIds, WeeklyLevelEvalService } from "./weekly-level-eval.js";
 
 const AS_OF = new Date("2026-08-10T02:00:00.000Z");
 const RUN_AT = new Date("2026-08-10T02:10:00.000Z");
@@ -297,6 +297,26 @@ describe("WeeklyLevelEvalService §17.6 / §32.9", () => {
       .resolves.toHaveLength(1);
     await expect(repo.boardSnapshots.findFinalBySeason("2025_2026"))
       .resolves.toHaveLength(1);
+  });
+
+  it("does not list or generate a season final before that season's final eval freezes levels", async () => {
+    const repo = new InMemoryRepository();
+    const user = makeUser({ user_id: "unfrozen-season-user" });
+    await repo.users.insert(user);
+    await repo.userSeasonStats.insert(makeSeasonStats(user.user_id, {
+      level_season_id: "2025_2026",
+      points: 36,
+      valid_predictions: 3,
+      wdl_hits: 3,
+      exact_hits: 2,
+      last_scoring_match_at: new Date("2026-06-28T12:00:00.000Z"),
+      is_level_frozen: false,
+    }));
+
+    await expect(listDueSeasonFinalIds(repo, AS_OF)).resolves.toEqual([]);
+    expect(await repo.boardSnapshots.findFinalBySeason("2025_2026")).toEqual([]);
+    expect(await repo.userSeasonStats.findByUserAndSeason(user.user_id, "2025_2026"))
+      .toMatchObject({ is_level_frozen: false });
   });
 
   it("[L91] 第 20 场于周一 10:05 applied：当周仍 Lv1，下周升 Lv2", async () => {

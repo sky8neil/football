@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { ProviderDataError } from "../provider/http.js";
 import { buildTimerSummary } from "./timer-summary.js";
 
-const TASK_TYPES = ["post_finish_verify", "live_match", "near_match", "future_schedule", "full_schedule_verify", "provider_reconcile", "settlement"] as const;
+const TASK_TYPES = ["post_finish_verify", "live_match", "near_match", "future_schedule", "full_schedule_verify", "provider_reconcile", "settlement", "period_finalize", "daily_consistency", "weekly_level_eval", "board_snapshot_career", "board_snapshot_strength", "board_snapshot_season"] as const;
 
 function assertNoSensitiveKeys(summary: Record<string, unknown>): void {
   expect(JSON.stringify(summary)).not.toMatch(/"(openid|api_key|apikey|token)"/i);
@@ -124,6 +124,56 @@ describe("buildTimerSummary", () => {
     });
     expect(summary.db_ops).toEqual({ read: 1, write: 0 });
     expect(summary.db_ops_by_collection).toEqual([]);
+    assertNoSensitiveKeys(summary);
+  });
+
+  it("keeps deferred and skipped distinct from ran and does not mark them failed", () => {
+    const summary = buildTimerSummary({
+      taskTypes: TASK_TYPES,
+      provider: {
+        outcome: "completed",
+        skipped: [{ task: "near_match", reason: "lock_held" }],
+        deferred: [{
+          task: "live_match",
+          next_attempt_at: "2026-08-09T00:01:00.000Z",
+          retry_attempt: 0,
+          last_error_code: "ECONNRESET",
+        }],
+      },
+      settlements: [],
+      dbOps: { read: 1, write: 0 },
+      durationMs: 4,
+      errors: [],
+    });
+    expect(summary.outcome).toBe("ok");
+    expect(summary.ran).toEqual([]);
+    expect(summary.skipped).toEqual([{ task: "near_match", reason: "lock_held" }]);
+    expect(summary.deferred).toEqual([{
+      task: "live_match",
+      next_attempt_at: "2026-08-09T00:01:00.000Z",
+      retry_attempt: 0,
+      last_error_code: "ECONNRESET",
+    }]);
+    expect(summary.failed).toEqual([]);
+    assertNoSensitiveKeys(summary);
+  });
+
+  it("marks completed items_failed as failed even without thrown errors", () => {
+    const summary = buildTimerSummary({
+      taskTypes: TASK_TYPES,
+      provider: {
+        outcome: "failed",
+        failed: [{ task: "live_match", reason: "items_failed", items_failed: 1 }],
+      },
+      settlements: [{ match_id: "m1", outcome: { kind: "settled" } }],
+      dbOps: { read: 2, write: 1 },
+      durationMs: 6,
+      errors: [],
+    });
+    expect(summary.outcome).toBe("partial");
+    expect(summary.ran).toEqual([]);
+    expect(summary.failed).toEqual([{ task: "live_match", reason: "items_failed", items_failed: 1 }]);
+    expect(summary.settlements).toEqual({ attempted: 1, settled: 1, failed: 0 });
     assertNoSensitiveKeys(summary);
   });
 });

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { PeriodType } from "../domain/enums.js";
 import type { RankingEntry } from "../domain/types.js";
 import { periodEndAt } from "../domain/time.js";
-import { finalizeRankingEntry } from "./period-finalize.js";
+import { finalizeRankingEntry, listDueWeekPeriodKeys } from "./period-finalize.js";
 
 const WEEK_ENTRY: RankingEntry = {
   schema_version: 1,
@@ -50,5 +50,16 @@ describe("period finalization", () => {
     expect(() => periodEndAt(PeriodType.Week, "2026-08")).toThrowError(
       expect.objectContaining({ code: "VALIDATION_ERROR" }),
     );
+  });
+
+  it("enumerates ended unfinalized week keys and skips current or already-final weeks", () => {
+    const now = new Date("2026-08-10T16:00:00.000Z");
+    const keys = listDueWeekPeriodKeys([
+      WEEK_ENTRY,
+      { ...WEEK_ENTRY, user_id: "user-2", period_key: "2026-W31", is_final: true },
+      { ...WEEK_ENTRY, user_id: "user-3", period_key: "2026-W33", is_final: false },
+      { ...WEEK_ENTRY, user_id: "user-4", period_key: "2026-W31", is_final: false },
+    ], now);
+    expect(keys).toEqual(["2026-W31", "2026-W32"]);
   });
 });

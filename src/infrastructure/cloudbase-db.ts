@@ -66,7 +66,9 @@ export const CLOUDBASE_REPOSITORY_ENV_KEYS = {
   resource_namespace: "FOOTBALL_RESOURCE_NAMESPACE",
 } as const;
 
-const COLLECTION_ALIASES: Readonly<Record<string, string>> = {
+export const CLOUDBASE_RUNTIME_COLLECTIONS = ["diag", "rate_limits"] as const;
+
+export const COLLECTION_ALIASES: Readonly<Record<string, string>> = {
   user_season_stats: "stats",
   team_provider_mappings: "team_src_map",
   match_provider_mappings: "match_src_map",
@@ -77,10 +79,21 @@ const COLLECTION_ALIASES: Readonly<Record<string, string>> = {
   scheduler_state: "sched_state",
 };
 
+const ALIAS_TO_LOGICAL: Readonly<Record<string, string>> = Object.fromEntries(
+  Object.entries(COLLECTION_ALIASES).map(([logical, alias]) => [alias, logical]),
+);
+
 export function cloudBaseCollectionName(namespace: string, collection: string): string {
   const name = `${namespace}_${COLLECTION_ALIASES[collection] ?? collection}`;
   if (name.length > 30) throw new Error(`CloudBase collection name exceeds 30 characters: ${name}`);
   return name;
+}
+
+export function logicalCollectionFromPhysical(namespace: string, physical: string): string {
+  const prefix = `${namespace}_`;
+  if (!physical.startsWith(prefix)) return physical;
+  const suffix = physical.slice(prefix.length);
+  return ALIAS_TO_LOGICAL[suffix] ?? suffix;
 }
 
 export function assertCloudBaseRepositoryConfig(config: {

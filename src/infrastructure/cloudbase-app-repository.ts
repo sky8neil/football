@@ -191,7 +191,7 @@ export class CloudBaseAppRepository implements AppRepository {
   readonly jobLocks: JobLockRepository;
 
   constructor(
-    private readonly config: CloudBaseRepositoryConfig,
+    private readonly config: Pick<CloudBaseRepositoryConfig, "resource_namespace">,
     private readonly db: CloudBaseDb,
   ) {
     this.users = {
@@ -278,6 +278,7 @@ export class CloudBaseAppRepository implements AppRepository {
     this.admins = {
       findByOpenid: async (openid) => this.one<Admin>("admins", { openid }),
       insert: async (admin) => this.add("admins", admin.admin_id, admin),
+      update: async (admin) => this.update("admins", admin.admin_id, admin),
     };
     this.adminAuditLogs = {
       findByEntity: async (entityType, entityId) => this.where<AdminAuditLog>("admin_audit_logs", { entity_type: entityType, entity_id: entityId }),

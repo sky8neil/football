@@ -212,10 +212,11 @@ export interface ProviderSnapshotRepository {
   insert(snapshot: ProviderSnapshot): Promise<void>;
 }
 
-/** 管理员身份只读查询；管理员由部署配置 provision，不提供业务创建/删除 API。 */
+/** 管理员身份查询与部署 provision 写入；不提供业务创建/删除 API。 */
 export interface AdminRepository {
   findByOpenid(openid: string): Promise<Admin | null>;
   insert(admin: Admin): Promise<void>;
+  update(admin: Admin): Promise<void>;
 }
 
 /** 管理员审计日志只追加，不提供 update/delete。 */
@@ -690,6 +691,7 @@ export class InMemoryRepository implements AppRepository {
     return {
       findByOpenid: (openid) => self.findAdminByOpenid(openid),
       insert: (admin) => self.insertAdmin(admin),
+      update: (admin) => self.updateAdmin(admin),
     };
   }
 
@@ -962,6 +964,31 @@ export class InMemoryRepository implements AppRepository {
       if (this.store.adminsByOpenid.get(admin.openid) === admin) {
         this.store.adminsByOpenid.delete(admin.openid);
       }
+    });
+  }
+
+  private async updateAdmin(admin: Admin): Promise<void> {
+    assertSchemaVersion(admin.schema_version);
+    const old = this.store.adminsById.get(admin.admin_id);
+    if (old === undefined) {
+      throw new DocumentNotFoundError("admins", admin.admin_id);
+    }
+    const openidChanged = admin.openid !== old.openid;
+    if (openidChanged) {
+      const owner = this.store.adminsByOpenid.get(admin.openid);
+      if (owner !== undefined && owner !== old) {
+        throw new UniqueConstraintError("admins", "uk_admin_openid", { openid: admin.openid });
+      }
+      this.store.adminsByOpenid.delete(old.openid);
+    }
+    this.store.adminsById.set(admin.admin_id, admin);
+    this.store.adminsByOpenid.set(admin.openid, admin);
+    this.logUndo(() => {
+      if (this.store.adminsById.get(admin.admin_id) !== admin) return;
+      if (this.store.adminsByOpenid.get(admin.openid) !== admin) return;
+      this.store.adminsById.set(admin.admin_id, old);
+      if (openidChanged) this.store.adminsByOpenid.delete(admin.openid);
+      this.store.adminsByOpenid.set(old.openid, old);
     });
   }
 

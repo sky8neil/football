@@ -2,8 +2,6 @@ import { InMemoryRepository } from "../infrastructure/repositories.js";
 import { COLLECTION_DEFINITIONS } from "../schema/collections.js";
 import { createGatewayRepository } from "../gateway/repository-factory.js";
 import { loadGatewayRuntimeConfig } from "../gateway/config.js";
-import { MatchQueryService } from "../application/match-query.js";
-import { SessionService } from "../application/session.js";
 import { SharedRateLimiter } from "../api/v1/rate-limit-store.js";
 import { CloudBaseRateLimitStore, loadCloudBaseRateLimitStoreConfig } from "../api/v1/cloudbase-rate-limit-store.js";
 import { CloudBaseWxRateLimitDatabase } from "../infrastructure/cloudbase-wx-rate-limit.js";
@@ -11,41 +9,31 @@ import { createCloudBaseWxDb, type CloudBaseSdkDatabase } from "../infrastructur
 import { handleGatewayRequest } from "../gateway/assemble.js";
 import { makeRequestId } from "../api/v1/validation.js";
 import { classifyCloudError, missingCloudEnvironmentKeys } from "../infrastructure/cloud-diagnostics.js";
-import { cloudBaseCollectionName, type CloudBaseDb } from "../infrastructure/cloudbase-db.js";
+import { CLOUDBASE_RUNTIME_COLLECTIONS, cloudBaseCollectionName } from "../infrastructure/cloudbase-db.js";
 import { createCountingDb } from "../infrastructure/db-op-counter.js";
-import { CloudBaseProviderUsageStore } from "../infrastructure/cloudbase-provider-usage.js";
-import { CloudBaseProviderKeyStateStore } from "../infrastructure/cloudbase-provider-key-state.js";
-import { CloudBaseProviderLeagueStateStore } from "../infrastructure/cloudbase-provider-league-state.js";
-import { CloudBaseSchedulerStateStore } from "../infrastructure/cloudbase-scheduler-state.js";
 import { ProviderBudget } from "../provider/budget.js";
 import { ProviderRegistry } from "../provider/registry.js";
 import { loadProviderSources, type ProviderSourceId } from "../provider/sources.js";
-import { ProviderFutureScheduleService } from "../application/provider-sync-service.js";
-import { ProviderFullScheduleVerifyService } from "../application/provider-full-schedule.js";
-import { ProviderNearMatchService } from "../application/provider-near-match.js";
-import { ProviderLiveMatchService } from "../application/provider-live-match.js";
-import { ProviderPostFinishVerifyService } from "../application/provider-post-finish.js";
-import type { ProviderFixtureFailureDiagnostic } from "../application/provider-sync-job.js";
-import { ProviderReconcileService } from "../application/provider-reconcile.js";
-import { ProviderSyncDispatcher, type ProviderSyncJobType } from "../application/provider-sync-dispatcher.js";
-import { SyncJobType } from "../domain/enums.js";
-import { providerJobIntervalMs } from "../sync/config.js";
-import { SUPPORTED_LEAGUES } from "../domain/config.js";
 import { runSettlementTimer } from "../application/settlement-timer.js";
 import { activeWindow } from "../application/provider-active-window.js";
 import type { Match } from "../domain/types.js";
+import { SUPPORTED_LEAGUES } from "../domain/config.js";
+import { SyncJobType } from "../domain/enums.js";
 import { createCloudFunctionHandler, type CloudFunctionContextLike, type CloudFunctionEvent } from "./index.js";
 import { buildTimerSummary } from "./timer-summary.js";
+import { createApplicationRuntime } from "../runtime/application-runtime.js";
+import {
+  isProviderSyncJobType,
+  logProviderFixtureFailures,
+  providerScheduleSummary,
+  runScheduledJobs,
+  runDueProviderJobs,
+  TIMER_TASK_TYPES,
+  UNWIRED_PERIODIC_TASKS,
+  WIRED_PERIODIC_TASKS,
+} from "../runtime/scheduled-jobs.js";
 
-const TIMER_TASK_TYPES = [
-  SyncJobType.PostFinishVerify,
-  SyncJobType.LiveMatch,
-  SyncJobType.NearMatch,
-  SyncJobType.FutureSchedule,
-  SyncJobType.FullScheduleVerify,
-  SyncJobType.ProviderReconcile,
-  "settlement",
-] as const;
+export { runDueProviderJobs };
 
 export interface CloudFunctionRuntimeOptions {
   env: Record<string, string | undefined>;
@@ -54,6 +42,7 @@ export interface CloudFunctionRuntimeOptions {
   nodeVersion: string;
   buildTime?: string;
   log?: (entry: Record<string, unknown>) => void;
+  now?: () => Date;
 }
 
 function requireCloudRuntimeConfig(env: Record<string, string | undefined>) {
@@ -92,9 +81,16 @@ export function createCloudFunctionRuntime(options: CloudFunctionRuntimeOptions)
   const cloudDb = counted.db;
   const repo = createGatewayRepository(config, cloudDb);
   if (repo instanceof InMemoryRepository) throw new Error("CloudBase runtime cannot use the memory repository");
-  let providerSources: ReturnType<typeof loadProviderSources>;
+  let runtime;
   try {
-    providerSources = loadProviderSources(env);
+    runtime = createApplicationRuntime({
+      env,
+      db: cloudDb,
+      namespace,
+      repo,
+      matchCursorSecret: config.match_cursor_secret,
+      log: logger,
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : "";
     const missingKey = /^DIAG_PROVIDER_KEY_MISSING source_id=([a-z]+) variable=([A-Z0-9_]+)$/.exec(message);
@@ -108,56 +104,6 @@ export function createCloudFunctionRuntime(options: CloudFunctionRuntimeOptions)
     }
     throw error;
   }
-  const configuredProviderLeagues = new Set(
-    providerSources.sources.flatMap((source) => source.leagues.map((league) => league.league_id)),
-  );
-  for (const league of SUPPORTED_LEAGUES) {
-    if (configuredProviderLeagues.has(league.league_id)) continue;
-    logger({
-      event: "provider_league_unconfigured",
-      diag_code: "DIAG_PROVIDER_LEAGUE_UNCONFIGURED",
-      league_id: league.league_id,
-    });
-  }
-  const providerBudget = new ProviderBudget(
-    providerSources.sources,
-    new CloudBaseProviderUsageStore(cloudDb, namespace),
-    logger,
-  );
-  const providerRegistry = new ProviderRegistry({
-    config: providerSources,
-    budget: providerBudget,
-    keyStateStore: new CloudBaseProviderKeyStateStore(cloudDb, namespace),
-    leagueStateStore: new CloudBaseProviderLeagueStateStore(cloudDb, namespace),
-    minimumGapMs: Number(env.FOOTBALL_PROVIDER_MIN_GAP_SECONDS ?? "3") * 1000,
-    log: logger,
-  });
-  const providerClient = providerRegistry.asClient();
-  const profile = providerSources.sync_profile;
-  const providerDispatcher = new ProviderSyncDispatcher({
-    [SyncJobType.FutureSchedule]: (now, leagueId) => new ProviderFutureScheduleService(repo, providerClient, {}, {
-      dueIntervalMs: providerJobIntervalMs(SyncJobType.FutureSchedule, profile),
-    }).run(now, leagueId),
-    [SyncJobType.FullScheduleVerify]: (now, leagueId) => new ProviderFullScheduleVerifyService(repo, providerClient, {}, {
-      dueIntervalMs: providerJobIntervalMs(SyncJobType.FullScheduleVerify, profile),
-    }).run(now, leagueId),
-    [SyncJobType.NearMatch]: (now) => new ProviderNearMatchService(repo, providerClient, {}, {
-      dueIntervalMs: providerJobIntervalMs(SyncJobType.NearMatch, profile),
-    }).run(now),
-    [SyncJobType.LiveMatch]: (now) => new ProviderLiveMatchService(repo, providerClient, {}, {
-      dueIntervalMs: providerJobIntervalMs(SyncJobType.LiveMatch, profile),
-    }).run(now),
-    [SyncJobType.PostFinishVerify]: (now) => new ProviderPostFinishVerifyService(repo, providerClient, {}, {
-      dueIntervalMs: providerJobIntervalMs(SyncJobType.PostFinishVerify, profile),
-    }).run(now),
-  });
-  const providerReconcile = new ProviderReconcileService(repo, providerClient);
-  const schedulerState = new CloudBaseSchedulerStateStore(cloudDb, namespace);
-  const settlementTimerOptions = { env, schedulerState };
-  const services = {
-    session: new SessionService(repo),
-    matches: new MatchQueryService(repo, config.match_cursor_secret),
-  };
   const limiterConfig = loadCloudBaseRateLimitStoreConfig(env);
   const rateLimiter = new SharedRateLimiter(new CloudBaseRateLimitStore(
     limiterConfig,
@@ -174,7 +120,7 @@ export function createCloudFunctionRuntime(options: CloudFunctionRuntimeOptions)
     resource_namespace: namespace,
     repository_backend: config.repository_backend,
     environment_keys: Object.fromEntries(requiredEnvironmentKeys.map((key) => [key, Boolean(env[key]?.trim())])),
-    provider_sources: providerSources.sources.map((source) => ({
+    provider_sources: runtime.providerSources.sources.map((source) => ({
       source_id: source.source_id,
       key_configured: Boolean(source.api_key),
       key_count: source.api_keys.length,
@@ -187,7 +133,7 @@ export function createCloudFunctionRuntime(options: CloudFunctionRuntimeOptions)
   const handler = createCloudFunctionHandler({
     assemble: handleGatewayRequest,
     config,
-    services,
+    services: runtime.services,
     repo,
     rate_limiter: rateLimiter,
     log: (entry) => logger({ event: "request", ...entry }),
@@ -197,7 +143,15 @@ export function createCloudFunctionRuntime(options: CloudFunctionRuntimeOptions)
   return async (event: CloudFunctionEvent, context: CloudFunctionContextLike & { ENV?: string }) => {
     if (event.action === "diag") {
       if (config.environment === "prod") return { result: { status: 404, body: { code: "NOT_FOUND", request_id: makeRequestId() } } };
-      return { result: await runDiagnostics({ options, namespace, context, providerSources, providerBudget, providerRegistry, repo }) };
+      return { result: await runDiagnostics({
+        options,
+        namespace,
+        context,
+        providerSources: runtime.providerSources,
+        providerBudget: runtime.providerBudget,
+        providerRegistry: runtime.providerRegistry,
+        repo,
+      }) };
     }
     if (event.action === "sync") {
       if (config.environment === "prod") return { result: { status: 404, body: { code: "NOT_FOUND", request_id: makeRequestId() } } };
@@ -210,209 +164,55 @@ export function createCloudFunctionRuntime(options: CloudFunctionRuntimeOptions)
       }
       const serverNow = new Date();
       const scheduledLeague = leagueScopedJob && event.league === undefined
-        ? (await providerRegistry.orderLeagues([...providerSources.sync_leagues], event.job, serverNow))[0]
+        ? (await runtime.providerRegistry.orderLeagues([...runtime.providerSources.sync_leagues], event.job, serverNow))[0]
         : event.league;
       if (leagueScopedJob && scheduledLeague === undefined) {
         return { result: { status: 200, body: { data: { kind: "skipped", reason: "no_configured_leagues" }, request_id: makeRequestId() } } };
       }
-      const sync = await providerDispatcher.run(event.job, serverNow, scheduledLeague);
+      const sync = await runtime.providerDispatcher.run(event.job, serverNow, scheduledLeague);
       logProviderFixtureFailures(logger, event.job, sync);
-      const data = { sync, settlements: await runSettlementTimer(repo, serverNow, settlementTimerOptions) };
+      const data = { sync, settlements: await runSettlementTimer(repo, serverNow, runtime.settlementTimerOptions) };
       return { result: { status: 200, body: { data, request_id: makeRequestId() } } };
     }
     if (event.Type === "Timer") {
       counted.counter.begin();
-      providerRegistry.beginTickCache();
       const startedAt = Date.now();
       const errors: unknown[] = [];
-      const serverNow = new Date();
+      const serverNow = (options.now ?? (() => new Date()))();
       let providerData: Record<string, unknown> = { outcome: "failed" };
       let settlements: { match_id: string; outcome: unknown }[] = [];
       try {
-        providerData = await runDueProviderJobs({
-          cloudDb,
-          namespace,
-          dispatcher: providerDispatcher,
-          providerRegistry,
-          syncLeagueIds: [...providerSources.sync_leagues],
-          sourceIds: providerSources.sources.map((source) => source.source_id),
-          profile: providerSources.sync_profile,
-          reconcile: providerReconcile,
-          serverNow,
-          log: logger,
-        });
-        settlements = await runSettlementTimer(repo, serverNow, settlementTimerOptions);
+        const scheduled = await runScheduledJobs({ runtime, serverNow });
+        providerData = scheduled.providerData;
+        settlements = scheduled.settlements;
+        errors.push(...scheduled.errors);
+        if (scheduled.errors.length > 0) throw scheduled.errors[0];
         return { result: { status: 200, body: { data: { ...providerData, settlements }, request_id: makeRequestId() } } };
       } catch (error) {
-        errors.push(error);
+        if (!errors.includes(error)) errors.push(error);
         throw error;
       } finally {
-        providerRegistry.endTickCache();
         try {
           const dbOps = counted.counter.end();
-          const jobs_run = Array.isArray(providerData.jobs_run)
-            ? providerData.jobs_run.filter((value): value is string => typeof value === "string")
-            : undefined;
-          const skipped = Array.isArray(providerData.skipped)
-            ? providerData.skipped.flatMap((row) => {
-                if (typeof row !== "object" || row === null) return [];
-                const task = (row as { task?: unknown }).task;
-                const reason = (row as { reason?: unknown }).reason;
-                return typeof task === "string" && typeof reason === "string" ? [{ task, reason }] : [];
-              })
-            : undefined;
-          const summary = buildTimerSummary({
-            taskTypes: TIMER_TASK_TYPES,
-            provider: {
-              outcome: typeof providerData.outcome === "string" ? providerData.outcome : "failed",
-              ...(jobs_run === undefined ? {} : { jobs_run }),
-              ...(skipped === undefined ? {} : { skipped }),
-            },
-            settlements,
-            dbOps,
-            durationMs: Date.now() - startedAt,
-            errors,
-          });
+          const summary = {
+            ...buildTimerSummary({
+              taskTypes: TIMER_TASK_TYPES,
+              provider: providerScheduleSummary(providerData),
+              settlements,
+              dbOps,
+              durationMs: Date.now() - startedAt,
+              errors,
+            }),
+            wired_periodic_tasks: WIRED_PERIODIC_TASKS,
+            unwired_periodic_tasks: UNWIRED_PERIODIC_TASKS,
+            fifteen_items_complete: true,
+          };
           logger({ event: "timer_summary", ...summary });
         } catch {}
       }
     }
     return handler(event, context);
   };
-}
-
-function isProviderSyncJobType(value: unknown): value is ProviderSyncJobType {
-  return value === SyncJobType.FutureSchedule ||
-    value === SyncJobType.FullScheduleVerify ||
-    value === SyncJobType.NearMatch ||
-    value === SyncJobType.LiveMatch ||
-    value === SyncJobType.PostFinishVerify;
-}
-
-export async function runDueProviderJobs(input: {
-  cloudDb: CloudBaseDb;
-  /** 资源命名空间：底层适配器收的是物理集合名，这里必须自己拼前缀。 */
-  namespace: string;
-  dispatcher: ProviderSyncDispatcher;
-  providerRegistry: ProviderRegistry;
-  syncLeagueIds: readonly string[];
-  sourceIds: readonly ProviderSourceId[];
-  profile: "test" | "prod";
-  reconcile: ProviderReconcileService;
-  serverNow: Date;
-  log: (entry: Record<string, unknown>) => void;
-}): Promise<Record<string, unknown>> {
-  const jobs: ProviderSyncJobType[] = [
-    SyncJobType.PostFinishVerify,
-    SyncJobType.LiveMatch,
-    SyncJobType.NearMatch,
-    SyncJobType.FutureSchedule,
-    SyncJobType.FullScheduleVerify,
-  ];
-  const skipped: { task: string; reason: string }[] = [];
-  if (input.sourceIds.length === 0) {
-    for (const jobType of jobs) skipped.push({ task: jobType, reason: "no_provider_sources" });
-    skipped.push({ task: SyncJobType.ProviderReconcile, reason: "no_provider_sources" });
-    return { outcome: "skipped", reason: "no_provider_sources", skipped };
-  }
-  const ran: string[] = [];
-  for (const jobType of jobs) {
-    if (jobType === SyncJobType.FutureSchedule || jobType === SyncJobType.FullScheduleVerify) {
-      const dueLeagues = await input.providerRegistry.dueLeagues(
-        input.syncLeagueIds,
-        jobType,
-        input.serverNow,
-        providerJobIntervalMs(jobType, input.profile),
-      );
-      const leagueId = dueLeagues[0];
-      if (leagueId === undefined) {
-        skipped.push({ task: jobType, reason: "no_due_league" });
-        continue;
-      }
-      const outcome = await input.dispatcher.run(jobType, input.serverNow, leagueId);
-      logProviderFixtureFailures(input.log, jobType, outcome);
-      input.log({ event: "provider_schedule", job_type: jobType, league_id: leagueId, outcome: outcome.kind });
-      ran.push(`${jobType}:${leagueId}`);
-      continue;
-    }
-    const logs = await input.cloudDb.query(cloudBaseCollectionName(input.namespace, "sync_logs"), { job_type: jobType }, {
-      order_by: "started_at",
-      direction: "desc",
-      limit: 1,
-    });
-    const last = logs[0];
-    const lastStartedAt = last?.started_at;
-    const lastStartedMs = lastStartedAt instanceof Date
-      ? lastStartedAt.getTime()
-      : typeof lastStartedAt === "string" ? Date.parse(lastStartedAt) : Number.NaN;
-    const interval = providerJobIntervalMs(jobType, input.profile);
-    // RP07：上一轮是延期，则只看 next_attempt_at，不再叠加常规间隔
-    if (last?.status === "deferred") {
-      const nextAttemptAt = last.next_attempt_at;
-      const nextAtMs = nextAttemptAt instanceof Date
-        ? nextAttemptAt.getTime()
-        : typeof nextAttemptAt === "string" ? Date.parse(nextAttemptAt) : Number.NaN;
-      if (Number.isFinite(nextAtMs) && input.serverNow.getTime() < nextAtMs) {
-        skipped.push({ task: jobType, reason: "deferred_not_due" });
-        continue;
-      }
-    } else if (Number.isFinite(lastStartedMs) && input.serverNow.getTime() - lastStartedMs < interval) {
-      skipped.push({ task: jobType, reason: "interval_not_due" });
-      continue;
-    }
-    const outcome = await input.dispatcher.run(jobType, input.serverNow);
-    logProviderFixtureFailures(input.log, jobType, outcome);
-    input.log({ event: "provider_schedule", job_type: jobType, outcome: outcome.kind });
-    ran.push(jobType);
-  }
-  const reconcileLogs = await input.cloudDb.query(cloudBaseCollectionName(input.namespace, "sync_logs"), { job_type: SyncJobType.ProviderReconcile }, {
-    order_by: "started_at",
-    direction: "desc",
-    limit: 1,
-  });
-  const lastReconcileAt = reconcileLogs[0]?.started_at;
-  const lastReconcileMs = lastReconcileAt instanceof Date
-    ? lastReconcileAt.getTime()
-    : typeof lastReconcileAt === "string" ? Date.parse(lastReconcileAt) : Number.NaN;
-  if (!Number.isFinite(lastReconcileMs) || input.serverNow.getTime() - lastReconcileMs >= 24 * 60 * 60_000) {
-    const outcome = await input.reconcile.run(input.serverNow);
-    if (outcome.kind === "completed") ran.push(SyncJobType.ProviderReconcile);
-    input.log({ event: "provider_schedule", job_type: SyncJobType.ProviderReconcile, outcome: outcome.kind });
-  } else {
-    skipped.push({ task: SyncJobType.ProviderReconcile, reason: "interval_not_due" });
-  }
-  return { outcome: "completed", jobs_run: ran, skipped };
-}
-
-function logProviderFixtureFailures(
-  log: (entry: Record<string, unknown>) => void,
-  jobType: ProviderSyncJobType,
-  outcome: unknown,
-): void {
-  if (typeof outcome !== "object" || outcome === null || Array.isArray(outcome)) return;
-  const fixtures = (outcome as { fixtures?: unknown }).fixtures;
-  if (typeof fixtures !== "object" || fixtures === null || Array.isArray(fixtures)) return;
-  const diagnostics = (fixtures as { failure_diagnostics?: unknown }).failure_diagnostics;
-  if (!Array.isArray(diagnostics)) return;
-
-  for (const raw of diagnostics) {
-    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) continue;
-    const diagnostic = raw as ProviderFixtureFailureDiagnostic;
-    log({
-      event: "provider_fixture_failure",
-      job_type: jobType,
-      sync_job_id: diagnostic.sync_job_id,
-      provider: diagnostic.provider,
-      provider_fixture_id: diagnostic.provider_fixture_id,
-      stage: diagnostic.stage,
-      outcome: diagnostic.outcome,
-      error_code: diagnostic.error_code,
-      error_name: diagnostic.error_name,
-      error_message: diagnostic.error_message,
-      reason_codes: diagnostic.reason_codes,
-      match_id: diagnostic.match_id,
-    });
-  }
 }
 
 async function runDiagnostics(input: {
@@ -458,9 +258,7 @@ async function runDiagnostics(input: {
   const collections: Record<string, { exists: boolean; diag_code?: string; hint?: string }> = {};
   const collectionNames = [
     ...COLLECTION_DEFINITIONS.map((definition) => cloudBaseCollectionName(namespace, definition.collection)),
-    cloudBaseCollectionName(namespace, "diag"),
-    cloudBaseCollectionName(namespace, "rate_limits"),
-    cloudBaseCollectionName(namespace, "provider_key_state"),
+    ...CLOUDBASE_RUNTIME_COLLECTIONS.map((collection) => cloudBaseCollectionName(namespace, collection)),
   ];
   for (const name of collectionNames) {
     try {

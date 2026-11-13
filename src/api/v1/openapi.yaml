@@ -5,7 +5,10 @@ info:
   description: |
     依据《赛事预言家 MVP 核心机器可执行规范 v2.0》第 23~30 节。
     本文件为 MVP 2.0 API 合同基线。
-    鉴权模型：依赖部署网关/运行环境注入的可信 openid；见根级 x-trusted-runtime-openid。客户端不得传身份凭证。
+    鉴权模型：业务层依赖部署网关/运行环境注入的可信 openid；见根级 x-trusted-runtime-openid。
+    客户端不得在 body/query/header 中自报 openid、user_id 或 JWT。
+    CloudBase 继续使用云函数 context.OPENID。
+    自建 VPS / HTTP 使用外部不透明 Bearer 会话，必须经后端校验后再注入 trusted_openid。
     Base path: /v1
 x-trusted-runtime-openid:
   required_for: auth_required_operations
@@ -13,14 +16,15 @@ x-trusted-runtime-openid:
   injection: gateway_or_runtime
   client_supply_forbidden: true
   notes: >
-    身份由部署网关/运行环境注入可信 openid（或等价运行时字段）。
-    后端不签发 JWT/Cookie/session token。
+    业务身份由部署网关/运行环境注入可信 openid（或等价运行时字段）。
     客户端不得在 body/query/header 中提交 openid、user_id 或 JWT 作为业务身份。
-    具体网关字段映射由 B3 实现，不改变本 API 合同。
+    CloudBase 从云函数 context.OPENID 注入；不签发、不校验自建会话 token。
+    自建 VPS / HTTP 签发不透明 Bearer 会话（不是 JWT），网关校验后注入 trusted_openid。
 servers:
   - url: https://api.example.com/v1
     description: MVP 生产环境
 tags:
+  - name: auth
   - name: session
   - name: profile
   - name: matches
@@ -32,6 +36,28 @@ tags:
   - name: share-card
   - name: admin
 paths:
+  /auth/wechat:
+    post:
+      tags: [auth]
+      summary: 微信登录交换自建会话
+      description: |
+        仅自建 VPS / HTTP 使用。body 只含一次性微信登录 code。
+        CloudBase 不调用本接口。登录失败统一 401 UNAUTHORIZED。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WechatAuthRequest'
+      responses:
+        '200':
+          description: 签发不透明会话凭证
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WechatAuthEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /session/init:
     post:
       tags: [session]
@@ -1673,6 +1699,39 @@ components:
           $ref: '#/components/schemas/MyGroupsData'
         request_id:
           type: string
+    WechatAuthRequest:
+      type: object
+      additionalProperties: false
+      required: [code]
+      properties:
+        code:
+          type: string
+          minLength: 1
+          description: 一次性微信登录 code；不得含 openid、user_id 或 token。
+    WechatAuthData:
+      type: object
+      additionalProperties: false
+      required: [access_token, token_type, expires_at]
+      properties:
+        access_token:
+          type: string
+          minLength: 1
+          description: 服务端生成的不透明随机凭证，不是 JWT。
+        token_type:
+          type: string
+          const: Bearer
+        expires_at:
+          type: string
+          format: date-time
+          description: UTC ISO 过期时间
+    WechatAuthEnvelope:
+      type: object
+      required: [data, request_id]
+      properties:
+        data:
+          $ref: '#/components/schemas/WechatAuthData'
+        request_id:
+          type: string
     SessionInitRequest:
       type: object
       additionalProperties: false
@@ -2535,3 +2594,12 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorEnvelope'
+  securitySchemes:
+    VpsSessionBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: Opaque
+      description: >
+        自建 VPS / HTTP 外部不透明会话。POST /auth/wechat 签发。
+        网关必须校验后再注入 trusted_openid。不是 JWT。
+        CloudBase 继续使用云函数 context.OPENID，不使用本凭证。

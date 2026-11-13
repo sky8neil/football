@@ -126,15 +126,14 @@ export async function loadSchemaPlan(namespace) {
   }
   const { COLLECTION_DEFINITIONS } = await import(pathToFileURL(distPath).href);
   const { UNIQUE_INDEXES, QUERY_INDEXES } = await import(pathToFileURL(join(ROOT, "dist", "schema", "indexes.js")).href);
-  const { cloudBaseCollectionName } = await import(
+  const { CLOUDBASE_RUNTIME_COLLECTIONS, cloudBaseCollectionName } = await import(
     pathToFileURL(join(ROOT, "dist", "infrastructure", "cloudbase-db.js")).href
   );
 
   // diag / rate_limits 是运行时诊断与限流用的附属集合，不在业务 schema 里但必须存在。
   const logicalCollections = [
     ...COLLECTION_DEFINITIONS.map((definition) => definition.collection),
-    "diag",
-    "rate_limits",
+    ...CLOUDBASE_RUNTIME_COLLECTIONS,
   ];
   const collections = [...new Set(logicalCollections)]
     .sort()

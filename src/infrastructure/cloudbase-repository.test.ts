@@ -7,6 +7,7 @@ import { COLLECTION_DEFINITIONS } from "../schema/collections.js";
 import { UNIQUE_INDEXES } from "../schema/indexes.js";
 import {
   CLOUDBASE_REPOSITORY_ENV_KEYS,
+  CLOUDBASE_RUNTIME_COLLECTIONS,
   CloudBaseAppRepository,
   CloudBaseDocumentNotFoundError,
   CloudBaseDuplicateKeyError,
@@ -307,6 +308,9 @@ describe("CloudBase repository configuration", () => {
       resource_namespace: "FOOTBALL_RESOURCE_NAMESPACE",
     });
     expect(cloudBaseCollectionName("football-test", "users")).toBe("football-test_users");
+    expect(CLOUDBASE_RUNTIME_COLLECTIONS).toEqual(["diag", "rate_limits"]);
+    expect(cloudBaseCollectionName("football-test", "diag")).toBe("football-test_diag");
+    expect(cloudBaseCollectionName("football-test", "rate_limits")).toBe("football-test_rate_limits");
   });
 
   it("requires both values", () => {
