@@ -181,12 +181,13 @@ export async function planDueProviderJobs(input: {
         input.serverNow,
         providerJobIntervalMs(jobType, input.profile),
       );
-      const leagueId = dueLeagues[0];
-      if (leagueId === undefined) {
+      if (dueLeagues.length === 0) {
         decisions.push({ task: jobType, action: "skip", reason: "no_due_league" });
         continue;
       }
-      decisions.push({ task: jobType, action: "run", reason: "due", league_id: leagueId });
+      for (const leagueId of dueLeagues) {
+        decisions.push({ task: jobType, action: "run", reason: "due", league_id: leagueId });
+      }
       continue;
     }
     const last = await latestSyncLog(input.cloudDb, input.namespace, jobType);
@@ -380,7 +381,7 @@ type ProviderJobDeferred = {
 };
 type ProviderJobFailed = { task: string; reason: string; items_failed?: number };
 
-function classifyProviderSyncOutcome(outcome: ProviderSyncOutcome): {
+export function classifyProviderSyncOutcome(outcome: ProviderSyncOutcome): {
   bucket: "ran" | "skipped" | "deferred" | "failed";
   reason?: string;
   deferred?: Omit<ProviderJobDeferred, "task">;
@@ -398,6 +399,9 @@ function classifyProviderSyncOutcome(outcome: ProviderSyncOutcome): {
         last_error_code: outcome.fixtures.last_error_code,
       },
     };
+  }
+  if (outcome.kind === "failed") {
+    return { bucket: "failed", reason: "items_failed", items_failed: outcome.fixtures.items_failed };
   }
   const itemsFailed = outcome.fixtures?.items_failed ?? 0;
   if (itemsFailed > 0) {
@@ -505,18 +509,24 @@ export async function runDueProviderJobs(input: RunDueProviderJobsInput): Promis
         outcome: outcome.kind,
       });
       const classified = classifyProviderSyncOutcome(outcome);
-      if (classified.bucket === "ran") ran.push(label);
-      else if (classified.bucket === "skipped") skipped.push({ task: label, reason: classified.reason ?? "skipped" });
-      else if (classified.bucket === "deferred" && classified.deferred !== undefined) {
-        deferred.push({ task: label, ...classified.deferred });
-      } else if (classified.bucket === "failed") {
-        failed.push({
-          task: label,
-          reason: classified.reason ?? "failed",
-          ...(classified.items_failed === undefined ? {} : { items_failed: classified.items_failed }),
-        });
+      if (classified.bucket === "ran") {
+        await input.providerRegistry.commitPendingLeagueSuccess(decision.task, input.serverNow, decision.league_id);
+        ran.push(label);
+      } else {
+        input.providerRegistry.discardPendingLeagueSuccess(decision.task, decision.league_id);
+        if (classified.bucket === "skipped") skipped.push({ task: label, reason: classified.reason ?? "skipped" });
+        else if (classified.bucket === "deferred" && classified.deferred !== undefined) {
+          deferred.push({ task: label, ...classified.deferred });
+        } else if (classified.bucket === "failed") {
+          failed.push({
+            task: label,
+            reason: classified.reason ?? "failed",
+            ...(classified.items_failed === undefined ? {} : { items_failed: classified.items_failed }),
+          });
+        }
       }
     } catch (error) {
+      input.providerRegistry.discardPendingLeagueSuccess(decision.task, decision.league_id);
       errors.push(error);
       failed.push({ task: label, reason: "exception" });
       input.log({

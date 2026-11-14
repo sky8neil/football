@@ -9,6 +9,8 @@ import { internalError } from "../domain/errors.js";
 import { newUuid } from "../domain/ids.js";
 import { validateMatchTransition } from "../domain/match-state-machine.js";
 import type { ProviderSnapshot } from "../domain/types.js";
+import type { ProviderLeagueRefs } from "../domain/config.js";
+import { findSupportedLeagueByProviderId } from "../domain/config.js";
 import type { ApiFootballFixture } from "../provider/types.js";
 import { normalizeFixture, type MapperAnomaly, type NormalizedFixture } from "../provider/fixture-mapper.js";
 import type { AppRepository, UnitOfWork } from "../infrastructure/repositories.js";
@@ -25,20 +27,49 @@ import { ProviderScheduleSyncService } from "./provider-schedule-sync.js";import
 import { persistAnomalyInTransaction } from "./anomaly-persistence.js";
 import { AnomalyEvaluationService } from "./anomaly-evaluation.js";
 import { assertValidServerNow } from "./period-finalize.js";
-import { ensureCrossSourceMatchMapping } from "./provider-cross-source.js";
+import {
+  ensureCrossSourceMatchMapping,
+  type CrossSourceConflictReason,
+} from "./provider-cross-source.js";
 import { decideProviderResultAdoption, type ProviderResultObservation } from "./provider-result-adoption.js";
+
+const SCHEDULE_AUTHORITY_PROVIDERS: ReadonlySet<string> = new Set([
+  Provider.ApiFootball,
+  Provider.FootballData,
+  Provider.Bsd,
+]);
+
+const CONFLICT_REASON_CODES: Record<CrossSourceConflictReason, string> = {
+  season_mismatch: "PROVIDER_CONFLICT_SEASON",
+  mapping_match_missing: "PROVIDER_CONFLICT_MATCH_MISSING",
+  mapping_league_mismatch: "PROVIDER_CONFLICT_LEAGUE",
+  mapping_season_mismatch: "PROVIDER_CONFLICT_LEDGER_SEASON",
+  mapping_team_mismatch: "PROVIDER_CONFLICT_TEAM",
+};
 
 export interface ProviderFixtureFailure {
   kind: "failed";
   match_id: string | null;
   anomaly_types: AnomalyType[];
+  /** 显式冲突等可观察原因；缺省时沿用 anomaly_types。 */
+  reason_codes?: string[];
 }
 
 export type ProviderFixtureSyncOutcome =
   | ProviderStatusSyncOutcome
   | ProviderTeamChangeOutcome
   | ProviderResultSyncOutcome
-  | ProviderFixtureFailure;
+  | ProviderFixtureFailure
+  | {
+      kind: "unlinked";
+      match_id: null;
+      reason: "unlinked" | "ambiguous";
+    }
+  | {
+      kind: "filtered";
+      match_id: null;
+      reason: "out_of_window";
+    };
 
 type MapperFailureUnitOfWork = UnitOfWork & {
   matchProviderMappings: NonNullable<UnitOfWork["matchProviderMappings"]>;
@@ -198,10 +229,11 @@ export class ProviderFixtureSyncService {
   constructor(
     private readonly repo: AppRepository,
     anomalyEvaluation?: AnomalyEvaluationService,
+    private readonly providerLeagueRefs?: ProviderLeagueRefs,
   ) {
     this.statusSync = new ProviderStatusSyncService(repo);
     this.resultSync = new ProviderResultSyncService(repo);
-    this.scheduleSync = new ProviderScheduleSyncService(repo);
+    this.scheduleSync = new ProviderScheduleSyncService(repo, providerLeagueRefs);
     this.anomalyEvaluation = anomalyEvaluation ?? new AnomalyEvaluationService(repo);
   }
 
@@ -313,9 +345,16 @@ export class ProviderFixtureSyncService {
     rawFixture: ApiFootballFixture,
     payload: Record<string, unknown>,
     serverNow: Date,
+    candidateMatchIds?: ReadonlySet<string>,
   ): Promise<ProviderFixtureSyncOutcome> {
     assertValidServerNow(serverNow);
-    const normalized = normalizeFixture(rawFixture);
+    const provider = rawFixture.provider ?? Provider.ApiFootball;
+    const isSecondary = ["5dollar", "openfoot", "sportapi"].includes(provider);
+    let normalized = normalizeFixture(
+      rawFixture,
+      this.providerLeagueRefs,
+      isSecondary ? { identityOnly: true } : {},
+    );
     if (normalized.entityFailed) {
       const outcome = await persistMapperFailure(
         this.repo,
@@ -335,18 +374,77 @@ export class ProviderFixtureSyncService {
       return outcome;
     }
 
-    if (["5dollar", "openfoot", "sportapi"].includes(normalized.fixture.provider ?? "")) {
-      const mapping = await ensureCrossSourceMatchMapping(this.repo, normalized.fixture, serverNow);
+    if (isSecondary) {
+      const mapping = await ensureCrossSourceMatchMapping(
+        this.repo,
+        normalized.fixture,
+        serverNow,
+        candidateMatchIds,
+        this.providerLeagueRefs,
+      );
       if (mapping.match_id === null) {
-        return { kind: "failed", match_id: null, anomaly_types: [AnomalyType.ProviderDataInvalid] };
+        if (mapping.reason === "conflict") {
+          const existing = await this.repo.matchProviderMappings?.findByProviderAndExternalId(
+            provider,
+            normalized.fixture.providerMatchId,
+          );
+          const match = existing === undefined || existing === null
+            ? null
+            : await this.repo.matches.findById(existing.match_id);
+          await this.persistMappingConflict(
+            normalized.fixture,
+            mapping.conflict_reason,
+            match?.match_id ?? null,
+            serverNow,
+          );
+          return {
+            kind: "failed",
+            match_id: match?.match_id ?? null,
+            anomaly_types: [AnomalyType.ProviderDataInvalid],
+            reason_codes: [CONFLICT_REASON_CODES[mapping.conflict_reason]],
+          };
+        }
+        if (mapping.reason === "out_of_window") {
+          return { kind: "filtered", match_id: null, reason: "out_of_window" };
+        }
+        const reason = mapping.reason === "ambiguous" ? "ambiguous" : "unlinked";
+        return { kind: "unlinked", match_id: null, reason };
+      }
+      const supportedLeague = findSupportedLeagueByProviderId(
+        normalized.fixture.leagueProviderId,
+        provider,
+        this.providerLeagueRefs,
+      );
+      normalized = normalizeFixture(
+        rawFixture,
+        this.providerLeagueRefs,
+        supportedLeague === undefined ? {} : { resolvedSeason: supportedLeague.source_season_ref },
+      );
+      if (normalized.entityFailed) {
+        const outcome = await persistMapperFailure(
+          this.repo,
+          normalized.fixture.providerMatchId,
+          normalized.fixture.rawStatus,
+          normalized.anomalies,
+          payload,
+          serverNow,
+          normalized.fixture.provider,
+        );
+        await this.evaluateAfterFixture(
+          outcome,
+          normalized.fixture.providerMatchId,
+          normalized.fixture.provider,
+          serverNow,
+        );
+        return outcome;
       }
     }
 
-    if (normalized.fixture.status.kind === MatchStatus.Scheduled) {
+    if (SCHEDULE_AUTHORITY_PROVIDERS.has(provider)) {
       const mappings = this.repo.matchProviderMappings;
       if (mappings !== undefined) {
         const existing = await mappings.findByProviderAndExternalId(
-          normalized.fixture.provider ?? Provider.ApiFootball,
+          provider,
           normalized.fixture.providerMatchId,
         );
         if (existing === null) {
@@ -355,13 +453,15 @@ export class ProviderFixtureSyncService {
             payload,
             serverNow,
           );
-          await this.evaluateAfterFixture(
-            outcome,
-            normalized.fixture.providerMatchId,
-            normalized.fixture.provider,
-            serverNow,
-          );
-          return outcome;
+          if (normalized.fixture.status.kind === MatchStatus.Scheduled) {
+            await this.evaluateAfterFixture(
+              outcome,
+              normalized.fixture.providerMatchId,
+              normalized.fixture.provider,
+              serverNow,
+            );
+            return outcome;
+          }
         }
       }
     }
@@ -422,6 +522,31 @@ export class ProviderFixtureSyncService {
       serverNow,
     );
     return outcome;
+  }
+
+  private async persistMappingConflict(
+    fixture: NormalizedFixture,
+    conflictReason: string,
+    matchId: string | null,
+    serverNow: Date,
+  ): Promise<void> {
+    const snapshots = this.repo.providerSnapshots;
+    if (snapshots === undefined) return;
+    await snapshots.insert({
+      schema_version: SCHEMA_VERSION,
+      snapshot_id: newUuid(),
+      provider: (fixture.provider ?? Provider.ApiFootball) as Provider,
+      entity_type: "match",
+      entity_id: matchId,
+      provider_entity_id: fixture.providerMatchId,
+      event_type: "provider_error",
+      payload: {
+        diag_code: "DIAG_PROVIDER_MATCH_CONFLICT",
+        reason: conflictReason,
+        league_id: fixture.leagueProviderId,
+      },
+      created_at: serverNow,
+    });
   }
 
   private async applyAdoptableResult(

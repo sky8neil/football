@@ -20,13 +20,13 @@ function mockHttp(respond: (path: string, query: Record<string, string>) => unkn
   return { client, calls };
 }
 
-function fiveDollarRow(id: number, leagueId = "4160026622") {
+function fiveDollarRow(id: number, leagueId = "4160026622", season?: string) {
   return {
     id,
     kickoff_utc: "2026-10-12T12:00:00Z",
     status: "finished",
     status_code: "full",
-    league: { id: leagueId },
+    league: { id: leagueId, ...(season === undefined ? {} : { season }) },
     round: 3,
     teams: { home: { id: 10, name: "Home" }, away: { id: 11, name: "Away" } },
     goals: { home: 2, away: 1 },
@@ -49,7 +49,8 @@ describe("FiveDollarAdapter", () => {
     expect(fixtures).toHaveLength(3);
     expect(calls.map(({ query }) => query.page)).toEqual(["1", "2", "1"]);
     for (const call of calls) {
-      expect(call.path).toBe("fixtures");
+      expect(call.path).toBe(`leagues/${EPL.source_league_ref}/fixtures`);
+      expect(call.query.season).toBe("26/27");
       expect(Number(call.query.end_time) - Number(call.query.start_time)).toBe(86_400);
       expect(call.query.per_page).toBe("100");
     }
@@ -57,10 +58,155 @@ describe("FiveDollarAdapter", () => {
     expect(fixtures[0]).toMatchObject({
       provider: "5dollar",
       fixture: { id: 1, status: { short: "FT" } },
-      league: { id: "4160026622", season: "2026", round: "3" },
+      league: { id: "4160026622", round: "3" },
       teams: { home: { id: 10, name: "Home" } },
       score: { fulltime: { home: 2, away: 1 } },
     });
+    expect(fixtures[0]?.league.season).toBeUndefined();
+  });
+
+  it("filters date-window fixtures to the requested league and keeps upstream season, including absent", async () => {
+    const { client, calls } = mockHttp(() => ({
+      data: [fiveDollarRow(1), fiveDollarRow(2, "4212821298")],
+      pagination: { has_more: false },
+    }));
+    const fixtures = await new FiveDollarAdapter(client).fetchFixturesByDateRange(
+      EPL, "2026-12-31", "2027-01-01", { jobType: "future_schedule", serverNow: NOW },
+    );
+
+    expect(calls).toHaveLength(2);
+    for (const call of calls) {
+      expect(call.path).toBe(`leagues/${EPL.source_league_ref}/fixtures`);
+      expect(call.query.season).toBe("26/27");
+    }
+    expect(fixtures.map((fixture) => fixture.fixture.id)).toEqual([1, 1]);
+    expect(fixtures.every((fixture) => fixture.league.id === EPL.source_league_ref)).toBe(true);
+    expect(fixtures.every((fixture) => fixture.league.season === undefined)).toBe(true);
+  });
+
+  it("fails closed when a requested-league row omits league identity instead of returning zero fixtures", async () => {
+    const missingLeagueId = fiveDollarRow(1) as { league?: { id?: string } };
+    delete missingLeagueId.league?.id;
+    const { client } = mockHttp(() => ({
+      data: [missingLeagueId],
+      pagination: { has_more: false },
+    }));
+
+    await expect(
+      new FiveDollarAdapter(client).fetchFixturesByDateRange(
+        EPL, "2026-10-12", "2026-10-12", { jobType: "post_finish_verify", serverNow: NOW },
+      ),
+    ).rejects.toThrow(/source_id=5d field=league\.id/);
+  });
+
+  it("retains an empty requested-league identity for application-level rejection instead of dropping it", async () => {
+    const { client } = mockHttp(() => ({
+      data: [fiveDollarRow(1, "")],
+      pagination: { has_more: false },
+    }));
+
+    const fixtures = await new FiveDollarAdapter(client).fetchFixturesByDateRange(
+      EPL, "2026-10-12", "2026-10-12", { jobType: "post_finish_verify", serverNow: NOW },
+    );
+
+    expect(fixtures).toHaveLength(1);
+    expect(fixtures[0]?.league.id).toBe("");
+  });
+
+  it("does not fabricate a requested league identity on the live entry", async () => {
+    const missingLeagueId = fiveDollarRow(1) as { league?: { id?: string } };
+    delete missingLeagueId.league?.id;
+    const { client } = mockHttp(() => ({
+      data: [missingLeagueId],
+      pagination: { has_more: false },
+    }));
+
+    const fixtures = await new FiveDollarAdapter(client).fetchLiveFixtures({
+      jobType: "live_match", serverNow: NOW,
+    });
+
+    expect(fixtures[0]?.league.id).toBe("");
+  });
+
+  it("keeps the verified season across a calendar-year boundary", async () => {
+    const { client, calls } = mockHttp(() => ({
+      data: [fiveDollarRow(1)],
+      pagination: { has_more: false },
+    }));
+    const fixtures = await new FiveDollarAdapter(client).fetchFixturesByDateRange(
+      EPL, "2026-12-31", "2027-01-01", { jobType: "future_schedule", serverNow: NOW },
+    );
+
+    expect(calls.map((call) => call.path)).toEqual([
+      `leagues/${EPL.source_league_ref}/fixtures`,
+      `leagues/${EPL.source_league_ref}/fixtures`,
+    ]);
+    expect(calls.map((call) => call.query.season)).toEqual(["26/27", "26/27"]);
+    expect(fixtures.map((fixture) => fixture.fixture.id)).toEqual([1, 1]);
+    expect(fixtures.every((fixture) => fixture.league.season === undefined)).toBe(true);
+  });
+
+  it("uses the runtime custom league ref when constraining the date window", async () => {
+    const custom = { league_id: "premier_league", source_league_ref: "999", season_ref: "2026" };
+    const { client, calls } = mockHttp(() => ({
+      data: [fiveDollarRow(1, "999")],
+      pagination: { has_more: false },
+    }));
+    const fixtures = await new FiveDollarAdapter(client).fetchFixturesByDateRange(
+      custom, "2026-10-12", "2026-10-12", { jobType: "post_finish_verify", serverNow: NOW },
+    );
+
+    expect(calls[0]?.path).toBe("leagues/999/fixtures");
+    expect(calls[0]?.query.season).toBe("26/27");
+    expect(fixtures[0]?.league).toMatchObject({ id: "999" });
+    expect(fixtures[0]?.league.season).toBeUndefined();
+  });
+
+  it("constrains the season entry with the source season window", async () => {
+    const { client, calls } = mockHttp(() => ({
+      data: [fiveDollarRow(1)],
+      pagination: { has_more: false },
+    }));
+    const fixtures = await new FiveDollarAdapter(client).fetchSeasonFixtures(EPL, {
+      jobType: "future_schedule", serverNow: NOW,
+    });
+
+    expect(calls).toEqual([
+      {
+        path: `leagues/${EPL.source_league_ref}/fixtures`,
+        query: { season: "26/27", page: "1", per_page: "100" },
+      },
+    ]);
+    expect(fixtures[0]?.league.season).toBeUndefined();
+  });
+
+  it("preserves an explicitly older source season instead of relabeling it", async () => {
+    const { client } = mockHttp(() => ({
+      data: [fiveDollarRow(1, "4160026622", "25/26"), fiveDollarRow(2, "4160026622", "26/27")],
+      pagination: { has_more: false },
+    }));
+    const fixtures = await new FiveDollarAdapter(client).fetchSeasonFixtures(EPL, {
+      jobType: "future_schedule", serverNow: NOW,
+    });
+
+    expect(fixtures[0]?.league.season).toBe("25/26");
+    expect(fixtures[1]?.league.season).toBe("26/27");
+  });
+
+  it("keeps all leagues for the live entry without a fixed 2026 season", async () => {
+    const { client, calls } = mockHttp(() => ({
+      data: [fiveDollarRow(1), fiveDollarRow(2, "4212821298")],
+      pagination: { has_more: false },
+    }));
+    const fixtures = await new FiveDollarAdapter(client).fetchLiveFixtures({
+      jobType: "live_match", serverNow: NOW,
+    });
+
+    expect(calls).toEqual([
+      { path: "fixtures", query: { status: "live", page: "1", per_page: "100" } },
+    ]);
+    expect(fixtures.map((fixture) => fixture.league.id)).toEqual(["4160026622", "4212821298"]);
+    expect(fixtures.every((fixture) => fixture.league.season === undefined)).toBe(true);
   });
 });
 
@@ -87,13 +233,24 @@ describe("OpenFootAdapter", () => {
     });
 
     expect(calls).toEqual([
-      { path: "matches", query: { competition: EPL.source_league_ref, season: "2026/2027" } },
-      { path: "matches", query: { competition: EPL.source_league_ref, season: "2026/2027", cursor: "cursor-next" } },
+      { path: "matches", query: { competition: EPL.source_league_ref, season: "2026/27" } },
+      { path: "matches", query: { competition: EPL.source_league_ref, season: "2026/27", cursor: "cursor-next" } },
     ]);
     expect(fixtures).toHaveLength(2);
     expect(fixtures[0]).toMatchObject({ provider: "openfoot", fixture: { id: "of-1", status: { short: "FT" } }, score: { fulltime: { home: 1, away: 0 } } });
     expect(fixtures[1]?.fixture.status.short).toBe("NS");
     expect(onQuota).toHaveBeenCalledWith(87, new Date("2026-11-01T00:00:00.000Z"), NOW);
+  });
+
+  it("queries natural-year leagues with the natural-year season", async () => {
+    const { client, calls } = mockHttp(() => ({ data: [], meta: { pagination: { next_cursor: null } } }));
+    await new OpenFootAdapter(client).fetchSeasonFixtures(CSL, {
+      jobType: "future_schedule", serverNow: NOW,
+    });
+
+    expect(calls).toEqual([
+      { path: "matches", query: { competition: CSL.source_league_ref, season: "2026" } },
+    ]);
   });
 
   it("fails closed when a page is marked partial", async () => {

@@ -1,6 +1,7 @@
 import { MatchStatus, SettlementStatus, SyncJobType } from "../domain/enums.js";
 import { internalError } from "../domain/errors.js";
 import type { Match } from "../domain/types.js";
+import type { ProviderLeagueRefs } from "../domain/config.js";
 import type { AppRepository } from "../infrastructure/repositories.js";
 import {
   type PostFinishVerifyFixtureClient,
@@ -18,7 +19,7 @@ import {
   type ProviderTeamSyncOutcome,
 } from "./provider-team-sync.js";
 import { SYNC_TASKS_V1, type SyncTaskConfig } from "../sync/config.js";
-import { loadActiveWindowFixtures } from "./provider-window-loader.js";
+import { loadActiveWindowFixturesWithStats } from "./provider-window-loader.js";
 
 /**
  * P1-1 / P2-1（32.5）：post_finish 高频确认只持续到首次 settlement 开始。
@@ -60,6 +61,11 @@ export type ProviderPostFinishVerifyOutcome =
       /** RP07：本轮因可重试错误延后，下一次调度到期再跑。 */
       kind: "deferred";
       fixtures: Extract<ProviderFixtureSyncJobOutcome, { kind: "deferred" }>;
+    }
+  | {
+      /** 重试耗尽或批次终态失败；调用结果与持久化 failed 日志一致。 */
+      kind: "failed";
+      fixtures: Extract<ProviderFixtureSyncJobOutcome, { kind: "failed" }>;
     };
 
 /** 贯通 32.5 的 finished 后确认任务入口；Provider client 由调用方注入。 */
@@ -71,10 +77,11 @@ export class ProviderPostFinishVerifyService {
     private readonly client: ProviderPostFinishVerifyClient,
     retryOptions: ProviderFixtureSyncRetryOptions = {},
     lockOptions: ProviderFixtureSyncLockOptions = {},
+    private readonly providerLeagueRefs?: ProviderLeagueRefs,
   ) {
     this.fixtureJob = new ProviderFixtureSyncJobService(
       repo,
-      new ProviderFixtureSyncService(repo),
+      new ProviderFixtureSyncService(repo, undefined, providerLeagueRefs),
       retryOptions,
       lockOptions,
     );
@@ -82,7 +89,13 @@ export class ProviderPostFinishVerifyService {
 
   async run(serverNow: Date): Promise<ProviderPostFinishVerifyOutcome> {
     const load: ProviderFixtureBatchLoader = async (loadNow) => {
-      return loadActiveWindowFixtures(this.repo, this.client, SyncJobType.PostFinishVerify, loadNow);
+      return loadActiveWindowFixturesWithStats(
+        this.repo,
+        this.client,
+        SyncJobType.PostFinishVerify,
+        loadNow,
+        this.providerLeagueRefs,
+      );
     };
     const fixtures = await this.fixtureJob.run(
       SyncJobType.PostFinishVerify,
@@ -94,6 +107,9 @@ export class ProviderPostFinishVerifyService {
     }
     if (fixtures.kind === "deferred") {
       return { kind: "deferred", fixtures };
+    }
+    if (fixtures.kind === "failed") {
+      return { kind: "failed", fixtures };
     }
     return {
       kind: "completed",

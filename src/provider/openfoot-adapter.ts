@@ -1,3 +1,4 @@
+import { findSupportedLeagueById, providerSeasonRef } from "../domain/config.js";
 import { ProviderDataError } from "./http.js";
 import type { ProviderAdapter, ProviderAdapterCallOptions, ProviderAdapterLeague, ProviderHttpClient } from "./adapter.js";
 import { asArray, asIdentifier, asRecord, asText } from "./adapter.js";
@@ -73,7 +74,8 @@ export class OpenFootAdapter implements ProviderAdapter {
   ) {}
 
   async fetchSeasonFixtures(league: ProviderAdapterLeague, options?: ProviderAdapterCallOptions): Promise<readonly ApiFootballFixture[]> {
-    const season = `${league.season_ref}/${Number(league.season_ref) + 1}`;
+    const registered = findSupportedLeagueById(league.league_id);
+    const season = registered === undefined ? league.season_ref : providerSeasonRef(registered, "of");
     return this.fetchMatches(league, { competition: league.source_league_ref, season }, options);
   }
 

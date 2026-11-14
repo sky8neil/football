@@ -1,4 +1,5 @@
 import { SyncJobType } from "../domain/enums.js";
+import type { ProviderLeagueRefs } from "../domain/config.js";
 import type { AppRepository } from "../infrastructure/repositories.js";
 import type { LiveMatchFixtureClient } from "./provider-fixture-loader.js";
 import {
@@ -13,7 +14,7 @@ import {
   type ProviderTeamClient,
   type ProviderTeamSyncOutcome,
 } from "./provider-team-sync.js";
-import { loadActiveWindowFixtures } from "./provider-window-loader.js";
+import { loadActiveWindowFixturesWithStats } from "./provider-window-loader.js";
 
 export interface ProviderLiveMatchClient
   extends LiveMatchFixtureClient,
@@ -33,6 +34,11 @@ export type ProviderLiveMatchOutcome =
       /** RP07：本轮因可重试错误延后，下一次调度到期再跑。 */
       kind: "deferred";
       fixtures: Extract<ProviderFixtureSyncJobOutcome, { kind: "deferred" }>;
+    }
+  | {
+      /** 重试耗尽或批次终态失败；调用结果与持久化 failed 日志一致。 */
+      kind: "failed";
+      fixtures: Extract<ProviderFixtureSyncJobOutcome, { kind: "failed" }>;
     };
 
 /** 贯通 32.4 的 T-2h 到 finished 任务入口；Provider client 由调用方注入。 */
@@ -45,8 +51,9 @@ export class ProviderLiveMatchService {
     private readonly client: ProviderLiveMatchClient,
     retryOptions: ProviderFixtureSyncRetryOptions = {},
     lockOptions: ProviderFixtureSyncLockOptions = {},
+    private readonly providerLeagueRefs?: ProviderLeagueRefs,
   ) {
-    this.fixtureSync = new ProviderFixtureSyncService(repo);
+    this.fixtureSync = new ProviderFixtureSyncService(repo, undefined, providerLeagueRefs);
     this.fixtureJob = new ProviderFixtureSyncJobService(
       repo,
       this.fixtureSync,
@@ -57,7 +64,13 @@ export class ProviderLiveMatchService {
 
   async run(serverNow: Date): Promise<ProviderLiveMatchOutcome> {
     const load: ProviderFixtureBatchLoader = (loadNow) =>
-      loadActiveWindowFixtures(this.repo, this.client, SyncJobType.LiveMatch, loadNow);
+      loadActiveWindowFixturesWithStats(
+        this.repo,
+        this.client,
+        SyncJobType.LiveMatch,
+        loadNow,
+        this.providerLeagueRefs,
+      );
     const fixtures = await this.fixtureJob.run(
       SyncJobType.LiveMatch,
       load,
@@ -68,6 +81,9 @@ export class ProviderLiveMatchService {
     }
     if (fixtures.kind === "deferred") {
       return { kind: "deferred", fixtures };
+    }
+    if (fixtures.kind === "failed") {
+      return { kind: "failed", fixtures };
     }
     // P0-1（33.1）：批次完成后巡检库内仍为 live 的 match，覆盖本批未触达的 stale。
     await this.fixtureSync.patrolLiveMatches(serverNow);

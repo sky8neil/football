@@ -105,6 +105,13 @@ export const SUPPORTED_LEAGUES = [
       of: "comp_premier_league_eng",
       sp: null,
     },
+    provider_season_refs: {
+      fd: null,
+      bsd: null,
+      "5d": "26/27",
+      of: "2026/27",
+      sp: null,
+    },
     season_id: "2026_2027",
     round_max: 38,
   },
@@ -122,6 +129,13 @@ export const SUPPORTED_LEAGUES = [
       bsd: null,
       "5d": "4212821298",
       of: "comp_laliga_es",
+      sp: null,
+    },
+    provider_season_refs: {
+      fd: null,
+      bsd: null,
+      "5d": "26/27",
+      of: "2026/27",
       sp: null,
     },
     season_id: "2026_2027",
@@ -143,6 +157,13 @@ export const SUPPORTED_LEAGUES = [
       of: "comp_serie_a_it",
       sp: null,
     },
+    provider_season_refs: {
+      fd: null,
+      bsd: null,
+      "5d": "26/27",
+      of: "2026/27",
+      sp: null,
+    },
     season_id: "2026_2027",
     round_max: 38,
   },
@@ -160,6 +181,13 @@ export const SUPPORTED_LEAGUES = [
       bsd: null,
       "5d": "686337048",
       of: "comp_bundesliga_de",
+      sp: null,
+    },
+    provider_season_refs: {
+      fd: null,
+      bsd: null,
+      "5d": "26/27",
+      of: "2026/27",
       sp: null,
     },
     season_id: "2026_2027",
@@ -181,6 +209,13 @@ export const SUPPORTED_LEAGUES = [
       of: "comp_ligue_1_fr",
       sp: null,
     },
+    provider_season_refs: {
+      fd: null,
+      bsd: null,
+      "5d": "26/27",
+      of: "2026/27",
+      sp: null,
+    },
     season_id: "2026_2027",
     round_max: 34,
   },
@@ -200,6 +235,13 @@ export const SUPPORTED_LEAGUES = [
       of: "comp_chinese_super_league_chn",
       sp: "85",
     },
+    provider_season_refs: {
+      fd: null,
+      bsd: null,
+      "5d": null,
+      of: "2026",
+      sp: null,
+    },
     season_id: "2026",
     round_max: 30,
   },
@@ -209,21 +251,63 @@ export const LEVEL_ELIGIBLE_LEAGUES = SUPPORTED_LEAGUES;
 
 export type SupportedLeague = (typeof SUPPORTED_LEAGUES)[number];
 export type SupportedLeagueId = SupportedLeague["league_id"];
+export type ProviderLeagueSourceId = "fd" | "bsd" | "5d" | "of" | "sp";
+
+export interface ConfiguredProviderLeagueRef {
+  source_id: ProviderLeagueSourceId;
+  source_league_ref: string;
+  league_id: SupportedLeagueId;
+}
+
+export type ProviderLeagueRefs = Readonly<Record<string, Readonly<Record<string, SupportedLeagueId>>>>;
+
+const PROVIDER_SOURCE_IDS: Readonly<Record<string, ProviderLeagueSourceId>> = {
+  football_data: "fd",
+  bsd: "bsd",
+  "5dollar": "5d",
+  openfoot: "of",
+  sportapi: "sp",
+};
+
+/** provider 枚举到源配置 ID 的唯一映射，避免各调用点各自维护一份。 */
+export function providerSourceId(provider: string): ProviderLeagueSourceId | null {
+  return PROVIDER_SOURCE_IDS[provider] ?? null;
+}
+
+/** 解析单个 runtime 的源联赛映射；未提供该源映射时回退静态配置。 */
+export function buildProviderLeagueRefs(
+  entries: readonly ConfiguredProviderLeagueRef[],
+): ProviderLeagueRefs {
+  const next: Record<string, Record<string, SupportedLeagueId>> = {};
+  for (const entry of entries) {
+    const byRef = next[entry.source_id] ?? (next[entry.source_id] = {});
+    const existing = byRef[entry.source_league_ref];
+    if (existing !== undefined && existing !== entry.league_id) {
+      throw new Error(
+        `DIAG_PROVIDER_LEAGUE_REF_CONFLICT source_id=${entry.source_id} source_league_ref=${entry.source_league_ref} league_ids=${existing},${entry.league_id}`,
+      );
+    }
+    byRef[entry.source_league_ref] = entry.league_id;
+  }
+  return next;
+}
 
 export function findSupportedLeagueByProviderId(
   providerLeagueId: string,
   provider: "api_football" | "football_data" | "bsd" | "5dollar" | "openfoot" | "sportapi" = "api_football",
+  providerLeagueRefs?: ProviderLeagueRefs,
 ): SupportedLeague | undefined {
   if (provider === "api_football") {
     return SUPPORTED_LEAGUES.find((row) => row.api_football_league_id === providerLeagueId);
   }
-  const sourceId = provider === "football_data" ? "fd"
-    : provider === "bsd" ? "bsd"
-    : provider === "5dollar" ? "5d"
-    : provider === "openfoot" ? "of"
-    : provider === "sportapi" ? "sp"
-    : null;
+  const sourceId = providerSourceId(provider);
   if (sourceId === null) return undefined;
+  if (providerLeagueRefs?.[sourceId] !== undefined) {
+    const configuredLeagueId = providerLeagueRefs[sourceId]![providerLeagueId];
+    return configuredLeagueId === undefined
+      ? undefined
+      : SUPPORTED_LEAGUES.find((row) => row.league_id === configuredLeagueId);
+  }
   return SUPPORTED_LEAGUES.find((row) => row.provider_refs[sourceId] === providerLeagueId);
 }
 
@@ -235,6 +319,13 @@ export function providerForLeague(
 
 export function findSupportedLeagueById(leagueId: string): SupportedLeague | undefined {
   return SUPPORTED_LEAGUES.find((row) => row.league_id === leagueId);
+}
+
+export function providerSeasonRef(
+  league: SupportedLeague,
+  sourceId: ProviderLeagueSourceId,
+): string {
+  return league.provider_season_refs[sourceId] ?? league.source_season_ref;
 }
 
 export function isSupportedLeagueId(value: string): value is SupportedLeagueId {

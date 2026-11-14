@@ -169,6 +169,7 @@ describe("ProviderRegistry request selection and diagnostics", () => {
     });
 
     expect(registry.lastRequest(sourceId)).toMatchObject({ status: 200, quota_remaining: expectedRemaining });
+    await registry.commitPendingLeagueSuccess(SyncJobType.FutureSchedule, NOW);
     const leagueRows = await registry.leagueDiagnostics(sourceId, [SyncJobType.FutureSchedule], NOW);
     expect(leagueRows[0]).toMatchObject({
       league_id: league, source_league_ref: ref, roles: { schedule: "primary" },

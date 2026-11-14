@@ -14,7 +14,11 @@ function recentSuccess(jobType: string) {
 
 async function runWithLiveMatchLog(liveMatchLog: Record<string, unknown>) {
   const dueLeagues = vi.fn(async () => []);
-  const providerRegistry = { dueLeagues } as unknown as Parameters<typeof runDueProviderJobs>[0]["providerRegistry"];
+  const providerRegistry = {
+    dueLeagues,
+    commitPendingLeagueSuccess: vi.fn(async () => undefined),
+    discardPendingLeagueSuccess: vi.fn(),
+  } as unknown as Parameters<typeof runDueProviderJobs>[0]["providerRegistry"];
   const dispatchRun = vi.fn(async (..._args: unknown[]) => ({ kind: "completed" }));
   const dispatcher = { run: dispatchRun } as unknown as Parameters<typeof runDueProviderJobs>[0]["dispatcher"];
   const querySpy = vi.fn(async (_collection: string, filter: { job_type?: string }) => {

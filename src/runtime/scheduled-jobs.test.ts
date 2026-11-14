@@ -32,7 +32,11 @@ async function runDueLiveMatch(outcome: unknown) {
     cloudDb: { query: querySpy } as unknown as Parameters<typeof runDueProviderJobs>[0]["cloudDb"],
     namespace: "football_test",
     dispatcher: { run: dispatchRun } as unknown as Parameters<typeof runDueProviderJobs>[0]["dispatcher"],
-    providerRegistry: { dueLeagues: vi.fn(async () => []) } as unknown as Parameters<typeof runDueProviderJobs>[0]["providerRegistry"],
+    providerRegistry: {
+      dueLeagues: vi.fn(async () => []),
+      commitPendingLeagueSuccess: vi.fn(async () => undefined),
+      discardPendingLeagueSuccess: vi.fn(),
+    } as unknown as Parameters<typeof runDueProviderJobs>[0]["providerRegistry"],
     syncLeagueIds: ["premier_league"],
     sourceIds: ["fd"],
     profile: "test",
@@ -54,7 +58,13 @@ function runtimeStub(overrides: Record<string, unknown> = {}): ApplicationRuntim
     },
     log: vi.fn(),
     providerSources: { sources: [], sync_leagues: new Set(), sync_profile: "test" },
-    providerRegistry: { beginTickCache: vi.fn(), endTickCache: vi.fn(), dueLeagues: vi.fn(async () => []) },
+    providerRegistry: {
+      beginTickCache: vi.fn(),
+      endTickCache: vi.fn(),
+      dueLeagues: vi.fn(async () => []),
+      commitPendingLeagueSuccess: vi.fn(async () => undefined),
+      discardPendingLeagueSuccess: vi.fn(),
+    },
     providerDispatcher: { run: vi.fn() },
     providerReconcile: { run: vi.fn(async () => ({ kind: "completed" })) },
     schedulerState: {
@@ -147,7 +157,13 @@ describe("runScheduledJobs", () => {
     const runtime = runtimeStub({
       db: { query },
       repo: { matches: { findSettlementTodos }, settlements: { findByStatus }, rankings: { findAll: vi.fn(async () => []) } },
-      providerRegistry: { beginTickCache, endTickCache, dueLeagues: vi.fn() },
+      providerRegistry: {
+        beginTickCache,
+        endTickCache,
+        dueLeagues: vi.fn(),
+        commitPendingLeagueSuccess: vi.fn(async () => undefined),
+        discardPendingLeagueSuccess: vi.fn(),
+      },
       providerReconcile: { run: reconcileRun },
     });
 
@@ -181,6 +197,8 @@ describe("runScheduledJobs", () => {
         beginTickCache,
         endTickCache,
         dueLeagues: vi.fn(async () => []),
+        commitPendingLeagueSuccess: vi.fn(async () => undefined),
+        discardPendingLeagueSuccess: vi.fn(),
       },
       providerDispatcher: { run: vi.fn(async () => { throw new Error("due league failed"); }) },
       providerReconcile: { run: vi.fn(async () => ({ kind: "completed" })) },
@@ -208,6 +226,8 @@ describe("runScheduledJobs", () => {
         beginTickCache: vi.fn(),
         endTickCache: vi.fn(),
         dueLeagues: vi.fn(async () => []),
+        commitPendingLeagueSuccess: vi.fn(async () => undefined),
+        discardPendingLeagueSuccess: vi.fn(),
       },
       db: {
         query: vi.fn(async (_collection: string, filter: { job_type?: string }) => {
@@ -249,6 +269,8 @@ describe("runScheduledJobs", () => {
         beginTickCache: vi.fn(),
         endTickCache: vi.fn(),
         dueLeagues: vi.fn(async () => []),
+        commitPendingLeagueSuccess: vi.fn(async () => undefined),
+        discardPendingLeagueSuccess: vi.fn(),
       },
       db: {
         query: vi.fn(async (_collection: string, filter: { job_type?: string }) => {

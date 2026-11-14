@@ -64,6 +64,16 @@ export class ProviderDataError extends ProviderError {
   }
 }
 
+/** 请求本身未执行（如源级轮询间隔未到），携带可重试时间；区别于预算拒绝与真实空数据。 */
+export class ProviderRequestDeferredError extends ProviderError {
+  readonly retry_at: Date;
+  constructor(readonly reason: string, retryAt: Date) {
+    super("PROVIDER_REQUEST_DEFERRED", `provider request deferred: ${reason}`);
+    this.name = "ProviderRequestDeferredError";
+    this.retry_at = new Date(retryAt);
+  }
+}
+
 /** 只读端点白名单（31.1）。非白名单或含 odds/bookmaker/bet 一律拒绝。 */
 export function assertReadOnlyEndpoint(path: string): void {
   if (!READ_ONLY_ENDPOINTS.includes(path) || FORBIDDEN_PATH_PATTERN.test(path)) {

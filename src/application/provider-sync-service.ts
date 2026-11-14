@@ -1,5 +1,6 @@
 import { SyncJobType } from "../domain/enums.js";
 import { internalError } from "../domain/errors.js";
+import type { ProviderLeagueRefs } from "../domain/config.js";
 import type { AppRepository } from "../infrastructure/repositories.js";
 import type { FutureScheduleFixtureClient } from "./provider-fixture-loader.js";
 import {
@@ -37,6 +38,12 @@ export type ProviderFutureScheduleOutcome =
       /** RP07：本轮因可重试错误延后，下一次调度到期再跑。 */
       kind: "deferred";
       fixtures: Extract<ProviderFixtureSyncJobOutcome, { kind: "deferred" }>;
+    }
+  | {
+      /** 重试耗尽或批次终态失败；调用结果与持久化 failed 日志一致。 */
+      kind: "failed";
+      teams: ProviderTeamSyncOutcome;
+      fixtures: Extract<ProviderFixtureSyncJobOutcome, { kind: "failed" }>;
     };
 
 /**
@@ -53,12 +60,13 @@ export class ProviderFutureScheduleService {
     client: ProviderScheduleSyncClient,
     retryOptions: ProviderFixtureSyncRetryOptions = {},
     lockOptions: ProviderFixtureSyncLockOptions = {},
+    providerLeagueRefs?: ProviderLeagueRefs,
   ) {
     this.client = client;
     this.teamSync = new ProviderTeamSyncService(repo, client);
     this.fixtureJob = new ProviderFixtureSyncJobService(
       repo,
-      new ProviderFixtureSyncService(repo),
+      new ProviderFixtureSyncService(repo, undefined, providerLeagueRefs),
       retryOptions,
       lockOptions,
     );
@@ -76,12 +84,19 @@ export class ProviderFutureScheduleService {
       SyncJobType.FutureSchedule,
       load,
       serverNow,
+      leagueId,
     );
     if (fixtures.kind === "skipped") {
       return { kind: "skipped", fixtures };
     }
     if (fixtures.kind === "deferred") {
       return { kind: "deferred", fixtures };
+    }
+    if (fixtures.kind === "failed") {
+      if (teams === null) {
+        throw internalError("future_schedule 失败但未记录球队同步结果");
+      }
+      return { kind: "failed", teams, fixtures };
     }
     if (teams === null) {
       throw internalError("future_schedule 已完成但未记录球队同步结果");

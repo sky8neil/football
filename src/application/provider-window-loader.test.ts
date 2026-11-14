@@ -71,7 +71,7 @@ describe("loadActiveWindowFixtures", () => {
     const client = { getFixtures: vi.fn(async () => [fixture]) };
 
     await expect(loadActiveWindowFixtures(repo, client, SyncJobType.LiveMatch, NOW)).resolves.toEqual([
-      { fixture, payload: { fixture } },
+      { fixture, payload: { fixture }, candidateMatchIds: ["match-id"] },
     ]);
     expect(client.getFixtures).toHaveBeenCalledTimes(1);
     expect(client.getFixtures).toHaveBeenCalledWith(expect.objectContaining({

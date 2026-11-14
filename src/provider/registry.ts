@@ -1,6 +1,6 @@
 import { SUPPORTED_LEAGUES } from "../domain/config.js";
 import type { ApiFootballFixturesQuery, ApiFootballSeasonFixturesQuery, ApiFootballTeamQuery, ProviderHttpClient as LegacyProviderHttpClient } from "./http.js";
-import { ApiFootballClient, ProviderHttpError, ProviderQuotaExceededError } from "./http.js";
+import { ApiFootballClient, ProviderHttpError, ProviderQuotaExceededError, ProviderRequestDeferredError } from "./http.js";
 import type { ApiFootballFixture, ApiFootballTeam } from "./types.js";
 import type { ProviderAdapter, ProviderAdapterLeague, ProviderHttpClient, ProviderHttpResponse } from "./adapter.js";
 import { BsdAdapter } from "./bsd-adapter.js";
@@ -11,7 +11,7 @@ import { SportApiAdapter } from "./sportapi-adapter.js";
 import type { ProviderSource, ProviderSourceId, ProviderSourcesConfig } from "./sources.js";
 import type { ProviderResponseMetadata } from "./transport.js";
 import { FetchProviderHttpClient } from "./transport.js";
-import { ProviderBudget, ProviderBudgetDeniedError, type ProviderBudgetJob } from "./budget.js";
+import { ProviderBudget, ProviderBudgetDeferredError, ProviderBudgetDeniedError, type ProviderBudgetJob } from "./budget.js";
 import { KeyPool, InMemoryProviderKeyStateStore, type ProviderKeyStateStore } from "./key-pool.js";
 import { InMemoryProviderLeagueStateStore, type ProviderLeagueState, type ProviderLeagueStateStore } from "./league-state.js";
 import { SyncJobType } from "../domain/enums.js";
@@ -171,9 +171,20 @@ export class ProviderRegistry {
   private readonly syncProfile: ProviderSourcesConfig["sync_profile"];
   private readonly minimumGapMs: number;
   private readonly leagueStateStore: ProviderLeagueStateStore;
-  private liveRequestCache: { key: string; value: Promise<readonly ApiFootballFixture[]> } | null = null;
+  private liveRequestCache: {
+    key: string;
+    value: Promise<readonly ApiFootballFixture[]>;
+    diagnosticsLogged?: boolean;
+  } | null = null;
   /** RP06：按轮（tick）缓存联赛状态，仅在 beginTickCache()..endTickCache() 之间生效。 */
   private tickStateCache: Map<string, ProviderLeagueState | null> | null = null;
+  /** 请求成功只登记候选；批次满足完成条件后由 commitPendingLeagueSuccess 推进业务完成时间。 */
+  private readonly pendingLeagueSuccess = new Map<string, {
+    sourceId: ProviderSourceId;
+    leagueId: string;
+    jobType: ProviderBudgetJob;
+    at: Date;
+  }>();
 
   constructor(options: ProviderRegistryOptions) {
     this.legacyClient = options.legacyClient;
@@ -246,9 +257,35 @@ export class ProviderRegistry {
     }));
   }
 
-  beginTickCache(): void { this.tickStateCache = new Map(); }
-  endTickCache(): void { this.tickStateCache = null; }
+  beginTickCache(): void {
+    this.tickStateCache = new Map();
+    this.pendingLeagueSuccess.clear();
+  }
+  endTickCache(): void {
+    this.tickStateCache = null;
+    this.pendingLeagueSuccess.clear();
+  }
   get tickCacheActive(): boolean { return this.tickStateCache !== null; }
+
+  /** 批次满足完成条件后推进联赛业务完成时间；请求成功本身不再直接推进。 */
+  async commitPendingLeagueSuccess(jobType: ProviderBudgetJob, at: Date, leagueId?: string): Promise<void> {
+    for (const [key, entry] of [...this.pendingLeagueSuccess]) {
+      if (entry.jobType !== jobType) continue;
+      if (leagueId !== undefined && entry.leagueId !== leagueId) continue;
+      await this.leagueStateStore.markSuccess(entry.sourceId, entry.leagueId, entry.jobType, at);
+      this.tickStateCache?.delete(`${entry.sourceId}|${entry.leagueId}|${entry.jobType}`);
+      this.pendingLeagueSuccess.delete(key);
+    }
+  }
+
+  /** 批次失败/延后/跳过时丢弃本轮候选，避免球队请求等单次成功被当作业务完成。 */
+  discardPendingLeagueSuccess(jobType: ProviderBudgetJob, leagueId?: string): void {
+    for (const [key, entry] of [...this.pendingLeagueSuccess]) {
+      if (entry.jobType !== jobType) continue;
+      if (leagueId !== undefined && entry.leagueId !== leagueId) continue;
+      this.pendingLeagueSuccess.delete(key);
+    }
+  }
 
   /** 唯一的状态读取入口：缓存生效时复用本轮已读结果，未生效时直连数据库且不缓存。 */
   private async loadLeagueStates(
@@ -367,12 +404,18 @@ export class ProviderRegistry {
     if (league === undefined) return [];
     const jobType = asBudgetJob(query.jobType);
     const now = query.serverNow ?? new Date();
+    /** 显式指定来源仅供 reconcile 等诊断读取，不参与联赛业务完成候选。 */
+    const pendingLeagueId = explicitSourceId === undefined ? league.league_id : undefined;
     const selectedPlan = explicitSourceId ? null : this.requestPlan(league.league_id, jobType, now);
     const selected = explicitSourceId
       ? this.entryForSource(explicitSourceId, league.league_id)
       : selectedPlan ? this.entryForSource(selectedPlan.source_id, league.league_id) : null;
     if (selected === null || selected === undefined) return this.legacyFetch(query, season);
-    if (jobType === SyncJobType.LiveMatch && !this.liveRequestDue(selected.source.source_id, now)) {
+    if (
+      jobType === SyncJobType.LiveMatch &&
+      selected.source.source_id !== "5d" &&
+      !this.liveRequestDue(selected.source.source_id, now)
+    ) {
       return [];
     }
     const trackLeagueInBudget = !(jobType === SyncJobType.LiveMatch && selected.source.source_id === "5d");
@@ -388,26 +431,39 @@ export class ProviderRegistry {
       if (jobType === SyncJobType.LiveMatch && selected.source.source_id === "5d") {
         const cacheKey = `${jobType}:${now.getTime()}`;
         if (this.liveRequestCache?.key !== cacheKey) {
+          if (!this.liveRequestDue(selected.source.source_id, now)) {
+            throw new ProviderRequestDeferredError(
+              "provider_interval",
+              this.liveRequestRetryAt(selected.source.source_id, now),
+            );
+          }
           const liveAdapter = selected.adapter as FiveDollarAdapter;
           this.liveRequestCache = {
             key: cacheKey,
-            value: this.withRequest(selected.source.source_id, jobType, now, () => liveAdapter.fetchLiveFixtures(callOptions), league.league_id),
+            value: this.withRequest(selected.source.source_id, jobType, now, () => liveAdapter.fetchLiveFixtures(callOptions)),
           };
         }
+        const cache = this.liveRequestCache!;
         let allLive: readonly ApiFootballFixture[];
         try {
-          allLive = await this.liveRequestCache.value;
+          allLive = await cache.value;
         } catch (error) {
-          if (this.liveRequestCache?.key === cacheKey) this.liveRequestCache = null;
+          // 失败结果在同 tick 内仍由共享缓存返回，避免下一联赛把失败误当作正常空响应。
           throw error;
         }
-        primaryFixtures = allLive.filter((fixture) => String(fixture.league.id) === selected.league.source_league_ref);
-        await this.leagueStateStore.markSuccess(selected.source.source_id, league.league_id, jobType, now);
-        // 删除而非改写，避免猜错 store 内部字段语义。
-        this.tickStateCache?.delete(`${selected.source.source_id}|${league.league_id}|${jobType}`);
+        this.logLiveInvalidFixtures(selected.source.source_id, jobType, cache, allLive);
+        if (pendingLeagueId !== undefined) {
+          this.pendingLeagueSuccess.set(`${selected.source.source_id}|${pendingLeagueId}|${jobType}`, {
+            sourceId: selected.source.source_id,
+            leagueId: pendingLeagueId,
+            jobType,
+            at: now,
+          });
+        }
+        primaryFixtures = allLive.filter((fixture) => String(fixture.league?.id ?? "") === selected.league.source_league_ref);
         if (this.budget) await this.budget.recordLeagueRequest(selected.source.source_id, league.league_id, now);
       } else {
-        primaryFixtures = await this.withRequest(selected.source.source_id, jobType, now, fetch, league.league_id);
+        primaryFixtures = await this.withRequest(selected.source.source_id, jobType, now, fetch, pendingLeagueId);
       }
       if (season && primaryFixtures.length === 0) {
         this.log?.({
@@ -423,17 +479,19 @@ export class ProviderRegistry {
         return primaryFixtures;
       }
       const comparisons = await this.fetchResultComparisons(league.league_id, selected.source.source_id, query, jobType, false);
-      return [...primaryFixtures, ...comparisons];
+      return [...primaryFixtures, ...comparisons.fixtures];
     } catch (error) {
+      if (error instanceof ProviderRequestDeferredError) throw error;
       if (jobType === SyncJobType.PostFinishVerify) {
         if (error instanceof ProviderBudgetDeniedError) {
           this.log?.({ event: "skipped_budget", source_id: selected.source.source_id, league_id: league.league_id, reason: error.reason });
         }
-        return this.fetchResultComparisons(league.league_id, selected.source.source_id, query, jobType, true);
+        const comparisons = await this.fetchResultComparisons(league.league_id, selected.source.source_id, query, jobType, true);
+        if (!comparisons.executed) throw error;
+        return comparisons.fixtures;
       }
       if (error instanceof ProviderBudgetDeniedError && jobType !== SyncJobType.LiveMatch) {
         this.log?.({ event: "skipped_budget", source_id: selected.source.source_id, league_id: league.league_id, reason: error.reason });
-        return [];
       }
       const fallbackReason = error instanceof ProviderBudgetDeniedError ? error.reason : "provider_unavailable";
       const fallbackPlan = this.requestPlan(league.league_id, jobType, now, new Map([[selected.source.source_id, fallbackReason]]));
@@ -444,7 +502,7 @@ export class ProviderRegistry {
       const fallbackFixtures = await this.withRequest(fallback.source.source_id, jobType, now, () =>
         season || !("dateFrom" in query) || query.dateFrom === undefined || query.dateTo === undefined
           ? fallback.adapter.fetchSeasonFixtures(fallback.league, fallbackOptions)
-          : fallback.adapter.fetchFixturesByDateRange(fallback.league, query.dateFrom, query.dateTo, fallbackOptions), league.league_id);
+          : fallback.adapter.fetchFixturesByDateRange(fallback.league, query.dateFrom, query.dateTo, fallbackOptions), pendingLeagueId);
       if (season && fallbackFixtures.length === 0) {
         this.log?.({
           diag_code: "DIAG_PROVIDER_NO_DATA",
@@ -465,13 +523,14 @@ export class ProviderRegistry {
     query: ApiFootballFixturesQuery | ApiFootballSeasonFixturesQuery,
     jobType: ProviderBudgetJob,
     includeFallbacks: boolean,
-  ): Promise<ApiFootballFixture[]> {
-    if (!("dateFrom" in query) || !query.dateFrom || !query.dateTo) return [];
+  ): Promise<{ fixtures: ApiFootballFixture[]; executed: boolean }> {
+    if (!("dateFrom" in query) || !query.dateFrom || !query.dateTo) return { fixtures: [], executed: false };
     const entries = (this.sourceLeagues.get(leagueId) ?? []).filter((entry) =>
       entry.source.source_id !== primarySourceId &&
       (entry.roles.result === "secondary" || (includeFallbacks && entry.roles.result === "fallback")),
     );
     const results: ApiFootballFixture[] = [];
+    let executed = false;
     for (const entry of entries) {
       try {
         const now = query.serverNow ?? new Date();
@@ -484,6 +543,7 @@ export class ProviderRegistry {
           ),
           leagueId,
         );
+        executed = true;
         results.push(...rows.filter((fixture) => fixture.fixture?.status?.short !== "NS"));
       } catch (error) {
         this.log?.({
@@ -495,7 +555,7 @@ export class ProviderRegistry {
         });
       }
     }
-    return results;
+    return { fixtures: results, executed };
   }
 
   private async legacyFetch(
@@ -558,6 +618,7 @@ export class ProviderRegistry {
     const preferred = this.budget ? await this.budget.candidateKeys(sourceId, now, excluded) : (this.source(sourceId)?.api_keys.map((key) => key.key_id) ?? []);
     const candidates = await pool.candidates(now, preferred);
     let lastReason = "provider_cooldown";
+    let lastRetryAt: Date | undefined;
     for (const keyId of candidates) {
       const decision = this.budget ? await this.budget.acquire(sourceId, jobType, now, keyId, leagueId) : { allowed: true as const, key_id: keyId, minute_used: 0, daily_used: 0, daily_limit: 0 };
       if (decision.allowed) {
@@ -566,6 +627,14 @@ export class ProviderRegistry {
         return keyId;
       }
       lastReason = decision.reason;
+      lastRetryAt = decision.retry_at;
+    }
+    if (lastRetryAt !== undefined) throw new ProviderBudgetDeferredError(lastReason, lastRetryAt);
+    if (this.budget) {
+      for (const key of this.source(sourceId)?.api_keys ?? []) {
+        const recovery = this.budget.unavailableWindow(sourceId, now, key.key_id);
+        if (recovery !== null) throw new ProviderBudgetDeferredError(recovery.reason, recovery.retry_at);
+      }
     }
     throw new ProviderBudgetDeniedError(lastReason);
   }
@@ -595,9 +664,12 @@ export class ProviderRegistry {
         const value = await fn();
         this.lastRequestsByJob.set(`${sourceId}:${jobType}`, now.getTime());
         if (leagueId) {
-          await this.leagueStateStore.markSuccess(sourceId, leagueId, jobType, now);
-          // 删除而非改写，避免猜错 store 内部字段语义。
-          this.tickStateCache?.delete(`${sourceId}|${leagueId}|${jobType}`);
+          this.pendingLeagueSuccess.set(`${sourceId}|${leagueId}|${jobType}`, {
+            sourceId,
+            leagueId,
+            jobType,
+            at: now,
+          });
         }
         this.lastRequests.set(sourceId, this.requestInfo(sourceId, 200, Date.now() - startedAt, now));
         this.log?.({ event: "provider_request", source_id: sourceId, ...this.lastRequests.get(sourceId) });
@@ -635,11 +707,50 @@ export class ProviderRegistry {
   private liveRequestDue(sourceId: ProviderSourceId, now: Date): boolean {
     const last = this.lastRequestsByJob.get(`${sourceId}:${SyncJobType.LiveMatch}`);
     if (last === undefined) return true;
+    return now.getTime() - last >= this.liveRequestIntervalMs(sourceId);
+  }
+
+  private liveRequestIntervalMs(sourceId: ProviderSourceId): number {
     const intervalMinutes = sourceId === "bsd" || sourceId === "sp"
       ? this.syncProfile === "test" ? 5 : 2
       : sourceId === "5d" ? this.syncProfile === "test" ? 5 : 3
       : this.syncProfile === "test" ? 10 : 5;
-    return now.getTime() - last >= intervalMinutes * 60_000;
+    return intervalMinutes * 60_000;
+  }
+
+  private liveRequestRetryAt(sourceId: ProviderSourceId, now: Date): Date {
+    const last = this.lastRequestsByJob.get(`${sourceId}:${SyncJobType.LiveMatch}`) ?? now.getTime();
+    return new Date(last + this.liveRequestIntervalMs(sourceId));
+  }
+
+  /**
+   * 全局 5d 直播响应缺少联赛归属时只做源级诊断：不把该行归到任何联赛，
+   * 也不让同批其他联赛的正常记录因此失败。每个共享请求批次最多记录一次。
+   */
+  private logLiveInvalidFixtures(
+    sourceId: ProviderSourceId,
+    jobType: ProviderBudgetJob,
+    cache: { diagnosticsLogged?: boolean } | null,
+    fixtures: readonly ApiFootballFixture[],
+  ): void {
+    if (cache === null || cache.diagnosticsLogged === true) return;
+    const invalid = fixtures.filter((fixture) => String(fixture.league?.id ?? "").length === 0);
+    cache.diagnosticsLogged = true;
+    if (invalid.length === 0) return;
+    const fixtureIds = invalid
+      .map((fixture) => fixture.fixture?.id)
+      .filter((id): id is string | number => typeof id === "string" || typeof id === "number")
+      .slice(0, 20)
+      .map((id) => String(id));
+    this.log?.({
+      event: "provider_data_invalid",
+      diag_code: "DIAG_PROVIDER_FORMAT",
+      source_id: sourceId,
+      job_type: jobType,
+      field: "league.id",
+      invalid_count: invalid.length,
+      ...(fixtureIds.length === 0 ? {} : { fixture_ids: fixtureIds }),
+    });
   }
 
   private observeProviderResponse(sourceId: ProviderSourceId, keyId: string, metadata: ProviderResponseMetadata): void {

@@ -48,6 +48,17 @@ function makeMatch(overrides: Partial<Match> = {}): Match {
   };
 }
 
+function makeFiveDollarFixture(
+  providerMatchId: string,
+  status: string,
+  score?: { home: number | null; away: number | null },
+): ApiFootballFixture {
+  const fixture = makeFixture(providerMatchId, status, score, Provider.FiveDollar);
+  fixture.league.id = "4160026622";
+  delete (fixture.league as { season?: unknown }).season;
+  return fixture;
+}
+
 function makeFixture(
   providerMatchId: string,
   status: string,
@@ -107,15 +118,32 @@ function makeTeam(teamId: string): Team {
   };
 }
 
-function makeTeamMapping(teamId: string, providerTeamId: string): TeamProviderMapping {
+function makeTeamMapping(
+  teamId: string,
+  providerTeamId: string,
+  provider: Provider = Provider.ApiFootball,
+): TeamProviderMapping {
   return {
     schema_version: 1,
     team_id: teamId,
-    provider: Provider.ApiFootball,
+    provider,
     provider_team_id: providerTeamId,
     created_at: NOW,
     updated_at: NOW,
   };
+}
+
+async function seedTeams(
+  repo: InMemoryRepository,
+  provider: Provider = Provider.ApiFootball,
+): Promise<{ home_team_id: string; away_team_id: string }> {
+  const homeTeamId = newUuid();
+  const awayTeamId = newUuid();
+  await repo.teams.insert(makeTeam(homeTeamId));
+  await repo.teams.insert(makeTeam(awayTeamId));
+  await repo.teamProviderMappings.insert(makeTeamMapping(homeTeamId, "1001", provider));
+  await repo.teamProviderMappings.insert(makeTeamMapping(awayTeamId, "1002", provider));
+  return { home_team_id: homeTeamId, away_team_id: awayTeamId };
 }
 
 async function seedChangedTeams(repo: InMemoryRepository): Promise<{
@@ -245,6 +273,482 @@ describe("ProviderFixtureSyncService", () => {
 
     // 预检读 home/away 各一次；applyTeamChange 复用预加载结果，不再重复查。
     expect(lookups).toBe(2);
+  });
+
+  it.each([
+    ["NS", MatchStatus.Scheduled],
+    ["1H", MatchStatus.Live],
+    ["PST", MatchStatus.Postponed],
+    ["CANC", MatchStatus.Cancelled],
+    ["ABD", MatchStatus.Abandoned],
+  ] as const)(
+    "主赛程源首次发现 %s fixture 且比赛不存在时建立 match 并应用状态",
+    async (statusShort, expectedStatus) => {
+      const repo = new InMemoryRepository();
+      const teams = await seedTeams(repo);
+      const fixture = makeFixture("1200001", statusShort);
+
+      const outcome = await new ProviderFixtureSyncService(repo).applyFixture(
+        fixture,
+        { fixture: { id: 1200001, status: statusShort } },
+        NOW,
+      );
+
+      expect(outcome).toMatchObject({
+        kind: "applied",
+        match_status: expectedStatus,
+      });
+      const mapping = await repo.matchProviderMappings.findByProviderAndExternalId(
+        Provider.ApiFootball,
+        "1200001",
+      );
+      expect(mapping).not.toBeNull();
+      expect(outcome.match_id).toBe(mapping!.match_id);
+      await expect(repo.matches.findById(mapping!.match_id)).resolves.toMatchObject({
+        home_team_id: teams.home_team_id,
+        away_team_id: teams.away_team_id,
+        match_status: expectedStatus,
+        settlement_status:
+          expectedStatus === MatchStatus.Cancelled
+            ? SettlementStatus.Voided
+            : SettlementStatus.Pending,
+      });
+    },
+  );
+
+  it("主赛程源首次发现已结束 fixture 时建档并走既有权威赛果采纳", async () => {
+    const repo = new InMemoryRepository();
+    const teams = await seedTeams(repo, Provider.FootballData);
+    const fixture = makeFixture(
+      "1200002",
+      "FT",
+      { home: 2, away: 1 },
+      Provider.FootballData,
+    );
+
+    const outcome = await new ProviderFixtureSyncService(repo).applyFixture(
+      fixture,
+      { fixture: { id: 1200002 }, score: { fulltime: { home: 2, away: 1 } } },
+      NOW,
+    );
+
+    expect(outcome).toMatchObject({
+      kind: "applied",
+      result_version: 1,
+      settlement_status: SettlementStatus.Waiting,
+    });
+    const mapping = await repo.matchProviderMappings.findByProviderAndExternalId(
+      Provider.FootballData,
+      "1200002",
+    );
+    expect(mapping).not.toBeNull();
+    expect(outcome.match_id).toBe(mapping!.match_id);
+    await expect(repo.matches.findById(mapping!.match_id)).resolves.toMatchObject({
+      home_team_id: teams.home_team_id,
+      away_team_id: teams.away_team_id,
+      match_status: MatchStatus.Finished,
+      settlement_status: SettlementStatus.Waiting,
+      regular_home_score: 2,
+      regular_away_score: 1,
+      result_version: 1,
+    });
+    await expect(
+      repo.matchResults.findByMatchAndVersion(mapping!.match_id, 1),
+    ).resolves.toMatchObject({
+      regular_home_score: 2,
+      regular_away_score: 1,
+    });
+  });
+
+  it("首次发现并重复输入同一已结束 fixture 时复用原 match_id 且不重复结算", async () => {
+    const repo = new InMemoryRepository();
+    await seedTeams(repo, Provider.FootballData);
+    const service = new ProviderFixtureSyncService(repo);
+    const fixture = makeFixture(
+      "1200003",
+      "FT",
+      { home: 2, away: 1 },
+      Provider.FootballData,
+    );
+
+    const first = await service.applyFixture(fixture, { fixture: { id: 1200003 } }, NOW);
+    const second = await service.applyFixture(
+      fixture,
+      { fixture: { id: 1200003 } },
+      new Date(NOW.getTime() + 60_000),
+    );
+
+    expect(second).toMatchObject({
+      kind: "unchanged",
+      match_id: first.match_id,
+      result_version: 1,
+    });
+    await expect(repo.matches.findBySeason("2026_2027")).resolves.toHaveLength(1);
+    await expect(
+      repo.matchResults.findByMatchAndVersion(first.match_id!, 2),
+    ).resolves.toBeNull();
+  });
+
+  it("无赛季但已有 5d 比赛映射时按账本赛季更新同一场比赛", async () => {
+    const repo = new InMemoryRepository();
+    const teams = await seedTeams(repo, Provider.FiveDollar);
+    const match = makeMatch({
+      home_team_id: teams.home_team_id,
+      away_team_id: teams.away_team_id,
+    });
+    await seedMatch(repo, match, "1300001", Provider.FiveDollar);
+    const fixture = makeFiveDollarFixture("1300001", "1H");
+
+    const outcome = await new ProviderFixtureSyncService(repo).applyFixture(
+      fixture,
+      { fixture: { id: 1300001 } },
+      NOW,
+    );
+
+    expect(outcome).toMatchObject({
+      kind: "applied",
+      match_id: match.match_id,
+      match_status: MatchStatus.Live,
+    });
+    await expect(repo.matches.findById(match.match_id)).resolves.toMatchObject({
+      match_status: MatchStatus.Live,
+      season_id: "2026_2027",
+    });
+    expect(fixture.league.season).toBeUndefined();
+    await expect(repo.matches.findBySeason("2026_2027")).resolves.toHaveLength(1);
+  });
+
+  it("无赛季、无比赛映射时用球队映射与开球容差唯一命中后关联同一场比赛", async () => {
+    const repo = new InMemoryRepository();
+    const teams = await seedTeams(repo, Provider.FiveDollar);
+    const match = makeMatch({
+      home_team_id: teams.home_team_id,
+      away_team_id: teams.away_team_id,
+    });
+    await repo.matches.insert(match);
+    const fixture = makeFiveDollarFixture("1300002", "1H");
+
+    const outcome = await new ProviderFixtureSyncService(repo).applyFixture(
+      fixture,
+      { fixture: { id: 1300002 } },
+      NOW,
+    );
+
+    expect(outcome).toMatchObject({
+      kind: "applied",
+      match_id: match.match_id,
+      match_status: MatchStatus.Live,
+    });
+    await expect(
+      repo.matchProviderMappings.findByProviderAndExternalId(Provider.FiveDollar, "1300002"),
+    ).resolves.toMatchObject({ match_id: match.match_id });
+    await expect(repo.matches.findBySeason("2026_2027")).resolves.toHaveLength(1);
+  });
+
+  it("无赛季且零候选或多候选时不采纳、不新建比赛", async () => {
+    const repo = new InMemoryRepository();
+    await seedTeams(repo, Provider.FiveDollar);
+    const fixture = makeFiveDollarFixture("1300003", "1H");
+
+    await expect(
+      new ProviderFixtureSyncService(repo).applyFixture(
+        fixture,
+        { fixture: { id: 1300003 } },
+        NOW,
+      ),
+    ).resolves.toMatchObject({
+      kind: "unlinked",
+      match_id: null,
+      reason: "unlinked",
+    });
+    await expect(
+      repo.matchProviderMappings.findByProviderAndExternalId(Provider.FiveDollar, "1300003"),
+    ).resolves.toBeNull();
+    await expect(repo.matches.findBySeason("2026_2027")).resolves.toEqual([]);
+  });
+
+  it("5d 明确旧赛季冲突时拒绝且不以账本赛季覆盖", async () => {
+    const repo = new InMemoryRepository();
+    const teams = await seedTeams(repo, Provider.FiveDollar);
+    const match = makeMatch({
+      home_team_id: teams.home_team_id,
+      away_team_id: teams.away_team_id,
+    });
+    await seedMatch(repo, match, "1300004", Provider.FiveDollar);
+    const fixture = makeFiveDollarFixture("1300004", "1H");
+    fixture.league.season = "25/26";
+
+    await expect(
+      new ProviderFixtureSyncService(repo).applyFixture(
+        fixture,
+        { fixture: { id: 1300004 } },
+        NOW,
+      ),
+    ).resolves.toMatchObject({
+      kind: "failed",
+      match_id: match.match_id,
+      anomaly_types: [AnomalyType.ProviderDataInvalid],
+    });
+    await expect(repo.matches.findById(match.match_id)).resolves.toMatchObject({
+      match_status: MatchStatus.Scheduled,
+      season_id: "2026_2027",
+    });
+    expect(fixture.league.season).toBe("25/26");
+  });
+
+  it("目标赛季明确但缺少比赛映射时返回 unlinked，不升级为整批失败", async () => {
+    const repo = new InMemoryRepository();
+    await seedTeams(repo, Provider.FiveDollar);
+    const fixture = makeFiveDollarFixture("1300107", "1H");
+    fixture.league.season = "26/27";
+
+    await expect(
+      new ProviderFixtureSyncService(repo).applyFixture(
+        fixture,
+        { fixture: { id: 1300107 } },
+        NOW,
+      ),
+    ).resolves.toMatchObject({
+      kind: "unlinked",
+      match_id: null,
+      reason: "unlinked",
+    });
+    await expect(
+      repo.matchProviderMappings.findByProviderAndExternalId(Provider.FiveDollar, "1300107"),
+    ).resolves.toBeNull();
+    await expect(repo.matches.findBySeason("2026_2027")).resolves.toEqual([]);
+  });
+
+  it("目标赛季明确但缺少球队映射时同样保留未关联原因", async () => {
+    const repo = new InMemoryRepository();
+    const fixture = makeFiveDollarFixture("1300108", "1H");
+    fixture.league.season = "26/27";
+
+    await expect(
+      new ProviderFixtureSyncService(repo).applyFixture(
+        fixture,
+        { fixture: { id: 1300108 } },
+        NOW,
+      ),
+    ).resolves.toMatchObject({
+      kind: "unlinked",
+      match_id: null,
+      reason: "unlinked",
+    });
+    await expect(
+      repo.matchProviderMappings.findByProviderAndExternalId(Provider.FiveDollar, "1300108"),
+    ).resolves.toBeNull();
+  });
+
+  it("显式赛季冲突持久化具体冲突原因快照", async () => {
+    const repo = new InMemoryRepository();
+    await seedTeams(repo, Provider.FiveDollar);
+    const fixture = makeFiveDollarFixture("1300109", "1H");
+    fixture.league.season = "25/26";
+
+    await expect(
+      new ProviderFixtureSyncService(repo).applyFixture(
+        fixture,
+        { fixture: { id: 1300109 } },
+        NOW,
+      ),
+    ).resolves.toMatchObject({
+      kind: "failed",
+      match_id: null,
+      anomaly_types: [AnomalyType.ProviderDataInvalid],
+    });
+    const evidence = await repo.providerSnapshots.findByEntity("match", null);
+    expect(evidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        provider: Provider.FiveDollar,
+        event_type: "provider_error",
+        provider_entity_id: "1300109",
+        payload: expect.objectContaining({
+          diag_code: "DIAG_PROVIDER_MATCH_CONFLICT",
+          reason: "season_mismatch",
+        }),
+      }),
+    ]));
+  });
+
+  it("已有 5d 映射指向不存在比赛时拒绝且不新建比赛", async () => {
+    const repo = new InMemoryRepository();
+    await seedTeams(repo, Provider.FiveDollar);
+    await repo.matchProviderMappings.insert({
+      schema_version: 1,
+      match_id: newUuid(),
+      provider: Provider.FiveDollar,
+      provider_match_id: "1300005",
+      created_at: NOW,
+      updated_at: NOW,
+    });
+    const fixture = makeFiveDollarFixture("1300005", "1H");
+
+    await expect(
+      new ProviderFixtureSyncService(repo).applyFixture(
+        fixture,
+        { fixture: { id: 1300005 } },
+        NOW,
+      ),
+    ).resolves.toMatchObject({
+      kind: "failed",
+      match_id: null,
+      anomaly_types: [AnomalyType.ProviderDataInvalid],
+    });
+    await expect(repo.matches.findBySeason("2026_2027")).resolves.toEqual([]);
+  });
+
+  it("身份已确认的无赛季 5d 不绕过非法比分校验", async () => {
+    const repo = new InMemoryRepository();
+    const teams = await seedTeams(repo, Provider.FiveDollar);
+    const match = makeMatch({
+      home_team_id: teams.home_team_id,
+      away_team_id: teams.away_team_id,
+    });
+    await seedMatch(repo, match, "1300006", Provider.FiveDollar);
+    const fixture = makeFiveDollarFixture("1300006", "FT", { home: null, away: 1 });
+
+    await expect(
+      new ProviderFixtureSyncService(repo).applyFixture(
+        fixture,
+        { fixture: { id: 1300006 } },
+        NOW,
+      ),
+    ).resolves.toMatchObject({
+      kind: "failed",
+      match_id: match.match_id,
+      anomaly_types: [AnomalyType.InvalidFinalScore],
+    });
+    await expect(repo.matches.findById(match.match_id)).resolves.toMatchObject({
+      regular_home_score: null,
+      regular_away_score: null,
+      result_version: 0,
+      season_id: "2026_2027",
+    });
+  });
+
+  it("主赛程源建档后无赛季 5d 观察落到同一 match_id 且不重复建档", async () => {
+    const repo = new InMemoryRepository();
+    const fdTeams = await seedTeams(repo, Provider.FootballData);
+    await repo.teamProviderMappings.insert(makeTeamMapping(fdTeams.home_team_id, "1001", Provider.FiveDollar));
+    await repo.teamProviderMappings.insert(makeTeamMapping(fdTeams.away_team_id, "1002", Provider.FiveDollar));
+    const service = new ProviderFixtureSyncService(repo);
+    const primary = makeFixture("1400001", "NS", undefined, Provider.FootballData);
+
+    const created = await service.applyFixture(primary, { fixture: { id: 1400001 } }, NOW);
+    const secondary = await service.applyFixture(
+      makeFiveDollarFixture("1400002", "1H"),
+      { fixture: { id: 1400002 } },
+      NOW,
+    );
+
+    expect(created).toMatchObject({ kind: "applied" });
+    expect(secondary).toMatchObject({
+      kind: "applied",
+      match_id: created.match_id,
+      match_status: MatchStatus.Live,
+    });
+    await expect(
+      repo.matchProviderMappings.findByProviderAndExternalId(Provider.FiveDollar, "1400002"),
+    ).resolves.toMatchObject({ match_id: created.match_id });
+    await expect(repo.matches.findBySeason("2026_2027")).resolves.toHaveLength(1);
+  });
+
+  it("主赛程源首次发现 live fixture 后重复输入复用原 match_id", async () => {
+    const repo = new InMemoryRepository();
+    await seedTeams(repo, Provider.FootballData);
+    const service = new ProviderFixtureSyncService(repo);
+    const fixture = makeFixture("1400003", "1H", undefined, Provider.FootballData);
+
+    const first = await service.applyFixture(fixture, { fixture: { id: 1400003 } }, NOW);
+    const second = await service.applyFixture(
+      fixture,
+      { fixture: { id: 1400003 } },
+      new Date(NOW.getTime() + 60_000),
+    );
+
+    expect(first).toMatchObject({ kind: "applied", match_status: MatchStatus.Live });
+    expect(second).toMatchObject({
+      kind: "unchanged",
+      match_id: first.match_id,
+    });
+    await expect(repo.matches.findBySeason("2026_2027")).resolves.toHaveLength(1);
+  });
+
+  it("主赛程源取消且缺少可靠 kickoff 时不捏造比赛记录", async () => {
+    const repo = new InMemoryRepository();
+    await seedTeams(repo);
+    const fixture = makeFixture("1400004", "CANC");
+    fixture.fixture.date = "";
+    (fixture.fixture as { timestamp: unknown }).timestamp = null;
+
+    await expect(
+      new ProviderFixtureSyncService(repo).applyFixture(
+        fixture,
+        { fixture: { id: 1400004 } },
+        NOW,
+      ),
+    ).resolves.toMatchObject({
+      kind: "failed",
+      match_id: null,
+      anomaly_types: [AnomalyType.ProviderDataInvalid],
+    });
+    await expect(
+      repo.matchProviderMappings.findByProviderAndExternalId(Provider.ApiFootball, "1400004"),
+    ).resolves.toBeNull();
+    await expect(repo.matches.findBySeason("2026_2027")).resolves.toEqual([]);
+  });
+
+  it("次要源首次出现不复制比赛，按既有比赛缺映射返回未关联", async () => {
+    const repo = new InMemoryRepository();
+    await seedTeams(repo, Provider.FiveDollar);
+    const fixture = makeFixture(
+      "1200004",
+      "FT",
+      { home: 1, away: 0 },
+      Provider.FiveDollar,
+    );
+    fixture.league.id = "4160026622";
+
+    await expect(
+      new ProviderFixtureSyncService(repo).applyFixture(
+        fixture,
+        { fixture: { id: 1200004 } },
+        NOW,
+      ),
+    ).resolves.toMatchObject({
+      kind: "unlinked",
+      match_id: null,
+      reason: "unlinked",
+    });
+    await expect(
+      repo.matchProviderMappings.findByProviderAndExternalId(Provider.FiveDollar, "1200004"),
+    ).resolves.toBeNull();
+    await expect(repo.matches.findBySeason("2026_2027")).resolves.toEqual([]);
+  });
+
+  it("主赛程源延期且缺少可靠 kickoff 时不捏造比赛记录", async () => {
+    const repo = new InMemoryRepository();
+    await seedTeams(repo);
+    const fixture = makeFixture("1200005", "PST");
+    fixture.fixture.date = "";
+    (fixture.fixture as { timestamp: unknown }).timestamp = null;
+
+    await expect(
+      new ProviderFixtureSyncService(repo).applyFixture(
+        fixture,
+        { fixture: { id: 1200005 } },
+        NOW,
+      ),
+    ).resolves.toMatchObject({
+      kind: "failed",
+      match_id: null,
+      anomaly_types: [AnomalyType.ProviderDataInvalid],
+    });
+    await expect(
+      repo.matchProviderMappings.findByProviderAndExternalId(Provider.ApiFootball, "1200005"),
+    ).resolves.toBeNull();
+    await expect(repo.matches.findBySeason("2026_2027")).resolves.toEqual([]);
   });
 
   it("主入口同步 scheduled fixture 时应用 Provider 主客队变更保护", async () => {

@@ -21,12 +21,16 @@ CloudBase 入口是 `cloudfunctions/api/index.js` → `cloudfunctions/api/dist/c
 |---|---|
 | `football-api.service` | API unit，`Type=simple` |
 | `football-jobs.service` | 单轮任务，`Type=oneshot`，`TimeoutStartSec=1800` |
-| `football-jobs.timer` | 每 10 分钟，`Persistent=true` |
+| `football-jobs.timer` | 每 15 分钟，`Persistent=true` |
 | `Caddyfile` | 备案域名反代到 `127.0.0.1:8787` |
 | `football.env.example` | VPS EnvironmentFile 占位，无真实凭据 |
 | `cloudbase.env.example` | 云函数环境变量占位，无腾讯云密钥 |
 
 `/usr/bin/node`、`User=neilxu`、`/home/neilxu/football/current` 都是建议值，安装前换成目标机实际 Node 路径、用户和发布目录。
+
+## 调度边界
+
+模板按已确认频率使用 15 分钟（`OnCalendar=*-*-* *:00/15:00`），保留 `Persistent=true`。短退避与更短的比分轮询只会在下一次 tick 被唤起时执行，15 分钟调度本身无法提供更高的刷新频率。提高实时性属于单独决策，本期不启用。
 
 ## VPS 最小步骤（开发完成后）
 
@@ -46,7 +50,7 @@ npm run jobs:tick -- --dry-run
 
 ```bash
 systemd-analyze verify ops/vps/football-api.service ops/vps/football-jobs.service ops/vps/football-jobs.timer
-systemd-analyze calendar '*-*-* *:00/10:00'
+systemd-analyze calendar '*-*-* *:00/15:00'
 caddy validate --config ops/vps/Caddyfile --adapter caddyfile
 ```
 

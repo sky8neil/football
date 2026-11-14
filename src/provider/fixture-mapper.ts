@@ -7,7 +7,12 @@
  * - 返回相应 blocking 或数据异常 anomaly。
  */
 import { AnomalyType } from "../domain/enums.js";
-import { findSupportedLeagueByProviderId } from "../domain/config.js";
+import {
+  findSupportedLeagueByProviderId,
+  providerSeasonRef,
+  providerSourceId,
+  type ProviderLeagueRefs,
+} from "../domain/config.js";
 import { parseKickoff, KICKOFF_TOLERANCE_MS } from "./kickoff.js";
 import { mapProviderStatus, type ProviderFixtureStatus } from "./status.js";
 import type { ApiFootballFixture } from "./types.js";
@@ -36,6 +41,11 @@ export interface NormalizedFixture {
   /** 仅 status=FT 且 fulltime 合法整数 0..99 时非 null（31.4）。 */
   fulltime: { home: number; away: number } | null;
   rawStatus: string | null;
+}
+
+export interface NormalizeFixtureOptions {
+  resolvedSeason?: string;
+  identityOnly?: boolean;
 }
 
 export interface NormalizeFixtureResult {
@@ -109,7 +119,11 @@ function emptyFixture(): NormalizedFixture {
   };
 }
 
-export function normalizeFixture(raw: ApiFootballFixture): NormalizeFixtureResult {
+export function normalizeFixture(
+  raw: ApiFootballFixture,
+  providerLeagueRefs?: ProviderLeagueRefs,
+  options: NormalizeFixtureOptions = {},
+): NormalizeFixtureResult {
   if (!isRecord(raw) || !isRecord(raw.fixture)) {
     return {
       fixture: emptyFixture(),
@@ -156,7 +170,7 @@ export function normalizeFixture(raw: ApiFootballFixture): NormalizeFixtureResul
   const registeredLeague =
     leagueProviderId.length === 0
       ? undefined
-      : findSupportedLeagueByProviderId(leagueProviderId, provider);
+      : findSupportedLeagueByProviderId(leagueProviderId, provider, providerLeagueRefs);
   if (leagueProviderId.length === 0) {
     anomalies.push(dataInvalid({ field: "league.id" }));
     entityFailed = true;
@@ -171,27 +185,39 @@ export function normalizeFixture(raw: ApiFootballFixture): NormalizeFixtureResul
   }
 
   const seasonValue = raw.league?.season;
-  const season =
+  const rawSeason =
     typeof seasonValue === "string" && seasonValue.length > 0
       ? seasonValue
       : typeof seasonValue === "number" && Number.isInteger(seasonValue)
         ? String(seasonValue)
         : null;
-  if (season === null) {
-    anomalies.push(dataInvalid({ field: "league.season" }));
-    entityFailed = true;
-  } else if (
-    registeredLeague !== undefined &&
-    season !== registeredLeague.source_season_ref
-  ) {
-    anomalies.push(
-      dataInvalid({
-        field: "league.season",
-        expected: registeredLeague.source_season_ref,
-        actual: season,
-      }),
-    );
-    entityFailed = true;
+  const sourceId = providerSourceId(provider);
+  const providerSeason = registeredLeague !== undefined && sourceId !== null
+    ? providerSeasonRef(registeredLeague, sourceId)
+    : null;
+  let season = rawSeason;
+  if (rawSeason === null) {
+    if (options.resolvedSeason !== undefined && options.resolvedSeason.length > 0) {
+      season = options.resolvedSeason;
+    } else {
+      anomalies.push(dataInvalid({ field: "league.season" }));
+      if (options.identityOnly !== true) entityFailed = true;
+    }
+  } else if (registeredLeague !== undefined) {
+    if (rawSeason === registeredLeague.source_season_ref) {
+      season = registeredLeague.source_season_ref;
+    } else if (providerSeason !== null && rawSeason === providerSeason) {
+      season = registeredLeague.source_season_ref;
+    } else {
+      anomalies.push(
+        dataInvalid({
+          field: "league.season",
+          expected: registeredLeague.source_season_ref,
+          actual: rawSeason,
+        }),
+      );
+      if (options.identityOnly !== true) entityFailed = true;
+    }
   }
 
   const round =
@@ -254,7 +280,7 @@ export function normalizeFixture(raw: ApiFootballFixture): NormalizeFixtureResul
       blocking: true,
       details: { status: rawStatus },
     });
-    entityFailed = true;
+    if (options.identityOnly !== true) entityFailed = true;
   } else if (status.kind === "finished" && rawStatus === "FT") {
     const fulltimeHome = raw.score?.fulltime?.home;
     const fulltimeAway = raw.score?.fulltime?.away;
@@ -269,13 +295,13 @@ export function normalizeFixture(raw: ApiFootballFixture): NormalizeFixtureResul
           fulltimeAway: fulltimeAway ?? null,
         },
       });
-      entityFailed = true;
+      if (options.identityOnly !== true) entityFailed = true;
     }
   }
 
   if (status.kind === "missing") {
     anomalies.push(dataInvalid({ field: "status" }));
-    entityFailed = true;
+    if (options.identityOnly !== true) entityFailed = true;
   }
 
   const kickoffConfirmed =

@@ -17,6 +17,16 @@ export class ProviderBudgetDeniedError extends ProviderError {
   }
 }
 
+/** 本地额度拒绝：携带可实际等待的额度重置时间，供上层写 deferred 而非空数据成功。 */
+export class ProviderBudgetDeferredError extends ProviderBudgetDeniedError {
+  readonly retry_at: Date;
+  constructor(reason: string, retryAt: Date) {
+    super(reason);
+    this.name = "ProviderBudgetDeferredError";
+    this.retry_at = new Date(retryAt);
+  }
+}
+
 export interface ProviderUsageBucket {
   source_id: ProviderSourceId;
   bucket_type: "minute" | "hour" | "day" | "month";
@@ -34,7 +44,7 @@ export interface ProviderUsageStore {
 
 export type ProviderBudgetDecision =
   | { allowed: true; minute_used: number; daily_used: number; daily_limit: number; key_id: string }
-  | { allowed: false; reason: "source_unconfigured" | "minute_limit" | "hour_limit" | "day_limit" | "month_limit" | "provider_quota" | "provider_cooldown"; key_id?: string };
+  | { allowed: false; reason: "source_unconfigured" | "minute_limit" | "hour_limit" | "day_limit" | "month_limit" | "provider_quota" | "provider_cooldown"; key_id?: string; retry_at?: Date };
 
 const PRIORITY_SHARE: Record<ProviderBudgetJob, number> = {
   [SyncJobType.PostFinishVerify]: 1,
@@ -89,6 +99,44 @@ function dayBucket(source: ProviderSource, now: Date, leagueId?: string): Provid
 function monthBucket(sourceId: ProviderSourceId, now: Date): ProviderUsageBucket {
   const key = now.toISOString().slice(0, 7);
   return makeBucket(sourceId, "month", key, new Date(`${key}-01T00:00:00.000Z`));
+}
+
+function nextMinuteStart(now: Date): Date {
+  const next = new Date(now);
+  next.setUTCSeconds(0, 0);
+  next.setUTCMinutes(next.getUTCMinutes() + 1);
+  return next;
+}
+
+function nextHourStart(now: Date): Date {
+  const next = new Date(now);
+  next.setUTCMinutes(0, 0, 0);
+  next.setUTCHours(next.getUTCHours() + 1);
+  return next;
+}
+
+function nextMonthStart(now: Date): Date {
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
+}
+
+function nextDayStart(source: ProviderSource, now: Date): Date {
+  if (source.day_boundary === "utc") {
+    const next = new Date(now);
+    next.setUTCHours(24, 0, 0, 0);
+    return next;
+  }
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(now);
+  const fields = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return new Date(Date.UTC(
+    Number(fields.year),
+    Number(fields.month) - 1,
+    Number(fields.day) + 1,
+  ) - 8 * 60 * 60 * 1000);
 }
 
 function providerStateKey(sourceId: ProviderSourceId, keyId?: string): string {
@@ -166,13 +214,13 @@ export class ProviderBudget {
     const stateKey = providerStateKey(sourceId, keyId);
     const blocked = this.blockedUntil.get(stateKey);
     if (blocked !== undefined) {
-      if (now.getTime() < blocked) return { allowed: false, reason: "provider_cooldown", key_id: key.key_id };
+      if (now.getTime() < blocked) return { allowed: false, reason: "provider_cooldown", key_id: key.key_id, retry_at: new Date(blocked) };
       this.blockedUntil.delete(stateKey);
     }
     const observation = this.observedRemaining.get(stateKey);
     if (observation !== undefined) {
       if (now.getTime() < observation.reset_at && observation.count <= 0) {
-        return { allowed: false, reason: "provider_quota", key_id: key.key_id };
+        return { allowed: false, reason: "provider_quota", key_id: key.key_id, retry_at: new Date(observation.reset_at) };
       }
       if (now.getTime() >= observation.reset_at) this.observedRemaining.delete(stateKey);
     }
@@ -183,36 +231,36 @@ export class ProviderBudget {
     const share = PRIORITY_SHARE[jobType];
     const dailyLimit = source.daily_cap > 0 ? Math.floor(source.daily_cap * share) : 0;
     if (!await this.store.reserve(minute, source.max_per_minute, now)) {
-      return { allowed: false, reason: "minute_limit", key_id: key.key_id };
+      return { allowed: false, reason: "minute_limit", key_id: key.key_id, retry_at: nextMinuteStart(now) };
     }
 
     const reserved: ProviderUsageBucket[] = [minute];
     if (keyMinute !== minute) {
       if (!await this.store.reserve(keyMinute, key.max_per_minute, now)) {
         await this.store.release(minute);
-        return { allowed: false, reason: "minute_limit", key_id: key.key_id };
+        return { allowed: false, reason: "minute_limit", key_id: key.key_id, retry_at: nextMinuteStart(now) };
       }
       reserved.push(keyMinute);
     }
-    const reserve = async (bucket: ProviderUsageBucket, cap: number, reason: BudgetLimitReason) => {
+    const reserve = async (bucket: ProviderUsageBucket, cap: number, reason: BudgetLimitReason, retryAt: Date) => {
       if (!await this.store.reserve(bucket, Math.floor(cap * share), now)) {
         for (const item of reserved) await this.store.release(item);
-        return { allowed: false, reason, key_id: key.key_id } as ProviderBudgetDecision;
+        return { allowed: false, reason, key_id: key.key_id, retry_at: retryAt } as ProviderBudgetDecision;
       }
       reserved.push(bucket);
       return null;
     };
 
     if (source.hourly_cap !== null) {
-      const denied = await reserve(hourBucket(sourceId, now), source.hourly_cap, "hour_limit");
+      const denied = await reserve(hourBucket(sourceId, now), source.hourly_cap, "hour_limit", nextHourStart(now));
       if (denied) return denied;
     }
     if (dailyLimit > 0) {
-      const denied = await reserve(day, source.daily_cap, "day_limit");
+      const denied = await reserve(day, source.daily_cap, "day_limit", nextDayStart(source, now));
       if (denied) return denied;
     }
     if (source.monthly_cap !== null) {
-      const denied = await reserve(monthBucket(sourceId, now), source.monthly_cap, "month_limit");
+      const denied = await reserve(monthBucket(sourceId, now), source.monthly_cap, "month_limit", nextMonthStart(now));
       if (denied) return denied;
     }
 
@@ -240,6 +288,24 @@ export class ProviderBudget {
     const source = this.sources.get(sourceId);
     if (source === undefined) return;
     await this.store.reserve(dayBucket(source, now, leagueId), Number.MAX_SAFE_INTEGER, now);
+  }
+
+  /** 已知可恢复窗口：供 key pool 已过滤掉冷却 key 时，上层仍能写带 retry_at 的 deferred。 */
+  unavailableWindow(
+    sourceId: ProviderSourceId,
+    now: Date,
+    keyId?: string,
+  ): { reason: "provider_cooldown" | "provider_quota"; retry_at: Date } | null {
+    const stateKey = providerStateKey(sourceId, keyId);
+    const blocked = this.blockedUntil.get(stateKey);
+    if (blocked !== undefined && now.getTime() < blocked) {
+      return { reason: "provider_cooldown", retry_at: new Date(blocked) };
+    }
+    const observation = this.observedRemaining.get(stateKey);
+    if (observation !== undefined && now.getTime() < observation.reset_at && observation.count <= 0) {
+      return { reason: "provider_quota", retry_at: new Date(observation.reset_at) };
+    }
+    return null;
   }
 
   observeRemoteQuota(sourceId: ProviderSourceId, remaining: number, resetAt: Date | null, now: Date, keyId?: string): void {

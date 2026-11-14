@@ -530,12 +530,19 @@ describe("shared scheduled-jobs reuse", () => {
 });
 
 describe("Provider Timer scheduling", () => {
-  it("dispatches only the oldest due league for each schedule job in one Timer tick", async () => {
+  it("dispatches every due league for each schedule job in one Timer tick", async () => {
     const now = new Date("2026-10-13T12:00:00.000Z");
     const dueLeagues = vi.fn()
       .mockResolvedValueOnce(["la_liga", "serie_a"])
       .mockResolvedValueOnce(["bundesliga", "ligue_1"]);
     const providerRegistry = { dueLeagues } as unknown as Parameters<typeof runDueProviderJobs>[0]["providerRegistry"];
+    const commitPendingLeagueSuccess = vi.fn(async (_job: string, _now: Date, _league?: string) => undefined);
+    const discardPendingLeagueSuccess = vi.fn();
+    const registry = {
+      ...providerRegistry,
+      commitPendingLeagueSuccess,
+      discardPendingLeagueSuccess,
+    } as unknown as Parameters<typeof runDueProviderJobs>[0]["providerRegistry"];
     const dispatchRun = vi.fn(async (..._args: unknown[]) => ({ kind: "completed" }));
     const dispatcher = { run: dispatchRun } as unknown as Parameters<typeof runDueProviderJobs>[0]["dispatcher"];
     const querySpy = vi.fn(async () => []);
@@ -546,7 +553,7 @@ describe("Provider Timer scheduling", () => {
       cloudDb,
       namespace: "football_test",
       dispatcher,
-      providerRegistry,
+      providerRegistry: registry,
       syncLeagueIds: ["la_liga", "serie_a", "bundesliga", "ligue_1"],
       sourceIds: ["fd"],
       profile: "test",
@@ -558,10 +565,16 @@ describe("Provider Timer scheduling", () => {
     // 底层适配器收物理集合名：查 sync_logs 必须带命名空间前缀，否则云端报「表不存在」。
     expect(querySpy).toHaveBeenCalledWith("football_test_sync_logs", expect.anything(), expect.anything());
 
-    expect(dispatchRun).toHaveBeenCalledWith(SyncJobType.FutureSchedule, now, "la_liga");
-    expect(dispatchRun).toHaveBeenCalledWith(SyncJobType.FullScheduleVerify, now, "bundesliga");
-    expect(dispatchRun.mock.calls.filter(([job]) => job === SyncJobType.FutureSchedule)).toHaveLength(1);
-    expect(dispatchRun.mock.calls.filter(([job]) => job === SyncJobType.FullScheduleVerify)).toHaveLength(1);
+    expect(dispatchRun.mock.calls.filter(([job]) => job === SyncJobType.FutureSchedule).map(([, , league]) => league))
+      .toEqual(["la_liga", "serie_a"]);
+    expect(dispatchRun.mock.calls.filter(([job]) => job === SyncJobType.FullScheduleVerify).map(([, , league]) => league))
+      .toEqual(["bundesliga", "ligue_1"]);
+    expect(commitPendingLeagueSuccess.mock.calls.map(([job, , league]) => `${job}:${league}`)).toEqual(expect.arrayContaining([
+      `${SyncJobType.FutureSchedule}:la_liga`,
+      `${SyncJobType.FutureSchedule}:serie_a`,
+      `${SyncJobType.FullScheduleVerify}:bundesliga`,
+      `${SyncJobType.FullScheduleVerify}:ligue_1`,
+    ]));
     expect(result.jobs_run).toEqual(expect.arrayContaining([
       `${SyncJobType.FutureSchedule}:la_liga`, `${SyncJobType.FullScheduleVerify}:bundesliga`,
     ]));

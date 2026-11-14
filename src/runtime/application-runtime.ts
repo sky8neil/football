@@ -60,6 +60,7 @@ export interface ApplicationRuntime {
 export function createApplicationRuntime(input: ApplicationRuntimeInput): ApplicationRuntime {
   const logger = input.log ?? ((entry) => console.log(JSON.stringify(entry)));
   const providerSources = loadProviderSources(input.env);
+  const providerLeagueRefs = providerSources.league_refs;
   const configuredProviderLeagues = new Set(
     providerSources.sources.flatMap((source) => source.leagues.map((league) => league.league_id)),
   );
@@ -89,21 +90,21 @@ export function createApplicationRuntime(input: ApplicationRuntimeInput): Applic
   const providerDispatcher = new ProviderSyncDispatcher({
     [SyncJobType.FutureSchedule]: (now, leagueId) => new ProviderFutureScheduleService(input.repo, providerClient, {}, {
       dueIntervalMs: providerJobIntervalMs(SyncJobType.FutureSchedule, profile),
-    }).run(now, leagueId),
+    }, providerLeagueRefs).run(now, leagueId),
     [SyncJobType.FullScheduleVerify]: (now, leagueId) => new ProviderFullScheduleVerifyService(input.repo, providerClient, {}, {
       dueIntervalMs: providerJobIntervalMs(SyncJobType.FullScheduleVerify, profile),
-    }).run(now, leagueId),
+    }, providerLeagueRefs).run(now, leagueId),
     [SyncJobType.NearMatch]: (now) => new ProviderNearMatchService(input.repo, providerClient, {}, {
       dueIntervalMs: providerJobIntervalMs(SyncJobType.NearMatch, profile),
-    }).run(now),
+    }, providerLeagueRefs).run(now),
     [SyncJobType.LiveMatch]: (now) => new ProviderLiveMatchService(input.repo, providerClient, {}, {
       dueIntervalMs: providerJobIntervalMs(SyncJobType.LiveMatch, profile),
-    }).run(now),
+    }, providerLeagueRefs).run(now),
     [SyncJobType.PostFinishVerify]: (now) => new ProviderPostFinishVerifyService(input.repo, providerClient, {}, {
       dueIntervalMs: providerJobIntervalMs(SyncJobType.PostFinishVerify, profile),
-    }).run(now),
+    }, providerLeagueRefs).run(now),
   });
-  const providerReconcile = new ProviderReconcileService(input.repo, providerClient);
+  const providerReconcile = new ProviderReconcileService(input.repo, providerClient, providerLeagueRefs);
   const schedulerState = new CloudBaseSchedulerStateStore(input.db, input.namespace);
   const periodFinalize = new PeriodFinalizeService(input.repo);
   const dailyConsistency = new DailyConsistencyService(

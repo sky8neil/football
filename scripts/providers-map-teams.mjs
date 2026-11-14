@@ -4,7 +4,11 @@ import { resolve } from "node:path";
 function normalize(name) {
   return String(name ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "")
     .toLowerCase().replace(/\b(football club|fc|afc)\b/g, " ")
-    .replace(/[^a-z0-9]+/g, " ").trim().replace(/\s+/g, " ");
+    .replace(/[^\p{L}\p{N}]+/gu, " ").trim().replace(/\s+/g, " ");
+}
+
+function mappingKey(mapping) {
+  return `${mapping.provider}:${String(mapping.provider_team_id)}`;
 }
 
 const inputArg = process.argv.indexOf("--input");
@@ -19,22 +23,47 @@ if (inputArg < 0 || !process.argv[inputArg + 1]) {
   }
 
   const localByName = new Map();
-  const localById = new Map(input.local_teams.map((team) => [team.team_id, team]));
+  const localById = new Map(input.local_teams.map((team) => [String(team.team_id), team]));
   for (const team of input.local_teams) {
-    const key = `${team.league_id}:${normalize(team.name)}`;
+    const name = normalize(team.name);
+    if (!name) continue;
+    const key = `${team.league_id}:${name}`;
     localByName.set(key, [...(localByName.get(key) ?? []), team]);
   }
-  const confirmedMappings = new Map((input.confirmed_mappings ?? []).map((mapping) => [
-    `${mapping.provider}:${String(mapping.provider_team_id)}`,
-    mapping.team_id,
-  ]));
+  const confirmedMappings = new Map();
+  for (const mapping of input.confirmed_mappings ?? []) {
+    const key = mappingKey(mapping);
+    const teamId = String(mapping.team_id);
+    const entry = confirmedMappings.get(key) ?? { teamIds: [] };
+    if (!entry.teamIds.includes(teamId)) entry.teamIds.push(teamId);
+    confirmedMappings.set(key, entry);
+  }
   const report = input.provider_teams.map((team) => {
-    const candidates = localByName.get(`${team.league_id}:${normalize(team.name)}`) ?? [];
-    const mappedTeamId = confirmedMappings.get(`${team.provider}:${String(team.provider_team_id)}`) ?? team.confirmed_team_id;
-    const mappedTeam = mappedTeamId ? localById.get(mappedTeamId) : null;
-    const confirmed = mappedTeam?.league_id === team.league_id ? mappedTeam : null;
+    const normalizedName = normalize(team.name);
+    const candidates = normalizedName ? (localByName.get(`${team.league_id}:${normalizedName}`) ?? []) : [];
+    const key = mappingKey(team);
+    const mapping = confirmedMappings.get(key);
+    const mappingTeamIds = [...(mapping?.teamIds ?? [])];
+    if (team.confirmed_team_id !== undefined && team.confirmed_team_id !== null) {
+      const teamId = String(team.confirmed_team_id);
+      if (!mappingTeamIds.includes(teamId)) mappingTeamIds.push(teamId);
+    }
+    const mappingConflict = mappingTeamIds.length > 1;
+    const mappedTeamId = mappingTeamIds.length === 1 ? mappingTeamIds[0] : null;
+    const mappedTeam = mappedTeamId === null ? null : localById.get(mappedTeamId) ?? null;
+    const missingTarget = mappedTeamId !== null && mappedTeam === null;
+    const mappingLeagueMismatch = mappedTeam !== null && mappedTeam.league_id !== team.league_id;
+    const mappingError = mappingConflict
+      ? "conflict"
+      : missingTarget
+        ? "missing_target"
+        : mappingLeagueMismatch
+          ? "league_mismatch"
+          : null;
+    const confirmed = mappingError === null && mappedTeam !== null ? mappedTeam : null;
     const suggestion = candidates.length === 1 ? candidates[0] : null;
-    const status = confirmed ? "confirmed" : candidates.length > 1 ? "ambiguous" : candidates.length === 1 ? "review" : "unmatched";
+    const status = mappingError
+      ?? (confirmed ? "confirmed" : candidates.length > 1 ? "ambiguous" : candidates.length === 1 ? "review" : "unmatched");
     return {
       provider: team.provider,
       provider_team_id: String(team.provider_team_id),
@@ -44,8 +73,10 @@ if (inputArg < 0 || !process.argv[inputArg + 1]) {
       team_id: confirmed?.team_id ?? null,
       suggested_team_id: suggestion?.team_id ?? null,
       local_name: confirmed?.name ?? suggestion?.name ?? null,
-      name_matches: confirmed ? normalize(confirmed.name) === normalize(team.name) : null,
-      mapping_league_mismatch: mappedTeam !== null && mappedTeam.league_id !== team.league_id,
+      name_matches: confirmed ? normalizedName !== "" && normalize(confirmed.name) === normalizedName : null,
+      mapping_league_mismatch: mappingLeagueMismatch,
+      mapping_error: mappingError,
+      mapping_team_ids: mappingTeamIds,
     };
   });
   console.log(JSON.stringify({
@@ -53,6 +84,9 @@ if (inputArg < 0 || !process.argv[inputArg + 1]) {
     review: report.filter((row) => row.status === "review").length,
     ambiguous: report.filter((row) => row.status === "ambiguous").length,
     unmatched: report.filter((row) => row.status === "unmatched").length,
+    conflict: report.filter((row) => row.status === "conflict").length,
+    missing_target: report.filter((row) => row.status === "missing_target").length,
+    league_mismatch: report.filter((row) => row.status === "league_mismatch").length,
     mappings: report,
   }, null, 2));
 }

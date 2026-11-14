@@ -1,5 +1,5 @@
 import { Provider } from "../domain/enums.js";
-import { SUPPORTED_LEAGUES, type SupportedLeagueId } from "../domain/config.js";
+import { SUPPORTED_LEAGUES, buildProviderLeagueRefs, type ProviderLeagueRefs, type SupportedLeagueId } from "../domain/config.js";
 import { ProviderDataError } from "./http.js";
 
 export type ProviderSourceId = "fd" | "bsd" | "5d" | "of" | "sp";
@@ -46,6 +46,8 @@ export interface ProviderSource {
 
 export interface ProviderSourcesConfig {
   sources: ProviderSource[];
+  /** 该 runtime 解析出的源联赛映射；未提供该源映射时按静态配置回退。 */
+  league_refs?: ProviderLeagueRefs;
   sync_profile: "test" | "prod";
   sync_leagues: Set<SupportedLeagueId>;
 }
@@ -157,10 +159,31 @@ function configuredRefs(
   defaults: readonly ProviderSourceLeague[],
 ): ProviderSourceLeague[] {
   if (!raw?.trim()) return defaults.map((value) => ({ ...value, roles: { ...value.roles } }));
-  const refs = JSON.parse(raw) as Record<string, string>;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new ProviderDataError("DIAG_PROVIDER_LEAGUE_REF_INVALID reason=invalid_json");
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new ProviderDataError("DIAG_PROVIDER_LEAGUE_REF_INVALID reason=not_an_object");
+  }
+  const refs = parsed as Record<string, unknown>;
+  for (const [leagueId, ref] of Object.entries(refs)) {
+    if (!defaults.some((value) => value.league_id === leagueId)) {
+      throw new ProviderDataError(
+        `DIAG_PROVIDER_LEAGUE_REF_INVALID reason=league_not_supported_for_source league_id=${leagueId}`,
+      );
+    }
+    if (typeof ref !== "string" || ref.trim().length === 0) {
+      throw new ProviderDataError(
+        `DIAG_PROVIDER_LEAGUE_REF_INVALID reason=invalid_source_league_ref league_id=${leagueId}`,
+      );
+    }
+  }
   return defaults.map((value) => ({
     ...value,
-    source_league_ref: refs[value.league_id] ?? value.source_league_ref,
+    source_league_ref: (refs[value.league_id] as string | undefined) ?? value.source_league_ref,
     roles: { ...value.roles },
   }));
 }
@@ -222,11 +245,18 @@ export function loadProviderSources(env: Record<string, string | undefined>): Pr
     };
   });
 
+  const leagueRefs = buildProviderLeagueRefs(sources.flatMap((source) => source.leagues.map((league) => ({
+    source_id: source.source_id,
+    source_league_ref: league.source_league_ref,
+    league_id: league.league_id,
+  }))));
+
   const enabledLeagues = new Set(sources.flatMap((source) => source.leagues
     .filter((league) => league.roles.schedule === "primary")
     .map((league) => league.league_id)));
   return {
     sources,
+    league_refs: leagueRefs,
     sync_profile: syncProfile,
     sync_leagues: new Set([...requestedLeagueIds].filter((id) => enabledLeagues.has(id))),
   };

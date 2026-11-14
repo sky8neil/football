@@ -25,6 +25,23 @@ describe("ProviderBudget", () => {
     await expect(budget.acquire("bsd", SyncJobType.PostFinishVerify, now)).resolves.toMatchObject({ allowed: true, daily_used: 10 });
   });
 
+  it("rejects exhausted daily quota with the real reset time and no extra reservation", async () => {
+    const configured = { ...source, max_per_minute: 20, daily_cap: 10 };
+    const budget = new ProviderBudget([configured], new InMemoryProviderUsageStore());
+    const now = new Date("2026-10-11T12:00:00.000Z");
+
+    for (let i = 0; i < 5; i += 1) {
+      await expect(budget.acquire("bsd", SyncJobType.FutureSchedule, now)).resolves.toMatchObject({ allowed: true });
+    }
+    await expect(budget.acquire("bsd", SyncJobType.FutureSchedule, now)).resolves.toMatchObject({
+      allowed: false,
+      reason: "day_limit",
+      key_id: "bsd#1",
+      retry_at: new Date("2026-10-12T00:00:00.000Z"),
+    });
+    await expect(budget.usageSnapshot(now)).resolves.toMatchObject({ bsd: { used: 5, cap: 10 } });
+  });
+
   it("shares atomic reservations across concurrent acquisitions and emits the 80% warning", async () => {
     const configured = { ...source, max_per_minute: 3, daily_cap: 10 };
     const log = vi.fn();
@@ -61,6 +78,7 @@ describe("ProviderBudget", () => {
       allowed: false,
       reason: "provider_quota",
       key_id: "bsd#1",
+      retry_at: resetAt,
     });
     await expect(budget.acquire("bsd", SyncJobType.LiveMatch, resetAt)).resolves.toMatchObject({ allowed: true });
   });
@@ -75,6 +93,7 @@ describe("ProviderBudget", () => {
       allowed: false,
       reason: "provider_cooldown",
       key_id: "bsd#1",
+      retry_at: resetAt,
     });
     await expect(budget.acquire("bsd", SyncJobType.LiveMatch, resetAt)).resolves.toMatchObject({ allowed: true });
   });

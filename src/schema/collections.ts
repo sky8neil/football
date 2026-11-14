@@ -481,6 +481,7 @@ export const COLLECTION_DEFINITIONS: readonly CollectionDef[] = [
           "board_snapshot_season_final",
         ],
       },
+      league_id: { type: "string", nullable: true, note: "按联赛执行的任务记录联赛；旧日志可为空" },
       status: { type: "string", required: true, enum: ["running", "success", "failed", "deferred"] },
       started_at: { type: "date", required: true },
       finished_at: { type: "date", nullable: true },
@@ -488,6 +489,8 @@ export const COLLECTION_DEFINITIONS: readonly CollectionDef[] = [
       items_read: { type: "int", required: true, min: 0 },
       items_changed: { type: "int", required: true, min: 0 },
       items_failed: { type: "int", required: true, min: 0 },
+      items_window_input: { type: "int", nullable: true, min: 0, note: "窗口过滤前、按联赛查询后的输入条数；非共享原始响应总数" },
+      items_window_filtered: { type: "int", nullable: true, min: 0, note: "窗口加载器正常过滤掉的条数" },
       failure_diagnostics: {
         type: "array",
         nullable: true,

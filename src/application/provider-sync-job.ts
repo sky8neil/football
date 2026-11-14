@@ -7,7 +7,9 @@ import {
   ProviderDataError,
   ProviderHttpError,
   ProviderError,
+  ProviderRequestDeferredError,
 } from "../provider/http.js";
+import { ProviderBudgetDeferredError } from "../provider/budget.js";
 import type { ApiFootballFixture } from "../provider/types.js";
 import {
   applyJitter,
@@ -26,11 +28,28 @@ import { assertValidServerNow } from "./period-finalize.js";
 export interface ProviderFixtureBatchItem {
   fixture: ApiFootballFixture;
   payload: Record<string, unknown>;
+  /** 窗口任务加载时记录的候选 match_id；用于限制跨源关联不落到窗口外比赛。 */
+  candidateMatchIds?: readonly string[];
+}
+
+/**
+ * 窗口加载阶段的可观察计数。字段名带 `window_`，表示这是窗口加载器按联赛查询后
+ * 进入/被窗口过滤的条数；它不是 5d 全联赛共享原始响应总数，也不代表 HTTP 请求次数。
+ */
+export interface ProviderFixtureBatchWindowCounts {
+  /** 进入窗口过滤阶段的条数（已按目标联赛筛选，未计入窗口过滤前的其他联赛行）。 */
+  items_window_input?: number;
+  /** 因已有映射、唯一候选不在活动窗口或主源缺少映射而被正常过滤的条数。 */
+  items_window_filtered?: number;
+}
+
+export interface ProviderFixtureLoadResult extends ProviderFixtureBatchWindowCounts {
+  items: readonly ProviderFixtureBatchItem[];
 }
 
 export type ProviderFixtureBatchLoader = (
   serverNow: Date,
-) => Promise<readonly ProviderFixtureBatchItem[]>;
+) => Promise<readonly ProviderFixtureBatchItem[] | ProviderFixtureLoadResult>;
 
 export interface ProviderFixtureSyncRetryOptions {
   /** @deprecated 已改为写 deferred 日志并返回，不再在函数内等待。 */
@@ -50,7 +69,7 @@ export interface ProviderFixtureFailureDiagnostic {
   provider: string;
   provider_fixture_id: string | null;
   stage: "apply_fixture";
-  outcome: "failed" | "conflict" | "exception";
+  outcome: "failed" | "conflict" | "unlinked" | "exception";
   error_code: string;
   error_name: string | null;
   error_message: string;
@@ -60,6 +79,7 @@ export interface ProviderFixtureFailureDiagnostic {
 
 const MAX_FAILURE_DIAGNOSTICS = 100;
 const MAX_DIAGNOSTIC_TEXT_LENGTH = 240;
+const PROVIDER_FIXTURE_FAILED = "PROVIDER_FIXTURE_FAILED";
 
 export type ProviderFixtureSyncJobOutcome =
   | {
@@ -68,6 +88,8 @@ export type ProviderFixtureSyncJobOutcome =
       items_read: number;
       items_changed: number;
       items_failed: number;
+      items_window_input?: number;
+      items_window_filtered?: number;
       failure_diagnostics?: ProviderFixtureFailureDiagnostic[];
       failure_diagnostics_omitted?: number;
     }
@@ -82,6 +104,26 @@ export type ProviderFixtureSyncJobOutcome =
       next_attempt_at: Date;
       retry_attempt: number;
       last_error_code: string | null;
+      items_read?: number;
+      items_changed?: number;
+      items_failed?: number;
+      items_window_input?: number;
+      items_window_filtered?: number;
+      failure_diagnostics?: ProviderFixtureFailureDiagnostic[];
+      failure_diagnostics_omitted?: number;
+    }
+  | {
+      kind: "failed";
+      job_type: SyncJobType;
+      items_read: number;
+      items_changed: number;
+      items_failed: number;
+      items_window_input?: number;
+      items_window_filtered?: number;
+      last_error_code: string;
+      last_error_message: string;
+      failure_diagnostics?: ProviderFixtureFailureDiagnostic[];
+      failure_diagnostics_omitted?: number;
     };
 
 function requireSyncLogs(
@@ -139,7 +181,10 @@ function providerFixtureId(item: ProviderFixtureBatchItem): string | null {
 
 function failureReasonCodes(outcome: ProviderFixtureSyncOutcome): string[] {
   if (outcome.kind === "failed") {
-    return outcome.anomaly_types.map((value) => safeDiagnosticText(value, 80));
+    return [
+      ...(outcome.reason_codes ?? []).map((value) => safeDiagnosticText(value, 120)),
+      ...outcome.anomaly_types.map((value) => safeDiagnosticText(value, 80)),
+    ];
   }
   if (outcome.kind === "conflict") {
     return [safeDiagnosticText(outcome.anomaly_type, 80)];
@@ -164,6 +209,17 @@ function outcomeFailureDiagnostic(
   item: ProviderFixtureBatchItem,
   outcome: ProviderFixtureSyncOutcome,
 ): ProviderFixtureFailureDiagnostic | null {
+  if (outcome.kind === "unlinked") {
+    return {
+      ...diagnosticBase(syncJobId, item),
+      outcome: "unlinked",
+      error_code: outcome.reason === "ambiguous" ? "AMBIGUOUS" : "UNLINKED",
+      error_name: null,
+      error_message: `fixture sync returned unlinked (${outcome.reason})`,
+      reason_codes: [outcome.reason],
+      match_id: null,
+    };
+  }
   if (!isFailed(outcome)) return null;
   const reasonCodes = failureReasonCodes(outcome);
   return {
@@ -203,7 +259,33 @@ function isFailed(
   return outcome.kind === "failed" || outcome.kind === "conflict";
 }
 
+function isFixtureLoadResult(
+  value: readonly ProviderFixtureBatchItem[] | ProviderFixtureLoadResult,
+): value is ProviderFixtureLoadResult {
+  return !Array.isArray(value);
+}
+
+function normalizeLoadedBatch(
+  loaded: readonly ProviderFixtureBatchItem[] | ProviderFixtureLoadResult,
+): {
+  items: readonly ProviderFixtureBatchItem[];
+  windowCounts: ProviderFixtureBatchWindowCounts;
+} {
+  if (!isFixtureLoadResult(loaded)) return { items: loaded, windowCounts: {} };
+  const windowCounts: ProviderFixtureBatchWindowCounts = {};
+  if (loaded.items_window_input !== undefined) {
+    windowCounts.items_window_input = loaded.items_window_input;
+  }
+  if (loaded.items_window_filtered !== undefined) {
+    windowCounts.items_window_filtered = loaded.items_window_filtered;
+  }
+  return { items: loaded.items, windowCounts };
+}
+
 function isRetryableLoaderError(error: unknown): boolean {
+  if (error instanceof ProviderBudgetDeferredError || error instanceof ProviderRequestDeferredError) {
+    return true;
+  }
   if (
     error instanceof DomainError ||
     isQuotaExceededError(error) ||
@@ -218,6 +300,15 @@ function isRetryableLoaderError(error: unknown): boolean {
     return false;
   }
   return error instanceof Error;
+}
+
+function nextRetryAt(error: unknown, serverNow: Date, delayMs: number): Date {
+  const backoffAt = new Date(serverNow.getTime() + delayMs);
+  if (!(error instanceof ProviderBudgetDeferredError) && !(error instanceof ProviderRequestDeferredError)) {
+    return backoffAt;
+  }
+  const resetAt = error.retry_at;
+  return resetAt.getTime() > backoffAt.getTime() ? resetAt : backoffAt;
 }
 
 export interface JobLockRenewalOptions {
@@ -330,8 +421,16 @@ export class ProviderFixtureSyncJobService {
   }
 
   /** RP08 锁内二次资格确认：锁前判断可能已过期（拿到锁时上一实例刚跑完），这里再核一次。 */
-  private async isStillDue(jobType: SyncJobType, serverNow: Date, dueIntervalMs: number): Promise<boolean> {
-    const latest = await this.repo.syncLogs?.findLatestByJobType?.(jobType);
+  private async isStillDue(
+    jobType: SyncJobType,
+    serverNow: Date,
+    dueIntervalMs: number,
+    leagueId?: string,
+  ): Promise<boolean> {
+    const latest = await this.repo.syncLogs?.findLatestByJobType?.(
+      jobType,
+      leagueId === undefined ? undefined : { leagueId },
+    );
     if (!latest) return true;
     const startedAt = latest.started_at as Date | string;
     const startedMs = startedAt instanceof Date
@@ -351,8 +450,15 @@ export class ProviderFixtureSyncJobService {
   }
 
   /** RP07：跨轮累计重试序号。上一条 deferred 日志的 retry_attempt + 1；无则 0。 */
-  private async priorRetryAttempt(jobType: SyncJobType, excludeSyncJobId: string): Promise<number> {
-    const latest = await this.repo.syncLogs?.findLatestByJobType?.(jobType, { excludeSyncJobId });
+  private async priorRetryAttempt(
+    jobType: SyncJobType,
+    excludeSyncJobId: string,
+    leagueId?: string,
+  ): Promise<number> {
+    const latest = await this.repo.syncLogs?.findLatestByJobType?.(jobType, {
+      excludeSyncJobId,
+      ...(leagueId === undefined ? {} : { leagueId }),
+    });
     if (!latest || latest.status !== SyncJobStatus.Deferred) return 0;
     return (latest.retry_attempt ?? 0) + 1;
   }
@@ -361,6 +467,7 @@ export class ProviderFixtureSyncJobService {
     jobType: SyncJobType,
     load: ProviderFixtureBatchLoader,
     serverNow: Date,
+    leagueId?: string,
   ): Promise<ProviderFixtureSyncJobOutcome> {
     assertValidServerNow(serverNow);
     const lockKey = jobLockKey(jobType);
@@ -375,7 +482,7 @@ export class ProviderFixtureSyncJobService {
 
     try {
       // RP08：锁内二次资格确认在 executeHeldByCaller 内部完成，这里不重复查询。
-      return await this.executeHeldByCaller(jobType, load, serverNow, ownerId);
+      return await this.executeHeldByCaller(jobType, load, serverNow, ownerId, leagueId);
     } finally {
       await this.repo.jobLocks.release(lockKey, ownerId);
     }
@@ -391,10 +498,11 @@ export class ProviderFixtureSyncJobService {
     load: ProviderFixtureBatchLoader,
     serverNow: Date,
     ownerId: string,
+    leagueId?: string,
   ): Promise<ProviderFixtureSyncJobOutcome> {
     assertValidServerNow(serverNow);
     const dueIntervalMs = this.lockOptions.dueIntervalMs;
-    if (dueIntervalMs !== undefined && !(await this.isStillDue(jobType, serverNow, dueIntervalMs))) {
+    if (dueIntervalMs !== undefined && !(await this.isStillDue(jobType, serverNow, dueIntervalMs, leagueId))) {
       return { kind: "skipped", job_type: jobType, reason: "not_due_after_lock" };
     }
     const syncLogs = requireSyncLogs(this.repo);
@@ -404,6 +512,7 @@ export class ProviderFixtureSyncJobService {
       schema_version: SCHEMA_VERSION,
       sync_job_id: newUuid(),
       job_type: jobType,
+      ...(leagueId === undefined ? {} : { league_id: leagueId }),
       status: SyncJobStatus.Running,
       started_at: serverNow,
       finished_at: null,
@@ -423,15 +532,18 @@ export class ProviderFixtureSyncJobService {
       let attemptCount = 0;
       try {
         let items: readonly ProviderFixtureBatchItem[];
+        let windowCounts: ProviderFixtureBatchWindowCounts = {};
         while (true) {
           await lockRenewal.assertHeld();
           attemptCount += 1;
           try {
-            items = await load(serverNow);
+            const normalized = normalizeLoadedBatch(await load(serverNow));
+            items = normalized.items;
+            windowCounts = normalized.windowCounts;
             break;
           } catch (error) {
             if (!isRetryableLoaderError(error)) throw error;
-            const retryAttempt = await this.priorRetryAttempt(jobType, runningLog.sync_job_id);
+            const retryAttempt = await this.priorRetryAttempt(jobType, runningLog.sync_job_id, leagueId);
             const delayMinutes = nextRetryDelayMinutes(retryAttempt);
             if (delayMinutes === null) {
               throw new DomainError(
@@ -444,7 +556,7 @@ export class ProviderFixtureSyncJobService {
               SYNC_RETRY_V1.jitterPercent,
               this.random,
             );
-            const nextAttemptAt = new Date(serverNow.getTime() + delayMs);
+            const nextAttemptAt = nextRetryAt(error, serverNow, delayMs);
             await lockRenewal.assertHeld();
             await syncLogs.update({
               ...runningLog,
@@ -486,19 +598,22 @@ export class ProviderFixtureSyncJobService {
               item.fixture,
               item.payload,
               serverNow,
+              item.candidateMatchIds === undefined
+                ? undefined
+                : new Set(item.candidateMatchIds),
             );
             if (isChanged(outcome)) {
               changed += 1;
             }
             if (isFailed(outcome)) {
               failed += 1;
-              const diagnostic = outcomeFailureDiagnostic(
-                runningLog.sync_job_id,
-                item,
-                outcome,
-              );
-              if (diagnostic !== null) recordFailure(diagnostic);
             }
+            const diagnostic = outcomeFailureDiagnostic(
+              runningLog.sync_job_id,
+              item,
+              outcome,
+            );
+            if (diagnostic !== null) recordFailure(diagnostic);
           } catch (error) {
             // 单个实体失败不影响同一批次其他实体；其事务已由 fixture service 回滚。
             failed += 1;
@@ -507,6 +622,58 @@ export class ProviderFixtureSyncJobService {
         }
 
         await lockRenewal.assertHeld();
+        const failureOutput = failureDiagnostics.length > 0 ? {
+          failure_diagnostics: failureDiagnostics,
+          failure_diagnostics_omitted: failureDiagnosticsOmitted,
+        } : {};
+        if (failed > 0) {
+          const retryAttempt = await this.priorRetryAttempt(
+            jobType,
+            runningLog.sync_job_id,
+            leagueId,
+          );
+          const delayMinutes = nextRetryDelayMinutes(retryAttempt);
+          const failureMessage = `provider fixture sync failed for ${failed}/${items.length} item(s)`;
+          const failureOutcome = {
+            items_read: items.length,
+            items_changed: changed,
+            items_failed: failed,
+            ...windowCounts,
+            last_error_code: PROVIDER_FIXTURE_FAILED,
+            last_error_message: failureMessage,
+            ...failureOutput,
+          };
+          const failureFields = { attempt_count: attemptCount, finished_at: serverNow, ...failureOutcome };
+          if (delayMinutes === null) {
+            await syncLogs.update({ ...runningLog, ...failureFields, status: SyncJobStatus.Failed });
+            return { kind: "failed", job_type: jobType, ...failureOutcome };
+          }
+          const delayMs = applyJitter(
+            delayMinutes * 60_000,
+            SYNC_RETRY_V1.jitterPercent,
+            this.random,
+          );
+          const nextAttemptAt = new Date(serverNow.getTime() + delayMs);
+          await syncLogs.update({
+            ...runningLog,
+            ...failureFields,
+            status: SyncJobStatus.Deferred,
+            retry_attempt: retryAttempt,
+            next_attempt_at: nextAttemptAt,
+          });
+          return {
+            kind: "deferred",
+            job_type: jobType,
+            next_attempt_at: nextAttemptAt,
+            retry_attempt: retryAttempt,
+            last_error_code: PROVIDER_FIXTURE_FAILED,
+            items_read: items.length,
+            items_changed: changed,
+            items_failed: failed,
+            ...windowCounts,
+            ...failureOutput,
+          };
+        }
         await syncLogs.update({
           ...runningLog,
           status: SyncJobStatus.Success,
@@ -515,10 +682,8 @@ export class ProviderFixtureSyncJobService {
           items_read: items.length,
           items_changed: changed,
           items_failed: failed,
-          ...(failureDiagnostics.length > 0 ? {
-            failure_diagnostics: failureDiagnostics,
-            failure_diagnostics_omitted: failureDiagnosticsOmitted,
-          } : {}),
+          ...windowCounts,
+          ...failureOutput,
         });
         return {
           kind: "completed",
@@ -526,10 +691,8 @@ export class ProviderFixtureSyncJobService {
           items_read: items.length,
           items_changed: changed,
           items_failed: failed,
-          ...(failureDiagnostics.length > 0 ? {
-            failure_diagnostics: failureDiagnostics,
-            failure_diagnostics_omitted: failureDiagnosticsOmitted,
-          } : {}),
+          ...windowCounts,
+          ...failureOutput,
         };
       } catch (error) {
         const stillHeld = await lockRenewal.assertHeld().then(() => true, () => false);

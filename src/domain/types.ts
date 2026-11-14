@@ -373,6 +373,8 @@ export interface ProviderSnapshot extends BaseDoc {
 export interface SyncLog extends BaseDoc {
   sync_job_id: string;
   job_type: SyncJobType;
+  /** 按联赛执行的任务记录联赛；旧日志可能没有该字段。 */
+  league_id?: string | null;
   status: SyncJobStatus;
   started_at: Date;
   finished_at: Date | null;
@@ -380,6 +382,10 @@ export interface SyncLog extends BaseDoc {
   items_read: number;
   items_changed: number;
   items_failed: number;
+  /** 窗口过滤阶段之前的输入条数；按联赛查询后的窗口阶段数量，非共享原始响应总数。 */
+  items_window_input?: number;
+  /** 窗口加载器正常过滤掉的条数（已有映射或唯一候选不在活动窗口）。 */
+  items_window_filtered?: number;
   failure_diagnostics?: SyncFailureDiagnostic[];
   failure_diagnostics_omitted?: number;
   last_error_code: string | null;

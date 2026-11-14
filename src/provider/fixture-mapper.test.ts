@@ -4,6 +4,19 @@ import { makeApiFixture } from "./fixture-factory.js";
 import { normalizeFixture } from "./fixture-mapper.js";
 import type { ApiFootballFixture } from "./types.js";
 
+function makeFiveDollarFixture(season?: string): ApiFootballFixture {
+  const base = makeApiFixture({ statusShort: "FT", fulltimeHome: 2, fulltimeAway: 1 });
+  return {
+    ...base,
+    provider: "5dollar",
+    league: {
+      id: "4160026622",
+      round: "3",
+      ...(season === undefined ? {} : { season }),
+    },
+  };
+}
+
 describe("fixture normalize mapper（31.3/31.4/31.5）", () => {
   it("关键 fixture 对象缺失时返回 fail-closed 结果而不是抛运行时错误", () => {
     const result = normalizeFixture({} as ApiFootballFixture);
@@ -194,6 +207,71 @@ describe("fixture normalize mapper（31.3/31.4/31.5）", () => {
           field: "league.season",
           expected: "2026",
           actual: "2025",
+        }),
+      }),
+    );
+  });
+
+  it("5d 源赛季标签命中登记窗口时归一化为内部赛季", () => {
+    const result = normalizeFixture(makeFiveDollarFixture("26/27"));
+
+    expect(result.entityFailed).toBe(false);
+    expect(result.fixture.season).toBe("2026");
+    expect(result.fixture.leagueProviderId).toBe("4160026622");
+  });
+
+  it("5d 旧赛季标签不被改标为目标赛季", () => {
+    const result = normalizeFixture(makeFiveDollarFixture("25/26"));
+
+    expect(result.entityFailed).toBe(true);
+    expect(result.anomalies).toContainEqual(
+      expect.objectContaining({
+        type: AnomalyType.ProviderDataInvalid,
+        details: expect.objectContaining({
+          field: "league.season",
+          actual: "25/26",
+        }),
+      }),
+    );
+  });
+
+  it("5d 无可信赛季字段时 fail-closed，不贴目标赛季", () => {
+    const result = normalizeFixture(makeFiveDollarFixture());
+
+    expect(result.fixture.season).toBeNull();
+    expect(result.entityFailed).toBe(true);
+    expect(result.anomalies).toContainEqual(
+      expect.objectContaining({
+        type: AnomalyType.ProviderDataInvalid,
+        details: { field: "league.season" },
+      }),
+    );
+  });
+
+  it("identityOnly 时 5d 无赛季不 fail-closed，也不贴目标赛季", () => {
+    const result = normalizeFixture(makeFiveDollarFixture(), undefined, { identityOnly: true });
+
+    expect(result.fixture.season).toBeNull();
+    expect(result.entityFailed).toBe(false);
+    expect(result.fixture.providerMatchId).toBe("1100001");
+    expect(result.fixture.homeTeamProviderId).toBe("40");
+    expect(result.fixture.awayTeamProviderId).toBe("41");
+  });
+
+  it("resolvedSeason 覆盖上游缺失赛季，但不覆盖明确旧赛季冲突", () => {
+    const overlay = normalizeFixture(makeFiveDollarFixture(), undefined, { resolvedSeason: "2026" });
+    expect(overlay.entityFailed).toBe(false);
+    expect(overlay.fixture.season).toBe("2026");
+
+    const conflict = normalizeFixture(makeFiveDollarFixture("25/26"), undefined, { resolvedSeason: "2026" });
+    expect(conflict.entityFailed).toBe(true);
+    expect(conflict.fixture.season).toBe("25/26");
+    expect(conflict.anomalies).toContainEqual(
+      expect.objectContaining({
+        type: AnomalyType.ProviderDataInvalid,
+        details: expect.objectContaining({
+          field: "league.season",
+          actual: "25/26",
         }),
       }),
     );

@@ -22,7 +22,9 @@ import { SyncJobType } from "../domain/enums.js";
 import { createCloudFunctionHandler, type CloudFunctionContextLike, type CloudFunctionEvent } from "./index.js";
 import { buildTimerSummary } from "./timer-summary.js";
 import { createApplicationRuntime } from "../runtime/application-runtime.js";
+import type { ProviderSyncOutcome } from "../application/provider-sync-dispatcher.js";
 import {
+  classifyProviderSyncOutcome,
   isProviderSyncJobType,
   logProviderFixtureFailures,
   providerScheduleSummary,
@@ -155,22 +157,37 @@ export function createCloudFunctionRuntime(options: CloudFunctionRuntimeOptions)
     }
     if (event.action === "sync") {
       if (config.environment === "prod") return { result: { status: 404, body: { code: "NOT_FOUND", request_id: makeRequestId() } } };
-      if (!isProviderSyncJobType(event.job)) {
+      const job = event.job;
+      if (!isProviderSyncJobType(job)) {
         return { result: { status: 400, body: { code: "VALIDATION_ERROR", request_id: makeRequestId() } } };
       }
-      const leagueScopedJob = event.job === SyncJobType.FutureSchedule || event.job === SyncJobType.FullScheduleVerify;
+      const leagueScopedJob = job === SyncJobType.FutureSchedule || job === SyncJobType.FullScheduleVerify;
       if (event.league !== undefined && (!leagueScopedJob || !SUPPORTED_LEAGUES.some((league) => league.league_id === event.league))) {
         return { result: { status: 400, body: { code: "VALIDATION_ERROR", request_id: makeRequestId() } } };
       }
       const serverNow = new Date();
       const scheduledLeague = leagueScopedJob && event.league === undefined
-        ? (await runtime.providerRegistry.orderLeagues([...runtime.providerSources.sync_leagues], event.job, serverNow))[0]
+        ? (await runtime.providerRegistry.orderLeagues([...runtime.providerSources.sync_leagues], job, serverNow))[0]
         : event.league;
       if (leagueScopedJob && scheduledLeague === undefined) {
         return { result: { status: 200, body: { data: { kind: "skipped", reason: "no_configured_leagues" }, request_id: makeRequestId() } } };
       }
-      const sync = await runtime.providerDispatcher.run(event.job, serverNow, scheduledLeague);
-      logProviderFixtureFailures(logger, event.job, sync);
+      const sync = await (async (): Promise<ProviderSyncOutcome> => {
+        runtime.providerRegistry.beginTickCache();
+        try {
+          const outcome = await runtime.providerDispatcher.run(job, serverNow, scheduledLeague);
+          const classified = classifyProviderSyncOutcome(outcome);
+          if (classified.bucket === "ran") {
+            await runtime.providerRegistry.commitPendingLeagueSuccess(job, serverNow, scheduledLeague);
+          } else {
+            runtime.providerRegistry.discardPendingLeagueSuccess(job, scheduledLeague);
+          }
+          return outcome;
+        } finally {
+          runtime.providerRegistry.endTickCache();
+        }
+      })();
+      logProviderFixtureFailures(logger, job, sync);
       const data = { sync, settlements: await runSettlementTimer(repo, serverNow, runtime.settlementTimerOptions) };
       return { result: { status: 200, body: { data, request_id: makeRequestId() } } };
     }
