@@ -255,13 +255,22 @@ describe("logos:check command", () => {
 
 describe("cloudbase:schema command", () => {
   it("lists the provider state collections and unique indexes from the built schema", () => {
-    const output = execFileSync("npm", ["run", "cloudbase:schema", "--", "--namespace", "football_test"], {
-      cwd: REPO_ROOT,
-      encoding: "utf8",
-    });
+    const tmpDir = mkdtempSync(resolve(tmpdir(), "cloudbase-schema-test-"));
+    try {
+      execFileSync("npx", ["tsc", "-p", "tsconfig.build.json", "--outDir", tmpDir], {
+        cwd: REPO_ROOT,
+        stdio: "pipe",
+      });
+      const output = execFileSync("node", ["scripts/cloudbase-schema.mjs", "--dist-dir", tmpDir, "--namespace", "football_test"], {
+        cwd: REPO_ROOT,
+        encoding: "utf8",
+      });
 
-    expect(output).toContain("football_test_provider_usage");
-    expect(output).toContain("football_test_provider_keys uk_provider_key_state_key_id unique=true fields=[key_id:asc]");
-    expect(output).toContain("football_test_provider_leagues uk_provider_league_state_source_job_league unique=true fields=[source_id:asc, job_type:asc, league_id:asc]");
+      expect(output).toContain("football_test_provider_usage");
+      expect(output).toContain("football_test_provider_keys uk_provider_key_state_key_id unique=true fields=[key_id:asc]");
+      expect(output).toContain("football_test_provider_leagues uk_provider_league_state_source_job_league unique=true fields=[source_id:asc, job_type:asc, league_id:asc]");
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });

@@ -2,10 +2,12 @@
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "noEmit": false,
+    "noEmitOnError": true,
     "outDir": "dist",
     "rootDir": "src",
     "declaration": true,
     "sourceMap": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  "exclude": ["**/*.test.ts", "**/*.pg.test.ts"]
 }

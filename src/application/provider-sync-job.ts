@@ -181,8 +181,11 @@ function providerFixtureId(item: ProviderFixtureBatchItem): string | null {
 
 function failureReasonCodes(outcome: ProviderFixtureSyncOutcome): string[] {
   if (outcome.kind === "failed") {
+    const reasonCodes = "reason_codes" in outcome && Array.isArray(outcome.reason_codes)
+      ? outcome.reason_codes
+      : [];
     return [
-      ...(outcome.reason_codes ?? []).map((value) => safeDiagnosticText(value, 120)),
+      ...reasonCodes.map((value: string) => safeDiagnosticText(value, 120)),
       ...outcome.anomaly_types.map((value) => safeDiagnosticText(value, 80)),
     ];
   }

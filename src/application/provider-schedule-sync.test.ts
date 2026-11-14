@@ -9,6 +9,9 @@ import type { ApiFootballFixture } from "../provider/types.js";
 import { ProviderFixtureSyncService } from "./provider-fixture-sync.js";
 
 const NOW = new Date("2026-08-10T12:00:00.000Z");
+const LEGACY_TEST_SYNC_OPTIONS = {
+  scheduleAuthorities: new Set([Provider.ApiFootball]),
+};
 
 function makeTeam(teamId: string): Team {
   return {
@@ -61,7 +64,7 @@ describe("Provider schedule discovery", () => {
       round: "Regular Season - 1",
     });
 
-    const outcome = await new ProviderFixtureSyncService(repo).applyFixture(
+    const outcome = await new ProviderFixtureSyncService(repo, LEGACY_TEST_SYNC_OPTIONS).applyFixture(
       fixture,
       { fixture },
       NOW,
@@ -120,7 +123,7 @@ describe("Provider schedule discovery", () => {
     });
 
     await expect(
-      new ProviderFixtureSyncService(repo).applyFixture(fixture, { fixture }, NOW),
+      new ProviderFixtureSyncService(repo, LEGACY_TEST_SYNC_OPTIONS).applyFixture(fixture, { fixture }, NOW),
     ).resolves.toMatchObject({
       kind: "failed",
       anomaly_types: [AnomalyType.ProviderDataInvalid],
@@ -150,7 +153,7 @@ describe("Provider schedule discovery", () => {
       round: "Regular Season - 35",
     });
 
-    const applied = await new ProviderFixtureSyncService(repo).applyFixture(
+    const applied = await new ProviderFixtureSyncService(repo, LEGACY_TEST_SYNC_OPTIONS).applyFixture(
       round34,
       { fixture: round34 },
       NOW,
@@ -167,7 +170,7 @@ describe("Provider schedule discovery", () => {
     });
 
     await expect(
-      new ProviderFixtureSyncService(repo).applyFixture(round35, { fixture: round35 }, NOW),
+      new ProviderFixtureSyncService(repo, LEGACY_TEST_SYNC_OPTIONS).applyFixture(round35, { fixture: round35 }, NOW),
     ).resolves.toMatchObject({
       kind: "failed",
       anomaly_types: [AnomalyType.ProviderDataInvalid],
@@ -187,7 +190,7 @@ describe("Provider schedule discovery", () => {
       round: "Regular Season - 1",
     });
 
-    await new ProviderFixtureSyncService(repo).applyFixture(fixture, { fixture }, NOW);
+    await new ProviderFixtureSyncService(repo, LEGACY_TEST_SYNC_OPTIONS).applyFixture(fixture, { fixture }, NOW);
     const mapping = await repo.matchProviderMappings.findByProviderAndExternalId(
       Provider.ApiFootball,
       "1100300",
@@ -207,7 +210,7 @@ describe("Provider schedule discovery", () => {
     const fixture = makeApiFixture({ fixtureId: 1100102, statusShort: "NS" });
 
     await expect(
-      new ProviderFixtureSyncService(repo).applyFixture(fixture, { fixture }, NOW),
+      new ProviderFixtureSyncService(repo, LEGACY_TEST_SYNC_OPTIONS).applyFixture(fixture, { fixture }, NOW),
     ).rejects.toMatchObject({ code: "INTERNAL_ERROR" });
     await expect(repo.matches.findBySeason(MVP_SEASON.season_id)).resolves.toEqual([]);
     await expect(

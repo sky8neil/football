@@ -193,9 +193,9 @@ describe("ProviderLiveMatchService", () => {
     }).run(NOW);
 
     expect(outcome).toMatchObject({
-      kind: "completed",
+      kind: "deferred",
       fixtures: {
-        kind: "completed",
+        kind: "deferred",
         job_type: SyncJobType.LiveMatch,
         items_read: 2,
         items_changed: 1,

@@ -13,7 +13,10 @@ import {
   type ProviderFixtureSyncLockOptions,
   type ProviderFixtureSyncRetryOptions,
 } from "./provider-sync-job.js";
-import { ProviderFixtureSyncService } from "./provider-fixture-sync.js";
+import {
+  ProviderFixtureSyncService,
+  type ProviderFixtureSyncOptions,
+} from "./provider-fixture-sync.js";
 import {
   type ProviderTeamClient,
   type ProviderTeamSyncOutcome,
@@ -78,10 +81,11 @@ export class ProviderPostFinishVerifyService {
     retryOptions: ProviderFixtureSyncRetryOptions = {},
     lockOptions: ProviderFixtureSyncLockOptions = {},
     private readonly providerLeagueRefs?: ProviderLeagueRefs,
+    fixtureSyncOptions?: ProviderFixtureSyncOptions,
   ) {
     this.fixtureJob = new ProviderFixtureSyncJobService(
       repo,
-      new ProviderFixtureSyncService(repo, undefined, providerLeagueRefs),
+      new ProviderFixtureSyncService(repo, undefined, providerLeagueRefs, fixtureSyncOptions),
       retryOptions,
       lockOptions,
     );

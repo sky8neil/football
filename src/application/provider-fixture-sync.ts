@@ -9,7 +9,7 @@ import { internalError } from "../domain/errors.js";
 import { newUuid } from "../domain/ids.js";
 import { validateMatchTransition } from "../domain/match-state-machine.js";
 import type { ProviderSnapshot } from "../domain/types.js";
-import type { ProviderLeagueRefs } from "../domain/config.js";
+import type { ProviderLeagueRefs, SupportedLeagueId } from "../domain/config.js";
 import { findSupportedLeagueByProviderId } from "../domain/config.js";
 import type { ApiFootballFixture } from "../provider/types.js";
 import { normalizeFixture, type MapperAnomaly, type NormalizedFixture } from "../provider/fixture-mapper.js";
@@ -32,12 +32,10 @@ import {
   type CrossSourceConflictReason,
 } from "./provider-cross-source.js";
 import { decideProviderResultAdoption, type ProviderResultObservation } from "./provider-result-adoption.js";
-
-const SCHEDULE_AUTHORITY_PROVIDERS: ReadonlySet<string> = new Set([
-  Provider.ApiFootball,
-  Provider.FootballData,
-  Provider.Bsd,
-]);
+import {
+  isScheduleAuthoritySource,
+  type ProviderSource,
+} from "../provider/sources.js";
 
 const CONFLICT_REASON_CODES: Record<CrossSourceConflictReason, string> = {
   season_mismatch: "PROVIDER_CONFLICT_SEASON",
@@ -219,22 +217,68 @@ async function readLastSuccessfulSyncAt(
   return latest?.created_at ?? null;
 }
 
+export interface ProviderFixtureSyncOptions {
+  anomalyEvaluation?: AnomalyEvaluationService;
+  providerLeagueRefs?: ProviderLeagueRefs;
+  /**
+   * 允许赛程建档的权威来源配置。
+   * 缺省时使用生产默认配置：按各联赛 roles.schedule === "primary" 判断
+   * （五大联赛仅 football_data，中超仅 bsd，次要源与 api_football 均不可建档）。
+   * 测试中可通过显式传入 authorityProviders（如 Set([Provider.ApiFootball])）或自定义断言函数适配。
+   */
+  scheduleAuthorities?:
+    | ReadonlySet<string>
+    | readonly ProviderSource[]
+    | ((provider: string, leagueId?: SupportedLeagueId) => boolean);
+}
+
 /** 单 fixture 的 Provider application 入口；不负责 HTTP、调度或真实凭证。 */
 export class ProviderFixtureSyncService {
   private readonly statusSync: ProviderStatusSyncService;
   private readonly resultSync: ProviderResultSyncService;
   private readonly scheduleSync: ProviderScheduleSyncService;
   private readonly anomalyEvaluation: AnomalyEvaluationService;
+  private readonly providerLeagueRefs: ProviderLeagueRefs | undefined;
+  private readonly options: ProviderFixtureSyncOptions | undefined;
 
   constructor(
     private readonly repo: AppRepository,
-    anomalyEvaluation?: AnomalyEvaluationService,
-    private readonly providerLeagueRefs?: ProviderLeagueRefs,
+    anomalyEvaluationOrOptions?: AnomalyEvaluationService | ProviderFixtureSyncOptions,
+    providerLeagueRefs?: ProviderLeagueRefs,
+    options?: ProviderFixtureSyncOptions,
   ) {
+    let anomalyEvaluation: AnomalyEvaluationService | undefined;
+    if (anomalyEvaluationOrOptions instanceof AnomalyEvaluationService) {
+      anomalyEvaluation = anomalyEvaluationOrOptions;
+      this.options = options;
+    } else if (anomalyEvaluationOrOptions !== undefined) {
+      this.options = anomalyEvaluationOrOptions;
+      anomalyEvaluation = anomalyEvaluationOrOptions.anomalyEvaluation;
+      providerLeagueRefs ??= anomalyEvaluationOrOptions.providerLeagueRefs;
+    } else {
+      this.options = options;
+    }
+    this.providerLeagueRefs = providerLeagueRefs;
     this.statusSync = new ProviderStatusSyncService(repo);
     this.resultSync = new ProviderResultSyncService(repo);
     this.scheduleSync = new ProviderScheduleSyncService(repo, providerLeagueRefs);
     this.anomalyEvaluation = anomalyEvaluation ?? new AnomalyEvaluationService(repo);
+  }
+
+  private isScheduleAuthority(provider: string, leagueId?: SupportedLeagueId): boolean {
+    const authorityConfig = this.options?.scheduleAuthorities;
+    if (typeof authorityConfig === "function") {
+      return authorityConfig(provider, leagueId);
+    }
+    if (authorityConfig instanceof Set) {
+      return authorityConfig.has(provider);
+    }
+    if (Array.isArray(authorityConfig)) {
+      if (leagueId === undefined) return false;
+      return isScheduleAuthoritySource(provider, leagueId, authorityConfig);
+    }
+    if (leagueId === undefined) return false;
+    return isScheduleAuthoritySource(provider, leagueId);
   }
 
   /**
@@ -440,7 +484,12 @@ export class ProviderFixtureSyncService {
       }
     }
 
-    if (SCHEDULE_AUTHORITY_PROVIDERS.has(provider)) {
+    const supportedLeague = findSupportedLeagueByProviderId(
+      normalized.fixture.leagueProviderId,
+      provider,
+      this.providerLeagueRefs,
+    );
+    if (this.isScheduleAuthority(provider, supportedLeague?.league_id)) {
       const mappings = this.repo.matchProviderMappings;
       if (mappings !== undefined) {
         const existing = await mappings.findByProviderAndExternalId(

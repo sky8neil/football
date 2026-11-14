@@ -7,6 +7,7 @@ import {
   SettlementStatus,
 } from "../domain/enums.js";
 import { newUuid } from "../domain/ids.js";
+import { type ProviderLeagueRefs } from "../domain/config.js";
 import type { Match, ProviderSnapshot, Team, TeamProviderMapping } from "../domain/types.js";
 import type { ApiFootballFixture } from "../provider/types.js";
 import { InMemoryRepository, type AppRepository, type UnitOfWork } from "../infrastructure/repositories.js";
@@ -285,8 +286,8 @@ describe("ProviderFixtureSyncService", () => {
     "主赛程源首次发现 %s fixture 且比赛不存在时建立 match 并应用状态",
     async (statusShort, expectedStatus) => {
       const repo = new InMemoryRepository();
-      const teams = await seedTeams(repo);
-      const fixture = makeFixture("1200001", statusShort);
+      const teams = await seedTeams(repo, Provider.FootballData);
+      const fixture = makeFixture("1200001", statusShort, undefined, Provider.FootballData);
 
       const outcome = await new ProviderFixtureSyncService(repo).applyFixture(
         fixture,
@@ -299,7 +300,7 @@ describe("ProviderFixtureSyncService", () => {
         match_status: expectedStatus,
       });
       const mapping = await repo.matchProviderMappings.findByProviderAndExternalId(
-        Provider.ApiFootball,
+        Provider.FootballData,
         "1200001",
       );
       expect(mapping).not.toBeNull();
@@ -677,8 +678,8 @@ describe("ProviderFixtureSyncService", () => {
 
   it("主赛程源取消且缺少可靠 kickoff 时不捏造比赛记录", async () => {
     const repo = new InMemoryRepository();
-    await seedTeams(repo);
-    const fixture = makeFixture("1400004", "CANC");
+    await seedTeams(repo, Provider.FootballData);
+    const fixture = makeFixture("1400004", "CANC", undefined, Provider.FootballData);
     fixture.fixture.date = "";
     (fixture.fixture as { timestamp: unknown }).timestamp = null;
 
@@ -694,7 +695,7 @@ describe("ProviderFixtureSyncService", () => {
       anomaly_types: [AnomalyType.ProviderDataInvalid],
     });
     await expect(
-      repo.matchProviderMappings.findByProviderAndExternalId(Provider.ApiFootball, "1400004"),
+      repo.matchProviderMappings.findByProviderAndExternalId(Provider.FootballData, "1400004"),
     ).resolves.toBeNull();
     await expect(repo.matches.findBySeason("2026_2027")).resolves.toEqual([]);
   });
@@ -729,8 +730,8 @@ describe("ProviderFixtureSyncService", () => {
 
   it("主赛程源延期且缺少可靠 kickoff 时不捏造比赛记录", async () => {
     const repo = new InMemoryRepository();
-    await seedTeams(repo);
-    const fixture = makeFixture("1200005", "PST");
+    await seedTeams(repo, Provider.FootballData);
+    const fixture = makeFixture("1200005", "PST", undefined, Provider.FootballData);
     fixture.fixture.date = "";
     (fixture.fixture as { timestamp: unknown }).timestamp = null;
 
@@ -746,7 +747,7 @@ describe("ProviderFixtureSyncService", () => {
       anomaly_types: [AnomalyType.ProviderDataInvalid],
     });
     await expect(
-      repo.matchProviderMappings.findByProviderAndExternalId(Provider.ApiFootball, "1200005"),
+      repo.matchProviderMappings.findByProviderAndExternalId(Provider.FootballData, "1200005"),
     ).resolves.toBeNull();
     await expect(repo.matches.findBySeason("2026_2027")).resolves.toEqual([]);
   });
@@ -1235,6 +1236,134 @@ describe("ProviderFixtureSyncService", () => {
       regular_away_score: null,
       result_version: 0,
       finish_detected_at: NOW,
+    });
+  });
+
+  describe("Q1: 赛程权威来源首次建档权限边界", () => {
+    it("生产默认配置下：api_football fixture 首次出现且无映射时，禁止建档", async () => {
+      const repo = new InMemoryRepository();
+      await seedTeams(repo, Provider.ApiFootball);
+      const fixture = makeFixture("1900001", "NS", undefined, Provider.ApiFootball);
+
+      await expect(
+        new ProviderFixtureSyncService(repo).applyFixture(fixture, { fixture: { id: 1900001 } }, NOW),
+      ).rejects.toMatchObject({
+        code: "MATCH_NOT_FOUND",
+        message: "MATCH 不存在",
+      });
+      await expect(repo.matches.findBySeason("2026_2027")).resolves.toHaveLength(0);
+    });
+
+    it("生产默认配置下：五大联赛仅 football_data 可首次建档，次要源 5dollar 不可建档", async () => {
+      const repo = new InMemoryRepository();
+      await seedTeams(repo, Provider.FiveDollar);
+      const fixture = makeFiveDollarFixture("1900002", "NS");
+      fixture.league.season = "26/27";
+
+      const outcome = await new ProviderFixtureSyncService(repo).applyFixture(
+        fixture,
+        { fixture: { id: 1900002 } },
+        NOW,
+      );
+      expect(outcome).toMatchObject({
+        kind: "unlinked",
+        match_id: null,
+      });
+      await expect(repo.matches.findBySeason("2026_2027")).resolves.toHaveLength(0);
+    });
+
+    it("生产默认配置下：中超仅 bsd 可首次建档，football_data 在中超不可首次建档", async () => {
+      const repo = new InMemoryRepository();
+      // bsd 在中超建档
+      const homeTeam = makeTeam("csl-home");
+      homeTeam.league_id = "chinese_super_league";
+      const awayTeam = makeTeam("csl-away");
+      awayTeam.league_id = "chinese_super_league";
+      await repo.teams.insert(homeTeam);
+      await repo.teams.insert(awayTeam);
+      await repo.teamProviderMappings.insert(makeTeamMapping(homeTeam.team_id, "2001", Provider.Bsd));
+      await repo.teamProviderMappings.insert(makeTeamMapping(awayTeam.team_id, "2002", Provider.Bsd));
+
+      const bsdFixture: ApiFootballFixture = {
+        provider: Provider.Bsd,
+        fixture: {
+          id: 2100001,
+          date: "2026-08-09T12:00:00.000Z",
+          timestamp: Date.parse("2026-08-09T12:00:00.000Z") / 1000,
+          status: { short: "NS" },
+        },
+        league: {
+          id: "52",
+          season: 2026,
+          round: "Regular Season - 1",
+        },
+        teams: {
+          home: { id: 2001, name: "CSL Home" },
+          away: { id: 2002, name: "CSL Away" },
+        },
+      };
+
+      const bsdOutcome = await new ProviderFixtureSyncService(repo).applyFixture(
+        bsdFixture,
+        { fixture: { id: 2100001 } },
+        NOW,
+      );
+      expect(bsdOutcome).toMatchObject({
+        kind: "applied",
+        match_status: MatchStatus.Scheduled,
+      });
+
+      // football_data 在中超不可建档
+      await repo.teamProviderMappings.insert(makeTeamMapping(homeTeam.team_id, "3001", Provider.FootballData));
+      await repo.teamProviderMappings.insert(makeTeamMapping(awayTeam.team_id, "3002", Provider.FootballData));
+      const providerLeagueRefs: ProviderLeagueRefs = {
+        fd: { CSL: "chinese_super_league" },
+      };
+      const fdCslFixture: ApiFootballFixture = {
+        provider: Provider.FootballData,
+        fixture: {
+          id: 2100002,
+          date: "2026-08-09T12:00:00.000Z",
+          timestamp: Date.parse("2026-08-09T12:00:00.000Z") / 1000,
+          status: { short: "NS" },
+        },
+        league: {
+          id: "CSL",
+          season: 2026,
+          round: "Regular Season - 1",
+        },
+        teams: {
+          home: { id: 3001, name: "CSL Home" },
+          away: { id: 3002, name: "CSL Away" },
+        },
+      };
+      await expect(
+        new ProviderFixtureSyncService(repo, undefined, providerLeagueRefs).applyFixture(
+          fdCslFixture,
+          { fixture: { id: 2100002 } },
+          NOW,
+        ),
+      ).rejects.toMatchObject({
+        code: "MATCH_NOT_FOUND",
+        message: "MATCH 不存在",
+      });
+      await expect(repo.matches.findBySeason("2026")).resolves.toHaveLength(1);
+    });
+
+    it("老测试或显式配置 scheduleAuthorities 时：可显式放行 api_football 首次建档", async () => {
+      const repo = new InMemoryRepository();
+      await seedTeams(repo, Provider.ApiFootball);
+      const fixture = makeFixture("1900003", "NS", undefined, Provider.ApiFootball);
+
+      const service = new ProviderFixtureSyncService(repo, undefined, undefined, {
+        scheduleAuthorities: new Set([Provider.ApiFootball]),
+      });
+      const outcome = await service.applyFixture(fixture, { fixture: { id: 1900003 } }, NOW);
+      expect(outcome).toMatchObject({
+        kind: "applied",
+        match_status: MatchStatus.Scheduled,
+      });
+      await expect(repo.matches.findBySeason("2026_2027")).resolves.toHaveLength(1);
     });
   });
 });

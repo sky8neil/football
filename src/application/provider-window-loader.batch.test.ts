@@ -91,7 +91,13 @@ describe("loadActiveWindowFixtures batch mapping (RP11)", () => {
     expect(findByProviderAndExternalIds.mock.calls[0]?.[0]).toBe(Provider.ApiFootball);
     expect(findByProviderAndExternalIds.mock.calls[0]?.[1]).toEqual(["ext-1", "ext-2", "ext-3", "ext-4", "ext-5"]);
     expect(findByProviderAndExternalId).toHaveBeenCalledTimes(0);
-    expect(result).toEqual(fixtures.map((item) => ({ fixture: item, payload: { fixture: item } })));
+    expect(result).toEqual(
+      fixtures.map((item) => ({
+        candidateMatchIds: ["match-1", "match-2", "match-3", "match-4", "match-5"],
+        fixture: item,
+        payload: { fixture: item },
+      })),
+    );
   });
 
   it("批量查询与逐条查询产出的 payload 数组相等", async () => {

@@ -45,6 +45,7 @@ export type ProviderStatusSyncOutcome =
       match_id: string;
       match_status: Match["match_status"];
       anomaly_types: [typeof AnomalyType.ProviderDataInvalid];
+      reason_codes?: string[];
     };
 
 export type ProviderTeamChangeOutcome =

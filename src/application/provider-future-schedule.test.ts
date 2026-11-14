@@ -43,10 +43,17 @@ describe("ProviderFutureScheduleService", () => {
       return query.leagueId === MVP_SEASON.api_football_league_id ? [fixture] : [];
     });
 
-    const outcome = await new ProviderFutureScheduleService(repo, {
-      getTeams,
-      getFixtures,
-    }).run(NOW);
+    const outcome = await new ProviderFutureScheduleService(
+      repo,
+      {
+        getTeams,
+        getFixtures,
+      },
+      {},
+      {},
+      undefined,
+      { scheduleAuthorities: new Set([Provider.ApiFootball]) },
+    ).run(NOW);
 
     expect(outcome).toMatchObject({
       teams: {

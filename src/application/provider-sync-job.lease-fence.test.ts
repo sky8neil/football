@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { SyncJobType } from "../domain/enums.js";
+import { MatchStatus, SyncJobType } from "../domain/enums.js";
 import { InMemoryRepository } from "../infrastructure/repositories.js";
 import { makeApiFixture } from "../provider/fixture-factory.js";
 import { ProviderDataError } from "../provider/http.js";
@@ -163,7 +163,11 @@ describe("RP08-2 租约围栏", () => {
         repo.jobLocks.renew(lockKey, ownerId, leaseUntil),
       release: (lockKey: string, ownerId: string) => repo.jobLocks.release(lockKey, ownerId),
     };
-    const applyFixture = vi.fn(async () => ({ kind: "failed" as const, match_id: null, anomaly_types: [] }));
+    const applyFixture = vi.fn(async () => ({
+      kind: "unchanged" as const,
+      match_id: "match-1",
+      match_status: MatchStatus.Scheduled,
+    }));
     const service = new ProviderFixtureSyncJobService(
       { jobLocks, syncLogs: repo.syncLogs },
       { applyFixture },

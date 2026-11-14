@@ -17,6 +17,17 @@ const ENV = {
   FOOTBALL_SESSION_TTL_SECONDS: "60",
 };
 
+function makeProviderRegistryMock(overrides: Record<string, unknown> = {}) {
+  return {
+    beginTickCache: vi.fn(),
+    endTickCache: vi.fn(),
+    dueLeagues: vi.fn(async () => []),
+    commitPendingLeagueSuccess: vi.fn(async () => undefined),
+    discardPendingLeagueSuccess: vi.fn(),
+    ...overrides,
+  };
+}
+
 function handleStub(overrides: Record<string, unknown> = {}): JobsTickHandle {
   const close = vi.fn(async () => undefined);
   const begin = vi.fn();
@@ -31,7 +42,7 @@ function handleStub(overrides: Record<string, unknown> = {}): JobsTickHandle {
     },
     log: vi.fn(),
     providerSources: { sources: [], sync_leagues: new Set(), sync_profile: "test" },
-    providerRegistry: { beginTickCache: vi.fn(), endTickCache: vi.fn(), dueLeagues: vi.fn(async () => []) },
+    providerRegistry: makeProviderRegistryMock(),
     providerDispatcher: { run: vi.fn() },
     providerReconcile: { run: vi.fn(async () => ({ kind: "completed" })) },
     schedulerState: {
@@ -191,11 +202,7 @@ describe("runJobsTick", () => {
     const now = new Date("2026-08-09T00:00:00.000Z");
     const handle = handleStub({
       providerSources: { sources: [{ source_id: "fd" }], sync_leagues: new Set(["premier_league"]), sync_profile: "test" },
-      providerRegistry: {
-        beginTickCache: vi.fn(),
-        endTickCache: vi.fn(),
-        dueLeagues: vi.fn(async () => []),
-      },
+      providerRegistry: makeProviderRegistryMock(),
       db: {
         query: vi.fn(async (_collection: string, filter: { job_type?: string }) => {
           if (filter.job_type === SyncJobType.LiveMatch) return [];
@@ -252,11 +259,7 @@ describe("runJobsTick", () => {
     const nextAttemptAt = new Date(now.getTime() + 60_000);
     const handle = handleStub({
       providerSources: { sources: [{ source_id: "fd" }], sync_leagues: new Set(["premier_league"]), sync_profile: "test" },
-      providerRegistry: {
-        beginTickCache: vi.fn(),
-        endTickCache: vi.fn(),
-        dueLeagues: vi.fn(async () => []),
-      },
+      providerRegistry: makeProviderRegistryMock(),
       db: {
         query: vi.fn(async (_collection: string, filter: { job_type?: string }) => {
           if (filter.job_type === SyncJobType.LiveMatch || filter.job_type === SyncJobType.NearMatch) return [];

@@ -261,3 +261,34 @@ export function loadProviderSources(env: Record<string, string | undefined>): Pr
     sync_leagues: new Set([...requestedLeagueIds].filter((id) => enabledLeagues.has(id))),
   };
 }
+
+/**
+ * 生产默认配置下各联赛的赛程权威来源（roles.schedule === "primary"）。
+ * 五大联赛仅 football_data，中超仅 bsd。
+ */
+export function defaultScheduleAuthorityForLeague(leagueId: SupportedLeagueId): Provider | null {
+  for (const source of Object.values(DEFINITIONS)) {
+    const matched = source.default_leagues.find((l) => l.league_id === leagueId);
+    if (matched !== undefined && matched.roles.schedule === "primary") {
+      return source.provider;
+    }
+  }
+  return null;
+}
+
+/**
+ * 判断指定 provider 是否为特定联赛的首次赛程建档权威来源。
+ */
+export function isScheduleAuthoritySource(
+  provider: string,
+  leagueId: SupportedLeagueId,
+  sources?: readonly ProviderSource[],
+): boolean {
+  if (sources !== undefined && sources.length > 0) {
+    const matchedSource = sources.find((source) => source.provider === provider);
+    if (matchedSource === undefined) return false;
+    const leagueConfig = matchedSource.leagues.find((league) => league.league_id === leagueId);
+    return leagueConfig?.roles.schedule === "primary";
+  }
+  return defaultScheduleAuthorityForLeague(leagueId) === provider;
+}

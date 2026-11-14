@@ -12,6 +12,7 @@ import {
 } from "./provider-sync-job.js";
 import {
   ProviderFixtureSyncService,
+  type ProviderFixtureSyncOptions,
 } from "./provider-fixture-sync.js";
 import {
   ProviderTeamSyncService,
@@ -61,12 +62,13 @@ export class ProviderFutureScheduleService {
     retryOptions: ProviderFixtureSyncRetryOptions = {},
     lockOptions: ProviderFixtureSyncLockOptions = {},
     providerLeagueRefs?: ProviderLeagueRefs,
+    fixtureSyncOptions?: ProviderFixtureSyncOptions,
   ) {
     this.client = client;
     this.teamSync = new ProviderTeamSyncService(repo, client);
     this.fixtureJob = new ProviderFixtureSyncJobService(
       repo,
-      new ProviderFixtureSyncService(repo, undefined, providerLeagueRefs),
+      new ProviderFixtureSyncService(repo, undefined, providerLeagueRefs, fixtureSyncOptions),
       retryOptions,
       lockOptions,
     );
