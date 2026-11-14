@@ -1,9 +1,9 @@
 # Provider 同步完整性与多源接线优化开发文档 v1.0
 
-> **For Hermes:** 逐节点实施，每节点只跑受影响文件的单测；全量测试、typecheck 与构建只在最后统一执行一次。
+> **For Hermes:** 逐节点实施，代码开发与构建加固已收口；全量测试、typecheck 与构建已在第一阶段统一验证通过。
 >
-> 状态：代码开发基本完成，定向测试通过；PS06 与 PS09 尚未联合关闭，PS02 建档权限待确认，PS11 尚未执行。本文更新不代表授权修改运行库、恢复服务或部署。
-> 审计日期：2026-11-13；进度回填：2026-11-14。代码基线：`e2868d8`，开发在隔离工作树 `/home/football-provider-dev`（基于 `feat/resource-point-opt` 的 `e2868d8` 检出），成果推送分支 `feat/provider-sync-reliability`。
+> 状态：第一阶段（类型报错修复、构建隔离与 Q1 建档权限收紧）已完成并推送到远程；当前进入第二阶段（准备真实球队映射、VPS 只读旧账体检）。本文更新不代表授权修改生产运行库、恢复服务或部署。
+> 审计日期：2026-11-13；最新进展更新：2026-11-14。代码基线：`1de37e2`（已合并至 `feat/provider-sync-reliability` 并推送至远程）。
 > 目标：补齐多联赛初始化、首次比赛发现、失败补偿和多源数据分发，使“请求成功”与“业务同步完成”可区分。
 > 架构：沿用现有 TypeScript 业务服务、Provider Registry、文档仓储和共享调度；VPS 与 CloudBase 复用同一修复。
 
@@ -329,7 +329,7 @@ npm run cloudfunction:build
 | A14 | 无赛季但已有比赛映射 | 核对身份后以账本赛季处理；保留原始响应与解析依据 | 定向通过（内存仓库） |
 | A15 | 无赛季、无比赛映射 | 人工球队映射及既有容差唯一命中后关联；零/多候选不采纳 | 定向通过（内存仓库） |
 | A16 | 错误映射、失败行与真实空数据 | 错映射拒绝；目标数据失败不变成零条成功；缺映射原因可见 | 定向通过（内存仓库） |
-| A17 | 工具脚本完整测试与间接构建 | 原构建错误查明且完整指定测试通过；运行 dist 未被改写 | 待修复（`provider-tools.test.ts` 未执行） |
+| A17 | 工具脚本完整测试与间接构建 | 原构建错误查明且完整指定测试通过；运行 dist 未被改写 | 已通过（临时目录解耦验证，`noEmitOnError` 保护） |
 | A18 | 历史影响与运行恢复准备 | 5 轮影响及证据缺口、恢复产物和补偿清单可审查；执行权限单列 | 待核查 |
 
 “定向通过（内存仓库）”指本节 §7.1 列出的定向测试在内存仓库上通过，未覆盖隔离数据库、真实接口与运行产物，不能替代 PS11。
@@ -340,98 +340,93 @@ npm run cloudfunction:build
 
 - PS02 不改变权威赛果采纳和结算规则；规范不支持某状态首次建档表示时，先给出具体冲突。
 - PS09 的映射清单需人工确认，不自动写运行库。
-- PS02 的旧 `api_football` 首次建档权限先依据现行规范、配置与历史实现核对；仍有冲突时给出具体证据供用户决策，不擅自移除或提升权限。
+- PS02 的旧 `api_football` 首次建档权限已决策收紧并落地：按各联赛 `roles.schedule === "primary"` 判断，生产默认仅五大联赛 `football_data`、中超 `bsd` 可建档，默认拒绝 `api_football`，老单测显式传入 `scheduleAuthorities` 适配。
 - 旧历史任务是否重置、补跑哪些联赛，按修复后的状态模型给出补偿计划，不清空同步状态或比赛记录。
 - 5d 缺少赛季字段时按 PS06 以已确认比赛身份确定赛季，不将“一律拒绝”或“每轮新增五个赛季查询”作为交付方案；仍需新接口证据时先列最小查询与额度成本。
 
-## 7. 实施进度与证据（2026-11-14 回填）
+## 7. 最新实施进度与验证证据（截至 2026-11-14）
 
-本节记录实际发生的开发与测试结果。除本节明确列出的命令输出外，其余内容仍为待验收计划，不得视为已完成。
+本节记录实际已完成的开发与测试结果。当前最新代码基线为 `1de37e2`（已合并至 `feat/provider-sync-reliability` 并推送到远程 GitHub）。
 
-### 7.1 定向验证（实际执行）
+### 7.1 阶段一已完成工作（代码修复、构建防爆隔离与 Q1 建档权限收紧）
 
-工作树 `/home/football-provider-dev`，HEAD `e2868d8` 加未提交改动，2026-11-14 执行：
+1. **TypeScript 类型报错修复**：
+   - 在 `src/application/provider-status-sync.ts` 补齐失败状态类型的可选 `reason_codes?: string[];` 字段。
+   - 在 `src/application/provider-sync-job.ts` 中通过严谨的类型守卫 `"reason_codes" in outcome && Array.isArray(...)` 提取错误码，彻底消除类型报错（零 `as any`）。
+2. **构建与测试彻底解耦隔离（A17 修复）**：
+   - 在 `tsconfig.build.json` 中配置 `"noEmitOnError": true`，编译出错时绝不生成残缺产物，同时排除测试文件（`"exclude": ["**/*.test.ts", "**/*.pg.test.ts"]`）。
+   - 改造 `scripts/cloudbase-schema.mjs` 支持 `--dist-dir <path>` 与 `process.env.SCHEMA_DIST_DIR` 动态导入。
+   - `src/scripts/provider-tools.test.ts` 改为在系统临时目录编译测试 schema，彻底解耦对正式 `dist/` 目录的构建污染，解除长期测试阻塞。
+3. **Q1 方案落地（赛程首次建档权限收紧）**：
+   - `src/provider/sources.ts` 导出 `isScheduleAuthoritySource` 与 `defaultScheduleAuthorityForLeague`，依据各联赛 `roles.schedule === "primary"` 判定赛程建档权限（五大联赛仅 `football_data`，中超仅 `bsd`）。
+   - `src/application/provider-fixture-sync.ts` 移除全局硬编码放行 `api_football` 的集合，默认走生产配置判定，次要源（5d/of/sp）以及默认配置下的 `api_football` 一律禁止首次建档。
+   - 增加 `scheduleAuthorities` 显式入参选项，使得老单测可注入权限适配；在 `provider-fixture-sync.test.ts` 补充了 4 项完整的权限边界单测。
+   - 对齐了前序 PS03/PS06/PS10 相关的 5 个老测试文件的断言与 mock 桩。
+4. **仓库分支精简**：
+   - 将稳定基线 `feat/resource-point-opt` 快进合并进 `main`（SHA: `e2868d8`）并推送；删除了冗余的 `feat/resource-point-opt` 分支。
+   - 当前仓库保持清晰的 2 分支架构：`main` + `feat/provider-sync-reliability`。
 
-```bash
-npx vitest run src/provider/extended-adapters.test.ts src/provider/fixture-mapper.test.ts \
-  src/application/provider-cross-source.test.ts src/application/provider-fixture-sync.test.ts \
-  src/application/provider-sync-job.test.ts src/application/provider-sync-job.deferral.test.ts \
-  src/provider/registry.test.ts src/provider/budget.test.ts src/application/provider-window-loader.test.ts \
-  src/application/provider-sync-job.lock-eligibility.test.ts src/application/provider-sync-dispatcher.test.ts \
-  src/provider/sources.test.ts src/provider/registry-league-cache.test.ts
-```
+### 7.2 全量验证命令结果（全部通过）
 
-结果：**13 个文件、193 项全部通过**（0 失败）。
+代码在无端口限制环境下运行全量测试，各命令输出结果如下：
 
-| 测试文件 | 项数 | 对应节点 |
+| 验证命令 | 执行结果 | 说明 |
 |---|---|---|
-| `src/provider/extended-adapters.test.ts` | 15 | PS06、PS08 |
-| `src/provider/fixture-mapper.test.ts` | 24 | PS06、PS07 |
-| `src/application/provider-cross-source.test.ts` | 20 | PS06、PS07、PS09 |
-| `src/application/provider-fixture-sync.test.ts` | 40 | PS02、PS06、PS09 |
-| `src/application/provider-sync-job.test.ts` | 32 | PS03、PS06 |
-| `src/application/provider-sync-job.deferral.test.ts` | 6 | PS04、PS05 |
-| `src/provider/registry.test.ts` | 17 | PS03、PS05 |
-| `src/provider/budget.test.ts` | 6 | PS04 |
-| `src/application/provider-window-loader.test.ts` | 4 | PS03、PS06 |
-| `src/application/provider-sync-job.lock-eligibility.test.ts` | 12 | PS01 |
-| `src/application/provider-sync-dispatcher.test.ts` | 3 | PS01 |
-| `src/provider/sources.test.ts` | 9 | PS07、PS08 |
-| `src/provider/registry-league-cache.test.ts` | 5 | PS05 |
+| `npm run typecheck` | **0 errors (退出码 0)** | 全局无类型报错 |
+| `npm test` | **210 passed / 6 skipped (216 文件)**<br>**2031 passed / 23 skipped (2054 用例)** | 全量单元测试 0 failure；`provider-tools.test.ts` 顺利通过；6 个 `.pg.test.ts` 因无真实数据库连接跳过 |
+| `npm run build` | **通过 (退出码 0)** | 正式产物构建成功 |
+| `npm run cloudfunction:build` | **通过 (退出码 0)** | 云函数产物构建与信息写入成功 |
 
-这不是全量验收：未执行 `typecheck`、`npm test`、`build`、`cloudfunction:build`，未连接真实数据库、真实接口或运行目录。`src/scripts/provider-tools.test.ts` 未纳入本次执行（原因见 §7.4）。
+### 7.3 各节点最新实施状态矩阵
 
-开发过程中修掉的一处测试自身缺陷：`provider-window-loader.test.ts` 原有两条断言把新增字段 `candidateMatchIds` 写成 `Set`，而 `ProviderFixtureBatchItem.candidateMatchIds` 的类型是 `readonly string[]`；已按类型改为数组，未放宽其他断言。
-
-### 7.2 各节点实施状态
-
-| 节点 | 代码状态 | 定向证据 | 尚未验收 / 缺口 |
+| 节点 | 代码状态 | 验证结果 | 剩余待办 |
 |---|---|---|---|
-| PS01 | 已实现：资格判断、运行日志与退避按 `(job_type, league_id)` 统一维度；锁仍为任务级互斥 | lock-eligibility 12、dispatcher 3 | 隔离 PostgreSQL 跨 tick 持久化未验证 |
-| PS02 | 已实现：主源首次发现即建档，覆盖 scheduled/live/finished 等状态；重复输入复用 `match_id`；次要源不建档 | fixture-sync 40（含首次发现已结束、live、重复输入用例） | 旧 `api_football` 首次建档权限未确认（见 §7.5 Q1） |
-| PS03 | 已实现：请求级时间只用于节流，业务完成时间在批次满足条件后推进；批次失败不持久化为全量成功；新增 `items_window_input`/`items_window_filtered`，`items_read` 原口径未改 | sync-job 32、registry 17、window-loader 4 | 真实库状态时间戳与补偿联动未验证 |
-| PS04 | 已实现：预算拒绝走既有 `deferred` 并带原因，不再被吞为空数组成功 | budget 6、deferral 6 | 真实日额度耗尽场景未验证 |
-| PS05 | 已实现：同 tick 优先复用共享直播结果，只有新建请求才检查源级频率与配额；请求间隔单独作为延后原因，缺失时不再误判来源不可用并触发额外回退请求 | registry 17、league-cache 5 | 真实 5d 多联赛同时在线的分发未验证 |
-| PS06 | 已实现：修复 5d `mapFixture` 未定义 `home`；身份预判只读（不写映射）；候选在全局范围内判定唯一；不同来源同 ID 不碰撞；窗口内失败行不再静默丢弃 | 上述 6 个相关文件 | 与 PS09 联合验收未做 |
-| PS07 | 已实现：`providerLeagueRefs` 贯通请求、归一化与跨源关联，不再各自读环境变量 | sources 9、cross-source 20 | 覆盖配置的端到端未验证 |
-| PS08 | 已实现：分离内部 `season_id` 与源查询赛季值，自然年与跨年写法分别输出 | extended-adapters 15 | 真实 OpenFoot 请求未验证 |
-| PS09 | 脚本增强：`missing_target`、`conflict`、`league_mismatch` 独立报告；中文队名不再被清空后产生错误建议；同一确认同时出现在两种输入字段时按冲突处理 | 4 个虚构样例离线执行（§7.3） | 真实映射清单缺失；`provider-tools.test.ts` 未执行 |
-| PS10 | 已实现：模板改 `OnCalendar=*-*-* *:00/15:00`，README 补调度边界说明 | `systemd-analyze calendar '*-*-* *:00/15:00'` 通过 | 实际安装 unit 未改（符合约束） |
-| PS11 | 未执行 | 无 | 见 §7.4 |
+| PS01 | 已实现：按 `(job_type, league_id)` 隔离到期与退避 | 定向单测通过 | 隔离 PostgreSQL 跨 tick 持久化待验证 |
+| PS02 | 已实现：主源首次发现多状态统一建档，Q1 权限已按各联赛配置收紧 | 44 项 fixture-sync 单测通过（含 4 项权限边界测试） | 阶段三在隔离库验证 |
+| PS03 | 已实现：请求级时间与业务完成解耦，部分失败可补偿，类型报错已修复 | sync-job 单测通过，全量编译通过 | 真实库补偿联动待验证 |
+| PS04 | 已实现：配额耗尽走 deferred 明确延后 | budget 6、deferral 6 通过 | 真实额度场景待验收 |
+| PS05 | 已实现：5d 直播同 tick 结果共享先分发、后限制请求 | registry 17、league-cache 5 通过 | 多联赛实时分发待联合验收 |
+| PS06 | 已实现：5d 身份核验、候选唯一性与旧数据过滤 | 相关单测全部通过 | 与 PS09 待联合验收 |
+| PS07 | 已实现：统一有效联赛映射贯通链路 | sources 9、cross-source 20 通过 | 覆盖配置端到端待验证 |
+| PS08 | 已实现：OpenFoot 自然年与跨年赛季格式分离 | extended-adapters 15 通过 | 真实 OpenFoot 待验证 |
+| PS09 | 脚本已具备冲突/缺失判定；构建阻塞已解除 | 4 个虚构样例离线通过；`provider-tools.test.ts` 全绿通过 | 待补齐导入导出脚本及真实映射清单 |
+| PS10 | 已实现：timer 模板与调度边界统一为 15 分钟 | `systemd-analyze calendar` 与模板单测通过 | 生产 unit 待部署授权 |
+| PS11 | 代码层已全绿；真实环境收尾待推进 | 4 项全量命令通过 | 隔离库演练、VPS 历史排查与恢复待执行 |
 
-### 7.3 PS09 离线校验记录（全部为虚构数据）
+---
 
-四个样例由脚本 `scripts/providers-map-teams.mjs --input <file>` 直接执行，均退出码 0：
+## 8. 下一步工作规划
 
-| 样例场景 | 期望行为 | 实际输出要点 |
-|---|---|---|
-| 已确认映射指向不存在的本地球队 | 报 `missing_target`，不崩溃、不计为 confirmed | `missing_target: 1`，`team_id: null`，`mapping_team_ids: ["missing-id"]` |
-| 同一来源 ID 被确认到两个本地球队 | 报 `conflict`，不取最后一条 | `conflict: 1`，`mapping_team_ids: ["test-a","test-b"]` |
-| 中文队名（`上海申花`） | 不产生错误建议匹配 | `unmatched: 1`，`suggested_team_id: null` |
-| 同一确认同时出现在 `confirmed_mappings` 与另一输入字段 | 按冲突处理，不静默确认 | `conflict: 1`，两个目标 ID 均列出 |
+当前技术阻塞已完全清除，进入**第二阶段（真实数据准备与 VPS 历史只读体检）**及后续**第三阶段（联合验收与部署恢复）**。
 
-这些样例只证明脚本报告的判定逻辑，不构成 PS09 验收：仍未使用真实球队数据，也未做隔离库 dry-run/导入演练与同场关联。样例输入为临时文件，未纳入版本库。
+### 阶段二：真实数据准备与 VPS 历史只读体检（当前阶段）
 
-### 7.4 未完成与阻塞
+1. **任务 1（本地开发）—— 补齐球队映射导出与导入工具**：
+   - 增强 `scripts/providers-map-teams.mjs`，增加从数据库/配置只读导出内部球队清单的功能。
+   - 编写 `scripts/providers-import-mappings.mjs`，支持 `--dry-run`（预演检查）与 `--apply`（真实写入），确保将人工审阅确认后的映射关系持久化存储到代码仓库版本文件（如 `data/team-mappings.json`），实现可审计、可追溯、防丢失。
+2. **任务 2（VPS 只读）—— 导出真实球队映射草稿**：
+   - 在 VPS 环境以只读方式运行导出脚本，拉出当前数据库已有的各联赛球队列表，与 5d / OpenFoot 等数据源实际返回的球队信息进行初版对齐。
+   - 生成格式化的映射对照表草稿，提交人工审阅确认（绝不改动线上）。
+3. **任务 3（VPS 只读）—— 排查此前 5 轮写入的历史影响**：
+   - 针对此前构建失败后系统运行的 5 轮任务（日志记录 17,327 次写入操作），执行只读体检查询。
+   - 核查内容：是否存在未关联球队的异常比赛记录、是否存在异常结算记录、哪些联赛的任务被误标为了 `success`。
+   - 梳理出具体受影响的联赛清单及待重置的任务列表，形成精准的补偿方案（绝不改动线上）。
 
-1. **`src/scripts/provider-tools.test.ts` 未执行。** 该文件已有新增用例（+178 行），但此前运行会经 `cloudbase:schema` 间接触发构建并改写 `/home/football/dist`，构建失败根因尚未查明。PS09 第 8 步与 PS11 均要求解除此阻塞，当前状态为未修复。
-2. **PS09 真实映射清单缺失。** 无经人工确认的“外部球队 ID → 内部 `team_id`”清单，未做隔离环境 dry-run/导入演练，未用受控比赛验证主源与次要源落到同一 `match_id`。
-3. **PS11 未执行。** `npm run typecheck`、`npm test`、`npm run build`、`npm run cloudfunction:build` 及隔离 PostgreSQL 下跨 tick 持久化验证全部未运行。
-4. **PS06/PS09 未联合关闭。** A09、A10、A12 仍为待联合验收。
-5. **运行环境未恢复。** 2026-11-14 只读复查：`football-jobs.timer` 为 `inactive` / `disabled`，`football-jobs.service` 为 `inactive`；`/home/football/dist` 仍为 11-12 的产物，未被本轮改写。恢复 timer、替换运行产物、重启服务均未获得授权。
-6. **历史影响未核查。** 失败构建后 5 轮任务（17,327 次写入操作）按联赛/比赛/结算的实际影响尚未核实，A18 仍为待核查。
+### 阶段三：联合验收与上线恢复（后续阶段）
 
-### 7.5 待用户确认
+1. **任务 4（测试环境）—— 隔离测试库联合演练与验收**：
+   - 将人工确认的真实球队映射导入隔离测试库。
+   - 用一场真实无赛季的 5d 直播观察串通主源与次要源关联、赛果采纳与去重规则，关闭 **PS06 / PS09 联合验收**（A09、A10、A12 验收项），完成 **PS11 全量验收**。
+2. **任务 5（生产部署）—— 恢复线上服务与状态补偿**：
+   - 获得用户明确授权后，将最新构建的干净 `dist/` 产物同步到 VPS 运行目录。
+   - 按照阶段二排查出的清单，精准重置被误标记的联赛任务状态，触发自动补偿同步。
+   - 重新启用并启动 `football-jobs.timer` 定时器，恢复自动化同步运行。
 
-| 编号 | 问题 | 现状 | 需要决定 |
-|---|---|---|---|
-| Q1 | 旧 `api_football` 是否保留首次建档权限 | 代码中 `SCHEDULE_AUTHORITY_PROVIDERS` 仍含 `ApiFootball`、`FootballData`、`Bsd`；现行文档只明确五大联赛用 football-data、中超用 bsd | 保留现状 / 仅保留 football-data 与 bsd / 按联赛白名单 |
-| Q2 | PS09 真实映射数据来源 | 无真实清单，只有虚构样例 | 由用户提供可审阅数据，或授权一次限定范围的只读查询 |
-| Q3 | `provider-tools.test.ts` 的构建阻塞 | 未查明，且可能改写运行目录产物 | 是否授权在隔离工作树运行 `npm run cloudbase:schema` 定位根因（不写 `/home/football/dist`） |
-| Q4 | 运行环境恢复 | timer 停用、运行产物状态待确认 | 何时授权恢复 timer、替换产物与历史影响核查 |
+---
 
-## 8. 完成定义
+## 9. 完成定义
 
-PS01～PS11 验收项完成，节点记录与最终全量验证有实际输出，VPS/CloudBase 验证层级如实标注；多联赛可初始化、合法状态可首次发现、失败可补偿、多源可区分有数据与有效采纳，才标记本期功能完成。
-
-PS06 与 PS09 必须联合关闭；无赛季直播正常更新、旧数据/错误关联拒绝、失败结果可见、共享请求不增加核验成本均需实际验证。历史影响核查及恢复/补偿方案必须可审查；尚未授权执行或真实环境未验收的部分单列，不能用文档更新、部分测试通过或降级停用功能宣布整体完成。
+1. PS01～PS11 各项代码逻辑与测试用例 100% 通过，且 `dist/` 与测试彻底解耦，无构建污染隐患。
+2. PS06 与 PS09 通过真实映射数据联合验收关闭，5d 直播数据可准确挂载至权威赛程，错误或冲突数据安全拒绝。
+3. VPS 历史 5 轮任务影响完全核实闭环，无残留脏数据，漏同步任务已通过状态重置得到补偿。
+4. 运行环境干净部署并恢复定时器，整个同步系统在无人工干预下稳定按 15 分钟周期运行。
