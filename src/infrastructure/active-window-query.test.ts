@@ -180,22 +180,31 @@ describe("buildActiveWindowFilters", () => {
     try {
       expect(selectActiveWindow([staleOne, staleTwo, exactBoundary, oldLive], query("live_match")))
         .toEqual([exactBoundary]);
-      expect(warn).toHaveBeenCalledTimes(2);
-      expect(warn).toHaveBeenNthCalledWith(1, "[live_match_stale]", {
-        match_id: "stale-one",
-        league_id: "premier_league",
-        kickoff_at: staleOne.kickoff_at.toISOString(),
-        server_now: NOW.toISOString(),
-      });
-      expect(warn).toHaveBeenNthCalledWith(2, "[live_match_stale]", {
-        match_id: "stale-two",
-        league_id: "la_liga",
-        kickoff_at: staleTwo.kickoff_at.toISOString(),
+      // 滞留告警按轮聚合成一条，避免滞留场次多时刷爆日志。
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith("[live_match_stale]", {
+        count: 2,
+        leagues: [
+          { league_id: "premier_league", count: 1 },
+          { league_id: "la_liga", count: 1 },
+        ],
+        sample: [
+          {
+            match_id: "stale-one",
+            league_id: "premier_league",
+            kickoff_at: staleOne.kickoff_at.toISOString(),
+          },
+          {
+            match_id: "stale-two",
+            league_id: "la_liga",
+            kickoff_at: staleTwo.kickoff_at.toISOString(),
+          },
+        ],
         server_now: NOW.toISOString(),
       });
 
       selectActiveWindow([staleOne, staleTwo], query("near_match"));
-      expect(warn).toHaveBeenCalledTimes(2);
+      expect(warn).toHaveBeenCalledTimes(1);
     } finally {
       warn.mockRestore();
     }

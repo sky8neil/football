@@ -22,6 +22,9 @@ export interface ActiveWindowFilterFragment {
 const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
 
+/** 滞留场次告警中最多附带多少条样本明细，避免聚合日志本身过长。 */
+const STALE_ALERT_SAMPLE_LIMIT = 10;
+
 /** 按上面的设计返回该任务需要的查询片段（取并集）。 */
 export function buildActiveWindowFilters(query: ActiveWindowQuery): ActiveWindowFilterFragment[] {
   const nowMs = query.now.getTime();
@@ -90,18 +93,28 @@ export function selectActiveWindow(
   const coerced = [...matches].map(coerceMatchKickoff);
   if (query.jobType === "live_match") {
     const staleKickoffBefore = query.now.getTime() - 6 * HOUR_MS;
-    for (const match of coerced) {
-      if (
+    const stale = coerced.filter(
+      (match) =>
         match.match_status === MatchStatus.Scheduled &&
-        match.kickoff_at.getTime() < staleKickoffBefore
-      ) {
-        console.warn("[live_match_stale]", {
+        match.kickoff_at.getTime() < staleKickoffBefore,
+    );
+    if (stale.length > 0) {
+      // 逐场告警会在滞留场次多时刷爆日志（曾出现单轮 240 条 / 每 15 分钟一轮），
+      // 因此按轮聚合成一条：给出总量、按联赛分布与有限条样本明细。
+      const leagueCounts = new Map<string, number>();
+      for (const match of stale) {
+        leagueCounts.set(match.league_id, (leagueCounts.get(match.league_id) ?? 0) + 1);
+      }
+      console.warn("[live_match_stale]", {
+        count: stale.length,
+        leagues: [...leagueCounts.entries()].map(([league_id, count]) => ({ league_id, count })),
+        sample: stale.slice(0, STALE_ALERT_SAMPLE_LIMIT).map((match) => ({
           match_id: match.match_id,
           league_id: match.league_id,
           kickoff_at: match.kickoff_at.toISOString(),
-          server_now: query.now.toISOString(),
-        });
-      }
+        })),
+        server_now: query.now.toISOString(),
+      });
     }
   }
   const filtered = activeWindow(coerced, query.now, query.jobType);
