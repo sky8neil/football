@@ -2,7 +2,7 @@ import { PeriodType, RankingBoard, SyncJobType } from "../domain/enums.js";
 import { DomainError } from "../domain/errors.js";
 import { FIXED_CONFIG_V1 } from "../domain/config.js";
 import { cloudBaseCollectionName, type CloudBaseDb } from "../infrastructure/cloudbase-db.js";
-import { providerJobIntervalMs, SYNC_TASKS_V1 } from "../sync/config.js";
+import { failedJobCooldownMs, providerJobIntervalMs, SYNC_TASKS_V1 } from "../sync/config.js";
 import type { ProviderFixtureFailureDiagnostic } from "../application/provider-sync-job.js";
 import type { ProviderReconcileService } from "../application/provider-reconcile.js";
 import { runSettlementTimer, type SettlementTimerOutcome } from "../application/settlement-timer.js";
@@ -142,6 +142,7 @@ function intervalSkip(
   last: Record<string, unknown> | undefined,
   serverNow: Date,
   intervalMs: number,
+  failedCooldownMs: number,
 ): string | undefined {
   const lastStartedMs = toEpochMs(last?.started_at);
   if (last?.status === "deferred") {
@@ -149,8 +150,10 @@ function intervalSkip(
     if (Number.isFinite(nextAtMs) && serverNow.getTime() < nextAtMs) return "deferred_not_due";
     return undefined;
   }
-  if (Number.isFinite(lastStartedMs) && serverNow.getTime() - lastStartedMs < intervalMs) {
-    return "interval_not_due";
+  // failed 不再被整个周期锁死：退避重试耗尽后按 exhaustedRetryMinutes 收敛重试。
+  const effectiveIntervalMs = last?.status === "failed" ? failedCooldownMs : intervalMs;
+  if (Number.isFinite(lastStartedMs) && serverNow.getTime() - lastStartedMs < effectiveIntervalMs) {
+    return last?.status === "failed" ? "failed_cooldown" : "interval_not_due";
   }
   return undefined;
 }
@@ -191,7 +194,12 @@ export async function planDueProviderJobs(input: {
       continue;
     }
     const last = await latestSyncLog(input.cloudDb, input.namespace, jobType);
-    const skipReason = intervalSkip(last, input.serverNow, providerJobIntervalMs(jobType, input.profile));
+    const skipReason = intervalSkip(
+      last,
+      input.serverNow,
+      providerJobIntervalMs(jobType, input.profile),
+      failedJobCooldownMs(jobType, input.profile),
+    );
     if (skipReason !== undefined) {
       decisions.push({ task: jobType, action: "skip", reason: skipReason });
       continue;

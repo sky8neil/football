@@ -6,6 +6,7 @@ import {
   SYNC_RETRY_V1,
   SYNC_TASKS_V1,
   applyJitter,
+  failedJobCooldownMs,
   isQuotaExceededError,
   jobLockKey,
   nextRetryDelayMinutes,
@@ -143,6 +144,17 @@ describe("重试策略（规范 32.8）", () => {
     expect(SYNC_RETRY_V1.quotaExceededStopsAutoRetry).toBe(true);
     expect(isQuotaExceededError(new ProviderQuotaExceededError(null))).toBe(true);
     expect(isQuotaExceededError(new Error("network down"))).toBe(false);
+  });
+
+  it("failed 冷却取 min(任务周期, exhaustedRetryMinutes)：长周期任务不再被锁死", () => {
+    expect(SYNC_RETRY_V1.exhaustedRetryMinutes).toBe(60);
+    // 长周期：被收敛到 1 小时，而不是 24 小时 / 12 小时
+    expect(failedJobCooldownMs(SyncJobType.FullScheduleVerify, "prod")).toBe(60 * 60_000);
+    expect(failedJobCooldownMs(SyncJobType.FutureSchedule, "test")).toBe(60 * 60_000);
+    // 短周期：维持原间隔，不因为 failed 变得更密
+    expect(failedJobCooldownMs(SyncJobType.LiveMatch, "prod")).toBe(3 * 60_000);
+    expect(failedJobCooldownMs(SyncJobType.PostFinishVerify, "test")).toBe(5 * 60_000);
+    expect(failedJobCooldownMs(SyncJobType.NearMatch, "prod")).toBe(30 * 60_000);
   });
 });
 

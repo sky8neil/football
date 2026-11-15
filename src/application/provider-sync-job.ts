@@ -371,7 +371,11 @@ export class ProviderFixtureSyncJobService {
       if (Number.isFinite(nextAtMs) && serverNow.getTime() < nextAtMs) return false;
       return true;
     }
-    if (serverNow.getTime() - startedMs < dueIntervalMs) return false;
+    // failed 不再被整个周期锁死：退避重试耗尽后按 min(周期, exhaustedRetryMinutes) 重试。
+    const effectiveDueIntervalMs = latest.status === SyncJobStatus.Failed
+      ? Math.min(dueIntervalMs, SYNC_RETRY_V1.exhaustedRetryMinutes * 60_000)
+      : dueIntervalMs;
+    if (serverNow.getTime() - startedMs < effectiveDueIntervalMs) return false;
     return true;
   }
 

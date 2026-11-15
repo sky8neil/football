@@ -107,7 +107,28 @@ export const SYNC_RETRY_V1 = {
   maxRetries: FIXED_CONFIG_V1.SYNC_MAX_RETRIES,
   jitterPercent: FIXED_CONFIG_V1.SYNC_RETRY_JITTER_PERCENT,
   quotaExceededStopsAutoRetry: true,
+  /**
+   * 退避重试耗尽后，`failed` 日志的最长冷却（分钟）。
+   *
+   * 历史行为：重试次数用尽后写一条 `failed` 且不带 `next_attempt_at`，于是被任务自身的
+   * 常规间隔锁死——`full_schedule_verify` 一次失败就要等 24 小时，中超 240 场因此卡了三天。
+   * 现在 failed 的冷却取 `min(任务间隔, 该值)`：短周期任务（live 3 分钟、post_finish 3/5 分钟）
+   * 行为不变，长周期任务（future_schedule、full_schedule_verify）退化为每小时重试一次，
+   * 既有上限也不至于高频轰炸 Provider。
+   */
+  exhaustedRetryMinutes: 60,
 } as const;
+
+/** `failed` 日志的冷却毫秒：不超过任务常规间隔，也不超过 exhaustedRetryMinutes。 */
+export function failedJobCooldownMs(
+  jobType: SyncJobType,
+  profile: ProviderJobProfile,
+): number {
+  return Math.min(
+    taskIntervalMinutes(jobType, profile) * 60_000,
+    SYNC_RETRY_V1.exhaustedRetryMinutes * 60_000,
+  );
+}
 
 /** 第 attempt 次重试（0 起）对应的退避延迟分钟数；超出上限返回 null（不再自动重试）。 */
 export function nextRetryDelayMinutes(attempt: number): number | null {

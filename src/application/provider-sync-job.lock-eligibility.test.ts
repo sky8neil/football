@@ -85,6 +85,46 @@ describe("RP08 锁内二次资格确认", () => {
     expect(load).toHaveBeenCalledTimes(1);
   });
 
+  it("最新日志 failed 但超过 exhaustedRetryMinutes → 不再锁满整个周期，直接重跑", async () => {
+    const DAY_MS = 24 * 60 * 60_000;
+    const repo = new InMemoryRepository();
+    await repo.syncLogs.insert(makeLog({
+      job_type: SyncJobType.FullScheduleVerify,
+      status: "failed",
+      started_at: new Date(NOW.getTime() - 61 * 60_000),
+    }));
+    const load = vi.fn(async () => []);
+    const service = makeService(repo, DAY_MS);
+
+    await expect(service.run(SyncJobType.FullScheduleVerify, load, NOW)).resolves.toEqual({
+      kind: "completed",
+      job_type: SyncJobType.FullScheduleVerify,
+      items_read: 0,
+      items_changed: 0,
+      items_failed: 0,
+    });
+    expect(load).toHaveBeenCalledTimes(1);
+  });
+
+  it("最新日志 failed 且仍在 exhaustedRetryMinutes 内 → skipped / not_due_after_lock", async () => {
+    const DAY_MS = 24 * 60 * 60_000;
+    const repo = new InMemoryRepository();
+    await repo.syncLogs.insert(makeLog({
+      job_type: SyncJobType.FullScheduleVerify,
+      status: "failed",
+      started_at: new Date(NOW.getTime() - 30 * 60_000),
+    }));
+    const load = vi.fn(async () => []);
+    const service = makeService(repo, DAY_MS);
+
+    await expect(service.run(SyncJobType.FullScheduleVerify, load, NOW)).resolves.toEqual({
+      kind: "skipped",
+      job_type: SyncJobType.FullScheduleVerify,
+      reason: "not_due_after_lock",
+    });
+    expect(load).not.toHaveBeenCalled();
+  });
+
   it("最新日志是 deferred 且 next_attempt_at 在未来 → skipped", async () => {
     const repo = new InMemoryRepository();
     await repo.syncLogs.insert(makeLog({
