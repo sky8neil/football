@@ -11,6 +11,7 @@ import type { Match, ProviderSnapshot, Team, TeamProviderMapping } from "../doma
 import type { ApiFootballFixture } from "../provider/types.js";
 import { InMemoryRepository, type AppRepository, type UnitOfWork } from "../infrastructure/repositories.js";
 import { ProviderFixtureSyncService } from "./provider-fixture-sync.js";
+import { persistAnomalyInTransaction } from "./anomaly-persistence.js";
 
 const NOW = new Date("2026-08-09T00:00:00.000Z");
 
@@ -865,6 +866,42 @@ describe("ProviderFixtureSyncService", () => {
       repo.anomalies.findByKey(`${match.match_id}:${AnomalyType.InvalidFinalScore}`),
     ).resolves.toMatchObject({ status: AnomalyStatus.Resolved });
   });
+  it("采纳权威赛果后 resolve 遗留的 PROVIDER_RESULT_PENDING 异常", async () => {
+    const repo = new InMemoryRepository();
+    const match = makeMatch();
+    await seedMatch(repo, match, "1100400", Provider.FootballData);
+    const anomalyKey = `${match.match_id}:${AnomalyType.ProviderResultPending}`;
+
+    // 模拟"非权威单源等待"阶段留下的异常：open + 非阻塞
+    await repo.withTransaction(async (tx) => {
+      await persistAnomalyInTransaction(
+        tx,
+        match.match_id,
+        AnomalyType.ProviderResultPending,
+        { open: true, blocking: false },
+        { reason: "non_authoritative_single_source" },
+        NOW,
+      );
+    });
+    await expect(repo.anomalies.findByKey(anomalyKey)).resolves.toMatchObject({
+      status: AnomalyStatus.Open,
+    });
+
+    const service = new ProviderFixtureSyncService(repo);
+    await expect(
+      service.applyFixture(
+        makeFixture("1100400", "FT", { home: 3, away: 0 }, Provider.FootballData),
+        { fixture: { id: 1100400 }, score: { fulltime: { home: 3, away: 0 } } },
+        NOW,
+      ),
+    ).resolves.toMatchObject({ kind: "applied", result_version: 1 });
+
+    await expect(repo.anomalies.findByKey(anomalyKey)).resolves.toMatchObject({
+      status: AnomalyStatus.Resolved,
+      resolution: "provider_result_adopted",
+    });
+  });
+
   it("首次无分 FT 的 settlement_status 变化必须经过既有 transition repository 入口", async () => {
     const repo = new InMemoryRepository();
     const match = makeMatch();

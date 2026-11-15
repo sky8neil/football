@@ -473,7 +473,7 @@ export class ProviderFixtureSyncService {
       }, serverNow);
       return { kind: "conflict", match_id: match.match_id, result_version: match.result_version, anomaly_type: AnomalyType.ProviderResultConflict };
     }
-    await this.persistResultAdoptionAnomaly(match.match_id, AnomalyType.ProviderResultPending, false, {}, serverNow, false);
+    await this.resolveResultAdoptionAnomaly(match.match_id, serverNow);
     return this.resultSync.applyFinishedFixture({
       ...fixture,
       resultProvider: decision.provider,
@@ -500,16 +500,33 @@ export class ProviderFixtureSyncService {
     });
   }
 
+  /**
+   * 采纳权威赛果后关闭遗留的 RESULT_PENDING 异常。
+   *
+   * 只传 `open: false` 而不带 `resolve` 时 `persistAnomalyInTransaction` 会走
+   * "unchanged" 分支（anomaly-persistence.ts:77），异常永远不会被关闭；这里必须
+   * 显式给出 resolve，否则每次等待都会留下一条永远 open 的非阻塞异常。
+   */
+  private async resolveResultAdoptionAnomaly(matchId: string, serverNow: Date): Promise<void> {
+    await this.repo.withTransaction(async (tx) => {
+      await persistAnomalyInTransaction(tx, matchId, AnomalyType.ProviderResultPending, {
+        open: false,
+        blocking: false,
+        resolve: { resolution: "provider_result_adopted", resolvedAt: serverNow },
+      }, {}, serverNow);
+    });
+  }
+
+  /** 打开/更新一条 wait/conflict 类异常。关闭异常请走 resolveResultAdoptionAnomaly。 */
   private async persistResultAdoptionAnomaly(
     matchId: string,
     type: AnomalyType,
     blocking: boolean,
     details: Record<string, unknown>,
     serverNow: Date,
-    open = true,
   ): Promise<void> {
     await this.repo.withTransaction(async (tx) => {
-      await persistAnomalyInTransaction(tx, matchId, type, { open, blocking }, details, serverNow);
+      await persistAnomalyInTransaction(tx, matchId, type, { open: true, blocking }, details, serverNow);
     });
   }
 }
