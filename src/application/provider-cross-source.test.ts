@@ -217,7 +217,7 @@ describe("ensureCrossSourceMatchMapping", () => {
 
   it.each([
     { label: "Premier League 30-minute boundary", provider: "5dollar" as const, league_id: "premier_league" as const, league_ref: "4160026622", tolerance: 30 * 60_000 },
-    { label: "Chinese Super League 5-minute boundary", provider: "sportapi" as const, league_id: "chinese_super_league" as const, league_ref: "85", tolerance: 5 * 60_000 },
+    { label: "Chinese Super League 90-minute boundary", provider: "sportapi" as const, league_id: "chinese_super_league" as const, league_ref: "85", tolerance: 90 * 60_000 },
   ])("accepts the inclusive $label and rejects one millisecond beyond it", async ({ provider, league_id, league_ref, tolerance }) => {
     const localMatch = makeMatch({
       league_id,
@@ -230,6 +230,31 @@ describe("ensureCrossSourceMatchMapping", () => {
 
     const outside = makeRepo({ matches: [makeMatch({ ...localMatch, kickoff_at: new Date(NOW.getTime() + tolerance + 1) })] });
     await expect(ensureCrossSourceMatchMapping(outside.repo, input, NOW)).resolves.toMatchObject({ match_id: null, reason: "unlinked" });
+  });
+
+  it("中超按 90 分钟容忍度对齐 openfoot 的夏令时偏移", async () => {
+    // 回归保护：openfoot 对不实行夏令时的联赛错误套用欧洲夏令时，
+    // 导致 DST 窗口内 kickoff 晚整 60 分钟。见 provider-cross-source.ts 常量注释。
+    const localMatch = makeMatch({
+      league_id: "chinese_super_league",
+      season_id: "2026",
+      kickoff_at: NOW,
+    });
+    const { repo, matchMappings } = makeRepo({ matches: [localMatch] });
+    const input = fixture({
+      provider: "openfoot" as const,
+      leagueProviderId: "comp_chinese_super_league_chn",
+      kickoffAt: new Date(NOW.getTime() + 60 * 60_000),
+    });
+
+    await expect(ensureCrossSourceMatchMapping(repo, input, NOW)).resolves.toEqual({
+      match_id: MATCH_ID,
+      reason: "mapped",
+    });
+    expect(matchMappings.insert).toHaveBeenCalledWith(expect.objectContaining({
+      match_id: MATCH_ID,
+      provider: "openfoot",
+    }));
   });
 
   it("uses the configured source league override for cross-source matching", async () => {

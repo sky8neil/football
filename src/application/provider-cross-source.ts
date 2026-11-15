@@ -9,6 +9,24 @@ import type { NormalizedFixture } from "../provider/fixture-mapper.js";
 const CROSS_SOURCE_PROVIDERS = new Set<Provider>(["5dollar", "openfoot", "sportapi"]);
 const warnedMissingTeamMappings = new Set<string>();
 
+/**
+ * 交叉核对时用于对齐本地比赛与 provider fixture 的 kickoff 容忍度（毫秒）。
+ *
+ * 中超单独放宽到 90 分钟：openfoot 对**不实行夏令时**的联赛（中国）错误地套用了
+ * 欧洲夏令时，导致其 kickoff 在 DST 窗口内比主源 bsd 晚整 60 分钟。
+ * 实测 2026 中超赛季：208/240 场偏移 +60 分钟且全部落在欧洲 DST 窗口内，
+ * 32/240 场零偏移且全部在窗口外；同期 EPL 380/380 场零偏移（欧洲夏令时本身合法）。
+ * 上游 provider 修复后可把中超收紧回 5 分钟。
+ *
+ * 放宽不引入歧义：同一赛季内同一 (主队, 客队) 对只可能因延期出现两条记录，
+ * 实测最短间隔 3 天，远超 90 分钟。
+ */
+const CROSS_SOURCE_KICKOFF_TOLERANCE_MS: Readonly<Record<string, number>> = {
+  chinese_super_league: 90 * 60_000,
+};
+
+const DEFAULT_CROSS_SOURCE_KICKOFF_TOLERANCE_MS = 30 * 60_000;
+
 export async function ensureCrossSourceMatchMapping(
   repo: AppRepository,
   fixture: NormalizedFixture,
@@ -38,7 +56,8 @@ export async function ensureCrossSourceMatchMapping(
   const candidates = (await repo.matches.findBySeason(activeLeagueSeason(supportedLeague, now).season_id)).filter((match) => {
     if (match.league_id !== supportedLeague.league_id || match.home_team_id !== home.team_id || match.away_team_id !== away.team_id) return false;
     if (candidateMatchIds && !candidateMatchIds.has(match.match_id)) return false;
-    const tolerance = match.league_id === "chinese_super_league" ? 5 * 60_000 : 30 * 60_000;
+    const tolerance = CROSS_SOURCE_KICKOFF_TOLERANCE_MS[match.league_id]
+      ?? DEFAULT_CROSS_SOURCE_KICKOFF_TOLERANCE_MS;
     return Math.abs(match.kickoff_at.getTime() - fixture.kickoffAt!.getTime()) <= tolerance;
   });
   if (candidates.length !== 1) {
