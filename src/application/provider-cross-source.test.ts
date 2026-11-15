@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { Provider } from "../domain/enums.js";
 import type { Match } from "../domain/types.js";
 import type { AppRepository } from "../infrastructure/repositories.js";
@@ -10,6 +10,8 @@ const NOW = new Date("2026-10-12T12:00:00.000Z");
 const MATCH_ID = "00000000-0000-4000-8000-000000000001";
 const HOME_ID = "00000000-0000-4000-8000-000000000002";
 const AWAY_ID = "00000000-0000-4000-8000-000000000003";
+
+afterEach(() => vi.restoreAllMocks());
 
 function fixture(overrides: Record<string, unknown> = {}) {
   return {
@@ -67,7 +69,12 @@ function makeMatch(overrides: Partial<Match> = {}): Match {
   };
 }
 
-function makeRepo(options: { matches?: Match[]; existingMapping?: { match_id: string } | null; missingTeam?: boolean } = {}) {
+function makeRepo(options: {
+  matches?: Match[];
+  existingMapping?: { match_id: string } | null;
+  missingTeam?: boolean;
+  missingTeamIds?: string[];
+} = {}) {
   const snapshots = { insert: vi.fn(async () => undefined) };
   const matchMappings = {
     findByProviderAndExternalId: vi.fn(async () => options.existingMapping ?? null),
@@ -75,7 +82,7 @@ function makeRepo(options: { matches?: Match[]; existingMapping?: { match_id: st
   };
   const teamMappings = {
     findByProviderAndExternalId: vi.fn(async (_provider: Provider, id: string) => {
-      if (options.missingTeam) return null;
+      if (options.missingTeam || options.missingTeamIds?.includes(id)) return null;
       if (id === "provider-home") return { team_id: HOME_ID };
       if (id === "provider-away") return { team_id: AWAY_ID };
       return null;
@@ -88,6 +95,11 @@ function makeRepo(options: { matches?: Match[]; existingMapping?: { match_id: st
     providerSnapshots: snapshots,
   } as unknown as AppRepository;
   return { repo, snapshots, matchMappings, teamMappings };
+}
+
+async function loadFreshEnsureCrossSourceMatchMapping() {
+  vi.resetModules();
+  return (await import("./provider-cross-source.js")).ensureCrossSourceMatchMapping;
 }
 
 describe("ensureCrossSourceMatchMapping", () => {
@@ -112,6 +124,84 @@ describe("ensureCrossSourceMatchMapping", () => {
     expect(snapshots.insert).toHaveBeenCalledWith(expect.objectContaining({
       provider: "5dollar", event_type: "provider_error", provider_entity_id: "provider-match-1",
       payload: expect.objectContaining({ diag_code: "DIAG_PROVIDER_MATCH_UNLINKED", reason: "team_mapping_missing" }),
+    }));
+  });
+
+  it("warns once for the same unmapped provider team across fixtures and records each snapshot", async () => {
+    const ensureWithFreshModule = await loadFreshEnsureCrossSourceMatchMapping();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { repo, snapshots } = makeRepo({ missingTeamIds: ["provider-home"] });
+
+    await ensureWithFreshModule(repo, fixture({ homeTeamName: undefined }), NOW);
+    await ensureWithFreshModule(repo, fixture({ providerMatchId: "provider-match-2" }), NOW);
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith("[team_mapping_missing]", {
+      league_id: "4160026622",
+      provider: "5dollar",
+      provider_team_id: "provider-home",
+      team_name: null,
+      side: "home",
+      provider_match_id: "provider-match-1",
+      season: "2026",
+    });
+    expect(snapshots.insert).toHaveBeenCalledTimes(2);
+  });
+
+  it("warns separately for missing home and away team mappings with structured details", async () => {
+    const ensureWithFreshModule = await loadFreshEnsureCrossSourceMatchMapping();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { repo } = makeRepo({ missingTeam: true });
+
+    await ensureWithFreshModule(repo, fixture(), NOW);
+
+    expect(warn).toHaveBeenCalledTimes(2);
+    expect(warn).toHaveBeenNthCalledWith(1, "[team_mapping_missing]", {
+      league_id: "4160026622",
+      provider: "5dollar",
+      provider_team_id: "provider-home",
+      team_name: "Home",
+      side: "home",
+      provider_match_id: "provider-match-1",
+      season: "2026",
+    });
+    expect(warn).toHaveBeenNthCalledWith(2, "[team_mapping_missing]", {
+      league_id: "4160026622",
+      provider: "5dollar",
+      provider_team_id: "provider-away",
+      team_name: "Away",
+      side: "away",
+      provider_match_id: "provider-match-1",
+      season: "2026",
+    });
+  });
+
+  it("does not warn when both provider team mappings exist", async () => {
+    const ensureWithFreshModule = await loadFreshEnsureCrossSourceMatchMapping();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { repo } = makeRepo();
+
+    await ensureWithFreshModule(repo, fixture(), NOW);
+
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("deduplicates warnings independently for each provider", async () => {
+    const ensureWithFreshModule = await loadFreshEnsureCrossSourceMatchMapping();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { repo } = makeRepo({ missingTeamIds: ["provider-home"] });
+
+    await ensureWithFreshModule(repo, fixture(), NOW);
+    await ensureWithFreshModule(repo, fixture({ provider: "sportapi", leagueProviderId: "85" }), NOW);
+
+    expect(warn).toHaveBeenCalledTimes(2);
+    expect(warn).toHaveBeenNthCalledWith(1, "[team_mapping_missing]", expect.objectContaining({
+      provider: "5dollar",
+      provider_team_id: "provider-home",
+    }));
+    expect(warn).toHaveBeenNthCalledWith(2, "[team_mapping_missing]", expect.objectContaining({
+      provider: "sportapi",
+      provider_team_id: "provider-home",
     }));
   });
 

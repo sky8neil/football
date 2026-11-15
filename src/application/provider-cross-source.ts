@@ -7,6 +7,7 @@ import type { AppRepository } from "../infrastructure/repositories.js";
 import type { NormalizedFixture } from "../provider/fixture-mapper.js";
 
 const CROSS_SOURCE_PROVIDERS = new Set<Provider>(["5dollar", "openfoot", "sportapi"]);
+const warnedMissingTeamMappings = new Set<string>();
 
 export async function ensureCrossSourceMatchMapping(
   repo: AppRepository,
@@ -29,6 +30,8 @@ export async function ensureCrossSourceMatchMapping(
     teams.findByProviderAndExternalId(provider, fixture.awayTeamProviderId),
   ]);
   if (!home || !away) {
+    if (!home) warnMissingTeamMapping(provider, fixture, "home");
+    if (!away) warnMissingTeamMapping(provider, fixture, "away");
     await recordUnlinked(repo, provider, fixture, now, "team_mapping_missing");
     return { match_id: null, reason: "unlinked" };
   }
@@ -55,6 +58,23 @@ export async function ensureCrossSourceMatchMapping(
   };
   await mappings.insert(mapping);
   return { match_id: match.match_id, reason: "mapped" };
+}
+
+function warnMissingTeamMapping(provider: Provider, fixture: NormalizedFixture, side: "home" | "away"): void {
+  const providerTeamId = side === "home" ? fixture.homeTeamProviderId : fixture.awayTeamProviderId;
+  const key = `${provider}:${providerTeamId}`;
+  if (warnedMissingTeamMappings.has(key)) return;
+  warnedMissingTeamMappings.add(key);
+
+  console.warn("[team_mapping_missing]", {
+    league_id: fixture.leagueProviderId,
+    provider,
+    provider_team_id: providerTeamId,
+    team_name: side === "home" ? fixture.homeTeamName ?? null : fixture.awayTeamName ?? null,
+    side,
+    provider_match_id: fixture.providerMatchId,
+    season: fixture.season,
+  });
 }
 
 async function recordUnlinked(repo: AppRepository, provider: Provider, fixture: NormalizedFixture, now: Date, reason: string): Promise<void> {
