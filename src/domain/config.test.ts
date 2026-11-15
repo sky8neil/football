@@ -1,9 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  activeLeagueSeason,
+  deriveSeasonId,
   FIXED_CONFIG_V1,
   LEVEL_ELIGIBLE_LEAGUES,
+  leagueSeasonBounds,
   MVP_SEASON,
   RANKING_FIRST_PERIOD_KEY,
+  seasonBounds,
+  seasonStartYear,
   SUPPORTED_LEAGUES,
 } from "./config.js";
 
@@ -88,5 +93,76 @@ describe("S0 固定配置 v2（规范 §3 / §1.4）", () => {
   it("登记大家怎么选的门槛与百分比粒度", () => {
     expect(FIXED_CONFIG_V1.CROWD_MIN_PREDICTIONS).toBe(20);
     expect(FIXED_CONFIG_V1.CROWD_GRANULARITY_PERCENT).toBe(5);
+  });
+});
+
+describe("赛季自动推导", () => {
+  const crossYearLeague = SUPPORTED_LEAGUES[0];
+  const naturalYearLeague = SUPPORTED_LEAGUES[5];
+
+  it("按 UTC 七月边界推导跨年联赛赛季", () => {
+    const cases = [
+      ["2026-06-30T23:59:59.999Z", "2025_2026"],
+      ["2026-07-01T00:00:00.000Z", "2026_2027"],
+      ["2027-06-30T23:59:59.999Z", "2026_2027"],
+      ["2027-07-01T00:00:00.000Z", "2027_2028"],
+    ] as const;
+
+    for (const [now, seasonId] of cases) {
+      expect(deriveSeasonId(crossYearLeague, new Date(now))).toBe(seasonId);
+    }
+  });
+
+  it("按 UTC 元旦边界推导自然年联赛赛季", () => {
+    const cases = [
+      ["2026-12-31T23:59:59.999Z", "2026"],
+      ["2027-01-01T00:00:00.000Z", "2027"],
+    ] as const;
+
+    for (const [now, seasonId] of cases) {
+      expect(deriveSeasonId(naturalYearLeague, new Date(now))).toBe(seasonId);
+    }
+  });
+
+  it("推导赛季参数并保留 null provider 键", () => {
+    const crossYear = activeLeagueSeason(crossYearLeague, new Date("2026-09-01T00:00:00.000Z"));
+    expect(crossYear).toMatchObject({
+      season_id: "2026_2027",
+      api_football_season: "2026",
+      source_season_ref: "2026",
+      provider_season_refs: {
+        of: "2026/27",
+        fd: null,
+      },
+    });
+
+    const naturalYear = activeLeagueSeason(
+      naturalYearLeague,
+      new Date("2026-09-01T00:00:00.000Z"),
+    );
+    expect(naturalYear).toMatchObject({
+      season_id: "2026",
+      api_football_season: "2026",
+      source_season_ref: "2026",
+      provider_season_refs: {
+        of: "2026",
+        fd: null,
+      },
+    });
+  });
+
+  it("seasonBounds 与联赛已登记窗口返回相同毫秒", () => {
+    const season = seasonBounds("2026_2027");
+    const league = leagueSeasonBounds(crossYearLeague);
+    expect(season).not.toBeNull();
+    expect(league).not.toBeNull();
+    expect(season?.start.getTime()).toBe(league?.start.getTime());
+    expect(season?.end.getTime()).toBe(league?.end.getTime());
+  });
+
+  it("解析跨年、自然年和无效赛季标识的起始年", () => {
+    expect(seasonStartYear("2026_2027")).toBe(2026);
+    expect(seasonStartYear("2026")).toBe(2026);
+    expect(seasonStartYear("abc")).toBeNull();
   });
 });

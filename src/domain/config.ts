@@ -252,6 +252,14 @@ export const LEVEL_ELIGIBLE_LEAGUES = SUPPORTED_LEAGUES;
 export type SupportedLeague = (typeof SUPPORTED_LEAGUES)[number];
 export type SupportedLeagueId = SupportedLeague["league_id"];
 export type ProviderLeagueSourceId = "fd" | "bsd" | "5d" | "of" | "sp";
+export type ProviderSeasonRefs = Readonly<Record<ProviderLeagueSourceId, string | null>>;
+
+export interface LeagueSeasonRefs {
+  season_id: string;
+  api_football_season: string;
+  source_season_ref: string;
+  provider_season_refs: ProviderSeasonRefs;
+}
 
 export interface ConfiguredProviderLeagueRef {
   source_id: ProviderLeagueSourceId;
@@ -318,16 +326,88 @@ export function providerSeasonRef(
   return league.provider_season_refs[sourceId] ?? league.source_season_ref;
 }
 
-/** 返回联赛已登记赛季的起止时间窗口（[start, end) UTC）；无法解析时返回 null。 */
-export function leagueSeasonBounds(league: SupportedLeague): { start: Date; end: Date } | null {
-  const crossYear = /^(\d{4})_(\d{4})$/.exec(league.season_id);
+/** 解析赛季标识的起始年；无法解析返回 null。 */
+export function seasonStartYear(seasonId: string): number | null {
+  const crossYear = /^(\d{4})_(\d{4})$/.exec(seasonId);
+  if (crossYear) return Number(crossYear[1]);
+
+  const naturalYear = /^(\d{4})$/.exec(seasonId);
+  return naturalYear ? Number(naturalYear[1]) : null;
+}
+
+/** 按 UTC 时间推导该联赛当前赛季标识；无法解析联赛形态时返回 league.season_id。 */
+export function deriveSeasonId(league: SupportedLeague, now: Date): string {
+  if (!Number.isFinite(now.getTime())) return league.season_id;
+
+  const crossYear = /^\d{4}_\d{4}$/.test(league.season_id);
+  if (crossYear) {
+    const currentYear = now.getUTCFullYear();
+    const startYear = now.getUTCMonth() >= 6 ? currentYear : currentYear - 1;
+    return `${startYear}_${startYear + 1}`;
+  }
+
+  if (/^\d{4}$/.test(league.season_id)) {
+    return String(now.getUTCFullYear());
+  }
+
+  return league.season_id;
+}
+
+function deriveProviderSeasonRefs(
+  league: SupportedLeague,
+  year: number,
+  crossYear: boolean,
+): ProviderSeasonRefs {
+  const refs = {} as Record<ProviderLeagueSourceId, string | null>;
+  for (const sourceId of Object.keys(league.provider_season_refs) as ProviderLeagueSourceId[]) {
+    const existingRef = league.provider_season_refs[sourceId];
+    if (existingRef === null) {
+      refs[sourceId] = null;
+    } else if (crossYear && sourceId === "of") {
+      refs[sourceId] = `${year}/${String(year + 1).slice(-2)}`;
+    } else if (crossYear) {
+      refs[sourceId] = existingRef;
+    } else {
+      refs[sourceId] = String(year);
+    }
+  }
+  return refs;
+}
+
+/** 按 UTC 时间推导该联赛当前赛季的全部赛季参数。 */
+export function activeLeagueSeason(league: SupportedLeague, now: Date): LeagueSeasonRefs {
+  const crossYear = /^\d{4}_\d{4}$/.test(league.season_id);
+  const naturalYear = /^\d{4}$/.test(league.season_id);
+  if ((!crossYear && !naturalYear) || !Number.isFinite(now.getTime())) {
+    return {
+      season_id: league.season_id,
+      api_football_season: league.api_football_season,
+      source_season_ref: league.source_season_ref,
+      provider_season_refs: { ...league.provider_season_refs },
+    };
+  }
+
+  const currentYear = now.getUTCFullYear();
+  const year = crossYear && now.getUTCMonth() < 6 ? currentYear - 1 : currentYear;
+  const seasonId = crossYear ? `${year}_${year + 1}` : String(year);
+  return {
+    season_id: seasonId,
+    api_football_season: String(year),
+    source_season_ref: String(year),
+    provider_season_refs: deriveProviderSeasonRefs(league, year, crossYear),
+  };
+}
+
+/** 按赛季标识推导起止窗口（[start, end) UTC）。 */
+export function seasonBounds(seasonId: string): { start: Date; end: Date } | null {
+  const crossYear = /^(\d{4})_(\d{4})$/.exec(seasonId);
   if (crossYear) {
     return {
       start: new Date(Date.UTC(Number(crossYear[1]), 6, 1)),
       end: new Date(Date.UTC(Number(crossYear[2]), 6, 1)),
     };
   }
-  const naturalYear = /^(\d{4})$/.exec(league.season_id);
+  const naturalYear = /^(\d{4})$/.exec(seasonId);
   if (naturalYear) {
     const year = Number(naturalYear[1]);
     return {
@@ -336,6 +416,11 @@ export function leagueSeasonBounds(league: SupportedLeague): { start: Date; end:
     };
   }
   return null;
+}
+
+/** 返回联赛已登记赛季的起止时间窗口（[start, end) UTC）；无法解析时返回 null。 */
+export function leagueSeasonBounds(league: SupportedLeague): { start: Date; end: Date } | null {
+  return seasonBounds(league.season_id);
 }
 
 export function isKickoffInLeagueSeason(league: SupportedLeague, kickoffAt: Date): boolean {
