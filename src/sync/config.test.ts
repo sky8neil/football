@@ -10,19 +10,21 @@ import {
   jobLockKey,
   nextRetryDelayMinutes,
   providerJobIntervalMs,
+  taskIntervalMinutes,
 } from "./config.js";
 
 describe("SYNC_TASKS_V1（规范 32.1-32.6）", () => {
-  it("future_schedule：未来 30 天、每 6 小时", () => {
+  it("future_schedule：未来 30 天、每 6 小时（test profile 12 小时）", () => {
     expect(SYNC_TASKS_V1[SyncJobType.FutureSchedule]).toMatchObject({
       lookaheadDays: 30,
-      intervalHours: 6,
+      intervalMinutes: 6 * 60,
+      intervalMinutesByProfile: { test: 12 * 60 },
     });
   });
 
   it("full_schedule_verify：每天至少 1 次", () => {
     expect(SYNC_TASKS_V1[SyncJobType.FullScheduleVerify]).toMatchObject({
-      intervalHours: 24,
+      intervalMinutes: 24 * 60,
     });
   });
 
@@ -41,16 +43,17 @@ describe("SYNC_TASKS_V1（规范 32.1-32.6）", () => {
     });
   });
 
-  it("post_finish_verify：首次 finished 后高频确认直到首次 settlement 开始", () => {
+  it("post_finish_verify：3 分钟（test profile 5 分钟），首次 settlement 前高频", () => {
     expect(SYNC_TASKS_V1[SyncJobType.PostFinishVerify]).toMatchObject({
       intervalMinutes: 3,
+      intervalMinutesByProfile: { test: 5 },
       highFrequencyUntilFirstSettlement: true,
     });
   });
 
   it("period_finalize：每小时", () => {
     expect(SYNC_TASKS_V1[SyncJobType.PeriodFinalize]).toMatchObject({
-      intervalHours: 1,
+      intervalMinutes: 60,
     });
   });
 
@@ -59,7 +62,7 @@ describe("SYNC_TASKS_V1（规范 32.1-32.6）", () => {
       intervalMinutes: 60,
     });
     expect(SYNC_TASKS_V1[SyncJobType.BoardSnapshotStrength]).toMatchObject({
-      intervalHours: 24,
+      intervalMinutes: 24 * 60,
     });
     expect(SYNC_TASKS_V1[SyncJobType.BoardSnapshotSeason]).toMatchObject({
       intervalMinutes: 60,
@@ -69,6 +72,33 @@ describe("SYNC_TASKS_V1（规范 32.1-32.6）", () => {
       cronExpression: "10 2 * * 1",
     });
     expect(SYNC_TASKS_V1[SyncJobType.LevelCorrectionReeval]).toEqual({});
+  });
+
+  it("不再保留 intervalHours 字段：间隔一律用分钟表达，避免两套单位", () => {
+    for (const config of Object.values(SYNC_TASKS_V1)) {
+      expect(config).not.toHaveProperty("intervalHours");
+    }
+  });
+});
+
+describe("taskIntervalMinutes（SYNC_TASKS_V1 是唯一来源）", () => {
+  it("5 个 provider 任务两个 profile 都取到配置值", () => {
+    expect(taskIntervalMinutes(SyncJobType.FutureSchedule, "prod")).toBe(360);
+    expect(taskIntervalMinutes(SyncJobType.FutureSchedule, "test")).toBe(720);
+    expect(taskIntervalMinutes(SyncJobType.FullScheduleVerify, "prod")).toBe(1440);
+    expect(taskIntervalMinutes(SyncJobType.FullScheduleVerify, "test")).toBe(1440);
+    expect(taskIntervalMinutes(SyncJobType.NearMatch, "prod")).toBe(30);
+    expect(taskIntervalMinutes(SyncJobType.NearMatch, "test")).toBe(30);
+    expect(taskIntervalMinutes(SyncJobType.LiveMatch, "prod")).toBe(3);
+    expect(taskIntervalMinutes(SyncJobType.LiveMatch, "test")).toBe(3);
+    expect(taskIntervalMinutes(SyncJobType.PostFinishVerify, "prod")).toBe(3);
+    expect(taskIntervalMinutes(SyncJobType.PostFinishVerify, "test")).toBe(5);
+  });
+
+  it("未声明间隔的任务直接抛错，不再静默回落硬编码值", () => {
+    expect(() => taskIntervalMinutes(SyncJobType.WeeklyLevelEval, "prod")).toThrow(
+      /未在 SYNC_TASKS_V1 中声明 intervalMinutes/,
+    );
   });
 });
 
@@ -131,6 +161,23 @@ describe("providerJobIntervalMs（RP08 锁前/锁内共用间隔）", () => {
     expect(providerJobIntervalMs(SyncJobType.PostFinishVerify, "prod")).toBe(3 * minute);
     expect(providerJobIntervalMs(SyncJobType.LiveMatch, "test")).toBe(3 * minute);
     expect(providerJobIntervalMs(SyncJobType.LiveMatch, "prod")).toBe(3 * minute);
+  });
+
+  it("数值与 SYNC_TASKS_V1 完全一致（不再有第二份硬编码）", () => {
+    for (const jobType of [
+      SyncJobType.FutureSchedule,
+      SyncJobType.FullScheduleVerify,
+      SyncJobType.NearMatch,
+      SyncJobType.LiveMatch,
+      SyncJobType.PostFinishVerify,
+    ] as const) {
+      for (const profile of ["test", "prod"] as const) {
+        expect(providerJobIntervalMs(jobType, profile)).toBe(
+          (SYNC_TASKS_V1[jobType]?.intervalMinutesByProfile?.[profile]
+            ?? SYNC_TASKS_V1[jobType]?.intervalMinutes ?? Number.NaN) * minute,
+        );
+      }
+    }
   });
 });
 

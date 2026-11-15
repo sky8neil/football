@@ -209,10 +209,6 @@ export async function planDueProviderJobs(input: {
   return decisions;
 }
 
-function intervalHoursMs(intervalHours: number): number {
-  return intervalHours * 60 * 60_000;
-}
-
 function intervalMinutesMs(intervalMinutes: number): number {
   return intervalMinutes * 60_000;
 }
@@ -232,7 +228,7 @@ function snapshotIntervalMs(jobType: typeof SyncJobType.BoardSnapshotCareer | ty
   if (jobType === SyncJobType.BoardSnapshotSeason) {
     return intervalMinutesMs(SYNC_TASKS_V1[SyncJobType.BoardSnapshotSeason]?.intervalMinutes ?? FIXED_CONFIG_V1.SEASON_BOARD_SNAPSHOT_MINUTES);
   }
-  return intervalHoursMs(SYNC_TASKS_V1[SyncJobType.BoardSnapshotStrength]?.intervalHours ?? 24);
+  return intervalMinutesMs(SYNC_TASKS_V1[SyncJobType.BoardSnapshotStrength]?.intervalMinutes ?? 24 * 60);
 }
 
 const SNAPSHOT_JOB_BOARDS = {
@@ -268,8 +264,8 @@ export async function planDuePeriodicJobs(input: {
   runtime: ApplicationRuntime;
   serverNow: Date;
 }): Promise<DueJobDecision[]> {
-  const finalizeInterval = intervalHoursMs(SYNC_TASKS_V1[SyncJobType.PeriodFinalize].intervalHours ?? 1);
-  const consistencyInterval = intervalHoursMs(SYNC_TASKS_V1[SyncJobType.DailyConsistency].intervalHours ?? 24);
+  const finalizeInterval = intervalMinutesMs(SYNC_TASKS_V1[SyncJobType.PeriodFinalize].intervalMinutes ?? 60);
+  const consistencyInterval = intervalMinutesMs(SYNC_TASKS_V1[SyncJobType.DailyConsistency].intervalMinutes ?? 24 * 60);
   const finalizeCycle = await input.runtime.schedulerState.getPeriodicJobCycle(SyncJobType.PeriodFinalize);
   const finalizeSkip = cycleSkip(finalizeCycle?.completed_cycle_at, input.serverNow, finalizeInterval);
   const decisions: DueJobDecision[] = [];

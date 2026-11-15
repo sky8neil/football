@@ -4,17 +4,28 @@
  * - 每个 job_type 使用锁 `sync:{job_type}`（32.7），lease 超时可接管。
  * - 普通暂时错误按 1/2/5/10/30 分钟退避重试，最多 5 次，每次 ±20% jitter（32.8）。
  * - quota 超限停止高频自动重试，等 Provider 明确 reset 或下一正常 scheduled run（32.8）。
+ *
+ * ## 单一来源
+ *
+ * `SYNC_TASKS_V1` 是**所有任务间隔的唯一来源**。`providerJobIntervalMs()` 只做单位换算
+ * 和 profile 覆盖，不再自己硬编码一套数字。历史上两处各写一份（本文件的 intervalMinutes
+ * 写了没人读、providerJobIntervalMs 里另有一份硬编码），改配置不生效，已按此约束收敛。
+ * `src/runtime/scheduled-jobs.ts` 的周期任务同样只从这里读。
  */
 import { FIXED_CONFIG_V1 } from "../domain/config.js";
 import { SyncJobType } from "../domain/enums.js";
 import { ProviderQuotaExceededError } from "../provider/http.js";
 
+export type ProviderJobProfile = "test" | "prod";
+
 export interface SyncTaskConfig {
   lookaheadDays?: number;
   windowStartHoursBeforeKickoff?: number;
   windowEndHoursBeforeKickoff?: number;
-  intervalHours?: number;
+  /** 常规运行间隔（分钟）。本文件是全系统唯一来源。 */
   intervalMinutes?: number;
+  /** 按 sync profile 覆盖 intervalMinutes；未覆盖的 profile 回落到 intervalMinutes。 */
+  intervalMinutesByProfile?: Partial<Record<ProviderJobProfile, number>>;
   cronExpression?: string;
   highFrequencyUntilFirstSettlement?: boolean;
 }
@@ -33,10 +44,12 @@ export const SYNC_TASKS_V1: Partial<Record<SyncJobType, SyncTaskConfig>> & {
 } = {
   future_schedule: {
     lookaheadDays: FIXED_CONFIG_V1.SYNC_FUTURE_DAYS,
-    intervalHours: FIXED_CONFIG_V1.SYNC_NORMAL_INTERVAL_HOURS,
+    intervalMinutes: FIXED_CONFIG_V1.SYNC_NORMAL_INTERVAL_HOURS * 60,
+    // test profile 配额更紧，赛程刷新降到 12 小时。
+    intervalMinutesByProfile: { test: FIXED_CONFIG_V1.SYNC_NORMAL_INTERVAL_HOURS * 2 * 60 },
   },
   full_schedule_verify: {
-    intervalHours: 24,
+    intervalMinutes: 24 * 60,
   },
   near_match: {
     windowStartHoursBeforeKickoff: 24,
@@ -49,13 +62,15 @@ export const SYNC_TASKS_V1: Partial<Record<SyncJobType, SyncTaskConfig>> & {
   },
   post_finish_verify: {
     intervalMinutes: 3,
+    // test profile 配额更紧，完场确认从 3 分钟放宽到 5 分钟。
+    intervalMinutesByProfile: { test: 5 },
     highFrequencyUntilFirstSettlement: true,
   },
   period_finalize: {
-    intervalHours: 1,
+    intervalMinutes: 60,
   },
   daily_consistency: {
-    intervalHours: 24,
+    intervalMinutes: 24 * 60,
   },
   weekly_level_eval: {
     cronExpression: "10 2 * * 1",
@@ -65,13 +80,27 @@ export const SYNC_TASKS_V1: Partial<Record<SyncJobType, SyncTaskConfig>> & {
     intervalMinutes: FIXED_CONFIG_V1.CAREER_BOARD_SNAPSHOT_MINUTES,
   },
   board_snapshot_strength: {
-    intervalHours: 24,
+    intervalMinutes: 24 * 60,
   },
   board_snapshot_season: {
     intervalMinutes: FIXED_CONFIG_V1.SEASON_BOARD_SNAPSHOT_MINUTES,
   },
   board_snapshot_season_final: {},
 };
+
+/**
+ * 任务的常规间隔（分钟）：`intervalMinutesByProfile[profile]` 优先，否则 `intervalMinutes`。
+ *
+ * 未声明即抛错——宁可启动时报错，也不要像历史上那样静默回落到硬编码的 3 分钟。
+ */
+export function taskIntervalMinutes(jobType: SyncJobType, profile: ProviderJobProfile): number {
+  const config: SyncTaskConfig | undefined = SYNC_TASKS_V1[jobType];
+  const minutes = config?.intervalMinutesByProfile?.[profile] ?? config?.intervalMinutes;
+  if (minutes === undefined) {
+    throw new Error(`${jobType} 未在 SYNC_TASKS_V1 中声明 intervalMinutes`);
+  }
+  return minutes;
+}
 
 export const SYNC_RETRY_V1 = {
   retryDelaysMinutes: FIXED_CONFIG_V1.SYNC_RETRY_DELAYS_MINUTES,
@@ -110,15 +139,7 @@ export function jobLockKey(jobType: SyncJobType): string {
   return `sync:${jobType}`;
 }
 
-export type ProviderJobProfile = "test" | "prod";
-
 /** 各 job_type 的常规执行间隔（毫秒）。RP08：锁前/锁内资格判断共用同一来源。 */
 export function providerJobIntervalMs(jobType: SyncJobType, profile: ProviderJobProfile): number {
-  const minute = 60_000;
-  const hour = 60 * minute;
-  if (jobType === SyncJobType.FutureSchedule) return (profile === "test" ? 12 : 6) * hour;
-  if (jobType === SyncJobType.FullScheduleVerify) return 24 * hour;
-  if (jobType === SyncJobType.NearMatch) return 30 * minute;
-  if (jobType === SyncJobType.PostFinishVerify) return (profile === "test" ? 5 : 3) * minute;
-  return 3 * minute;
+  return taskIntervalMinutes(jobType, profile) * 60_000;
 }
