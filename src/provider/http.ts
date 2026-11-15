@@ -78,6 +78,8 @@ export interface ProviderHttpClient {
 export interface ApiFootballFixturesQuery {
   dateFrom?: string;
   dateTo?: string;
+  /** 仅 post_finish_verify 使用；缺省时副源回退到 dateFrom..dateTo 范围。 */
+  secondaryDates?: readonly string[];
   fixtureId?: string;
   leagueId: string;
   season: string;

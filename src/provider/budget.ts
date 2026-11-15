@@ -47,7 +47,8 @@ export type ProviderBudgetDecision =
   | { allowed: false; reason: "source_unconfigured" | "minute_limit" | "hour_limit" | "day_limit" | "month_limit" | "provider_quota" | "provider_cooldown"; key_id?: string; retry_at?: Date };
 
 const PRIORITY_SHARE: Record<ProviderBudgetJob, number> = {
-  [SyncJobType.PostFinishVerify]: 1,
+  // 保留至少 15% 的 OpenFoot 日额度给每日 provider_reconcile；该份额也作用于月桶（of 无 hourly_cap）。
+  [SyncJobType.PostFinishVerify]: 0.85,
   [SyncJobType.LiveMatch]: 0.9,
   [SyncJobType.NearMatch]: 0.7,
   [SyncJobType.FutureSchedule]: 0.5,

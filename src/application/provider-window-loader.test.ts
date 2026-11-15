@@ -8,7 +8,7 @@ import { loadActiveWindowFixtures } from "./provider-window-loader.js";
 
 const NOW = new Date("2026-10-11T12:00:00.000Z");
 
-function mappedMatch(leagueId: string, kickoffAt: Date): Match {
+function mappedMatch(leagueId: string, kickoffAt: Date, overrides: Partial<Match> = {}): Match {
   return {
     league_id: leagueId,
     match_id: "match-id",
@@ -16,6 +16,7 @@ function mappedMatch(leagueId: string, kickoffAt: Date): Match {
     match_status: MatchStatus.Scheduled,
     settlement_status: SettlementStatus.Pending,
     finish_detected_at: null,
+    ...overrides,
   } as Match;
 }
 
@@ -28,6 +29,22 @@ function repository(match: Match | null, provider: Provider, providerMatchId: st
       findByProviderAndExternalId: async () => match ? { match_id: matchId } : null,
     },
   } as unknown as AppRepository;
+}
+
+function repositoryForMatches(matches: Match[]): AppRepository {
+  return {
+    matches: { findActiveWindow: async () => matches },
+    matchProviderMappings: { findByProviderAndExternalId: async () => null },
+  } as unknown as AppRepository;
+}
+
+async function queryForMatches(
+  matches: Match[],
+  jobType: typeof SyncJobType.LiveMatch | typeof SyncJobType.NearMatch | typeof SyncJobType.PostFinishVerify,
+): Promise<ApiFootballFixturesQuery | undefined> {
+  const client = { getFixtures: vi.fn(async (_query: ApiFootballFixturesQuery) => []) };
+  await loadActiveWindowFixtures(repositoryForMatches(matches), client, jobType, NOW);
+  return client.getFixtures.mock.calls[0]?.[0];
 }
 
 describe("loadActiveWindowFixtures", () => {
@@ -106,5 +123,49 @@ describe("loadActiveWindowFixtures", () => {
     const requestB = requests.find((query) => query.leagueId === SUPPORTED_LEAGUES[1]!.api_football_league_id);
     expect(requestA?.dateFrom).toBe(historicalKickoff.toISOString().slice(0, 10));
     expect(requestB?.dateFrom).toBe(new Date(NOW.getTime() - 24 * 60 * 60_000).toISOString().slice(0, 10));
+  });
+
+  it("requests post-finish secondary dates from unchecked kickoff days and their next days", async () => {
+    const query = await queryForMatches([
+      mappedMatch("premier_league", new Date("2026-10-10T23:30:00.000Z")),
+      mappedMatch("premier_league", new Date("2026-10-12T02:00:00.000Z")),
+    ], SyncJobType.PostFinishVerify);
+
+    expect(query?.secondaryDates).toEqual(["2026-10-10", "2026-10-11", "2026-10-12", "2026-10-13"]);
+  });
+
+  it("excludes already matching dual-source results from secondary dates", async () => {
+    const query = await queryForMatches([
+      mappedMatch("premier_league", new Date("2026-10-10T23:30:00.000Z"), {
+        result_version: 1,
+        compared_providers: [Provider.FootballData, Provider.OpenFoot],
+      }),
+      mappedMatch("premier_league", new Date("2026-10-12T02:00:00.000Z")),
+    ], SyncJobType.PostFinishVerify);
+
+    expect(query?.secondaryDates).toEqual(["2026-10-12", "2026-10-13"]);
+  });
+
+  it("passes an empty secondary date list when every candidate has matching dual-source results", async () => {
+    const query = await queryForMatches([
+      mappedMatch("premier_league", new Date("2026-10-10T23:30:00.000Z"), {
+        result_version: 1,
+        compared_providers: [Provider.FootballData, Provider.OpenFoot],
+      }),
+      mappedMatch("premier_league", new Date("2026-10-12T02:00:00.000Z"), {
+        result_version: 2,
+        compared_providers: [Provider.FootballData, Provider.OpenFoot],
+      }),
+    ], SyncJobType.PostFinishVerify);
+
+    expect(query?.secondaryDates).toEqual([]);
+  });
+
+  it.each([SyncJobType.LiveMatch, SyncJobType.NearMatch] as const)("does not pass secondary dates for %s", async (jobType) => {
+    const query = await queryForMatches([
+      mappedMatch("premier_league", new Date("2026-10-10T23:30:00.000Z")),
+    ], jobType);
+
+    expect(query).not.toHaveProperty("secondaryDates");
   });
 });

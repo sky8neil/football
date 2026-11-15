@@ -1,11 +1,39 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { SyncJobType } from "../domain/enums.js";
 import { InMemoryProviderUsageStore, ProviderBudget } from "./budget.js";
 import { InMemoryProviderLeagueStateStore } from "./league-state.js";
+import { OpenFootAdapter } from "./openfoot-adapter.js";
 import { loadProviderSources } from "./sources.js";
 import { ProviderRegistry } from "./registry.js";
 
+function createResultComparisonRegistry() {
+  const config = loadProviderSources({
+    FOOTBALL_PROVIDER_SOURCES: "fd,of",
+    FOOTBALL_PROVIDER_KEY_FD_1: "fd-key-only",
+    FOOTBALL_PROVIDER_KEY_OF: "of-key-only",
+  });
+  const requests: URL[] = [];
+  const fetchImpl: typeof fetch = async (input) => {
+    const rawUrl = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    const url = new URL(rawUrl);
+    requests.push(url);
+    const body = url.hostname === "openfootapi.com"
+      ? { data: [], meta: { pagination: { next_cursor: null } } }
+      : { matches: [] };
+    return new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  return {
+    registry: new ProviderRegistry({ config, fetchImpl, minimumGapMs: 0 }),
+    requests,
+  };
+}
+
 describe("ProviderRegistry", () => {
+  afterEach(() => vi.restoreAllMocks());
+
   it("routes each league to its own adapter and authentication key", async () => {
     const config = loadProviderSources({
       FOOTBALL_PROVIDER_SOURCES: "fd,bsd",
@@ -423,5 +451,66 @@ describe("ProviderRegistry", () => {
     // Same league within the 5-minute prod cooldown is still throttled.
     await expect(client.getFixtures(query("39", new Date(now.getTime() + 60_000)))).resolves.toEqual([]);
     expect(requestCount).toBe(2);
+  });
+
+  it("calls the result secondary adapter once per requested secondary date", async () => {
+    const adapterCall = vi.spyOn(OpenFootAdapter.prototype, "fetchFixturesByDateRange");
+    const { registry, requests } = createResultComparisonRegistry();
+    const secondaryDates = ["2026-10-10", "2026-10-12"];
+
+    await registry.asClient().getFixtures({
+      leagueId: "39",
+      season: "2026",
+      dateFrom: "2026-10-10",
+      dateTo: "2026-10-12",
+      secondaryDates,
+      jobType: SyncJobType.PostFinishVerify,
+      serverNow: new Date("2026-10-13T12:00:00.000Z"),
+    });
+
+    expect(adapterCall.mock.calls.map(([, dateFrom, dateTo]) => [dateFrom, dateTo])).toEqual(
+      secondaryDates.map((date) => [date, date]),
+    );
+    expect(requests.filter((url) => url.hostname === "openfootapi.com").map((url) => url.searchParams.get("date")))
+      .toEqual(secondaryDates);
+  });
+
+  it("does not call a result secondary adapter for an empty secondary date list", async () => {
+    const adapterCall = vi.spyOn(OpenFootAdapter.prototype, "fetchFixturesByDateRange");
+    const { registry, requests } = createResultComparisonRegistry();
+
+    await registry.asClient().getFixtures({
+      leagueId: "39",
+      season: "2026",
+      dateFrom: "2026-10-10",
+      dateTo: "2026-10-12",
+      secondaryDates: [],
+      jobType: SyncJobType.PostFinishVerify,
+      serverNow: new Date("2026-10-13T12:00:00.000Z"),
+    });
+
+    expect(adapterCall).not.toHaveBeenCalled();
+    expect(requests.filter((url) => url.hostname === "openfootapi.com")).toHaveLength(0);
+  });
+
+  it("keeps a single result secondary range call when secondary dates are undefined", async () => {
+    const adapterCall = vi.spyOn(OpenFootAdapter.prototype, "fetchFixturesByDateRange");
+    const { registry, requests } = createResultComparisonRegistry();
+
+    await registry.asClient().getFixtures({
+      leagueId: "39",
+      season: "2026",
+      dateFrom: "2026-10-10",
+      dateTo: "2026-10-12",
+      jobType: SyncJobType.PostFinishVerify,
+      serverNow: new Date("2026-10-13T12:00:00.000Z"),
+    });
+
+    expect(adapterCall).toHaveBeenCalledTimes(1);
+    expect(adapterCall.mock.calls.map(([, dateFrom, dateTo]) => [dateFrom, dateTo])).toEqual([
+      ["2026-10-10", "2026-10-12"],
+    ]);
+    expect(requests.filter((url) => url.hostname === "openfootapi.com").map((url) => url.searchParams.get("date")))
+      .toEqual(["2026-10-10", "2026-10-11", "2026-10-12"]);
   });
 });

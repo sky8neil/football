@@ -7,6 +7,11 @@ const source = loadProviderSources({
   FOOTBALL_PROVIDER_SOURCES: "bsd",
   FOOTBALL_PROVIDER_KEY_BSD: "test-key",
 }).sources[0]!;
+const openFootSource = loadProviderSources({
+  FOOTBALL_PROVIDER_SOURCES: "of",
+  FOOTBALL_PROVIDER_KEY_OF: "test-key",
+  FOOTBALL_SYNC_PROFILE: "prod",
+}).sources[0]!;
 
 describe("ProviderBudget", () => {
   it("enforces per-minute and priority-based daily caps", async () => {
@@ -22,7 +27,33 @@ describe("ProviderBudget", () => {
       await expect(budget.acquire("bsd", SyncJobType.LiveMatch, now)).resolves.toMatchObject({ allowed: true });
     }
     await expect(budget.acquire("bsd", SyncJobType.LiveMatch, now)).resolves.toMatchObject({ allowed: false, reason: "day_limit", key_id: "bsd#1" });
-    await expect(budget.acquire("bsd", SyncJobType.PostFinishVerify, now)).resolves.toMatchObject({ allowed: true, daily_used: 10 });
+    await expect(budget.acquire("bsd", SyncJobType.PostFinishVerify, now)).resolves.toMatchObject({
+      allowed: false,
+      reason: "day_limit",
+    });
+  });
+
+  it("reserves OpenFoot daily quota for provider reconciliation", async () => {
+    const configured = { ...openFootSource, max_per_minute: 200, daily_cap: 120 };
+    const now = new Date("2026-10-11T12:00:00.000Z");
+    const postFinishBudget = new ProviderBudget([configured], new InMemoryProviderUsageStore());
+
+    for (let i = 0; i < 102; i += 1) {
+      await expect(postFinishBudget.acquire("of", SyncJobType.PostFinishVerify, now)).resolves.toMatchObject({ allowed: true });
+    }
+    await expect(postFinishBudget.acquire("of", SyncJobType.PostFinishVerify, now)).resolves.toMatchObject({
+      allowed: false,
+      reason: "day_limit",
+    });
+
+    const reconcileBudget = new ProviderBudget([configured], new InMemoryProviderUsageStore());
+    for (let i = 0; i < 60; i += 1) {
+      await expect(reconcileBudget.acquire("of", SyncJobType.FullScheduleVerify, now)).resolves.toMatchObject({ allowed: true });
+    }
+    await expect(reconcileBudget.acquire("of", SyncJobType.FullScheduleVerify, now)).resolves.toMatchObject({
+      allowed: false,
+      reason: "day_limit",
+    });
   });
 
   it("rejects exhausted daily quota with the real reset time and no extra reservation", async () => {
