@@ -53,6 +53,22 @@ function presentItem(item, board) {
   return displayed;
 }
 
+function seasonStartYear(levelSeasonId) {
+  const match = /^(\d{4})_(\d{4})$/.exec(levelSeasonId || "");
+  if (!match || Number(match[2]) !== Number(match[1]) + 1) return null;
+  return Number(match[1]);
+}
+
+function previousAvailableSeason(availableLevelSeasons, currentLevelSeasonId) {
+  const currentStartYear = seasonStartYear(currentLevelSeasonId);
+  if (currentStartYear === null) return null;
+  const earlierSeasons = availableLevelSeasons
+    .map((seasonId) => ({ seasonId, startYear: seasonStartYear(seasonId) }))
+    .filter((season) => season.startYear !== null && season.startYear < currentStartYear)
+    .sort((a, b) => b.startYear - a.startYear);
+  return earlierSeasons.length > 0 ? earlierSeasons[0].seasonId : null;
+}
+
 Page({
   data: {
     state: "loading",
@@ -97,6 +113,11 @@ Page({
     hasMore: false,
     nextCursor: null,
     loadingMore: false,
+  },
+
+  onLoad() {
+    this.userChangedSeason = false;
+    this.autoSeasonFallback = false;
   },
 
   onShow() {
@@ -234,7 +255,9 @@ Page({
 
   onSeasonChange(event) {
     const seasonId = this.data.availableLevelSeasons[Number(event.detail.value)];
-    if (!seasonId || seasonId === this.data.selectedLevelSeasonId) return;
+    if (!seasonId) return;
+    this.userChangedSeason = true;
+    if (seasonId === this.data.selectedLevelSeasonId) return;
     const selectedIndex = this.data.availableLevelSeasons.indexOf(seasonId);
     const scope = seasonId !== this.data.currentLevelSeasonId ? "global" : this.data.scope;
     this.setData({
@@ -338,10 +361,40 @@ Page({
       : [];
     const page = payload.page || {};
     const merged = replace ? items : this.data.items.concat(items);
-    const availableLevelSeasons = Array.isArray(payload.available_level_seasons)
+    const payloadAvailableLevelSeasons = Array.isArray(payload.available_level_seasons)
       ? payload.available_level_seasons
       : [];
+    const availableLevelSeasons = payloadAvailableLevelSeasons.slice();
+    const currentLevelSeasonId = view.currentLevelSeasonId || this.data.currentLevelSeasonId;
+    if (
+      this.data.board === "season" &&
+      currentLevelSeasonId &&
+      availableLevelSeasons.indexOf(currentLevelSeasonId) === -1
+    ) {
+      availableLevelSeasons.push(currentLevelSeasonId);
+    }
     const selectedLevelSeasonId = payload.level_season_id || this.data.selectedLevelSeasonId;
+    const fallbackSeasonId = previousAvailableSeason(payloadAvailableLevelSeasons, currentLevelSeasonId);
+    if (
+      this.data.board === "season" &&
+      replace === true &&
+      this.userChangedSeason !== true &&
+      this.autoSeasonFallback !== true &&
+      payload.level_season_id === currentLevelSeasonId &&
+      Array.isArray(payload.items) && payload.items.length === 0 &&
+      fallbackSeasonId
+    ) {
+      this.autoSeasonFallback = true;
+      this.setData({
+        selectedLevelSeasonId: fallbackSeasonId,
+        selectedSeasonIndex: availableLevelSeasons.indexOf(fallbackSeasonId),
+        availableLevelSeasons,
+        currentLevelSeasonId,
+        scope: "global",
+        groupId: null,
+      }, () => this.loadFirstPage());
+      return;
+    }
     const selectedWeekIndex = Math.max(0, view.weekOptions.findIndex((item) => item.key === payload.period_key));
     const selectedSeasonIndex = Math.max(0, availableLevelSeasons.indexOf(selectedLevelSeasonId));
     let me = null;
@@ -389,10 +442,10 @@ Page({
       selectedPeriodKey: payload.period_key,
       availableLevelSeasons,
       selectedLevelSeasonId,
-      currentLevelSeasonId: view.currentLevelSeasonId,
+      currentLevelSeasonId,
       selectedSeasonIndex,
       showGroupScope: this.data.board !== "season" ||
-        selectedLevelSeasonId === view.currentLevelSeasonId,
+        selectedLevelSeasonId === currentLevelSeasonId,
       hasMore: page.has_more === true,
       nextCursor: page.next_cursor === undefined ? null : page.next_cursor,
       availableBoards,
