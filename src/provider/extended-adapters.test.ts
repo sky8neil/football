@@ -79,7 +79,20 @@ describe("FiveDollarAdapter", () => {
     expect(fixtures[0]?.league.id).toBe(LA_LIGA.source_league_ref);
   });
 
-  it("does not relabel 2025 season fixtures as 2026 and rejects out-of-season kickoffs", async () => {
+  it("uses serverNow to infer the active source season when the provider omits it", async () => {
+    const { client } = mockHttp(() => ({
+      data: [{ ...fiveDollarRow(4), kickoff_utc: "2027-08-12T12:00:00Z" }],
+      pagination: { has_more: false },
+    }));
+    const fixtures = await new FiveDollarAdapter(client).fetchSeasonFixtures(EPL, {
+      jobType: "future_schedule",
+      serverNow: new Date("2027-07-02T00:00:00.000Z"),
+    });
+
+    expect(fixtures[0]?.league.season).toBe("2027");
+  });
+
+  it("preserves explicit adjacent season and rejects out-of-active-season kickoffs", async () => {
     const { client } = mockHttp(() => ({
       data: [
         { ...fiveDollarRow(101), season: "2025" },
@@ -93,11 +106,11 @@ describe("FiveDollarAdapter", () => {
     });
 
     expect(fixtures[0]?.league.season).toBe("2025");
-    expect(normalizeFixture(fixtures[0]!).entityFailed).toBe(true);
+    expect(normalizeFixture(fixtures[0]!, undefined, NOW).entityFailed).toBe(false);
     expect(fixtures[1]?.league.season).not.toBe("2026");
-    expect(normalizeFixture(fixtures[1]!).entityFailed).toBe(true);
+    expect(normalizeFixture(fixtures[1]!, undefined, NOW).entityFailed).toBe(true);
     expect(fixtures[2]?.league.season).toBe("2026");
-    expect(normalizeFixture(fixtures[2]!).entityFailed).toBe(false);
+    expect(normalizeFixture(fixtures[2]!, undefined, NOW).entityFailed).toBe(false);
   });
 
   it("applies cross-year and natural-year season boundaries in live fixtures without hardcoded 2026", async () => {
@@ -118,9 +131,9 @@ describe("FiveDollarAdapter", () => {
 
     expect(fixtures[0]?.league.season).toBe("2026");
     expect(fixtures[1]?.league.season).not.toBe("2026");
-    expect(normalizeFixture(fixtures[1]!, leagueRefs).entityFailed).toBe(true);
+    expect(normalizeFixture(fixtures[1]!, leagueRefs, NOW).entityFailed).toBe(true);
     expect(fixtures[2]?.league.season).toBe("2026");
-    expect(normalizeFixture(fixtures[2]!, leagueRefs).entityFailed).toBe(false);
+    expect(normalizeFixture(fixtures[2]!, leagueRefs, NOW).entityFailed).toBe(false);
   });
 });
 

@@ -8,8 +8,10 @@
  */
 import { AnomalyType } from "../domain/enums.js";
 import {
+  activeLeagueSeason,
   findSupportedLeagueByProviderId,
   isKickoffInLeagueSeason,
+  seasonStartYear,
   type ProviderLeagueRefs,
 } from "../domain/config.js";
 import { parseKickoff, KICKOFF_TOLERANCE_MS } from "./kickoff.js";
@@ -116,6 +118,7 @@ function emptyFixture(): NormalizedFixture {
 export function normalizeFixture(
   raw: ApiFootballFixture,
   providerLeagueRefs?: ProviderLeagueRefs,
+  now?: Date,
 ): NormalizeFixtureResult {
   if (!isRecord(raw) || !isRecord(raw.fixture)) {
     return {
@@ -184,17 +187,28 @@ export function normalizeFixture(
       : typeof seasonValue === "number" && Number.isInteger(seasonValue)
         ? String(seasonValue)
         : null;
+  const expectedSeasonRef = registeredLeague === undefined
+    ? null
+    : now === undefined
+      ? registeredLeague.source_season_ref
+      : activeLeagueSeason(registeredLeague, now).source_season_ref;
+  const actualYear = season === null ? null : seasonStartYear(season);
+  const expectedYear = expectedSeasonRef === null ? null : seasonStartYear(expectedSeasonRef);
+  const matchesExpectedSeason = season !== null && (
+    now === undefined
+      ? season === expectedSeasonRef
+      : actualYear !== null && expectedYear !== null
+        ? Math.abs(actualYear - expectedYear) <= 1
+        : season === expectedSeasonRef
+  );
   if (season === null) {
     anomalies.push(dataInvalid({ field: "league.season" }));
     entityFailed = true;
-  } else if (
-    registeredLeague !== undefined &&
-    season !== registeredLeague.source_season_ref
-  ) {
+  } else if (registeredLeague !== undefined && !matchesExpectedSeason) {
     anomalies.push(
       dataInvalid({
         field: "league.season",
-        expected: registeredLeague.source_season_ref,
+        expected: expectedSeasonRef,
         actual: season,
       }),
     );
@@ -255,14 +269,14 @@ export function normalizeFixture(
   } else if (
     provider === "5dollar" &&
     registeredLeague !== undefined &&
-    season === registeredLeague.source_season_ref &&
+    season === expectedSeasonRef &&
     kickoff.kickoffAt !== null &&
-    !isKickoffInLeagueSeason(registeredLeague, kickoff.kickoffAt)
+    !isKickoffInLeagueSeason(registeredLeague, kickoff.kickoffAt, now)
   ) {
     anomalies.push(
       dataInvalid({
         field: "league.season",
-        expected: registeredLeague.source_season_ref,
+        expected: expectedSeasonRef,
         actual: season,
       }),
     );

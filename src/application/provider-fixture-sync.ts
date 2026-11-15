@@ -323,7 +323,7 @@ export class ProviderFixtureSyncService {
     serverNow: Date,
   ): Promise<ProviderFixtureSyncOutcome> {
     assertValidServerNow(serverNow);
-    const normalized = normalizeFixture(rawFixture, this.providerLeagueRefs);
+    const normalized = normalizeFixture(rawFixture, this.providerLeagueRefs, serverNow);
     if (normalized.entityFailed) {
       const outcome = await persistMapperFailure(
         this.repo,

@@ -331,7 +331,7 @@ export function seasonStartYear(seasonId: string): number | null {
   const crossYear = /^(\d{4})_(\d{4})$/.exec(seasonId);
   if (crossYear) return Number(crossYear[1]);
 
-  const naturalYear = /^(\d{4})$/.exec(seasonId);
+  const naturalYear = /^(\d{4})(?:\/\d{2})?$/.exec(seasonId);
   return naturalYear ? Number(naturalYear[1]) : null;
 }
 
@@ -433,10 +433,24 @@ export function leagueSeasonBounds(league: SupportedLeague): { start: Date; end:
   return seasonBounds(league.season_id);
 }
 
-export function isKickoffInLeagueSeason(league: SupportedLeague, kickoffAt: Date): boolean {
+/** 按 UTC 时间推导该联赛当前赛季的起止窗口。 */
+export function activeLeagueSeasonBounds(
+  league: SupportedLeague,
+  now: Date,
+): { start: Date; end: Date } | null {
+  return seasonBounds(activeLeagueSeason(league, now).season_id);
+}
+
+export function isKickoffInLeagueSeason(
+  league: SupportedLeague,
+  kickoffAt: Date,
+  now?: Date,
+): boolean {
   const ms = kickoffAt.getTime();
   if (!Number.isFinite(ms)) return false;
-  const bounds = leagueSeasonBounds(league);
+  const bounds = now === undefined
+    ? leagueSeasonBounds(league)
+    : activeLeagueSeasonBounds(league, now);
   if (bounds === null) return false;
   return ms >= bounds.start.getTime() && ms < bounds.end.getTime();
 }

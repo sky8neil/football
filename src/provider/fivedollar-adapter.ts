@@ -1,4 +1,5 @@
 import {
+  activeLeagueSeason,
   findSupportedLeagueById,
   findSupportedLeagueByProviderId,
   isKickoffInLeagueSeason,
@@ -37,6 +38,7 @@ function resolveSeason(
   timestamp: number,
   kickoff: string,
   providerLeagueRefs?: ProviderLeagueRefs,
+  serverNow?: Date,
 ): string {
   const explicit =
     asText(row.season) ??
@@ -53,13 +55,17 @@ function resolveSeason(
     (sourceLeagueId ? findSupportedLeagueByProviderId(sourceLeagueId, "5dollar", providerLeagueRefs) : undefined);
   if (registered === undefined) return "";
 
-  return isKickoffInLeagueSeason(registered, new Date(kickoffMs)) ? registered.source_season_ref : "";
+  if (!isKickoffInLeagueSeason(registered, new Date(kickoffMs), serverNow)) return "";
+  return serverNow === undefined
+    ? registered.source_season_ref
+    : activeLeagueSeason(registered, serverNow).source_season_ref;
 }
 
 function mapFixture(
   value: unknown,
   league: ProviderAdapterLeague,
   providerLeagueRefs?: ProviderLeagueRefs,
+  serverNow?: Date,
 ): ApiFootballFixture {
   const row = asRecord(value);
   if (row === null) return {} as ApiFootballFixture;
@@ -80,7 +86,7 @@ function mapFixture(
     league: {
       id: sourceLeagueId,
       ...(asText(sourceLeague?.name) ? { name: asText(sourceLeague?.name)! } : {}),
-      season: resolveSeason(row, sourceLeague, league, sourceLeagueId, timestamp, kickoff, providerLeagueRefs),
+      season: resolveSeason(row, sourceLeague, league, sourceLeagueId, timestamp, kickoff, providerLeagueRefs, serverNow),
       round: typeof row.round === "number" || typeof row.round === "string" ? String(row.round) : "",
     },
     teams: {
@@ -176,7 +182,7 @@ export class FiveDollarAdapter implements ProviderAdapter {
       await options?.beforeRequest?.();
       const body = await this.http.getJson(fixturePath(path), { ...query, page: String(page), per_page: "100" });
       const parsed = parseData(body);
-      output.push(...parsed.rows.map((row) => mapFixture(row, league, this.providerLeagueRefs)));
+      output.push(...parsed.rows.map((row) => mapFixture(row, league, this.providerLeagueRefs, options?.serverNow)));
       hasMore = parsed.hasMore;
       page += 1;
     }

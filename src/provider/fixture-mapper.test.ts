@@ -1,10 +1,15 @@
 import { describe, expect, it } from "vitest";
+import { seasonStartYear } from "../domain/config.js";
 import { AnomalyType } from "../domain/enums.js";
 import { makeApiFixture } from "./fixture-factory.js";
 import { normalizeFixture } from "./fixture-mapper.js";
 import type { ApiFootballFixture } from "./types.js";
 
 describe("fixture normalize mapper（31.3/31.4/31.5）", () => {
+  it("解析 YYYY/YY 赛季标识的起始年", () => {
+    expect(seasonStartYear("2026/27")).toBe(2026);
+  });
+
   it("关键 fixture 对象缺失时返回 fail-closed 结果而不是抛运行时错误", () => {
     const result = normalizeFixture({} as ApiFootballFixture);
 
@@ -183,7 +188,7 @@ describe("fixture normalize mapper（31.3/31.4/31.5）", () => {
     expect(result.fixture.season).toBe("2026");
   });
 
-  it("已知联赛但 season 与登记值不符 -> PROVIDER_DATA_INVALID + entityFailed", () => {
+  it("未传 now 时 season 与静态登记值不符仍 fail-closed", () => {
     const result = normalizeFixture(makeApiFixture({ leagueId: 78, season: "2025" }));
 
     expect(result.entityFailed).toBe(true);
@@ -195,6 +200,47 @@ describe("fixture normalize mapper（31.3/31.4/31.5）", () => {
           expected: "2026",
           actual: "2025",
         }),
+      }),
+    );
+  });
+
+  it("按传入 now 接受当前或相邻赛季，并拒绝更远赛季", () => {
+    const now = new Date("2027-07-02T00:00:00.000Z");
+
+    for (const season of ["2027", "2026"]) {
+      const result = normalizeFixture(makeApiFixture({ season }), undefined, now);
+      expect(result.entityFailed).toBe(false);
+      expect(result.anomalies).toEqual([]);
+    }
+
+    const rejected = normalizeFixture(makeApiFixture({ season: "2020" }), undefined, now);
+    expect(rejected.entityFailed).toBe(true);
+    expect(rejected.anomalies).toContainEqual(
+      expect.objectContaining({
+        type: AnomalyType.ProviderDataInvalid,
+        details: { field: "league.season", expected: "2027", actual: "2020" },
+      }),
+    );
+  });
+
+  it("在 2026 赛季接受 2026 并拒绝 2030", () => {
+    const now = new Date("2026-11-15T00:00:00.000Z");
+    expect(normalizeFixture(makeApiFixture({ season: "2026" }), undefined, now).entityFailed).toBe(false);
+    expect(normalizeFixture(makeApiFixture({ season: "2030" }), undefined, now).entityFailed).toBe(true);
+  });
+
+  it("空赛季或无法解析的赛季标识仍 fail-closed", () => {
+    const empty = normalizeFixture(makeApiFixture({ season: "" }), undefined, new Date("2027-07-02T00:00:00.000Z"));
+    expect(empty.entityFailed).toBe(true);
+    expect(empty.anomalies).toContainEqual(
+      expect.objectContaining({ details: { field: "league.season" } }),
+    );
+
+    const unparseable = normalizeFixture(makeApiFixture({ season: "unknown" }), undefined, new Date("2027-07-02T00:00:00.000Z"));
+    expect(unparseable.entityFailed).toBe(true);
+    expect(unparseable.anomalies).toContainEqual(
+      expect.objectContaining({
+        details: { field: "league.season", expected: "2027", actual: "unknown" },
       }),
     );
   });

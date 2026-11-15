@@ -130,7 +130,7 @@ export async function loadActiveWindowFixtures(
         continue;
       }
       if (provider !== "5dollar" && provider !== "openfoot" && provider !== "sportapi") continue;
-      const normalized = normalizeFixture(fixture, providerLeagueRefs);
+      const normalized = normalizeFixture(fixture, providerLeagueRefs, serverNow);
       if (normalized.entityFailed) continue;
       const crossMatch = await ensureCrossSourceMatchMapping(
         repo,

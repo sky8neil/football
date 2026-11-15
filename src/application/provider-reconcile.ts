@@ -96,7 +96,7 @@ export class ProviderReconcileService {
         continue;
       }
       for (const fixture of fixtures) {
-        const normalized = normalizeFixture(fixture, this.providerLeagueRefs);
+        const normalized = normalizeFixture(fixture, this.providerLeagueRefs, serverNow);
         if (normalized.entityFailed || normalized.fixture.fulltime === null) continue;
         const mapping = await ensureCrossSourceMatchMapping(
           this.repo,
