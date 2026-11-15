@@ -8,7 +8,7 @@
     <scroll-view class="leagues" scroll-x enable-flex scroll-with-animation>
       <view wx:for="{{leagues}}" wx:key="id" class="league {{item.id === selectedLeague ? 'active' : ''}}" data-id="{{item.id}}" bindtap="onLeagueTap">
         <image class="league-logo" src="{{item.logo}}" mode="aspectFit"></image>
-        <text>{{item.name}}</text>
+        <view class="league-label"><text>{{item.name}}</text><text wx:if="{{item.offSeason}}" class="offseason-badge">休赛</text></view>
       </view>
     </scroll-view>
   </view>
@@ -26,7 +26,7 @@
   <view class="results {{resultsTransition}}">
     <view wx:if="{{state === 'loading'}}" class="loading">加载中</view>
     <view wx:elif="{{state === 'empty'}}" class="empty">这一天暂无比赛
-下拉看看别的日期</view>
+点选上方日期或切换其他联赛看看</view>
     <view wx:elif="{{state === 'error'}}" class="error"><text>{{errorMessage}}</text><button class="retry" bindtap="onRetry">重试</button></view>
     <scroll-view wx:else class="feed" scroll-y scroll-with-animation scroll-into-view="{{scrollIntoView}}" bindtap="onFeedTap">
     <view wx:for="{{items}}" wx:key="match_id" id="match-{{item.match_id}}" class="match {{item.cardClass}} {{item.uiState}}" data-match-id="{{item.match_id}}" bindtap="onCardTap">

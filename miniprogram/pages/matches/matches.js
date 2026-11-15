@@ -23,6 +23,7 @@ const RESULT_TEXT = {
 };
 const scope = (league, date, matchId) => `${league}:${date}:${matchId}`;
 const pad = (n) => (n < 10 ? `0${n}` : String(n));
+const WEEKDAY_INDEX = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
 
 function beijingParts(iso) {
   const date = iso ? new Date(iso) : new Date();
@@ -41,12 +42,14 @@ const DATE_SPAN_DAYS = 11;
 
 function buildDates(anchor) {
   const dates = [];
-  const start = new Date(anchor.getTime());
-  start.setHours(12, 0, 0, 0);
+  const parts = beijingParts(anchor);
+  if (!parts) return dates;
+  const start = Date.UTC(parts.year, parts.month - 1, parts.day, 4, 0, 0);
   for (let i = 0; i < DATE_SPAN_DAYS; i += 1) {
-    const date = new Date(start.getTime());
-    date.setDate(start.getDate() + i);
-    dates.push({ key: `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`, label: i === 0 ? "今天" : i === 1 ? "明天" : WEEKDAYS[date.getDay()], day: pad(date.getDate()) });
+    const date = new Date(start + i * 24 * 60 * 60 * 1000);
+    const key = date.toLocaleString("sv-SE", { timeZone: "Asia/Shanghai" }).split(" ")[0];
+    const weekday = date.toLocaleDateString("en-US", { timeZone: "Asia/Shanghai", weekday: "short" });
+    dates.push({ key, label: i === 0 ? "今天" : i === 1 ? "明天" : WEEKDAYS[WEEKDAY_INDEX[weekday]], day: key.slice(-2) });
   }
   return dates;
 }
@@ -89,7 +92,7 @@ Page({
     headerHeight: headerHeight(),
     avatarText: "球",
     state: "loading", items: [], errorMessage: "", hasMore: false, nextCursor: null, loadingMore: false, nickname: "",
-    leagues: [], selectedLeague: "premier_league", dates: [], selectedDate: "", openCount: 0, doneCount: 0, recentScore: null,
+    leagues: [], activeLeagueIds: [], selectedLeague: "premier_league", dates: [], selectedDate: "", openCount: 0, doneCount: 0, recentScore: null,
     scrollIntoView: "", resultsTransition: "results-enter",
   },
   drafts: {}, uiStates: {}, submittedMap: {}, idempotencyKeys: {}, lastPayloads: {}, requestSerial: 0,
@@ -97,7 +100,13 @@ Page({
   onLoad() {
     const dates = buildDates(new Date());
     this.setData({ dates, selectedDate: dates[0].key, leagues: LEAGUES.map((item) => ({ ...item, logo: getLeagueLogo(item.id) })), nickname: truncateNickname(resolveNickname()), avatarText: Array.from(resolveNickname())[0] || "球" });
-    resolveDefaultLeague(listMatches, new Date()).then((leagueId) => {
+    resolveDefaultLeague(listMatches, new Date()).then(({ leagueId, activeLeagueIds }) => {
+      const activeIds = Array.isArray(activeLeagueIds) ? activeLeagueIds : [];
+      const activeSet = new Set(activeIds);
+      this.setData({
+        activeLeagueIds: activeIds,
+        leagues: this.data.leagues.map((league) => ({ ...league, offSeason: !activeSet.has(league.id) })),
+      });
       if (!this.userChangedLeague) this.setData({ selectedLeague: leagueId });
       this.initialized = true;
       this.loadFirstPage();
@@ -267,3 +276,5 @@ Page({
     });
   },
 });
+
+if (typeof module !== "undefined") module.exports = { buildDates, beijingParts };
