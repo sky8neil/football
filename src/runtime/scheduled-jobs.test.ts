@@ -15,6 +15,7 @@ import {
   runScheduledJobs,
 } from "./scheduled-jobs.js";
 import type { ApplicationRuntime } from "./application-runtime.js";
+import { SYNC_TASKS_V1 } from "../sync/config.js";
 
 const NOW = new Date("2026-08-09T00:00:00.000Z");
 
@@ -133,6 +134,26 @@ describe("UNWIRED_PERIODIC_TASKS", () => {
     ]);
     expect(WIRED_PERIODIC_TASKS.every((row) => row.status === "wired")).toBe(true);
     expect(UNWIRED_PERIODIC_TASKS).toEqual([]);
+  });
+
+  it("展示用间隔与 SYNC_TASKS_V1 不漂移（本列表只是文案，数值必须一致）", () => {
+    const minutes = (row: Record<string, unknown>): number => (
+      typeof row.intervalMinutes === "number"
+        ? row.intervalMinutes
+        : typeof row.intervalHours === "number"
+          ? (row.intervalHours as number) * 60
+          : Number.NaN
+    );
+    for (const row of WIRED_PERIODIC_TASKS) {
+      const declared = SYNC_TASKS_V1[row.task]?.intervalMinutes;
+      if (row.task === SyncJobType.WeeklyLevelEval || row.task === SyncJobType.BoardSnapshotSeasonFinal) {
+        // cron 驱动 / 事件驱动，没有常规间隔
+        expect(declared).toBeUndefined();
+        continue;
+      }
+      expect(declared).toBeDefined();
+      expect(minutes(row as unknown as Record<string, unknown>)).toBe(declared);
+    }
   });
 });
 
