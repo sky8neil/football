@@ -183,3 +183,15 @@ page { background: var(--surface-canvas); color: var(--text-primary); font-famil
 .feed { height:auto;max-height:none;padding-bottom:calc(80px + env(safe-area-inset-bottom)); }
 
 .feed { height:calc(100vh - var(--native-header-height,88px) - 213px - env(safe-area-inset-bottom));padding-bottom:16px; }
+
+/* —— 空档期与休赛期卡片 —— */
+.no-match-card,.offseason-card { margin:var(--space-4) var(--page-padding-inline);padding:var(--space-8);border:var(--match-card-border);border-radius:var(--match-card-radius);background:var(--match-card-background-strong);box-shadow:var(--match-card-shadow);backdrop-filter:blur(var(--match-card-blur));-webkit-backdrop-filter:blur(var(--match-card-blur));text-align:center; }
+.empty-title,.offseason-title { color:var(--text-primary);font-size:var(--font-30);font-weight:var(--weight-bold); }
+.empty-copy,.next-match-note { margin-top:var(--space-3);color:var(--text-muted);font-size:var(--font-22); }
+.offseason-card { border-color:var(--color-brand-soft); }
+.offseason-eyebrow { color:var(--color-brand-primary);font-size:var(--font-20);font-weight:var(--weight-bold); }
+.offseason-title { margin-top:var(--space-2); }
+.offseason-countdown { margin-top:var(--space-4);color:var(--text-secondary);font-size:var(--font-22); }
+.season-action { display:block;width:100%;min-height:var(--cta-height);margin:var(--space-5) 0 0;padding:0 var(--space-4);border:0;border-radius:var(--radius-md);background:var(--color-brand-primary);color:var(--text-on-brand);font-size:var(--font-22);font-weight:var(--weight-bold);line-height:var(--cta-height); }
+.season-rankings { background:var(--color-brand-soft);color:var(--color-brand-primary); }
+.next-match-action { margin-top:var(--space-5); }

@@ -27,8 +27,22 @@
     <view wx:if="{{state === 'loading'}}" class="loading">加载中</view>
     <view wx:elif="{{state === 'empty'}}" class="empty">这一天暂无比赛
 点选上方日期或切换其他联赛看看</view>
+    <view wx:elif="{{state === 'no-match'}}" class="no-match-card">
+      <view class="empty-title">这一天暂无比赛</view>
+      <view class="empty-copy">可以跳到最近的比赛日继续预测</view>
+      <button wx:if="{{nextMatch && nextMatch.inDateStrip}}" class="season-action next-match-action" data-date="{{nextMatch.date}}" bindtap="onNextMatchTap">{{nextMatch.displayText}}</button>
+      <view wx:elif="{{nextMatch}}" class="next-match-note">{{nextMatch.displayText}}</view>
+    </view>
+    <view wx:elif="{{state === 'offseason'}}" class="offseason-card">
+      <view class="offseason-eyebrow">本赛季已收官</view>
+      <view class="offseason-title">{{offseasonInfo.title}}</view>
+      <view wx:if="{{offseasonInfo.nextSeasonDate}}" class="offseason-countdown">距离新赛季揭幕战还有 {{offseasonInfo.countdownDays}} 天</view>
+      <view wx:else class="offseason-countdown">新赛季赛程公布后将第一时间开放预测</view>
+      <button wx:if="{{offseasonInfo.activeLeagueId}}" class="season-action" data-id="{{offseasonInfo.activeLeagueId}}" bindtap="onLeagueTap">去看看正在进行的 {{offseasonInfo.activeLeagueName}} →</button>
+      <button class="season-action season-rankings" bindtap="onRankingsTap">查看本赛季最终排行榜 →</button>
+    </view>
     <view wx:elif="{{state === 'error'}}" class="error"><text>{{errorMessage}}</text><button class="retry" bindtap="onRetry">重试</button></view>
-    <scroll-view wx:else class="feed" scroll-y scroll-with-animation scroll-into-view="{{scrollIntoView}}" bindtap="onFeedTap">
+    <scroll-view wx:elif="{{state === 'list'}}" class="feed" scroll-y scroll-with-animation scroll-into-view="{{scrollIntoView}}" bindtap="onFeedTap">
     <view wx:for="{{items}}" wx:key="match_id" id="match-{{item.match_id}}" class="match {{item.cardClass}} {{item.uiState}}" data-match-id="{{item.match_id}}" bindtap="onCardTap">
       <view class="match-top"><view class="kick"><text class="kick-time">{{item.timeText}}</text><text class="kick-meta">{{item.metaText}}</text></view><text wx:if="{{item.cardClass === 'is-live' || item.cardClass === 'is-done'}}" class="crowd-link" data-match-id="{{item.match_id}}" catchtap="onCardTap">{{item.crowdLinkText}}</text><view class="state {{item.stateClass}}">{{item.stateText}}</view></view>
       <view class="faceoff">
