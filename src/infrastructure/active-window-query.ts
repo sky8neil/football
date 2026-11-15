@@ -88,6 +88,22 @@ export function selectActiveWindow(
   query: ActiveWindowQuery,
 ): Match[] {
   const coerced = [...matches].map(coerceMatchKickoff);
+  if (query.jobType === "live_match") {
+    const staleKickoffBefore = query.now.getTime() - 6 * HOUR_MS;
+    for (const match of coerced) {
+      if (
+        match.match_status === MatchStatus.Scheduled &&
+        match.kickoff_at.getTime() < staleKickoffBefore
+      ) {
+        console.warn("[live_match_stale]", {
+          match_id: match.match_id,
+          league_id: match.league_id,
+          kickoff_at: match.kickoff_at.toISOString(),
+          server_now: query.now.toISOString(),
+        });
+      }
+    }
+  }
   const filtered = activeWindow(coerced, query.now, query.jobType);
   const seen = new Set<string>();
   const unique: Match[] = [];

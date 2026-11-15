@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { MatchStatus, SettlementStatus } from "../domain/enums.js";
 import type { Match } from "../domain/types.js";
 import { activeWindow } from "../application/provider-active-window.js";
@@ -154,6 +154,51 @@ describe("buildActiveWindowFilters", () => {
     expect(fragments[0]).toEqual({ equals: { match_status: MatchStatus.Live } });
     expect(fragments[1]!.equals).toEqual({ match_status: MatchStatus.Scheduled });
     expect(fragments[1]!.kickoffAtLte?.getTime()).toBe(at(2 * HOUR_MS).getTime());
+  });
+
+  it("live_match：过滤前逐场告警超 6 小时的 scheduled 候选", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const staleOne = makeMatch({
+      match_id: "stale-one",
+      kickoff_at: at(-7 * HOUR_MS),
+    });
+    const staleTwo = makeMatch({
+      match_id: "stale-two",
+      league_id: "la_liga",
+      kickoff_at: at(-8 * HOUR_MS),
+    });
+    const exactBoundary = makeMatch({
+      match_id: "stale-boundary",
+      kickoff_at: at(-6 * HOUR_MS),
+    });
+    const oldLive = makeMatch({
+      match_id: "old-live",
+      match_status: MatchStatus.Live,
+      kickoff_at: at(-7 * HOUR_MS),
+    });
+
+    try {
+      expect(selectActiveWindow([staleOne, staleTwo, exactBoundary, oldLive], query("live_match")))
+        .toEqual([exactBoundary]);
+      expect(warn).toHaveBeenCalledTimes(2);
+      expect(warn).toHaveBeenNthCalledWith(1, "[live_match_stale]", {
+        match_id: "stale-one",
+        league_id: "premier_league",
+        kickoff_at: staleOne.kickoff_at.toISOString(),
+        server_now: NOW.toISOString(),
+      });
+      expect(warn).toHaveBeenNthCalledWith(2, "[live_match_stale]", {
+        match_id: "stale-two",
+        league_id: "la_liga",
+        kickoff_at: staleTwo.kickoff_at.toISOString(),
+        server_now: NOW.toISOString(),
+      });
+
+      selectActiveWindow([staleOne, staleTwo], query("near_match"));
+      expect(warn).toHaveBeenCalledTimes(2);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("post_finish_verify：finished×{pending,waiting} 等值 + pending/waiting 且 kickoff_at <= now", () => {

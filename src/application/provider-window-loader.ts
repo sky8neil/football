@@ -14,6 +14,7 @@ import { ensureCrossSourceMatchMapping } from "./provider-cross-source.js";
  * 异常数据（大量滞留待结算）时不会把整表拉进内存。超出的部分由后续轮次补齐。
  */
 const WINDOW_CANDIDATE_LIMIT = 500;
+const DAY_MS = 24 * 60 * 60_000;
 
 type ProviderWindowJob = typeof import("../domain/enums.js").SyncJobType.NearMatch |
   typeof import("../domain/enums.js").SyncJobType.LiveMatch |
@@ -63,20 +64,18 @@ export async function loadActiveWindowFixtures(
   if (mappings === undefined) return [];
 
   const candidateMatchIds = new Map<string, Set<string>>();
+  const candidateMatchesByLeague = new Map<string, typeof matches>();
   for (const match of matches) {
     const league = findSupportedLeagueById(match.league_id);
     if (league === undefined) continue;
     const ids = candidateMatchIds.get(league.league_id) ?? new Set<string>();
     ids.add(match.match_id);
     candidateMatchIds.set(league.league_id, ids);
+    const leagueMatches = candidateMatchesByLeague.get(league.league_id) ?? [];
+    leagueMatches.push(match);
+    candidateMatchesByLeague.set(league.league_id, leagueMatches);
   }
 
-  const earliestKickoffMs = matches.reduce(
-    (acc, match) => Math.min(acc, match.kickoff_at.getTime()),
-    serverNow.getTime() - 24 * 60 * 60_000,
-  );
-  const from = new Date(earliestKickoffMs).toISOString().slice(0, 10);
-  const to = new Date(serverNow.getTime() + 24 * 60 * 60_000).toISOString().slice(0, 10);
   const result: ProviderFixtureBatchItem[] = [];
   const orderedIds = client.orderLeagues
     ? await client.orderLeagues(SUPPORTED_LEAGUES.map((league) => league.league_id), jobType, serverNow)
@@ -86,9 +85,18 @@ export async function loadActiveWindowFixtures(
     if (!league) continue;
     const ids = candidateMatchIds.get(league.league_id);
     if (ids === undefined || ids.size === 0) continue;
+    const leagueMatches = candidateMatchesByLeague.get(league.league_id) ?? [];
+    const earliestKickoffMs = leagueMatches.reduce(
+      (acc, match) => Math.min(acc, match.kickoff_at.getTime()),
+      serverNow.getTime() - DAY_MS,
+    );
+    const latestKickoffMs = leagueMatches.reduce(
+      (acc, match) => Math.max(acc, match.kickoff_at.getTime()),
+      serverNow.getTime() + DAY_MS,
+    );
     const fixtures = await client.getFixtures({
-      dateFrom: from,
-      dateTo: to,
+      dateFrom: new Date(earliestKickoffMs).toISOString().slice(0, 10),
+      dateTo: new Date(latestKickoffMs).toISOString().slice(0, 10),
       leagueId: league.api_football_league_id,
       season: league.api_football_season,
       jobType,

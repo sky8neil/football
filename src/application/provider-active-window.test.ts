@@ -34,13 +34,34 @@ describe("activeWindow", () => {
     ]);
   });
 
-  it("selects from T-2h until finished without a live cutoff", () => {
+  it("includes live and scheduled matches only from kickoff T-6h through T+2h", () => {
+    const scheduledSevenHoursAgo = match(new Date(NOW.getTime() - 7 * 60 * 60_000));
+    const scheduledFiveHoursAgo = match(new Date(NOW.getTime() - 5 * 60 * 60_000));
+    const liveSevenHoursAgo = match(new Date(NOW.getTime() - 7 * 60 * 60_000), MatchStatus.Live);
+    const liveThreeHoursAgo = match(new Date(NOW.getTime() - 3 * 60 * 60_000), MatchStatus.Live);
+    const lowerBoundary = match(new Date(NOW.getTime() - 6 * 60 * 60_000));
+    const upperBoundary = match(new Date(NOW.getTime() + 2 * 60 * 60_000));
+    const outsideUpperBoundary = match(new Date(NOW.getTime() + 2 * 60 * 60_000 + 60_000));
+
     expect(activeWindow([
-      match(new Date(NOW.getTime() + 10 * 60_000)),
-      match(new Date(NOW.getTime() - 3 * 60 * 60_000), MatchStatus.Live),
-      match(new Date(NOW.getTime() + 10 * 60_000 + 1)),
-      match(new Date(NOW.getTime() - 3 * 60 * 60_000 - 1), MatchStatus.Live),
-    ], NOW, SyncJobType.LiveMatch)).toHaveLength(4);
+      scheduledSevenHoursAgo,
+      scheduledFiveHoursAgo,
+      liveSevenHoursAgo,
+      liveThreeHoursAgo,
+      lowerBoundary,
+      upperBoundary,
+      outsideUpperBoundary,
+    ], NOW, SyncJobType.LiveMatch)).toEqual([
+      scheduledFiveHoursAgo,
+      liveThreeHoursAgo,
+      lowerBoundary,
+      upperBoundary,
+    ]);
+  });
+
+  it("keeps near_match selection independent of the live window cutoff", () => {
+    const staleScheduled = match(new Date(NOW.getTime() - 7 * 60 * 60_000));
+    expect(activeWindow([staleScheduled], NOW, SyncJobType.NearMatch)).toEqual([]);
   });
 
   it("selects unsettled finished matches and only the daily tick after 24 hours", () => {
@@ -49,6 +70,8 @@ describe("activeWindow", () => {
     const overdue = match(new Date(NOW.getTime() - 25 * 60 * 60_000), MatchStatus.Finished);
     overdue.finish_detected_at = NOW;
     expect(activeWindow([finished, overdue], NOW, SyncJobType.PostFinishVerify)).toEqual([finished]);
+    const staleLive = match(new Date(NOW.getTime() - 7 * 60 * 60_000), MatchStatus.Live);
+    expect(activeWindow([staleLive], NOW, SyncJobType.PostFinishVerify)).toEqual([staleLive]);
     expect(activeWindow([overdue], new Date("2026-10-12T00:00:00.000Z"), SyncJobType.PostFinishVerify)).toEqual([overdue]);
     overdue.settlement_status = SettlementStatus.Settled;
     expect(activeWindow([overdue], new Date("2026-10-12T00:00:00.000Z"), SyncJobType.PostFinishVerify)).toEqual([]);

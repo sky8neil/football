@@ -19,8 +19,10 @@ export function activeWindow(
         untilKickoff > 2 * HOUR_MS && untilKickoff <= 24 * HOUR_MS;
     }
     if (jobType === "live_match") {
-      return match.match_status === MatchStatus.Live ||
-        (match.match_status === MatchStatus.Scheduled && kickoff <= current + 2 * HOUR_MS);
+      const withinLiveWindow = kickoff >= current - 6 * HOUR_MS &&
+        kickoff <= current + 2 * HOUR_MS;
+      return withinLiveWindow &&
+        (match.match_status === MatchStatus.Live || match.match_status === MatchStatus.Scheduled);
     }
     if (jobType === "post_finish_verify") {
       const awaitingFirstSettlement = match.settlement_status === SettlementStatus.Pending ||

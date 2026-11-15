@@ -3,6 +3,7 @@ import { SUPPORTED_LEAGUES } from "../domain/config.js";
 import { MatchStatus, Provider, SettlementStatus, SyncJobType } from "../domain/enums.js";
 import type { Match } from "../domain/types.js";
 import type { AppRepository } from "../infrastructure/repositories.js";
+import type { ApiFootballFixturesQuery } from "../provider/http.js";
 import { loadActiveWindowFixtures } from "./provider-window-loader.js";
 
 const NOW = new Date("2026-10-11T12:00:00.000Z");
@@ -81,5 +82,29 @@ describe("loadActiveWindowFixtures", () => {
       jobType: SyncJobType.LiveMatch,
       serverNow: NOW,
     }));
+  });
+
+  it("computes fixture date ranges independently for each league", async () => {
+    const historicalKickoff = new Date(NOW.getTime() - 90 * 24 * 60 * 60_000);
+    const leagueAMatch = mappedMatch("premier_league", historicalKickoff);
+    const leagueBMatch = mappedMatch("la_liga", new Date(NOW.getTime() - 60 * 60_000));
+    const repo = {
+      matches: { findActiveWindow: async () => [leagueAMatch, leagueBMatch] },
+      matchProviderMappings: { findByProviderAndExternalId: async () => null },
+    } as unknown as AppRepository;
+    const requests: ApiFootballFixturesQuery[] = [];
+    const client = {
+      getFixtures: vi.fn(async (query: ApiFootballFixturesQuery) => {
+        requests.push(query);
+        return [];
+      }),
+    };
+
+    await loadActiveWindowFixtures(repo, client, SyncJobType.LiveMatch, NOW);
+
+    const requestA = requests.find((query) => query.leagueId === SUPPORTED_LEAGUES[0]!.api_football_league_id);
+    const requestB = requests.find((query) => query.leagueId === SUPPORTED_LEAGUES[1]!.api_football_league_id);
+    expect(requestA?.dateFrom).toBe(historicalKickoff.toISOString().slice(0, 10));
+    expect(requestB?.dateFrom).toBe(new Date(NOW.getTime() - 24 * 60 * 60_000).toISOString().slice(0, 10));
   });
 });
