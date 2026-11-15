@@ -1,4 +1,4 @@
-import { SUPPORTED_LEAGUES, findSupportedLeagueById, type ProviderLeagueRefs } from "../domain/config.js";
+import { activeLeagueSeason, SUPPORTED_LEAGUES, findSupportedLeagueById, type ProviderLeagueRefs } from "../domain/config.js";
 import type { SyncJobType } from "../domain/enums.js";
 import type { MatchProviderMapping } from "../domain/types.js";
 import type { AppRepository } from "../infrastructure/repositories.js";
@@ -108,7 +108,7 @@ export async function loadActiveWindowFixtures(
       dateFrom: new Date(earliestKickoffMs).toISOString().slice(0, 10),
       dateTo: new Date(latestKickoffMs).toISOString().slice(0, 10),
       leagueId: league.api_football_league_id,
-      season: league.api_football_season,
+      season: activeLeagueSeason(league, serverNow).api_football_season,
       jobType,
       serverNow,
       ...(secondaryDates === undefined ? {} : { secondaryDates }),

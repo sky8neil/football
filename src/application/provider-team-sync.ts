@@ -1,4 +1,4 @@
-import { SUPPORTED_LEAGUES, type SupportedLeague } from "../domain/config.js";
+import { activeLeagueSeason, SUPPORTED_LEAGUES, type SupportedLeague } from "../domain/config.js";
 import { Provider, SCHEMA_VERSION, SyncJobType, TeamStatus } from "../domain/enums.js";
 import { internalError, validationError } from "../domain/errors.js";
 import { newUuid } from "../domain/ids.js";
@@ -93,7 +93,7 @@ export class ProviderTeamSyncService {
     for (const league of leagues) {
       const providerTeams = await this.client.getTeams({
         leagueId: league.api_football_league_id,
-        season: league.api_football_season,
+        season: activeLeagueSeason(league, serverNow).api_football_season,
         jobType,
         serverNow,
       });

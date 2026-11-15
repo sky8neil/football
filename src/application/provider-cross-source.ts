@@ -2,7 +2,7 @@ import { SCHEMA_VERSION } from "../domain/enums.js";
 import { newUuid } from "../domain/ids.js";
 import type { Provider } from "../domain/enums.js";
 import type { MatchProviderMapping } from "../domain/types.js";
-import { findSupportedLeagueByProviderId, type ProviderLeagueRefs } from "../domain/config.js";
+import { activeLeagueSeason, findSupportedLeagueByProviderId, type ProviderLeagueRefs } from "../domain/config.js";
 import type { AppRepository } from "../infrastructure/repositories.js";
 import type { NormalizedFixture } from "../provider/fixture-mapper.js";
 
@@ -35,7 +35,7 @@ export async function ensureCrossSourceMatchMapping(
     await recordUnlinked(repo, provider, fixture, now, "team_mapping_missing");
     return { match_id: null, reason: "unlinked" };
   }
-  const candidates = (await repo.matches.findBySeason(supportedLeague.season_id)).filter((match) => {
+  const candidates = (await repo.matches.findBySeason(activeLeagueSeason(supportedLeague, now).season_id)).filter((match) => {
     if (match.league_id !== supportedLeague.league_id || match.home_team_id !== home.team_id || match.away_team_id !== away.team_id) return false;
     if (candidateMatchIds && !candidateMatchIds.has(match.match_id)) return false;
     const tolerance = match.league_id === "chinese_super_league" ? 5 * 60_000 : 30 * 60_000;

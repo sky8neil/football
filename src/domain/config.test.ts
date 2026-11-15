@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  activeProviderSeasonRef,
   activeLeagueSeason,
   deriveSeasonId,
   FIXED_CONFIG_V1,
@@ -10,6 +11,7 @@ import {
   seasonBounds,
   seasonStartYear,
   SUPPORTED_LEAGUES,
+  providerSeasonRef,
 } from "./config.js";
 
 describe("S0 固定配置 v2（规范 §3 / §1.4）", () => {
@@ -149,6 +151,35 @@ describe("赛季自动推导", () => {
         fd: null,
       },
     });
+  });
+
+  it("2026-11-15 推导值与所有联赛当前静态赛季字段一致", () => {
+    const now = new Date("2026-11-15T00:00:00.000Z");
+
+    for (const league of SUPPORTED_LEAGUES) {
+      const active = activeLeagueSeason(league, now);
+      expect(active).toEqual({
+        season_id: league.season_id,
+        api_football_season: league.api_football_season,
+        source_season_ref: league.source_season_ref,
+        provider_season_refs: league.provider_season_refs,
+      });
+      expect(activeProviderSeasonRef(league, "of", now)).toBe(providerSeasonRef(league, "of"));
+    }
+  });
+
+  it("换季后推导 2027/28 跨年赛季与 2027 自然年赛季", () => {
+    const now = new Date("2027-07-02T00:00:00.000Z");
+    const crossYearLeagues = SUPPORTED_LEAGUES.filter((league) => league.season_id.includes("_"));
+    const naturalYearLeagues = SUPPORTED_LEAGUES.filter((league) => !league.season_id.includes("_"));
+
+    for (const league of crossYearLeagues) {
+      expect(activeLeagueSeason(league, now).season_id).toBe("2027_2028");
+      expect(activeProviderSeasonRef(league, "of", now)).toBe("2027/28");
+    }
+    for (const league of naturalYearLeagues) {
+      expect(activeLeagueSeason(league, now).season_id).toBe("2027");
+    }
   });
 
   it("seasonBounds 与联赛已登记窗口返回相同毫秒", () => {

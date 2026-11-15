@@ -398,6 +398,16 @@ export function activeLeagueSeason(league: SupportedLeague, now: Date): LeagueSe
   };
 }
 
+/** 按 UTC 时间取该联赛在指定 provider 下的赛季引用；缺省回退到推导出的 source_season_ref。 */
+export function activeProviderSeasonRef(
+  league: SupportedLeague,
+  sourceId: ProviderLeagueSourceId,
+  now: Date,
+): string {
+  const active = activeLeagueSeason(league, now);
+  return active.provider_season_refs[sourceId] ?? active.source_season_ref;
+}
+
 /** 按赛季标识推导起止窗口（[start, end) UTC）。 */
 export function seasonBounds(seasonId: string): { start: Date; end: Date } | null {
   const crossYear = /^(\d{4})_(\d{4})$/.exec(seasonId);

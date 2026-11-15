@@ -1,5 +1,5 @@
 import { MatchStatus, SCHEMA_VERSION, SettlementStatus, SyncJobStatus, SyncJobType } from "../domain/enums.js";
-import { SUPPORTED_LEAGUES, type ProviderLeagueRefs } from "../domain/config.js";
+import { activeLeagueSeason, SUPPORTED_LEAGUES, type ProviderLeagueRefs } from "../domain/config.js";
 import { newUuid } from "../domain/ids.js";
 import type { ProviderSnapshot, SyncLog } from "../domain/types.js";
 import type { AppRepository } from "../infrastructure/repositories.js";
@@ -74,7 +74,7 @@ export class ProviderReconcileService {
     for (const league of SUPPORTED_LEAGUES) {
       const sourceId: ProviderSourceId = league.league_id === "chinese_super_league" ? "sp" : "of";
       const sourceProvider = sourceId === "sp" ? "sportapi" : "openfoot";
-      const matches = (await this.repo.matches.findBySeason(league.season_id)).filter((match) =>
+      const matches = (await this.repo.matches.findBySeason(activeLeagueSeason(league, serverNow).season_id)).filter((match) =>
         match.league_id === league.league_id &&
         match.settlement_status === SettlementStatus.Settled &&
         match.match_status === MatchStatus.Finished &&
@@ -87,7 +87,7 @@ export class ProviderReconcileService {
           dateFrom: yesterday,
           dateTo: yesterday,
           leagueId: league.api_football_league_id,
-          season: league.api_football_season,
+          season: activeLeagueSeason(league, serverNow).api_football_season,
           jobType: SyncJobType.FullScheduleVerify,
           serverNow,
         });

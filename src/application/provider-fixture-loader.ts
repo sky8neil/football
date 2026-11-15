@@ -1,4 +1,4 @@
-import { FIXED_CONFIG_V1, SUPPORTED_LEAGUES } from "../domain/config.js";
+import { activeLeagueSeason, FIXED_CONFIG_V1, SUPPORTED_LEAGUES } from "../domain/config.js";
 import { SyncJobType } from "../domain/enums.js";
 import { internalError, validationError } from "../domain/errors.js";
 import { parseKickoff } from "../provider/kickoff.js";
@@ -82,7 +82,12 @@ async function loadFixturesForSupportedLeagues(
   for (const leagueId of orderedIds) {
     const league = SUPPORTED_LEAGUES.find((row) => row.league_id === leagueId);
     if (!league) continue;
-    fixtures.push(...await load(league.api_football_league_id, league.api_football_season, jobType, serverNow));
+    fixtures.push(...await load(
+      league.api_football_league_id,
+      activeLeagueSeason(league, serverNow).api_football_season,
+      jobType,
+      serverNow,
+    ));
   }
   return fixtures;
 }

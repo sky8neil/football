@@ -17,7 +17,7 @@ import { loadProviderSources, type ProviderSourceId } from "../provider/sources.
 import { runSettlementTimer } from "../application/settlement-timer.js";
 import { activeWindow } from "../application/provider-active-window.js";
 import type { Match } from "../domain/types.js";
-import { SUPPORTED_LEAGUES } from "../domain/config.js";
+import { activeLeagueSeason, SUPPORTED_LEAGUES } from "../domain/config.js";
 import { SyncJobType } from "../domain/enums.js";
 import { createCloudFunctionHandler, type CloudFunctionContextLike, type CloudFunctionEvent } from "./index.js";
 import { buildTimerSummary } from "./timer-summary.js";
@@ -362,7 +362,7 @@ async function providerDiagnostics(
       ], now)).map(async (league) => {
         const configuredLeague = SUPPORTED_LEAGUES.find((row) => row.league_id === league.league_id);
         const localMatches = configuredLeague
-          ? (await loadSeason(configuredLeague.season_id)).filter((match) => match.league_id === league.league_id)
+          ? (await loadSeason(activeLeagueSeason(configuredLeague, now).season_id)).filter((match) => match.league_id === league.league_id)
           : [];
         const activeMatchIds = new Set<string>();
         for (const jobType of [SyncJobType.PostFinishVerify, SyncJobType.LiveMatch, SyncJobType.NearMatch]) {

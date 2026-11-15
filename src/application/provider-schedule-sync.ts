@@ -1,4 +1,4 @@
-import { FIXED_CONFIG_V1, findSupportedLeagueByProviderId, type ProviderLeagueRefs } from "../domain/config.js";
+import { activeLeagueSeason, FIXED_CONFIG_V1, findSupportedLeagueByProviderId, type ProviderLeagueRefs } from "../domain/config.js";
 import {
   MatchStatus,
   Provider,
@@ -81,7 +81,7 @@ function buildMatch(
     schema_version: SCHEMA_VERSION,
     match_id: newUuid(),
     league_id: league.league_id,
-    season_id: league.season_id,
+    season_id: activeLeagueSeason(league, serverNow).season_id,
     round_id: fixture.roundId,
     home_team_id: homeTeamId,
     away_team_id: awayTeamId,
