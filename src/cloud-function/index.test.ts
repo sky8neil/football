@@ -44,6 +44,7 @@ function makeConfig(
     cloudbase_repository: null,
     postgres_repository: null,
     vps_auth: null,
+    deploy_target: "vps",
     ...overrides,
   };
 }

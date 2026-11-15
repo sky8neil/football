@@ -1,9 +1,13 @@
 [Unit]
-Description=Run Football jobs every fifteen minutes
+Description=Run Football jobs every three minutes (VPS realtime profile)
 
 [Timer]
-OnCalendar=*-*-* *:00/15:00
+# VPS 部署默认 3 分钟：live_match 的 3 分钟间隔才能真实生效。
+# CloudBase（腾讯云云函数定时器）最小粒度 15 分钟，同样的代码在云上会退化为 15 分钟——
+# 部署前用 `npm run deploy:preflight` 查看当前目标的实际刷新频率。
+OnCalendar=*-*-* *:00/3:00
 Persistent=true
+AccuracySec=10s
 Unit=football-jobs.service
 
 [Install]

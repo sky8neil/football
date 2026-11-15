@@ -12,7 +12,7 @@
     "vps:db": "npm run build && node scripts/vps-db.mjs",
     "vps:admin": "npm run build && node scripts/vps-admin.mjs",
     "jobs:tick": "npm run build && node dist/jobs/tick.js",
-    "cloudbase:deploy": "npm run cloudfunction:build && node --no-deprecation scripts/cloudbase-deploy-function.mjs --apply --deploy-code",
+    "cloudbase:deploy": "npm run build && node scripts/deploy-preflight.mjs --target=cloudbase && npm run cloudfunction:build && node --no-deprecation scripts/cloudbase-deploy-function.mjs --apply --deploy-code",
     "cloudbase:function": "node --no-deprecation scripts/cloudbase-deploy-function.mjs",
     "cloudbase:provision": "npm run build && node --no-deprecation scripts/cloudbase-provision.mjs",
     "cloudbase:schema": "npm run build && node scripts/cloudbase-schema.mjs",
@@ -24,7 +24,9 @@
     "providers:map-teams": "node scripts/providers-map-teams.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "deploy:preflight": "npm run build && node scripts/deploy-preflight.mjs",
+    "vps:preflight": "npm run build && node scripts/deploy-preflight.mjs --target=vps"
   },
   "dependencies": {
     "pg": "^8.16.3"

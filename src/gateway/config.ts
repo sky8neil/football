@@ -6,6 +6,7 @@ import {
   loadCloudBaseRepositoryConfig,
   type CloudBaseRepositoryConfig,
 } from "../infrastructure/cloudbase-db.js";
+import { resolveDeployTarget, type DeployTarget } from "../sync/deploy-target.js";
 
 export const LOCAL_PUBLIC_SOURCE = "local_v0" as const;
 
@@ -30,6 +31,8 @@ export interface GatewayRuntimeConfig {
   cloudbase_repository: CloudBaseRepositoryConfig | null;
   postgres_repository: PostgresRepositoryConfig | null;
   vps_auth: VpsAuthConfig | null;
+  /** 部署目标：决定调度器 tick 粒度（vps 3 分钟 / cloudbase 15 分钟）。 */
+  deploy_target: DeployTarget;
 }
 
 function isEnvironmentName(value: unknown): value is EnvironmentName {
@@ -136,5 +139,6 @@ export function loadGatewayRuntimeConfig(
     cloudbase_repository: cloudbaseRepository,
     postgres_repository: postgresRepository,
     vps_auth: vpsAuth,
+    deploy_target: resolveDeployTarget(env),
   };
 }

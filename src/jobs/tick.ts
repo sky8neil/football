@@ -15,6 +15,9 @@ import {
   WIRED_PERIODIC_TASKS,
 } from "../runtime/scheduled-jobs.js";
 import { createVpsRuntime } from "../runtime/vps-runtime.js";
+import { SyncJobType } from "../domain/enums.js";
+import { effectiveRefreshMinutes, schedulerTickMinutes } from "../sync/deploy-target.js";
+import { taskIntervalMinutes, type ProviderJobProfile } from "../sync/config.js";
 
 export interface JobsTickHandle {
   application: ApplicationRuntime;
@@ -49,6 +52,36 @@ function settlementFailed(settlements: readonly { match_id: string; outcome: unk
     if (typeof row.outcome !== "object" || row.outcome === null) return false;
     return (row.outcome as { kind?: unknown }).kind === "failed";
   });
+}
+
+/**
+ * 调度策略快照：部署目标决定 tick 粒度，tick 粒度决定"实时"到底有多实时。
+ *
+ * 每轮打一条日志。线上排查"比分为什么十几分钟才动"时先看这条：
+ * `live_match_effective_minutes` 才是真正生效的刷新间隔。
+ */
+function schedulerPolicy(
+  config: GatewayRuntimeConfig,
+  profile: ProviderJobProfile,
+): Record<string, unknown> {
+  const target = config.deploy_target;
+  const tickMinutes = schedulerTickMinutes(target);
+  const liveConfigured = taskIntervalMinutes(SyncJobType.LiveMatch, profile);
+  const liveEffective = effectiveRefreshMinutes(SyncJobType.LiveMatch, profile, target);
+  return {
+    event: "scheduler_policy",
+    deploy_target: target,
+    sync_profile: profile,
+    tick_minutes: tickMinutes,
+    live_match_configured_minutes: liveConfigured,
+    live_match_effective_minutes: liveEffective,
+    ...(liveConfigured < tickMinutes
+      ? {
+        degraded_to_tick: true,
+        note: `调度粒度 ${tickMinutes} 分钟 > live_match 配置 ${liveConfigured} 分钟，实时刷新实际按 ${liveEffective} 分钟生效`,
+      }
+      : {}),
+  };
 }
 
 function createHandle(
@@ -92,6 +125,8 @@ export async function runJobsTick(options: JobsTickOptions = {}): Promise<JobsTi
     handle = options.assemble === undefined
       ? createHandle(config, env, log)
       : await options.assemble(config);
+    const policy = schedulerPolicy(config, handle.application.providerSources.sync_profile);
+    log(policy);
     if (dryRun) {
       const planned = await planScheduledJobs({ runtime: handle.application, serverNow });
       const todos = await handle.application.repo.matches.findSettlementTodos({ limit: 100 });

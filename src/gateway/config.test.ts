@@ -61,6 +61,7 @@ describe("loadGatewayRuntimeConfig", () => {
       cloudbase_repository: null,
       postgres_repository: null,
       vps_auth: null,
+      deploy_target: "vps",
     });
     expect(config.public_source).toBe("local_v0");
   });
