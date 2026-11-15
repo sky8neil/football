@@ -113,7 +113,7 @@ const DEFINITIONS: Record<ProviderSourceId, SourceDefinition> = {
       league("of", "serie_a", "disabled", "disabled", "disabled", "secondary", "reconcile"),
       league("of", "bundesliga", "disabled", "disabled", "disabled", "secondary", "reconcile"),
       league("of", "ligue_1", "disabled", "disabled", "disabled", "secondary", "reconcile"),
-      league("of", "chinese_super_league", "historical", "disabled", "disabled", "disabled", "historical"),
+      league("of", "chinese_super_league", "historical", "disabled", "disabled", "secondary", "historical"),
     ],
   },
   sp: {

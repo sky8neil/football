@@ -110,7 +110,7 @@ describe("loadProviderSources", () => {
       expect(ofSource!.leagues.find((entry) => entry.league_id === leagueId)?.roles.result).toBe("secondary");
     }
     expect(ofSource!.leagues.find((entry) => entry.league_id === "chinese_super_league")?.roles).toMatchObject({
-      result: "disabled",
+      result: "secondary",
       reconcile: "historical",
     });
   });
