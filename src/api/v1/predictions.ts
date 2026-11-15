@@ -9,6 +9,7 @@ import type {
   PredictionHistoryResult,
 } from "../../application/prediction-query.js";
 import {
+  activeSeasonIds,
   FIXED_CONFIG_V1,
   findSupportedLeagueById,
   isSupportedLeagueId,
@@ -195,6 +196,7 @@ function parseHistoryLimit(value: unknown): number {
 
 export function validateMyPredictionsQuery(
   query: Record<string, unknown>,
+  now?: Date,
 ): PredictionHistoryQuery {
   assertUnknownFields(query, PREDICTION_HISTORY_QUERY_FIELDS);
   const leagueId = query.league_id === undefined ? null : query.league_id;
@@ -208,10 +210,13 @@ export function validateMyPredictionsQuery(
   if (seasonId !== null && leagueId === null) {
     throw validationError("season_id 仅能与 league_id 同时提供", { field: "season_id" });
   }
+  const league = leagueId === null ? undefined : findSupportedLeagueById(leagueId);
   if (
     seasonId !== null &&
-    leagueId !== null &&
-    findSupportedLeagueById(leagueId)?.season_id !== seasonId
+    league !== undefined &&
+    (now === undefined
+      ? league.season_id !== seasonId
+      : !activeSeasonIds(league, now).includes(seasonId))
   ) {
     throw validationError("season_id 必须等于该联赛当前登记值", { field: "season_id" });
   }
@@ -261,7 +266,7 @@ export async function getMyPredictions(
     userId,
     input.server_now,
   );
-  const query = validateMyPredictionsQuery(input.query);
+  const query = validateMyPredictionsQuery(input.query, input.server_now);
   const result = await service.listMyPredictions(userId, query);
   return {
     status: 200,

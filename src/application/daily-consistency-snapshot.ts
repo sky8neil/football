@@ -1,4 +1,4 @@
-import { FIXED_CONFIG_V1, SUPPORTED_LEAGUES } from "../domain/config.js";
+import { activeSeasonIds, FIXED_CONFIG_V1, SUPPORTED_LEAGUES } from "../domain/config.js";
 import {
   LevelScope,
   PeriodType,
@@ -594,11 +594,15 @@ async function loadActiveSettlementScopes(
 /** 从事实账本与缓存文档加载 daily consistency 的比较输入，不写入任何业务数据。 */
 export async function loadDailyConsistencySnapshot(
   tx: UnitOfWork,
+  now?: Date,
 ): Promise<DailyConsistencyInput> {
   requirePorts(tx);
   const users = await tx.users.findAll();
   const matchesById = new Map<string, Match>();
-  for (const seasonId of new Set(SUPPORTED_LEAGUES.map((league) => league.season_id))) {
+  const seasonIds = now === undefined
+    ? new Set(SUPPORTED_LEAGUES.map((league) => league.season_id))
+    : new Set(SUPPORTED_LEAGUES.flatMap((league) => activeSeasonIds(league, now)));
+  for (const seasonId of seasonIds) {
     for (const match of await tx.matches.findBySeason(seasonId)) {
       matchesById.set(match.match_id, match);
     }
@@ -733,7 +737,7 @@ export async function loadDailyConsistencySnapshot(
 export class RepositoryDailyConsistencySnapshotSource {
   constructor(private readonly repo: AppRepository) {}
 
-  load(_serverNow: Date): Promise<DailyConsistencyInput> {
-    return this.repo.withTransaction((tx) => loadDailyConsistencySnapshot(tx));
+  load(serverNow: Date): Promise<DailyConsistencyInput> {
+    return this.repo.withTransaction((tx) => loadDailyConsistencySnapshot(tx, serverNow));
   }
 }

@@ -709,6 +709,7 @@ describe("RebuildPeriodRankingsService", () => {
   it("目标周期存在 settling/correcting match 时返回 SETTLEMENT_ALREADY_RUNNING", async () => {
     const repo = new InMemoryRepository();
     const match = makeMatch("active-ranking-match", WEEK_ANCHOR, {
+      season_id: "2025_2026",
       settlement_status: SettlementStatus.Correcting,
     });
     await repo.matches.insert(match);
@@ -792,6 +793,64 @@ describe("RebuildPeriodRankingsService", () => {
     expect(outcome.rankings).toEqual([
       expect.objectContaining({ user_id: "u1", period_score: 12, global_rank: 1 }),
     ]);
+  });
+
+  it("week rebuild 合并上一赛季补赛与当前赛季比赛的结算事实", async () => {
+    const repo = new InMemoryRepository();
+    await repo.users.insert(makeUser("u1"));
+    const previousSeasonMatch = makeMatch("previous-season-match", WEEK_ANCHOR, {
+      season_id: "2025_2026",
+    });
+    const currentSeasonMatch = makeMatch("current-season-match", WEEK_ANCHOR);
+    await insertFact(
+      repo,
+      previousSeasonMatch,
+      makePrediction("previous-season-prediction", "u1", previousSeasonMatch.match_id),
+      [1],
+      [{
+        id: "previous-season-settlement",
+        version: 1,
+        item: makeItem("previous-season-settlement", "previous-season-prediction", "u1", 1),
+      }],
+    );
+    await insertFact(
+      repo,
+      currentSeasonMatch,
+      makePrediction("current-season-prediction", "u1", currentSeasonMatch.match_id),
+      [1],
+      [{
+        id: "current-season-settlement",
+        version: 1,
+        item: makeItem("current-season-settlement", "current-season-prediction", "u1", 1),
+      }],
+    );
+
+    const outcome = await new RebuildPeriodRankingsService(repo).rebuildPeriodRankings(
+      PeriodType.Week,
+      "2026-W32",
+      NOW,
+    );
+
+    expect(outcome.rankings).toEqual([
+      expect.objectContaining({
+        user_id: "u1",
+        period_score: 24,
+        valid_predictions: 2,
+        global_rank: 1,
+      }),
+    ]);
+  });
+
+  it("上一赛季存在结算中场次时阻止榜单快照重建", async () => {
+    const repo = new InMemoryRepository();
+    await repo.matches.insert(makeMatch("previous-season-settling-match", WEEK_ANCHOR, {
+      season_id: "2025_2026",
+      settlement_status: SettlementStatus.Settling,
+    }));
+
+    await expect(
+      new RebuildPeriodRankingsService(repo).rebuildBoardSnapshot(RankingBoard.Career, NOW),
+    ).rejects.toMatchObject({ code: "SETTLEMENT_ALREADY_RUNNING" });
   });
 
   it("rebuildBoardSnapshot writes a new career snapshot version", async () => {

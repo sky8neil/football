@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  activeSeasonIds,
   activeProviderSeasonRef,
   activeLeagueSeason,
   deriveSeasonId,
@@ -11,7 +12,9 @@ import {
   seasonBounds,
   seasonStartYear,
   SUPPORTED_LEAGUES,
+  previousLeagueSeasonId,
   providerSeasonRef,
+  type SupportedLeague,
 } from "./config.js";
 
 describe("S0 固定配置 v2（规范 §3 / §1.4）", () => {
@@ -180,6 +183,26 @@ describe("赛季自动推导", () => {
     for (const league of naturalYearLeagues) {
       expect(activeLeagueSeason(league, now).season_id).toBe("2027");
     }
+  });
+
+  it("读路径赛季集合包含当前与上一赛季，支持跨年和自然年联赛", () => {
+    const now = new Date("2026-08-11T00:00:00.000Z");
+
+    expect(previousLeagueSeasonId(crossYearLeague, now)).toBe("2025_2026");
+    expect(activeSeasonIds(crossYearLeague, now)).toEqual(["2026_2027", "2025_2026"]);
+    expect(previousLeagueSeasonId(naturalYearLeague, now)).toBe("2025");
+    expect(activeSeasonIds(naturalYearLeague, now)).toEqual(["2026", "2025"]);
+  });
+
+  it("无法解析赛季形态时只返回静态登记赛季", () => {
+    const unparseableLeague = {
+      ...crossYearLeague,
+      season_id: "cup_season",
+    } as unknown as SupportedLeague;
+    const now = new Date("2026-08-11T00:00:00.000Z");
+
+    expect(previousLeagueSeasonId(unparseableLeague, now)).toBeNull();
+    expect(activeSeasonIds(unparseableLeague, now)).toEqual(["cup_season"]);
   });
 
   it("seasonBounds 与联赛已登记窗口返回相同毫秒", () => {

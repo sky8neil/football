@@ -20,7 +20,10 @@ import type {
 } from "../domain/types.js";
 import { InMemoryRepository } from "../infrastructure/repositories.js";
 import { checkDailyConsistency } from "./daily-consistency.js";
-import { RepositoryDailyConsistencySnapshotSource } from "./daily-consistency-snapshot.js";
+import {
+  loadDailyConsistencySnapshot,
+  RepositoryDailyConsistencySnapshotSource,
+} from "./daily-consistency-snapshot.js";
 import { defaultLevelState } from "../domain/types.js";
 
 const ORIGINAL_FIRST_EVAL = FIXED_CONFIG_V1.LEVEL_FIRST_EVAL_AS_OF;
@@ -225,6 +228,26 @@ async function setup(matchOverrides: Partial<Match> = {}) {
 }
 
 describe("RepositoryDailyConsistencySnapshotSource", () => {
+  it("按传入时间读取上一赛季补赛；省略时间时保留静态赛季集合", async () => {
+    const repo = new InMemoryRepository();
+    await repo.users.insert(makeUser());
+    await repo.matches.insert(makeMatch({
+      season_id: "2025_2026",
+      settlement_status: SettlementStatus.Settling,
+    }));
+    await repo.predictions.insert(makePrediction());
+
+    const staticSnapshot = await repo.withTransaction((tx) => loadDailyConsistencySnapshot(tx));
+    expect(staticSnapshot.active_settlements).toEqual([]);
+
+    const dynamicSnapshot = await new RepositoryDailyConsistencySnapshotSource(repo).load(NOW);
+    expect(dynamicSnapshot.active_settlements).toContainEqual(expect.objectContaining({
+      match_id: MATCH_ID,
+      season_id: "2026_2027",
+      periods: [{ period_type: PeriodType.Week, period_key: "2026-W32" }],
+    }));
+  });
+
   it("从 applied ledger 重建 career、season 与 week ranking 的 expected 快照", async () => {
     const repo = await setup();
     const source = new RepositoryDailyConsistencySnapshotSource(repo);

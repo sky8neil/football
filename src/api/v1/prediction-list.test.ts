@@ -74,6 +74,45 @@ describe("GET /v1/predictions/me", () => {
     }
   });
 
+  it("传入当前时间时允许当前及上一赛季，拒绝更早赛季", () => {
+    expect(validateMyPredictionsQuery({
+      league_id: "premier_league",
+      season_id: "2026_2027",
+    }, NOW).season_id).toBe("2026_2027");
+    expect(validateMyPredictionsQuery({
+      league_id: "premier_league",
+      season_id: "2025_2026",
+    }, NOW).season_id).toBe("2025_2026");
+    expect(() => validateMyPredictionsQuery({
+      league_id: "premier_league",
+      season_id: "2024_2025",
+    }, NOW)).toThrowError(expect.objectContaining({
+      code: "VALIDATION_ERROR",
+      details: { field: "season_id" },
+    }));
+    expect(() => validateMyPredictionsQuery({
+      league_id: "premier_league",
+      season_id: "2025_2026",
+    })).toThrowError(expect.objectContaining({ code: "VALIDATION_ERROR" }));
+  });
+
+  it("history handler 用 server_now 校验上一赛季请求", async () => {
+    await expect(getMyPredictions({
+      listMyPredictions: async (_userId, query) => {
+        expect(query).toMatchObject({
+          league_id: "premier_league",
+          season_id: "2025_2026",
+        });
+        return RESULT;
+      },
+    }, {
+      authenticated_user_id: "00000000-0000-4000-8000-000000000001",
+      query: { league_id: "premier_league", season_id: "2025_2026" },
+      server_now: NOW,
+      request_id: "request-predictions-previous-season",
+    })).resolves.toMatchObject({ status: 200 });
+  });
+
   it("要求登录并返回分页成功 envelope", async () => {
     const list = async (
       userId: string,

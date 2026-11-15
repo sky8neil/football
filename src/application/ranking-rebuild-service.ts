@@ -1,4 +1,4 @@
-import { FIXED_CONFIG_V1, SUPPORTED_LEAGUES } from "../domain/config.js";
+import { activeSeasonIds, FIXED_CONFIG_V1, SUPPORTED_LEAGUES } from "../domain/config.js";
 import {
   PeriodType,
   RankingBoard,
@@ -178,7 +178,9 @@ export class RebuildPeriodRankingsService {
   ): Promise<RebuildPeriodRankingsOutcome> {
     assertRankingPort(tx);
     const supportedLeagueIds = new Set(SUPPORTED_LEAGUES.map((league) => league.league_id));
-    const seasonIds = [...new Set(SUPPORTED_LEAGUES.map((league) => league.season_id))];
+    const seasonIds = [...new Set(
+      SUPPORTED_LEAGUES.flatMap((league) => activeSeasonIds(league, serverNow)),
+    )];
     const matchesById = new Map<string, Match>();
     for (const seasonId of seasonIds) {
       for (const match of await tx.matches.findBySeason(seasonId)) {
@@ -349,7 +351,9 @@ export class RebuildPeriodRankingsService {
   ): Promise<RebuildBoardSnapshotOutcome> {
     assertValidServerNow(serverNow);
     const supportedLeagueIds = new Set(SUPPORTED_LEAGUES.map((league) => league.league_id));
-    const seasonIds = new Set(SUPPORTED_LEAGUES.map((league) => league.season_id));
+    const seasonIds = new Set(
+      SUPPORTED_LEAGUES.flatMap((league) => activeSeasonIds(league, serverNow)),
+    );
     for (const seasonId of seasonIds) {
       for (const match of await tx.matches.findBySeason(seasonId)) {
         if (supportedLeagueIds.has(match.league_id) && activeSettlement(match)) {
