@@ -163,7 +163,11 @@ describe("RP08-2 租约围栏", () => {
         repo.jobLocks.renew(lockKey, ownerId, leaseUntil),
       release: (lockKey: string, ownerId: string) => repo.jobLocks.release(lockKey, ownerId),
     };
-    const applyFixture = vi.fn(async () => ({ kind: "failed" as const, match_id: null, anomaly_types: [] }));
+    const applyFixture = vi.fn(async () => ({
+      kind: "unchanged" as const,
+      match_id: "m-1",
+      match_status: "scheduled" as const,
+    }));
     const service = new ProviderFixtureSyncJobService(
       { jobLocks, syncLogs: repo.syncLogs },
       { applyFixture },

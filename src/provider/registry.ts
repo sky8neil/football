@@ -11,7 +11,7 @@ import { SportApiAdapter } from "./sportapi-adapter.js";
 import type { ProviderSource, ProviderSourceId, ProviderSourcesConfig } from "./sources.js";
 import type { ProviderResponseMetadata } from "./transport.js";
 import { FetchProviderHttpClient } from "./transport.js";
-import { ProviderBudget, ProviderBudgetDeniedError, type ProviderBudgetJob } from "./budget.js";
+import { ProviderBudget, ProviderBudgetDeferredError, ProviderBudgetDeniedError, type ProviderBudgetJob } from "./budget.js";
 import { KeyPool, InMemoryProviderKeyStateStore, type ProviderKeyStateStore } from "./key-pool.js";
 import { InMemoryProviderLeagueStateStore, type ProviderLeagueState, type ProviderLeagueStateStore } from "./league-state.js";
 import { SyncJobType } from "../domain/enums.js";
@@ -125,11 +125,12 @@ function adapterForSource(
   http: ProviderHttpClient,
   log?: (entry: Record<string, unknown>) => void,
   onOpenFootQuota?: (remaining: number, resetAt: Date, now: Date) => void,
+  providerLeagueRefs?: ProviderSourcesConfig["league_refs"],
 ): ProviderAdapter {
   switch (source.adapter) {
     case "football_data": return new FootballDataAdapter(http);
     case "bsd": return new BsdAdapter(http, log);
-    case "fivedollar": return new FiveDollarAdapter(http);
+    case "fivedollar": return new FiveDollarAdapter(http, providerLeagueRefs);
     case "openfoot": return new OpenFootAdapter(http, onOpenFootQuota);
     case "sportapi": return new SportApiAdapter(http);
   }
@@ -174,6 +175,13 @@ export class ProviderRegistry {
   private liveRequestCache: { key: string; value: Promise<readonly ApiFootballFixture[]> } | null = null;
   /** RP06：按轮（tick）缓存联赛状态，仅在 beginTickCache()..endTickCache() 之间生效。 */
   private tickStateCache: Map<string, ProviderLeagueState | null> | null = null;
+  /** 请求成功只登记候选；批次满足完成条件后由 commitPendingLeagueSuccess 推进业务完成时间。 */
+  private readonly pendingLeagueSuccess = new Map<string, {
+    sourceId: ProviderSourceId;
+    leagueId: string;
+    jobType: ProviderBudgetJob;
+    at: Date;
+  }>();
 
   constructor(options: ProviderRegistryOptions) {
     this.legacyClient = options.legacyClient;
@@ -203,7 +211,7 @@ export class ProviderRegistry {
       this.httpBySource.set(source.source_id, http);
       const adapter = adapterForSource(source, http, this.log, (remaining, resetAt, now) => {
         this.budget?.observeRemoteQuota("of", remaining, resetAt, now);
-      });
+      }, options.config.league_refs);
       this.adapters.set(source.source_id, adapter);
       for (const league of source.leagues) {
         const entries = this.sourceLeagues.get(league.league_id) ?? [];
@@ -246,9 +254,32 @@ export class ProviderRegistry {
     }));
   }
 
-  beginTickCache(): void { this.tickStateCache = new Map(); }
-  endTickCache(): void { this.tickStateCache = null; }
+  beginTickCache(): void {
+    this.tickStateCache = new Map();
+    this.pendingLeagueSuccess.clear();
+  }
+  endTickCache(): void {
+    this.tickStateCache = null;
+    this.pendingLeagueSuccess.clear();
+  }
   get tickCacheActive(): boolean { return this.tickStateCache !== null; }
+
+  /** 批次满足完成条件后推进联赛业务完成时间；请求成功本身不再直接推进。 */
+  async commitPendingLeagueSuccess(jobType: ProviderBudgetJob, at: Date): Promise<void> {
+    for (const [key, entry] of [...this.pendingLeagueSuccess]) {
+      if (entry.jobType !== jobType) continue;
+      await this.leagueStateStore.markSuccess(entry.sourceId, entry.leagueId, entry.jobType, at);
+      this.tickStateCache?.delete(`${entry.sourceId}|${entry.leagueId}|${entry.jobType}`);
+      this.pendingLeagueSuccess.delete(key);
+    }
+  }
+
+  /** 批次失败/延后/跳过时丢弃本轮候选，避免球队请求等单次成功被当作业务完成。 */
+  discardPendingLeagueSuccess(jobType: ProviderBudgetJob): void {
+    for (const [key, entry] of [...this.pendingLeagueSuccess]) {
+      if (entry.jobType === jobType) this.pendingLeagueSuccess.delete(key);
+    }
+  }
 
   /** 唯一的状态读取入口：缓存生效时复用本轮已读结果，未生效时直连数据库且不缓存。 */
   private async loadLeagueStates(
@@ -372,7 +403,11 @@ export class ProviderRegistry {
       ? this.entryForSource(explicitSourceId, league.league_id)
       : selectedPlan ? this.entryForSource(selectedPlan.source_id, league.league_id) : null;
     if (selected === null || selected === undefined) return this.legacyFetch(query, season);
-    if (jobType === SyncJobType.LiveMatch && !this.liveRequestDue(selected.source.source_id, now)) {
+    if (
+      jobType === SyncJobType.LiveMatch &&
+      selected.source.source_id !== "5d" &&
+      !this.liveRequestDue(selected.source.source_id, now, league.league_id)
+    ) {
       return [];
     }
     const trackLeagueInBudget = !(jobType === SyncJobType.LiveMatch && selected.source.source_id === "5d");
@@ -388,6 +423,7 @@ export class ProviderRegistry {
       if (jobType === SyncJobType.LiveMatch && selected.source.source_id === "5d") {
         const cacheKey = `${jobType}:${now.getTime()}`;
         if (this.liveRequestCache?.key !== cacheKey) {
+          if (!this.liveRequestDue(selected.source.source_id, now)) return [];
           const liveAdapter = selected.adapter as FiveDollarAdapter;
           this.liveRequestCache = {
             key: cacheKey,
@@ -401,10 +437,13 @@ export class ProviderRegistry {
           if (this.liveRequestCache?.key === cacheKey) this.liveRequestCache = null;
           throw error;
         }
+        this.pendingLeagueSuccess.set(`${selected.source.source_id}|${league.league_id}|${jobType}`, {
+          sourceId: selected.source.source_id,
+          leagueId: league.league_id,
+          jobType,
+          at: now,
+        });
         primaryFixtures = allLive.filter((fixture) => String(fixture.league.id) === selected.league.source_league_ref);
-        await this.leagueStateStore.markSuccess(selected.source.source_id, league.league_id, jobType, now);
-        // 删除而非改写，避免猜错 store 内部字段语义。
-        this.tickStateCache?.delete(`${selected.source.source_id}|${league.league_id}|${jobType}`);
         if (this.budget) await this.budget.recordLeagueRequest(selected.source.source_id, league.league_id, now);
       } else {
         primaryFixtures = await this.withRequest(selected.source.source_id, jobType, now, fetch, league.league_id);
@@ -423,17 +462,19 @@ export class ProviderRegistry {
         return primaryFixtures;
       }
       const comparisons = await this.fetchResultComparisons(league.league_id, selected.source.source_id, query, jobType, false);
-      return [...primaryFixtures, ...comparisons];
+      return [...primaryFixtures, ...comparisons.fixtures];
     } catch (error) {
       if (jobType === SyncJobType.PostFinishVerify) {
         if (error instanceof ProviderBudgetDeniedError) {
           this.log?.({ event: "skipped_budget", source_id: selected.source.source_id, league_id: league.league_id, reason: error.reason });
         }
-        return this.fetchResultComparisons(league.league_id, selected.source.source_id, query, jobType, true);
+        const comparisons = await this.fetchResultComparisons(league.league_id, selected.source.source_id, query, jobType, true);
+        if (error instanceof ProviderBudgetDeferredError && !comparisons.executed) throw error;
+        return comparisons.fixtures;
       }
       if (error instanceof ProviderBudgetDeniedError && jobType !== SyncJobType.LiveMatch) {
         this.log?.({ event: "skipped_budget", source_id: selected.source.source_id, league_id: league.league_id, reason: error.reason });
-        return [];
+        if (!(error instanceof ProviderBudgetDeferredError)) return [];
       }
       const fallbackReason = error instanceof ProviderBudgetDeniedError ? error.reason : "provider_unavailable";
       const fallbackPlan = this.requestPlan(league.league_id, jobType, now, new Map([[selected.source.source_id, fallbackReason]]));
@@ -465,13 +506,14 @@ export class ProviderRegistry {
     query: ApiFootballFixturesQuery | ApiFootballSeasonFixturesQuery,
     jobType: ProviderBudgetJob,
     includeFallbacks: boolean,
-  ): Promise<ApiFootballFixture[]> {
-    if (!("dateFrom" in query) || !query.dateFrom || !query.dateTo) return [];
+  ): Promise<{ fixtures: ApiFootballFixture[]; executed: boolean }> {
+    if (!("dateFrom" in query) || !query.dateFrom || !query.dateTo) return { fixtures: [], executed: false };
     const entries = (this.sourceLeagues.get(leagueId) ?? []).filter((entry) =>
       entry.source.source_id !== primarySourceId &&
       (entry.roles.result === "secondary" || (includeFallbacks && entry.roles.result === "fallback")),
     );
     const results: ApiFootballFixture[] = [];
+    let executed = false;
     for (const entry of entries) {
       try {
         const now = query.serverNow ?? new Date();
@@ -484,6 +526,7 @@ export class ProviderRegistry {
           ),
           leagueId,
         );
+        executed = true;
         results.push(...rows.filter((fixture) => fixture.fixture?.status?.short !== "NS"));
       } catch (error) {
         this.log?.({
@@ -495,7 +538,7 @@ export class ProviderRegistry {
         });
       }
     }
-    return results;
+    return { fixtures: results, executed };
   }
 
   private async legacyFetch(
@@ -558,6 +601,7 @@ export class ProviderRegistry {
     const preferred = this.budget ? await this.budget.candidateKeys(sourceId, now, excluded) : (this.source(sourceId)?.api_keys.map((key) => key.key_id) ?? []);
     const candidates = await pool.candidates(now, preferred);
     let lastReason = "provider_cooldown";
+    let lastRetryAt: Date | undefined;
     for (const keyId of candidates) {
       const decision = this.budget ? await this.budget.acquire(sourceId, jobType, now, keyId, leagueId) : { allowed: true as const, key_id: keyId, minute_used: 0, daily_used: 0, daily_limit: 0 };
       if (decision.allowed) {
@@ -566,7 +610,9 @@ export class ProviderRegistry {
         return keyId;
       }
       lastReason = decision.reason;
+      lastRetryAt = decision.retry_at;
     }
+    if (lastRetryAt !== undefined) throw new ProviderBudgetDeferredError(lastReason, lastRetryAt);
     throw new ProviderBudgetDeniedError(lastReason);
   }
 
@@ -593,17 +639,20 @@ export class ProviderRegistry {
       this.lastResponseMetadata.delete(sourceId);
       try {
         const value = await fn();
-        this.lastRequestsByJob.set(`${sourceId}:${jobType}`, now.getTime());
+        this.lastRequestsByJob.set(this.jobThrottleKey(sourceId, jobType, leagueId), now.getTime());
         if (leagueId) {
-          await this.leagueStateStore.markSuccess(sourceId, leagueId, jobType, now);
-          // 删除而非改写，避免猜错 store 内部字段语义。
-          this.tickStateCache?.delete(`${sourceId}|${leagueId}|${jobType}`);
+          this.pendingLeagueSuccess.set(`${sourceId}|${leagueId}|${jobType}`, {
+            sourceId,
+            leagueId,
+            jobType,
+            at: now,
+          });
         }
         this.lastRequests.set(sourceId, this.requestInfo(sourceId, 200, Date.now() - startedAt, now));
         this.log?.({ event: "provider_request", source_id: sourceId, ...this.lastRequests.get(sourceId) });
         return value;
       } catch (error) {
-        this.lastRequestsByJob.set(`${sourceId}:${jobType}`, now.getTime());
+        this.lastRequestsByJob.set(this.jobThrottleKey(sourceId, jobType, leagueId), now.getTime());
         if (error instanceof ProviderQuotaExceededError) {
           const resetAt = quotaResetAt(sourceId, now, error);
           const keyId = this.activeRequestContext.get(sourceId)?.key_id;
@@ -632,8 +681,13 @@ export class ProviderRegistry {
     }
   }
 
-  private liveRequestDue(sourceId: ProviderSourceId, now: Date): boolean {
-    const last = this.lastRequestsByJob.get(`${sourceId}:${SyncJobType.LiveMatch}`);
+  private jobThrottleKey(sourceId: ProviderSourceId, jobType: ProviderBudgetJob, leagueId?: string): string {
+    if (sourceId === "5d" || !leagueId) return `${sourceId}:${jobType}`;
+    return `${sourceId}:${jobType}:${leagueId}`;
+  }
+
+  private liveRequestDue(sourceId: ProviderSourceId, now: Date, leagueId?: string): boolean {
+    const last = this.lastRequestsByJob.get(this.jobThrottleKey(sourceId, SyncJobType.LiveMatch, leagueId));
     if (last === undefined) return true;
     const intervalMinutes = sourceId === "bsd" || sourceId === "sp"
       ? this.syncProfile === "test" ? 5 : 2

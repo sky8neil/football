@@ -1,6 +1,7 @@
 import { MatchStatus, SettlementStatus, SyncJobType } from "../domain/enums.js";
 import { internalError } from "../domain/errors.js";
 import type { Match } from "../domain/types.js";
+import type { ProviderLeagueRefs } from "../domain/config.js";
 import type { AppRepository } from "../infrastructure/repositories.js";
 import {
   type PostFinishVerifyFixtureClient,
@@ -71,10 +72,11 @@ export class ProviderPostFinishVerifyService {
     private readonly client: ProviderPostFinishVerifyClient,
     retryOptions: ProviderFixtureSyncRetryOptions = {},
     lockOptions: ProviderFixtureSyncLockOptions = {},
+    private readonly providerLeagueRefs?: ProviderLeagueRefs,
   ) {
     this.fixtureJob = new ProviderFixtureSyncJobService(
       repo,
-      new ProviderFixtureSyncService(repo),
+      new ProviderFixtureSyncService(repo, undefined, providerLeagueRefs),
       retryOptions,
       lockOptions,
     );
@@ -82,7 +84,13 @@ export class ProviderPostFinishVerifyService {
 
   async run(serverNow: Date): Promise<ProviderPostFinishVerifyOutcome> {
     const load: ProviderFixtureBatchLoader = async (loadNow) => {
-      return loadActiveWindowFixtures(this.repo, this.client, SyncJobType.PostFinishVerify, loadNow);
+      return loadActiveWindowFixtures(
+        this.repo,
+        this.client,
+        SyncJobType.PostFinishVerify,
+        loadNow,
+        this.providerLeagueRefs,
+      );
     };
     const fixtures = await this.fixtureJob.run(
       SyncJobType.PostFinishVerify,

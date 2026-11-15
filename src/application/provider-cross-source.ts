@@ -2,7 +2,7 @@ import { SCHEMA_VERSION } from "../domain/enums.js";
 import { newUuid } from "../domain/ids.js";
 import type { Provider } from "../domain/enums.js";
 import type { MatchProviderMapping } from "../domain/types.js";
-import { SUPPORTED_LEAGUES } from "../domain/config.js";
+import { findSupportedLeagueByProviderId, type ProviderLeagueRefs } from "../domain/config.js";
 import type { AppRepository } from "../infrastructure/repositories.js";
 import type { NormalizedFixture } from "../provider/fixture-mapper.js";
 
@@ -13,6 +13,7 @@ export async function ensureCrossSourceMatchMapping(
   fixture: NormalizedFixture,
   now: Date,
   candidateMatchIds?: ReadonlySet<string>,
+  providerLeagueRefs?: ProviderLeagueRefs,
 ): Promise<{ match_id: string | null; reason: "mapped" | "unlinked" | "ambiguous" | "not_secondary" }> {
   const provider = fixture.provider as Provider | undefined;
   if (!provider || !CROSS_SOURCE_PROVIDERS.has(provider)) return { match_id: null, reason: "not_secondary" };
@@ -21,7 +22,7 @@ export async function ensureCrossSourceMatchMapping(
   if (!mappings || !teams || fixture.kickoffAt === null) return { match_id: null, reason: "unlinked" };
   const external = await mappings.findByProviderAndExternalId(provider, fixture.providerMatchId);
   if (external) return { match_id: external.match_id, reason: "mapped" };
-  const supportedLeague = findSupportedLeagueByProviderIdForSource(provider, fixture.leagueProviderId);
+  const supportedLeague = findSupportedLeagueByProviderId(fixture.leagueProviderId, provider, providerLeagueRefs);
   if (!supportedLeague) return { match_id: null, reason: "unlinked" };
   const [home, away] = await Promise.all([
     teams.findByProviderAndExternalId(provider, fixture.homeTeamProviderId),
@@ -70,15 +71,4 @@ async function recordUnlinked(repo: AppRepository, provider: Provider, fixture: 
     payload: { diag_code: "DIAG_PROVIDER_MATCH_UNLINKED", league_id: fixture.leagueProviderId, reason },
     created_at: now,
   });
-}
-
-function findSupportedLeagueByProviderIdForSource(provider: Provider, providerId: string) {
-  if (provider === "5dollar") return findLeague("5d", providerId);
-  if (provider === "openfoot") return findLeague("of", providerId);
-  if (provider === "sportapi") return findLeague("sp", providerId);
-  return undefined;
-}
-
-function findLeague(source: "5d" | "of" | "sp", providerId: string) {
-  return SUPPORTED_LEAGUES.find((league) => league.provider_refs[source] === providerId);
 }

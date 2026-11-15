@@ -1,11 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
+import { buildProviderLeagueRefs } from "../domain/config.js";
 import type { ProviderHttpClient } from "./adapter.js";
 import { BsdAdapter } from "./bsd-adapter.js";
 import { FiveDollarAdapter } from "./fivedollar-adapter.js";
+import { normalizeFixture } from "./fixture-mapper.js";
 import { OpenFootAdapter } from "./openfoot-adapter.js";
 import { SportApiAdapter } from "./sportapi-adapter.js";
 
 const EPL = { league_id: "premier_league", source_league_ref: "4160026622", season_ref: "2026" };
+const LA_LIGA = { league_id: "la_liga", source_league_ref: "4212821298", season_ref: "2026" };
 const CSL = { league_id: "chinese_super_league", source_league_ref: "85", season_ref: "2026" };
 const NOW = new Date("2026-10-12T12:30:00.000Z");
 
@@ -62,6 +65,63 @@ describe("FiveDollarAdapter", () => {
       score: { fulltime: { home: 2, away: 1 } },
     });
   });
+
+  it("filters out other leagues when querying fixtures by date range", async () => {
+    const { client } = mockHttp(() => ({
+      data: [fiveDollarRow(1, EPL.source_league_ref), fiveDollarRow(2, LA_LIGA.source_league_ref)],
+      pagination: { has_more: false },
+    }));
+    const fixtures = await new FiveDollarAdapter(client).fetchFixturesByDateRange(
+      LA_LIGA, "2026-10-12", "2026-10-12", { jobType: "post_finish_verify", serverNow: NOW },
+    );
+
+    expect(fixtures.map((fixture) => fixture.fixture.id)).toEqual([2]);
+    expect(fixtures[0]?.league.id).toBe(LA_LIGA.source_league_ref);
+  });
+
+  it("does not relabel 2025 season fixtures as 2026 and rejects out-of-season kickoffs", async () => {
+    const { client } = mockHttp(() => ({
+      data: [
+        { ...fiveDollarRow(101), season: "2025" },
+        { ...fiveDollarRow(102), kickoff_utc: "2025-10-12T12:00:00Z" },
+        { ...fiveDollarRow(103), kickoff_utc: "2027-05-15T12:00:00Z" },
+      ],
+      pagination: { has_more: false },
+    }));
+    const fixtures = await new FiveDollarAdapter(client).fetchSeasonFixtures(EPL, {
+      jobType: "full_schedule_verify", serverNow: NOW,
+    });
+
+    expect(fixtures[0]?.league.season).toBe("2025");
+    expect(normalizeFixture(fixtures[0]!).entityFailed).toBe(true);
+    expect(fixtures[1]?.league.season).not.toBe("2026");
+    expect(normalizeFixture(fixtures[1]!).entityFailed).toBe(true);
+    expect(fixtures[2]?.league.season).toBe("2026");
+    expect(normalizeFixture(fixtures[2]!).entityFailed).toBe(false);
+  });
+
+  it("applies cross-year and natural-year season boundaries in live fixtures without hardcoded 2026", async () => {
+    const leagueRefs = buildProviderLeagueRefs([
+      { source_id: "5d", source_league_ref: "9901", league_id: "chinese_super_league" },
+    ]);
+    const { client } = mockHttp(() => ({
+      data: [
+        { ...fiveDollarRow(201, EPL.source_league_ref), kickoff_utc: "2027-05-15T12:00:00Z" },
+        { ...fiveDollarRow(202, "9901"), kickoff_utc: "2027-01-05T12:00:00Z" },
+        { ...fiveDollarRow(203, "9901"), kickoff_utc: "2026-06-01T12:00:00Z" },
+      ],
+      pagination: { has_more: false },
+    }));
+    const fixtures = await new FiveDollarAdapter(client, leagueRefs).fetchLiveFixtures({
+      jobType: "live_match", serverNow: NOW,
+    });
+
+    expect(fixtures[0]?.league.season).toBe("2026");
+    expect(fixtures[1]?.league.season).not.toBe("2026");
+    expect(normalizeFixture(fixtures[1]!, leagueRefs).entityFailed).toBe(true);
+    expect(fixtures[2]?.league.season).toBe("2026");
+    expect(normalizeFixture(fixtures[2]!, leagueRefs).entityFailed).toBe(false);
+  });
 });
 
 describe("OpenFootAdapter", () => {
@@ -87,13 +147,24 @@ describe("OpenFootAdapter", () => {
     });
 
     expect(calls).toEqual([
-      { path: "matches", query: { competition: EPL.source_league_ref, season: "2026/2027" } },
-      { path: "matches", query: { competition: EPL.source_league_ref, season: "2026/2027", cursor: "cursor-next" } },
+      { path: "matches", query: { competition: EPL.source_league_ref, season: "2026/27" } },
+      { path: "matches", query: { competition: EPL.source_league_ref, season: "2026/27", cursor: "cursor-next" } },
     ]);
     expect(fixtures).toHaveLength(2);
     expect(fixtures[0]).toMatchObject({ provider: "openfoot", fixture: { id: "of-1", status: { short: "FT" } }, score: { fulltime: { home: 1, away: 0 } } });
     expect(fixtures[1]?.fixture.status.short).toBe("NS");
     expect(onQuota).toHaveBeenCalledWith(87, new Date("2026-11-01T00:00:00.000Z"), NOW);
+  });
+
+  it("queries natural-year leagues with the natural-year season", async () => {
+    const { client, calls } = mockHttp(() => ({ data: [], meta: { pagination: { next_cursor: null } } }));
+    await new OpenFootAdapter(client).fetchSeasonFixtures(CSL, {
+      jobType: "future_schedule", serverNow: NOW,
+    });
+
+    expect(calls).toEqual([
+      { path: "matches", query: { competition: CSL.source_league_ref, season: "2026" } },
+    ]);
   });
 
   it("fails closed when a page is marked partial", async () => {

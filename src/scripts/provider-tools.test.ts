@@ -52,6 +52,22 @@ describe("providers:map-teams command", () => {
       expect(report.mappings[0].provider_name).toBe("Arsenal FC");
     });
   });
+
+  it("confirms mappings by external ID and reports name differences without importing", () => {
+    const input = {
+      local_teams: [{ team_id: "local-arsenal", league_id: "premier_league", name: "Arsenal" }],
+      provider_teams: [{ provider: "football_data", provider_team_id: "57", league_id: "premier_league", name: "The Gunners" }],
+      confirmed_mappings: [{ provider: "football_data", provider_team_id: "57", team_id: "local-arsenal" }],
+    };
+    withInput(input, (path) => {
+      const stdout = execFileSync(process.execPath, [MAP_SCRIPT, "--input", path], { cwd: REPO_ROOT, encoding: "utf8" });
+      const report = JSON.parse(stdout);
+      expect(report).toMatchObject({ confirmed: 1, review: 0, ambiguous: 0, unmatched: 0 });
+      expect(report.mappings).toEqual([expect.objectContaining({
+        provider_team_id: "57", status: "confirmed", team_id: "local-arsenal", name_matches: false, suggested_team_id: null,
+      })]);
+    });
+  });
 });
 
 describe("logos:check command", () => {

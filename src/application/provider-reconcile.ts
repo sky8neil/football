@@ -1,5 +1,5 @@
 import { MatchStatus, SCHEMA_VERSION, SettlementStatus, SyncJobStatus, SyncJobType } from "../domain/enums.js";
-import { SUPPORTED_LEAGUES } from "../domain/config.js";
+import { SUPPORTED_LEAGUES, type ProviderLeagueRefs } from "../domain/config.js";
 import { newUuid } from "../domain/ids.js";
 import type { ProviderSnapshot, SyncLog } from "../domain/types.js";
 import type { AppRepository } from "../infrastructure/repositories.js";
@@ -20,7 +20,11 @@ export type ProviderReconcileOutcome =
   | { kind: "skipped"; reason: "lock_held" };
 
 export class ProviderReconcileService {
-  constructor(private readonly repo: AppRepository, private readonly client: ProviderReconcileClient) {}
+  constructor(
+    private readonly repo: AppRepository,
+    private readonly client: ProviderReconcileClient,
+    private readonly providerLeagueRefs?: ProviderLeagueRefs,
+  ) {}
 
   async run(serverNow: Date): Promise<ProviderReconcileOutcome> {
     const ownerId = newUuid();
@@ -92,9 +96,15 @@ export class ProviderReconcileService {
         continue;
       }
       for (const fixture of fixtures) {
-        const normalized = normalizeFixture(fixture);
+        const normalized = normalizeFixture(fixture, this.providerLeagueRefs);
         if (normalized.entityFailed || normalized.fixture.fulltime === null) continue;
-        const mapping = await ensureCrossSourceMatchMapping(this.repo, normalized.fixture, serverNow, new Set(matches.map((match) => match.match_id)));
+        const mapping = await ensureCrossSourceMatchMapping(
+          this.repo,
+          normalized.fixture,
+          serverNow,
+          new Set(matches.map((match) => match.match_id)),
+          this.providerLeagueRefs,
+        );
         if (!mapping.match_id) continue;
         const match = matches.find((candidate) => candidate.match_id === mapping.match_id);
         if (!match) continue;

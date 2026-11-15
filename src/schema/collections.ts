@@ -481,6 +481,7 @@ export const COLLECTION_DEFINITIONS: readonly CollectionDef[] = [
           "board_snapshot_season_final",
         ],
       },
+      league_id: { type: "string", nullable: true, note: "按联赛执行的任务记录联赛；旧日志可为空" },
       status: { type: "string", required: true, enum: ["running", "success", "failed", "deferred"] },
       started_at: { type: "date", required: true },
       finished_at: { type: "date", nullable: true },

@@ -9,6 +9,7 @@ import { internalError } from "../domain/errors.js";
 import { newUuid } from "../domain/ids.js";
 import { validateMatchTransition } from "../domain/match-state-machine.js";
 import type { ProviderSnapshot } from "../domain/types.js";
+import type { ProviderLeagueRefs } from "../domain/config.js";
 import type { ApiFootballFixture } from "../provider/types.js";
 import { normalizeFixture, type MapperAnomaly, type NormalizedFixture } from "../provider/fixture-mapper.js";
 import type { AppRepository, UnitOfWork } from "../infrastructure/repositories.js";
@@ -27,6 +28,12 @@ import { AnomalyEvaluationService } from "./anomaly-evaluation.js";
 import { assertValidServerNow } from "./period-finalize.js";
 import { ensureCrossSourceMatchMapping } from "./provider-cross-source.js";
 import { decideProviderResultAdoption, type ProviderResultObservation } from "./provider-result-adoption.js";
+
+const SCHEDULE_AUTHORITY_PROVIDERS: ReadonlySet<string> = new Set([
+  Provider.ApiFootball,
+  Provider.FootballData,
+  Provider.Bsd,
+]);
 
 export interface ProviderFixtureFailure {
   kind: "failed";
@@ -198,10 +205,11 @@ export class ProviderFixtureSyncService {
   constructor(
     private readonly repo: AppRepository,
     anomalyEvaluation?: AnomalyEvaluationService,
+    private readonly providerLeagueRefs?: ProviderLeagueRefs,
   ) {
     this.statusSync = new ProviderStatusSyncService(repo);
     this.resultSync = new ProviderResultSyncService(repo);
-    this.scheduleSync = new ProviderScheduleSyncService(repo);
+    this.scheduleSync = new ProviderScheduleSyncService(repo, providerLeagueRefs);
     this.anomalyEvaluation = anomalyEvaluation ?? new AnomalyEvaluationService(repo);
   }
 
@@ -315,7 +323,7 @@ export class ProviderFixtureSyncService {
     serverNow: Date,
   ): Promise<ProviderFixtureSyncOutcome> {
     assertValidServerNow(serverNow);
-    const normalized = normalizeFixture(rawFixture);
+    const normalized = normalizeFixture(rawFixture, this.providerLeagueRefs);
     if (normalized.entityFailed) {
       const outcome = await persistMapperFailure(
         this.repo,
@@ -335,18 +343,25 @@ export class ProviderFixtureSyncService {
       return outcome;
     }
 
-    if (["5dollar", "openfoot", "sportapi"].includes(normalized.fixture.provider ?? "")) {
-      const mapping = await ensureCrossSourceMatchMapping(this.repo, normalized.fixture, serverNow);
+    const provider = normalized.fixture.provider ?? Provider.ApiFootball;
+    if (["5dollar", "openfoot", "sportapi"].includes(provider)) {
+      const mapping = await ensureCrossSourceMatchMapping(
+        this.repo,
+        normalized.fixture,
+        serverNow,
+        undefined,
+        this.providerLeagueRefs,
+      );
       if (mapping.match_id === null) {
         return { kind: "failed", match_id: null, anomaly_types: [AnomalyType.ProviderDataInvalid] };
       }
     }
 
-    if (normalized.fixture.status.kind === MatchStatus.Scheduled) {
+    if (SCHEDULE_AUTHORITY_PROVIDERS.has(provider)) {
       const mappings = this.repo.matchProviderMappings;
       if (mappings !== undefined) {
         const existing = await mappings.findByProviderAndExternalId(
-          normalized.fixture.provider ?? Provider.ApiFootball,
+          provider,
           normalized.fixture.providerMatchId,
         );
         if (existing === null) {
@@ -355,13 +370,15 @@ export class ProviderFixtureSyncService {
             payload,
             serverNow,
           );
-          await this.evaluateAfterFixture(
-            outcome,
-            normalized.fixture.providerMatchId,
-            normalized.fixture.provider,
-            serverNow,
-          );
-          return outcome;
+          if (normalized.fixture.status.kind === MatchStatus.Scheduled) {
+            await this.evaluateAfterFixture(
+              outcome,
+              normalized.fixture.providerMatchId,
+              normalized.fixture.provider,
+              serverNow,
+            );
+            return outcome;
+          }
         }
       }
     }
@@ -438,8 +455,8 @@ export class ProviderFixtureSyncService {
     await this.persistResultObservation(match.match_id, fixture.providerMatchId, observation, serverNow);
     const snapshots = await this.repo.providerSnapshots?.findByEntity("match", match.match_id) ?? [];
     const observations = snapshots.flatMap((snapshot) => {
-      const raw = snapshot.payload.provider_result_observation;
-      return isProviderResultObservation(raw) ? [raw] : [];
+      const parsed = parseProviderResultObservation(snapshot.payload.provider_result_observation);
+      return parsed ? [parsed] : [];
     });
     const decision = decideProviderResultAdoption(match.league_id, observations, match.kickoff_at, serverNow);
     if (decision.kind === "wait") {
@@ -510,8 +527,21 @@ function toResultObservation(fixture: NormalizedFixture, provider: Provider, obs
   };
 }
 
-function isProviderResultObservation(value: unknown): value is ProviderResultObservation {
-  if (typeof value !== "object" || value === null) return false;
+function parseProviderResultObservation(value: unknown): ProviderResultObservation | null {
+  if (typeof value !== "object" || value === null) return null;
   const entry = value as Partial<ProviderResultObservation>;
-  return typeof entry.provider === "string" && typeof entry.status === "string" && entry.observed_at instanceof Date;
+  if (typeof entry.provider !== "string" || typeof entry.status !== "string") return null;
+  const observedAt = entry.observed_at instanceof Date
+    ? entry.observed_at
+    : typeof entry.observed_at === "string"
+      ? new Date(entry.observed_at)
+      : null;
+  if (observedAt === null || !Number.isFinite(observedAt.getTime())) return null;
+  return {
+    provider: entry.provider,
+    status: entry.status,
+    score: entry.score ?? null,
+    raw_status: entry.raw_status ?? null,
+    observed_at: observedAt,
+  };
 }

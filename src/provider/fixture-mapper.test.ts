@@ -250,4 +250,24 @@ describe("fixture normalize mapper（31.3/31.4/31.5）", () => {
     expect(result.fixture.season).toBe("2026");
     expect(result.fixture.leagueProviderId).toBe("39");
   });
+
+  it("5dollar 2025 年开球时间落在 2026_2027 赛季边界外时拒绝采纳", () => {
+    const fixture = {
+      ...makeApiFixture({
+        leagueId: 4160026622,
+        season: "2026",
+        date: "2025-10-12T12:00:00.000Z",
+        timestamp: Date.parse("2025-10-12T12:00:00.000Z") / 1000,
+      }),
+      provider: "5dollar" as const,
+    };
+    const result = normalizeFixture(fixture);
+    expect(result.entityFailed).toBe(true);
+    expect(result.anomalies).toContainEqual(
+      expect.objectContaining({
+        type: AnomalyType.ProviderDataInvalid,
+        details: expect.objectContaining({ field: "league.season" }),
+      }),
+    );
+  });
 });

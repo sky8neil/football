@@ -1,4 +1,4 @@
-import { SUPPORTED_LEAGUES, findSupportedLeagueById } from "../domain/config.js";
+import { SUPPORTED_LEAGUES, findSupportedLeagueById, type ProviderLeagueRefs } from "../domain/config.js";
 import type { SyncJobType } from "../domain/enums.js";
 import type { MatchProviderMapping } from "../domain/types.js";
 import type { AppRepository } from "../infrastructure/repositories.js";
@@ -52,6 +52,7 @@ export async function loadActiveWindowFixtures(
   client: ProviderWindowFixtureClient,
   jobType: ProviderWindowJob,
   serverNow: Date,
+  providerLeagueRefs?: ProviderLeagueRefs,
 ): Promise<ProviderFixtureBatchItem[]> {
   const matches = await repo.matches.findActiveWindow({
     jobType,
@@ -110,9 +111,15 @@ export async function loadActiveWindowFixtures(
         continue;
       }
       if (provider !== "5dollar" && provider !== "openfoot" && provider !== "sportapi") continue;
-      const normalized = normalizeFixture(fixture);
+      const normalized = normalizeFixture(fixture, providerLeagueRefs);
       if (normalized.entityFailed) continue;
-      const crossMatch = await ensureCrossSourceMatchMapping(repo, normalized.fixture, serverNow, ids);
+      const crossMatch = await ensureCrossSourceMatchMapping(
+        repo,
+        normalized.fixture,
+        serverNow,
+        ids,
+        providerLeagueRefs,
+      );
       if (crossMatch.match_id !== null && ids.has(crossMatch.match_id)) result.push({ fixture, payload: { fixture } });
     }
   }

@@ -7,7 +7,11 @@
  * - 返回相应 blocking 或数据异常 anomaly。
  */
 import { AnomalyType } from "../domain/enums.js";
-import { findSupportedLeagueByProviderId } from "../domain/config.js";
+import {
+  findSupportedLeagueByProviderId,
+  isKickoffInLeagueSeason,
+  type ProviderLeagueRefs,
+} from "../domain/config.js";
 import { parseKickoff, KICKOFF_TOLERANCE_MS } from "./kickoff.js";
 import { mapProviderStatus, type ProviderFixtureStatus } from "./status.js";
 import type { ApiFootballFixture } from "./types.js";
@@ -109,7 +113,10 @@ function emptyFixture(): NormalizedFixture {
   };
 }
 
-export function normalizeFixture(raw: ApiFootballFixture): NormalizeFixtureResult {
+export function normalizeFixture(
+  raw: ApiFootballFixture,
+  providerLeagueRefs?: ProviderLeagueRefs,
+): NormalizeFixtureResult {
   if (!isRecord(raw) || !isRecord(raw.fixture)) {
     return {
       fixture: emptyFixture(),
@@ -156,7 +163,7 @@ export function normalizeFixture(raw: ApiFootballFixture): NormalizeFixtureResul
   const registeredLeague =
     leagueProviderId.length === 0
       ? undefined
-      : findSupportedLeagueByProviderId(leagueProviderId, provider);
+      : findSupportedLeagueByProviderId(leagueProviderId, provider, providerLeagueRefs);
   if (leagueProviderId.length === 0) {
     anomalies.push(dataInvalid({ field: "league.id" }));
     entityFailed = true;
@@ -242,6 +249,21 @@ export function normalizeFixture(raw: ApiFootballFixture): NormalizeFixtureResul
         field: "kickoff",
         mismatch: true,
         deltaMs: kickoff.deltaMs,
+      }),
+    );
+    entityFailed = true;
+  } else if (
+    provider === "5dollar" &&
+    registeredLeague !== undefined &&
+    season === registeredLeague.source_season_ref &&
+    kickoff.kickoffAt !== null &&
+    !isKickoffInLeagueSeason(registeredLeague, kickoff.kickoffAt)
+  ) {
+    anomalies.push(
+      dataInvalid({
+        field: "league.season",
+        expected: registeredLeague.source_season_ref,
+        actual: season,
       }),
     );
     entityFailed = true;

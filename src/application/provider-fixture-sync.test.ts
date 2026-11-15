@@ -107,15 +107,32 @@ function makeTeam(teamId: string): Team {
   };
 }
 
-function makeTeamMapping(teamId: string, providerTeamId: string): TeamProviderMapping {
+function makeTeamMapping(
+  teamId: string,
+  providerTeamId: string,
+  provider: Provider = Provider.ApiFootball,
+): TeamProviderMapping {
   return {
     schema_version: 1,
     team_id: teamId,
-    provider: Provider.ApiFootball,
+    provider,
     provider_team_id: providerTeamId,
     created_at: NOW,
     updated_at: NOW,
   };
+}
+
+async function seedTeams(
+  repo: InMemoryRepository,
+  provider: Provider = Provider.ApiFootball,
+): Promise<{ home_team_id: string; away_team_id: string }> {
+  const homeTeamId = newUuid();
+  const awayTeamId = newUuid();
+  await repo.teams.insert(makeTeam(homeTeamId));
+  await repo.teams.insert(makeTeam(awayTeamId));
+  await repo.teamProviderMappings.insert(makeTeamMapping(homeTeamId, "1001", provider));
+  await repo.teamProviderMappings.insert(makeTeamMapping(awayTeamId, "1002", provider));
+  return { home_team_id: homeTeamId, away_team_id: awayTeamId };
 }
 
 async function seedChangedTeams(repo: InMemoryRepository): Promise<{
@@ -245,6 +262,173 @@ describe("ProviderFixtureSyncService", () => {
 
     // 预检读 home/away 各一次；applyTeamChange 复用预加载结果，不再重复查。
     expect(lookups).toBe(2);
+  });
+
+  it.each([
+    ["NS", MatchStatus.Scheduled],
+    ["1H", MatchStatus.Live],
+    ["PST", MatchStatus.Postponed],
+    ["CANC", MatchStatus.Cancelled],
+    ["ABD", MatchStatus.Abandoned],
+  ] as const)(
+    "主赛程源首次发现 %s fixture 且比赛不存在时建立 match 并应用状态",
+    async (statusShort, expectedStatus) => {
+      const repo = new InMemoryRepository();
+      const teams = await seedTeams(repo);
+      const fixture = makeFixture("1200001", statusShort);
+
+      const outcome = await new ProviderFixtureSyncService(repo).applyFixture(
+        fixture,
+        { fixture: { id: 1200001, status: statusShort } },
+        NOW,
+      );
+
+      expect(outcome).toMatchObject({
+        kind: "applied",
+        match_status: expectedStatus,
+      });
+      const mapping = await repo.matchProviderMappings.findByProviderAndExternalId(
+        Provider.ApiFootball,
+        "1200001",
+      );
+      expect(mapping).not.toBeNull();
+      expect(outcome.match_id).toBe(mapping!.match_id);
+      await expect(repo.matches.findById(mapping!.match_id)).resolves.toMatchObject({
+        home_team_id: teams.home_team_id,
+        away_team_id: teams.away_team_id,
+        match_status: expectedStatus,
+        settlement_status:
+          expectedStatus === MatchStatus.Cancelled
+            ? SettlementStatus.Voided
+            : SettlementStatus.Pending,
+      });
+    },
+  );
+
+  it("主赛程源首次发现已结束 fixture 时建档并走既有权威赛果采纳", async () => {
+    const repo = new InMemoryRepository();
+    const teams = await seedTeams(repo, Provider.FootballData);
+    const fixture = makeFixture(
+      "1200002",
+      "FT",
+      { home: 2, away: 1 },
+      Provider.FootballData,
+    );
+
+    const outcome = await new ProviderFixtureSyncService(repo).applyFixture(
+      fixture,
+      { fixture: { id: 1200002 }, score: { fulltime: { home: 2, away: 1 } } },
+      NOW,
+    );
+
+    expect(outcome).toMatchObject({
+      kind: "applied",
+      result_version: 1,
+      settlement_status: SettlementStatus.Waiting,
+    });
+    const mapping = await repo.matchProviderMappings.findByProviderAndExternalId(
+      Provider.FootballData,
+      "1200002",
+    );
+    expect(mapping).not.toBeNull();
+    expect(outcome.match_id).toBe(mapping!.match_id);
+    await expect(repo.matches.findById(mapping!.match_id)).resolves.toMatchObject({
+      home_team_id: teams.home_team_id,
+      away_team_id: teams.away_team_id,
+      match_status: MatchStatus.Finished,
+      settlement_status: SettlementStatus.Waiting,
+      regular_home_score: 2,
+      regular_away_score: 1,
+      result_version: 1,
+    });
+    await expect(
+      repo.matchResults.findByMatchAndVersion(mapping!.match_id, 1),
+    ).resolves.toMatchObject({
+      regular_home_score: 2,
+      regular_away_score: 1,
+    });
+  });
+
+  it("首次发现并重复输入同一已结束 fixture 时复用原 match_id 且不重复结算", async () => {
+    const repo = new InMemoryRepository();
+    await seedTeams(repo, Provider.FootballData);
+    const service = new ProviderFixtureSyncService(repo);
+    const fixture = makeFixture(
+      "1200003",
+      "FT",
+      { home: 2, away: 1 },
+      Provider.FootballData,
+    );
+
+    const first = await service.applyFixture(fixture, { fixture: { id: 1200003 } }, NOW);
+    const second = await service.applyFixture(
+      fixture,
+      { fixture: { id: 1200003 } },
+      new Date(NOW.getTime() + 60_000),
+    );
+
+    expect(second).toMatchObject({
+      kind: "unchanged",
+      match_id: first.match_id,
+      result_version: 1,
+    });
+    expect(first.match_id).toBeTruthy();
+    await expect(repo.matches.findBySeason("2026_2027")).resolves.toHaveLength(1);
+    await expect(
+      repo.matchResults.findByMatchAndVersion(first.match_id!, 2),
+    ).resolves.toBeNull();
+  });
+
+  it("次要源首次出现不复制比赛，仍按既有比赛匹配失败处理", async () => {
+    const repo = new InMemoryRepository();
+    await seedTeams(repo, Provider.FiveDollar);
+    const fixture = makeFixture(
+      "1200004",
+      "FT",
+      { home: 1, away: 0 },
+      Provider.FiveDollar,
+    );
+    fixture.league.id = "4160026622";
+
+    await expect(
+      new ProviderFixtureSyncService(repo).applyFixture(
+        fixture,
+        { fixture: { id: 1200004 } },
+        NOW,
+      ),
+    ).resolves.toMatchObject({
+      kind: "failed",
+      match_id: null,
+      anomaly_types: [AnomalyType.ProviderDataInvalid],
+    });
+    await expect(
+      repo.matchProviderMappings.findByProviderAndExternalId(Provider.FiveDollar, "1200004"),
+    ).resolves.toBeNull();
+    await expect(repo.matches.findBySeason("2026_2027")).resolves.toEqual([]);
+  });
+
+  it("主赛程源延期且缺少可靠 kickoff 时不捏造比赛记录", async () => {
+    const repo = new InMemoryRepository();
+    await seedTeams(repo);
+    const fixture = makeFixture("1200005", "PST");
+    fixture.fixture.date = "";
+    (fixture.fixture as { timestamp: unknown }).timestamp = null;
+
+    await expect(
+      new ProviderFixtureSyncService(repo).applyFixture(
+        fixture,
+        { fixture: { id: 1200005 } },
+        NOW,
+      ),
+    ).resolves.toMatchObject({
+      kind: "failed",
+      match_id: null,
+      anomaly_types: [AnomalyType.ProviderDataInvalid],
+    });
+    await expect(
+      repo.matchProviderMappings.findByProviderAndExternalId(Provider.ApiFootball, "1200005"),
+    ).resolves.toBeNull();
+    await expect(repo.matches.findBySeason("2026_2027")).resolves.toEqual([]);
   });
 
   it("主入口同步 scheduled fixture 时应用 Provider 主客队变更保护", async () => {
@@ -731,6 +915,36 @@ describe("ProviderFixtureSyncService", () => {
       regular_away_score: null,
       result_version: 0,
       finish_detected_at: NOW,
+    });
+  });
+
+  it("PostgreSQL JSONB 往返反序列化（observed_at 为 ISO 字符串）时仍能采纳完场赛果", async () => {
+    const repo = new InMemoryRepository();
+    const teams = await seedTeams(repo, Provider.FootballData);
+    const match = makeMatch({
+      home_team_id: teams.home_team_id,
+      away_team_id: teams.away_team_id,
+    });
+    await seedMatch(repo, match, "1100202", Provider.FootballData);
+    const origFindByEntity = repo.providerSnapshots.findByEntity.bind(repo.providerSnapshots);
+    repo.providerSnapshots.findByEntity = async (entityType, entityId) => {
+      const rows = await origFindByEntity(entityType, entityId);
+      return rows.map((row) => ({
+        ...row,
+        payload: JSON.parse(JSON.stringify(row.payload)) as Record<string, unknown>,
+      }));
+    };
+
+    const outcome = await new ProviderFixtureSyncService(repo).applyFixture(
+      makeFixture("1100202", "FT", { home: 3, away: 0 }, Provider.FootballData),
+      { fixture: { id: 1100202 }, score: { fulltime: { home: 3, away: 0 } } },
+      NOW,
+    );
+
+    expect(outcome).toMatchObject({
+      kind: "applied",
+      match_id: match.match_id,
+      result_version: 1,
     });
   });
 });

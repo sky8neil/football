@@ -45,7 +45,7 @@ describe("VPS09 templates match compiled entries", () => {
     expect(jobsUnit).toContain("ExecStart=/usr/bin/node /home/neilxu/football/current/dist/jobs/tick.js");
     expect(jobsUnit).toContain("Type=oneshot");
     expect(jobsUnit).toContain("TimeoutStartSec=1800");
-    expect(jobsTimer).toContain("OnCalendar=*-*-* *:00/10:00");
+    expect(jobsTimer).toContain("OnCalendar=*-*-* *:00/15:00");
     expect(jobsTimer).toContain("Persistent=true");
     expect(jobsTimer).toContain("Unit=football-jobs.service");
   });

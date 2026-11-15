@@ -1,5 +1,5 @@
 import { Provider } from "../domain/enums.js";
-import { SUPPORTED_LEAGUES, type SupportedLeagueId } from "../domain/config.js";
+import { SUPPORTED_LEAGUES, buildProviderLeagueRefs, type ProviderLeagueRefs, type SupportedLeagueId } from "../domain/config.js";
 import { ProviderDataError } from "./http.js";
 
 export type ProviderSourceId = "fd" | "bsd" | "5d" | "of" | "sp";
@@ -46,6 +46,8 @@ export interface ProviderSource {
 
 export interface ProviderSourcesConfig {
   sources: ProviderSource[];
+  /** 该 runtime 解析出的源联赛映射；未提供时按静态配置回退。 */
+  league_refs?: ProviderLeagueRefs;
   sync_profile: "test" | "prod";
   sync_leagues: Set<SupportedLeagueId>;
 }
@@ -106,11 +108,11 @@ const DEFINITIONS: Record<ProviderSourceId, SourceDefinition> = {
     url_env: "FOOTBALL_PROVIDER_URL_OF", auth: { header: "Authorization", scheme: "bearer" },
     per_minute: 60, daily_test: 40, daily_prod: 120, monthly_test: 1000, monthly_prod: 4000, day_boundary: "utc",
     default_leagues: [
-      league("of", "premier_league", "disabled", "disabled", "disabled", "fallback", "reconcile"),
-      league("of", "la_liga", "disabled", "disabled", "disabled", "fallback", "reconcile"),
-      league("of", "serie_a", "disabled", "disabled", "disabled", "fallback", "reconcile"),
-      league("of", "bundesliga", "disabled", "disabled", "disabled", "fallback", "reconcile"),
-      league("of", "ligue_1", "disabled", "disabled", "disabled", "fallback", "reconcile"),
+      league("of", "premier_league", "disabled", "disabled", "disabled", "secondary", "reconcile"),
+      league("of", "la_liga", "disabled", "disabled", "disabled", "secondary", "reconcile"),
+      league("of", "serie_a", "disabled", "disabled", "disabled", "secondary", "reconcile"),
+      league("of", "bundesliga", "disabled", "disabled", "disabled", "secondary", "reconcile"),
+      league("of", "ligue_1", "disabled", "disabled", "disabled", "secondary", "reconcile"),
       league("of", "chinese_super_league", "historical", "disabled", "disabled", "disabled", "historical"),
     ],
   },
@@ -222,11 +224,23 @@ export function loadProviderSources(env: Record<string, string | undefined>): Pr
     };
   });
 
+  let leagueRefs: ProviderLeagueRefs;
+  try {
+    leagueRefs = buildProviderLeagueRefs(sources.flatMap((source) => source.leagues.map((league) => ({
+      source_id: source.source_id,
+      source_league_ref: league.source_league_ref,
+      league_id: league.league_id,
+    }))));
+  } catch (error) {
+    throw new ProviderDataError(error instanceof Error ? error.message : "invalid provider league refs");
+  }
+
   const enabledLeagues = new Set(sources.flatMap((source) => source.leagues
     .filter((league) => league.roles.schedule === "primary")
     .map((league) => league.league_id)));
   return {
     sources,
+    league_refs: leagueRefs,
     sync_profile: syncProfile,
     sync_leagues: new Set([...requestedLeagueIds].filter((id) => enabledLeagues.has(id))),
   };

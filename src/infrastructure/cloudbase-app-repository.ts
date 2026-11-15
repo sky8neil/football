@@ -298,7 +298,10 @@ export class CloudBaseAppRepository implements AppRepository {
       findLatestByJobType: async (jobType, options) => {
         const rows = await this.where<SyncLog>(
           "sync_logs",
-          { job_type: jobType },
+          {
+            job_type: jobType,
+            ...(options?.leagueId === undefined ? {} : { league_id: options.leagueId }),
+          },
           { order_by: "started_at", direction: "desc", limit: 5 },
         );
         return rows.find((log) => log.sync_job_id !== options?.excludeSyncJobId) ?? null;

@@ -373,6 +373,8 @@ export interface ProviderSnapshot extends BaseDoc {
 export interface SyncLog extends BaseDoc {
   sync_job_id: string;
   job_type: SyncJobType;
+  /** 按联赛执行的任务记录联赛；旧日志可能没有该字段。 */
+  league_id?: string | null;
   status: SyncJobStatus;
   started_at: Date;
   finished_at: Date | null;

@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 import { Provider } from "../domain/enums.js";
 import type { Match } from "../domain/types.js";
 import type { AppRepository } from "../infrastructure/repositories.js";
+import { loadProviderSources } from "../provider/sources.js";
 import { ensureCrossSourceMatchMapping } from "./provider-cross-source.js";
+import { decideProviderResultAdoption } from "./provider-result-adoption.js";
 
 const NOW = new Date("2026-10-12T12:00:00.000Z");
 const MATCH_ID = "00000000-0000-4000-8000-000000000001";
@@ -104,8 +106,9 @@ describe("ensureCrossSourceMatchMapping", () => {
   });
 
   it("records a diagnostic snapshot when a provider team has no local mapping", async () => {
-    const { repo, snapshots } = makeRepo({ missingTeam: true });
+    const { repo, snapshots, matchMappings } = makeRepo({ missingTeam: true });
     await expect(ensureCrossSourceMatchMapping(repo, fixture(), NOW)).resolves.toEqual({ match_id: null, reason: "unlinked" });
+    expect(matchMappings.insert).not.toHaveBeenCalled();
     expect(snapshots.insert).toHaveBeenCalledWith(expect.objectContaining({
       provider: "5dollar", event_type: "provider_error", provider_entity_id: "provider-match-1",
       payload: expect.objectContaining({ diag_code: "DIAG_PROVIDER_MATCH_UNLINKED", reason: "team_mapping_missing" }),
@@ -137,5 +140,63 @@ describe("ensureCrossSourceMatchMapping", () => {
 
     const outside = makeRepo({ matches: [makeMatch({ ...localMatch, kickoff_at: new Date(NOW.getTime() + tolerance + 1) })] });
     await expect(ensureCrossSourceMatchMapping(outside.repo, input, NOW)).resolves.toMatchObject({ match_id: null, reason: "unlinked" });
+  });
+
+  it("uses the configured source league override for cross-source matching", async () => {
+    const config = loadProviderSources({
+      FOOTBALL_PROVIDER_SOURCES: "5d",
+      FOOTBALL_PROVIDER_KEY_5D: "5d-secret",
+      FOOTBALL_PROVIDER_LEAGUE_REF_5D: JSON.stringify({ premier_league: "999" }),
+      FOOTBALL_SYNC_LEAGUES: "premier_league",
+    });
+    const { repo, matchMappings } = makeRepo();
+    const input = fixture({ leagueProviderId: "999" });
+    await expect(ensureCrossSourceMatchMapping(repo, input, NOW, undefined, config.league_refs)).resolves.toEqual({ match_id: MATCH_ID, reason: "mapped" });
+    expect(matchMappings.insert).toHaveBeenCalledWith(expect.objectContaining({
+      match_id: MATCH_ID,
+      provider: "5dollar",
+      provider_match_id: "provider-match-1",
+    }));
+  });
+
+  it("keeps using the original runtime mapping after another configuration loads", async () => {
+    const first = loadProviderSources({
+      FOOTBALL_PROVIDER_SOURCES: "5d",
+      FOOTBALL_PROVIDER_KEY_5D: "5d-secret",
+      FOOTBALL_PROVIDER_LEAGUE_REF_5D: JSON.stringify({ premier_league: "999" }),
+      FOOTBALL_SYNC_LEAGUES: "premier_league",
+    });
+    loadProviderSources({
+      FOOTBALL_PROVIDER_SOURCES: "5d",
+      FOOTBALL_PROVIDER_KEY_5D: "5d-secret",
+      FOOTBALL_PROVIDER_LEAGUE_REF_5D: JSON.stringify({ premier_league: "888" }),
+      FOOTBALL_SYNC_LEAGUES: "premier_league",
+    });
+    const { repo } = makeRepo();
+    await expect(ensureCrossSourceMatchMapping(
+      repo,
+      fixture({ leagueProviderId: "999" }),
+      NOW,
+      undefined,
+      first.league_refs,
+    )).resolves.toEqual({ match_id: MATCH_ID, reason: "mapped" });
+  });
+
+  it("links secondary observation to the primary match_id and applies result adoption and conflict rules", async () => {
+    const { repo } = makeRepo();
+    const linked = await ensureCrossSourceMatchMapping(repo, fixture(), NOW);
+    expect(linked).toEqual({ match_id: MATCH_ID, reason: "mapped" });
+
+    const agreed = decideProviderResultAdoption("premier_league", [
+      { provider: "football_data", status: "finished", score: { home: 2, away: 1 }, raw_status: "FT", observed_at: NOW },
+      { provider: "5dollar", status: "finished", score: { home: 2, away: 1 }, raw_status: "FT", observed_at: NOW },
+    ], NOW, NOW);
+    expect(agreed).toMatchObject({ kind: "adopt", provider: "football_data", score: { home: 2, away: 1 } });
+
+    const conflicted = decideProviderResultAdoption("premier_league", [
+      { provider: "football_data", status: "finished", score: { home: 2, away: 1 }, raw_status: "FT", observed_at: NOW },
+      { provider: "5dollar", status: "finished", score: { home: 1, away: 1 }, raw_status: "FT", observed_at: NOW },
+    ], NOW, NOW);
+    expect(conflicted).toEqual({ kind: "anomaly", reason: "score_conflict" });
   });
 });

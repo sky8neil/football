@@ -1,4 +1,5 @@
 import { SyncJobType } from "../domain/enums.js";
+import type { ProviderLeagueRefs } from "../domain/config.js";
 import type { AppRepository } from "../infrastructure/repositories.js";
 import type { LiveMatchFixtureClient } from "./provider-fixture-loader.js";
 import {
@@ -45,8 +46,9 @@ export class ProviderLiveMatchService {
     private readonly client: ProviderLiveMatchClient,
     retryOptions: ProviderFixtureSyncRetryOptions = {},
     lockOptions: ProviderFixtureSyncLockOptions = {},
+    private readonly providerLeagueRefs?: ProviderLeagueRefs,
   ) {
-    this.fixtureSync = new ProviderFixtureSyncService(repo);
+    this.fixtureSync = new ProviderFixtureSyncService(repo, undefined, providerLeagueRefs);
     this.fixtureJob = new ProviderFixtureSyncJobService(
       repo,
       this.fixtureSync,
@@ -57,7 +59,13 @@ export class ProviderLiveMatchService {
 
   async run(serverNow: Date): Promise<ProviderLiveMatchOutcome> {
     const load: ProviderFixtureBatchLoader = (loadNow) =>
-      loadActiveWindowFixtures(this.repo, this.client, SyncJobType.LiveMatch, loadNow);
+      loadActiveWindowFixtures(
+        this.repo,
+        this.client,
+        SyncJobType.LiveMatch,
+        loadNow,
+        this.providerLeagueRefs,
+      );
     const fixtures = await this.fixtureJob.run(
       SyncJobType.LiveMatch,
       load,

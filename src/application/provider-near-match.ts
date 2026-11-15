@@ -1,4 +1,5 @@
 import { SyncJobType } from "../domain/enums.js";
+import type { ProviderLeagueRefs } from "../domain/config.js";
 import type { AppRepository } from "../infrastructure/repositories.js";
 import type { NearMatchFixtureClient } from "./provider-fixture-loader.js";
 import {
@@ -44,10 +45,11 @@ export class ProviderNearMatchService {
     private readonly client: ProviderNearMatchClient,
     retryOptions: ProviderFixtureSyncRetryOptions = {},
     lockOptions: ProviderFixtureSyncLockOptions = {},
+    private readonly providerLeagueRefs?: ProviderLeagueRefs,
   ) {
     this.fixtureJob = new ProviderFixtureSyncJobService(
       repo,
-      new ProviderFixtureSyncService(repo),
+      new ProviderFixtureSyncService(repo, undefined, providerLeagueRefs),
       retryOptions,
       lockOptions,
     );
@@ -55,7 +57,13 @@ export class ProviderNearMatchService {
 
   async run(serverNow: Date): Promise<ProviderNearMatchOutcome> {
     const load: ProviderFixtureBatchLoader = async (loadNow) => {
-      return loadActiveWindowFixtures(this.repo, this.client, SyncJobType.NearMatch, loadNow);
+      return loadActiveWindowFixtures(
+        this.repo,
+        this.client,
+        SyncJobType.NearMatch,
+        loadNow,
+        this.providerLeagueRefs,
+      );
     };
     const fixtures = await this.fixtureJob.run(
       SyncJobType.NearMatch,

@@ -1,4 +1,4 @@
-import { FIXED_CONFIG_V1, findSupportedLeagueByProviderId } from "../domain/config.js";
+import { FIXED_CONFIG_V1, findSupportedLeagueByProviderId, type ProviderLeagueRefs } from "../domain/config.js";
 import {
   MatchStatus,
   Provider,
@@ -51,17 +51,14 @@ function buildMatch(
   homeTeamId: string,
   awayTeamId: string,
   serverNow: Date,
+  providerLeagueRefs?: ProviderLeagueRefs,
 ): Match {
-  if (
-    fixture.status.kind !== MatchStatus.Scheduled ||
-    fixture.kickoffAt === null ||
-    fixture.roundId == null
-  ) {
-    throw internalError("Provider 赛程发现只接受 mapper 已验证的 scheduled kickoff 和 round");
+  if (fixture.kickoffAt === null || fixture.roundId == null) {
+    throw internalError("Provider 赛程发现只接受 mapper 已验证的 kickoff 和 round");
   }
 
   const provider = fixture.provider ?? Provider.ApiFootball;
-  const league = findSupportedLeagueByProviderId(fixture.leagueProviderId, provider);
+  const league = findSupportedLeagueByProviderId(fixture.leagueProviderId, provider, providerLeagueRefs);
   if (league === undefined) {
     throw new ProviderDataError("provider fixture league is not in SUPPORTED_LEAGUES");
   }
@@ -131,9 +128,12 @@ function discoveredSnapshot(
   };
 }
 
-/** 首次发现合法 scheduled fixture 时建立内部 match 与 Provider mapping。 */
+/** 首次发现合法 fixture 时建立内部 match 与 Provider mapping；状态由调用方另行应用。 */
 export class ProviderScheduleSyncService {
-  constructor(private readonly repo: AppRepository) {}
+  constructor(
+    private readonly repo: AppRepository,
+    private readonly providerLeagueRefs?: ProviderLeagueRefs,
+  ) {}
 
   async discover(
     fixture: ProviderFixture,
@@ -143,8 +143,8 @@ export class ProviderScheduleSyncService {
     assertValidServerNow(serverNow);
     return this.repo.withTransaction(async (tx) => {
       requirePorts(tx);
-      if (fixture.status.kind !== MatchStatus.Scheduled || fixture.kickoffAt === null) {
-        throw internalError("Provider 赛程发现只接受 mapper 已验证的 scheduled kickoff");
+      if (fixture.kickoffAt === null) {
+        throw internalError("Provider 赛程发现只接受 mapper 已验证的 kickoff");
       }
 
       const existing = await tx.matchProviderMappings.findByProviderAndExternalId(
@@ -187,6 +187,7 @@ export class ProviderScheduleSyncService {
         homeMapping.team_id,
         awayMapping.team_id,
         serverNow,
+        this.providerLeagueRefs,
       );
       await tx.matches.insert(match);
       await tx.matchProviderMappings.insert({

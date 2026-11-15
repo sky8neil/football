@@ -8,6 +8,7 @@ import {
   ProviderHttpError,
   ProviderError,
 } from "../provider/http.js";
+import { ProviderBudgetDeferredError } from "../provider/budget.js";
 import type { ApiFootballFixture } from "../provider/types.js";
 import {
   applyJitter,
@@ -60,6 +61,7 @@ export interface ProviderFixtureFailureDiagnostic {
 
 const MAX_FAILURE_DIAGNOSTICS = 100;
 const MAX_DIAGNOSTIC_TEXT_LENGTH = 240;
+const PROVIDER_FIXTURE_FAILED = "PROVIDER_FIXTURE_FAILED";
 
 export type ProviderFixtureSyncJobOutcome =
   | {
@@ -82,6 +84,11 @@ export type ProviderFixtureSyncJobOutcome =
       next_attempt_at: Date;
       retry_attempt: number;
       last_error_code: string | null;
+      items_read?: number;
+      items_changed?: number;
+      items_failed?: number;
+      failure_diagnostics?: ProviderFixtureFailureDiagnostic[];
+      failure_diagnostics_omitted?: number;
     };
 
 function requireSyncLogs(
@@ -204,6 +211,9 @@ function isFailed(
 }
 
 function isRetryableLoaderError(error: unknown): boolean {
+  if (error instanceof ProviderBudgetDeferredError) {
+    return true;
+  }
   if (
     error instanceof DomainError ||
     isQuotaExceededError(error) ||
@@ -218,6 +228,13 @@ function isRetryableLoaderError(error: unknown): boolean {
     return false;
   }
   return error instanceof Error;
+}
+
+function nextRetryAt(error: unknown, serverNow: Date, delayMs: number): Date {
+  const backoffAt = new Date(serverNow.getTime() + delayMs);
+  if (!(error instanceof ProviderBudgetDeferredError)) return backoffAt;
+  const resetAt = error.retry_at;
+  return resetAt.getTime() > backoffAt.getTime() ? resetAt : backoffAt;
 }
 
 export interface JobLockRenewalOptions {
@@ -330,8 +347,16 @@ export class ProviderFixtureSyncJobService {
   }
 
   /** RP08 锁内二次资格确认：锁前判断可能已过期（拿到锁时上一实例刚跑完），这里再核一次。 */
-  private async isStillDue(jobType: SyncJobType, serverNow: Date, dueIntervalMs: number): Promise<boolean> {
-    const latest = await this.repo.syncLogs?.findLatestByJobType?.(jobType);
+  private async isStillDue(
+    jobType: SyncJobType,
+    serverNow: Date,
+    dueIntervalMs: number,
+    leagueId?: string,
+  ): Promise<boolean> {
+    const latest = await this.repo.syncLogs?.findLatestByJobType?.(
+      jobType,
+      leagueId === undefined ? undefined : { leagueId },
+    );
     if (!latest) return true;
     const startedAt = latest.started_at as Date | string;
     const startedMs = startedAt instanceof Date
@@ -351,8 +376,15 @@ export class ProviderFixtureSyncJobService {
   }
 
   /** RP07：跨轮累计重试序号。上一条 deferred 日志的 retry_attempt + 1；无则 0。 */
-  private async priorRetryAttempt(jobType: SyncJobType, excludeSyncJobId: string): Promise<number> {
-    const latest = await this.repo.syncLogs?.findLatestByJobType?.(jobType, { excludeSyncJobId });
+  private async priorRetryAttempt(
+    jobType: SyncJobType,
+    excludeSyncJobId: string,
+    leagueId?: string,
+  ): Promise<number> {
+    const latest = await this.repo.syncLogs?.findLatestByJobType?.(jobType, {
+      excludeSyncJobId,
+      ...(leagueId === undefined ? {} : { leagueId }),
+    });
     if (!latest || latest.status !== SyncJobStatus.Deferred) return 0;
     return (latest.retry_attempt ?? 0) + 1;
   }
@@ -361,6 +393,7 @@ export class ProviderFixtureSyncJobService {
     jobType: SyncJobType,
     load: ProviderFixtureBatchLoader,
     serverNow: Date,
+    leagueId?: string,
   ): Promise<ProviderFixtureSyncJobOutcome> {
     assertValidServerNow(serverNow);
     const lockKey = jobLockKey(jobType);
@@ -375,7 +408,7 @@ export class ProviderFixtureSyncJobService {
 
     try {
       // RP08：锁内二次资格确认在 executeHeldByCaller 内部完成，这里不重复查询。
-      return await this.executeHeldByCaller(jobType, load, serverNow, ownerId);
+      return await this.executeHeldByCaller(jobType, load, serverNow, ownerId, leagueId);
     } finally {
       await this.repo.jobLocks.release(lockKey, ownerId);
     }
@@ -391,10 +424,11 @@ export class ProviderFixtureSyncJobService {
     load: ProviderFixtureBatchLoader,
     serverNow: Date,
     ownerId: string,
+    leagueId?: string,
   ): Promise<ProviderFixtureSyncJobOutcome> {
     assertValidServerNow(serverNow);
     const dueIntervalMs = this.lockOptions.dueIntervalMs;
-    if (dueIntervalMs !== undefined && !(await this.isStillDue(jobType, serverNow, dueIntervalMs))) {
+    if (dueIntervalMs !== undefined && !(await this.isStillDue(jobType, serverNow, dueIntervalMs, leagueId))) {
       return { kind: "skipped", job_type: jobType, reason: "not_due_after_lock" };
     }
     const syncLogs = requireSyncLogs(this.repo);
@@ -404,6 +438,7 @@ export class ProviderFixtureSyncJobService {
       schema_version: SCHEMA_VERSION,
       sync_job_id: newUuid(),
       job_type: jobType,
+      ...(leagueId === undefined ? {} : { league_id: leagueId }),
       status: SyncJobStatus.Running,
       started_at: serverNow,
       finished_at: null,
@@ -431,7 +466,7 @@ export class ProviderFixtureSyncJobService {
             break;
           } catch (error) {
             if (!isRetryableLoaderError(error)) throw error;
-            const retryAttempt = await this.priorRetryAttempt(jobType, runningLog.sync_job_id);
+            const retryAttempt = await this.priorRetryAttempt(jobType, runningLog.sync_job_id, leagueId);
             const delayMinutes = nextRetryDelayMinutes(retryAttempt);
             if (delayMinutes === null) {
               throw new DomainError(
@@ -444,7 +479,7 @@ export class ProviderFixtureSyncJobService {
               SYNC_RETRY_V1.jitterPercent,
               this.random,
             );
-            const nextAttemptAt = new Date(serverNow.getTime() + delayMs);
+            const nextAttemptAt = nextRetryAt(error, serverNow, delayMs);
             await lockRenewal.assertHeld();
             await syncLogs.update({
               ...runningLog,
@@ -507,6 +542,72 @@ export class ProviderFixtureSyncJobService {
         }
 
         await lockRenewal.assertHeld();
+        const failureOutput = failureDiagnostics.length > 0 ? {
+          failure_diagnostics: failureDiagnostics,
+          failure_diagnostics_omitted: failureDiagnosticsOmitted,
+        } : {};
+        if (failed > 0) {
+          const retryAttempt = await this.priorRetryAttempt(
+            jobType,
+            runningLog.sync_job_id,
+            leagueId,
+          );
+          const delayMinutes = nextRetryDelayMinutes(retryAttempt);
+          const failureMessage = `provider fixture sync failed for ${failed}/${items.length} item(s)`;
+          if (delayMinutes === null) {
+            await syncLogs.update({
+              ...runningLog,
+              status: SyncJobStatus.Failed,
+              attempt_count: attemptCount,
+              finished_at: serverNow,
+              items_read: items.length,
+              items_changed: changed,
+              items_failed: failed,
+              last_error_code: PROVIDER_FIXTURE_FAILED,
+              last_error_message: failureMessage,
+              ...failureOutput,
+            });
+            return {
+              kind: "completed",
+              job_type: jobType,
+              items_read: items.length,
+              items_changed: changed,
+              items_failed: failed,
+              ...failureOutput,
+            };
+          }
+          const delayMs = applyJitter(
+            delayMinutes * 60_000,
+            SYNC_RETRY_V1.jitterPercent,
+            this.random,
+          );
+          const nextAttemptAt = new Date(serverNow.getTime() + delayMs);
+          await syncLogs.update({
+            ...runningLog,
+            status: SyncJobStatus.Deferred,
+            attempt_count: attemptCount,
+            finished_at: serverNow,
+            items_read: items.length,
+            items_changed: changed,
+            items_failed: failed,
+            retry_attempt: retryAttempt,
+            next_attempt_at: nextAttemptAt,
+            last_error_code: PROVIDER_FIXTURE_FAILED,
+            last_error_message: failureMessage,
+            ...failureOutput,
+          });
+          return {
+            kind: "deferred",
+            job_type: jobType,
+            next_attempt_at: nextAttemptAt,
+            retry_attempt: retryAttempt,
+            last_error_code: PROVIDER_FIXTURE_FAILED,
+            items_read: items.length,
+            items_changed: changed,
+            items_failed: failed,
+            ...failureOutput,
+          };
+        }
         await syncLogs.update({
           ...runningLog,
           status: SyncJobStatus.Success,
@@ -515,10 +616,7 @@ export class ProviderFixtureSyncJobService {
           items_read: items.length,
           items_changed: changed,
           items_failed: failed,
-          ...(failureDiagnostics.length > 0 ? {
-            failure_diagnostics: failureDiagnostics,
-            failure_diagnostics_omitted: failureDiagnosticsOmitted,
-          } : {}),
+          ...failureOutput,
         });
         return {
           kind: "completed",
@@ -526,10 +624,7 @@ export class ProviderFixtureSyncJobService {
           items_read: items.length,
           items_changed: changed,
           items_failed: failed,
-          ...(failureDiagnostics.length > 0 ? {
-            failure_diagnostics: failureDiagnostics,
-            failure_diagnostics_omitted: failureDiagnosticsOmitted,
-          } : {}),
+          ...failureOutput,
         };
       } catch (error) {
         const stillHeld = await lockRenewal.assertHeld().then(() => true, () => false);

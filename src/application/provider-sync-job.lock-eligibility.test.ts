@@ -158,6 +158,106 @@ describe("RP08 锁内二次资格确认", () => {
     expect(load).toHaveBeenCalledTimes(1);
   });
 
+  it("英超刚执行成功，西甲同周期仍可执行", async () => {
+    const repo = new InMemoryRepository();
+    await repo.syncLogs.insert(makeLog({
+      job_type: SyncJobType.FullScheduleVerify,
+      league_id: "premier_league",
+      status: "success",
+      started_at: new Date(NOW.getTime() - 60_000),
+    }));
+    const load = vi.fn(async () => []);
+    const service = makeService(repo, DUE_INTERVAL_MS);
+
+    await expect(
+      service.run(SyncJobType.FullScheduleVerify, load, NOW, "la_liga"),
+    ).resolves.toEqual({
+      kind: "completed",
+      job_type: SyncJobType.FullScheduleVerify,
+      items_read: 0,
+      items_changed: 0,
+      items_failed: 0,
+    });
+    expect(load).toHaveBeenCalledTimes(1);
+    await expect(repo.syncLogs.findLatestByJobType!(SyncJobType.FullScheduleVerify, {
+      leagueId: "la_liga",
+    })).resolves.toMatchObject({ league_id: "la_liga", status: "success" });
+  });
+
+  it("同一联赛刚执行成功仍按周期跳过", async () => {
+    const repo = new InMemoryRepository();
+    await repo.syncLogs.insert(makeLog({
+      job_type: SyncJobType.FullScheduleVerify,
+      league_id: "premier_league",
+      status: "success",
+      started_at: new Date(NOW.getTime() - 60_000),
+    }));
+    const load = vi.fn(async () => []);
+    const service = makeService(repo, DUE_INTERVAL_MS);
+
+    await expect(
+      service.run(SyncJobType.FullScheduleVerify, load, NOW, "premier_league"),
+    ).resolves.toEqual({
+      kind: "skipped",
+      job_type: SyncJobType.FullScheduleVerify,
+      reason: "not_due_after_lock",
+    });
+    expect(load).not.toHaveBeenCalled();
+  });
+
+  it("英超 deferred 不阻止西甲到期执行", async () => {
+    const repo = new InMemoryRepository();
+    await repo.syncLogs.insert(makeLog({
+      job_type: SyncJobType.FullScheduleVerify,
+      league_id: "premier_league",
+      status: "deferred",
+      next_attempt_at: new Date(NOW.getTime() + 60_000),
+    }));
+    const load = vi.fn(async () => []);
+    const service = makeService(repo, DUE_INTERVAL_MS);
+
+    await expect(
+      service.run(SyncJobType.FullScheduleVerify, load, NOW, "la_liga"),
+    ).resolves.toMatchObject({ kind: "completed" });
+    expect(load).toHaveBeenCalledTimes(1);
+  });
+
+  it("西甲重试序号不继承英超的 deferred 记录", async () => {
+    const repo = new InMemoryRepository();
+    await repo.syncLogs.insert(makeLog({
+      job_type: SyncJobType.FullScheduleVerify,
+      league_id: "premier_league",
+      status: "deferred",
+      retry_attempt: 2,
+      next_attempt_at: new Date(NOW.getTime() + 60_000),
+    }));
+    const load = vi.fn(async () => {
+      throw new Error("temporary failure");
+    });
+    const service = makeService(repo, DUE_INTERVAL_MS);
+
+    await expect(
+      service.run(SyncJobType.FullScheduleVerify, load, NOW, "la_liga"),
+    ).resolves.toMatchObject({ kind: "deferred", retry_attempt: 0 });
+    expect(load).toHaveBeenCalledTimes(1);
+  });
+
+  it("旧日志没有 league_id 时不视为指定联赛的成功记录", async () => {
+    const repo = new InMemoryRepository();
+    await repo.syncLogs.insert(makeLog({
+      job_type: SyncJobType.FullScheduleVerify,
+      status: "success",
+      started_at: new Date(NOW.getTime() - 60_000),
+    }));
+    const load = vi.fn(async () => []);
+    const service = makeService(repo, DUE_INTERVAL_MS);
+
+    await expect(
+      service.run(SyncJobType.FullScheduleVerify, load, NOW, "la_liga"),
+    ).resolves.toMatchObject({ kind: "completed" });
+    expect(load).toHaveBeenCalledTimes(1);
+  });
+
   it("executeHeldByCaller 在 not-due 时返回 skipped 且不写 sync_log、不 release", async () => {
     const repo = new InMemoryRepository();
     await repo.syncLogs.insert(makeLog({

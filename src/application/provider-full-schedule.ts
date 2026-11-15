@@ -1,5 +1,6 @@
 import { SyncJobType } from "../domain/enums.js";
 import { internalError } from "../domain/errors.js";
+import type { ProviderLeagueRefs } from "../domain/config.js";
 import type { AppRepository } from "../infrastructure/repositories.js";
 import type { FullScheduleFixtureClient } from "./provider-fixture-loader.js";
 import { createFullScheduleVerifyLoader } from "./provider-fixture-loader.js";
@@ -48,12 +49,13 @@ export class ProviderFullScheduleVerifyService {
     client: ProviderFullScheduleVerifyClient,
     retryOptions: ProviderFixtureSyncRetryOptions = {},
     lockOptions: ProviderFixtureSyncLockOptions = {},
+    providerLeagueRefs?: ProviderLeagueRefs,
   ) {
     this.client = client;
     this.teamSync = new ProviderTeamSyncService(repo, client);
     this.fixtureJob = new ProviderFixtureSyncJobService(
       repo,
-      new ProviderFixtureSyncService(repo),
+      new ProviderFixtureSyncService(repo, undefined, providerLeagueRefs),
       retryOptions,
       lockOptions,
     );
@@ -71,6 +73,7 @@ export class ProviderFullScheduleVerifyService {
       SyncJobType.FullScheduleVerify,
       load,
       serverNow,
+      leagueId,
     );
     if (fixtures.kind === "skipped") {
       return { kind: "skipped", fixtures };

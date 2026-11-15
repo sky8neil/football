@@ -530,7 +530,7 @@ describe("shared scheduled-jobs reuse", () => {
 });
 
 describe("Provider Timer scheduling", () => {
-  it("dispatches only the oldest due league for each schedule job in one Timer tick", async () => {
+  it("dispatches all due leagues in order for each schedule job in one Timer tick", async () => {
     const now = new Date("2026-10-13T12:00:00.000Z");
     const dueLeagues = vi.fn()
       .mockResolvedValueOnce(["la_liga", "serie_a"])
@@ -559,11 +559,16 @@ describe("Provider Timer scheduling", () => {
     expect(querySpy).toHaveBeenCalledWith("football_test_sync_logs", expect.anything(), expect.anything());
 
     expect(dispatchRun).toHaveBeenCalledWith(SyncJobType.FutureSchedule, now, "la_liga");
+    expect(dispatchRun).toHaveBeenCalledWith(SyncJobType.FutureSchedule, now, "serie_a");
     expect(dispatchRun).toHaveBeenCalledWith(SyncJobType.FullScheduleVerify, now, "bundesliga");
-    expect(dispatchRun.mock.calls.filter(([job]) => job === SyncJobType.FutureSchedule)).toHaveLength(1);
-    expect(dispatchRun.mock.calls.filter(([job]) => job === SyncJobType.FullScheduleVerify)).toHaveLength(1);
+    expect(dispatchRun).toHaveBeenCalledWith(SyncJobType.FullScheduleVerify, now, "ligue_1");
+    expect(dispatchRun.mock.calls.filter(([job]) => job === SyncJobType.FutureSchedule)).toHaveLength(2);
+    expect(dispatchRun.mock.calls.filter(([job]) => job === SyncJobType.FullScheduleVerify)).toHaveLength(2);
     expect(result.jobs_run).toEqual(expect.arrayContaining([
-      `${SyncJobType.FutureSchedule}:la_liga`, `${SyncJobType.FullScheduleVerify}:bundesliga`,
+      `${SyncJobType.FutureSchedule}:la_liga`,
+      `${SyncJobType.FutureSchedule}:serie_a`,
+      `${SyncJobType.FullScheduleVerify}:bundesliga`,
+      `${SyncJobType.FullScheduleVerify}:ligue_1`,
     ]));
   });
 });

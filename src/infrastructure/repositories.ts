@@ -256,7 +256,7 @@ export interface SyncLogRepository {
   /** RP07：取某 job_type 最近一条日志。实现可选，调用方必须处理 undefined。 */
   findLatestByJobType?(
     jobType: SyncJobType,
-    options?: { excludeSyncJobId?: string },
+    options?: { excludeSyncJobId?: string; leagueId?: string },
   ): Promise<SyncLog | null>;
 }
 
@@ -2283,11 +2283,14 @@ export class InMemoryRepository implements AppRepository {
 
   private async findLatestSyncLogByJobType(
     jobType: SyncJobType,
-    options?: { excludeSyncJobId?: string },
+    options?: { excludeSyncJobId?: string; leagueId?: string },
   ): Promise<SyncLog | null> {
     const excludeSyncJobId = options?.excludeSyncJobId;
+    const leagueId = options?.leagueId;
     const matched = [...this.store.syncLogsById.values()].filter(
-      (log) => log.job_type === jobType && log.sync_job_id !== excludeSyncJobId,
+      (log) => log.job_type === jobType &&
+        log.sync_job_id !== excludeSyncJobId &&
+        (leagueId === undefined || log.league_id === leagueId),
     );
     if (matched.length === 0) {
       return null;

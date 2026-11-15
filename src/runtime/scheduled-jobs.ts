@@ -181,12 +181,13 @@ export async function planDueProviderJobs(input: {
         input.serverNow,
         providerJobIntervalMs(jobType, input.profile),
       );
-      const leagueId = dueLeagues[0];
-      if (leagueId === undefined) {
+      if (dueLeagues.length === 0) {
         decisions.push({ task: jobType, action: "skip", reason: "no_due_league" });
         continue;
       }
-      decisions.push({ task: jobType, action: "run", reason: "due", league_id: leagueId });
+      for (const leagueId of dueLeagues) {
+        decisions.push({ task: jobType, action: "run", reason: "due", league_id: leagueId });
+      }
       continue;
     }
     const last = await latestSyncLog(input.cloudDb, input.namespace, jobType);
@@ -505,18 +506,24 @@ export async function runDueProviderJobs(input: RunDueProviderJobsInput): Promis
         outcome: outcome.kind,
       });
       const classified = classifyProviderSyncOutcome(outcome);
-      if (classified.bucket === "ran") ran.push(label);
-      else if (classified.bucket === "skipped") skipped.push({ task: label, reason: classified.reason ?? "skipped" });
-      else if (classified.bucket === "deferred" && classified.deferred !== undefined) {
-        deferred.push({ task: label, ...classified.deferred });
-      } else if (classified.bucket === "failed") {
-        failed.push({
-          task: label,
-          reason: classified.reason ?? "failed",
-          ...(classified.items_failed === undefined ? {} : { items_failed: classified.items_failed }),
-        });
+      if (classified.bucket === "ran") {
+        await input.providerRegistry.commitPendingLeagueSuccess?.(decision.task, input.serverNow);
+        ran.push(label);
+      } else {
+        input.providerRegistry.discardPendingLeagueSuccess?.(decision.task);
+        if (classified.bucket === "skipped") skipped.push({ task: label, reason: classified.reason ?? "skipped" });
+        else if (classified.bucket === "deferred" && classified.deferred !== undefined) {
+          deferred.push({ task: label, ...classified.deferred });
+        } else if (classified.bucket === "failed") {
+          failed.push({
+            task: label,
+            reason: classified.reason ?? "failed",
+            ...(classified.items_failed === undefined ? {} : { items_failed: classified.items_failed }),
+          });
+        }
       }
     } catch (error) {
+      input.providerRegistry.discardPendingLeagueSuccess?.(decision.task);
       errors.push(error);
       failed.push({ task: label, reason: "exception" });
       input.log({

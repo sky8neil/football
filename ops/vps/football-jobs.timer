@@ -1,8 +1,8 @@
 [Unit]
-Description=Run Football jobs every ten minutes
+Description=Run Football jobs every fifteen minutes
 
 [Timer]
-OnCalendar=*-*-* *:00/10:00
+OnCalendar=*-*-* *:00/15:00
 Persistent=true
 Unit=football-jobs.service
 

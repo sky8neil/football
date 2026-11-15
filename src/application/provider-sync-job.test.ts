@@ -15,6 +15,7 @@ import {
 } from "../provider/http.js";
 import type { ApiFootballFixture } from "../provider/types.js";
 import { applyJitter } from "../sync/config.js";
+import { planDueProviderJobs, runDueProviderJobs } from "../runtime/scheduled-jobs.js";
 import { ProviderFixtureSyncService } from "./provider-fixture-sync.js";
 import {
   ProviderFixtureSyncJobService,
@@ -402,7 +403,158 @@ describe("ProviderFixtureSyncJobService", () => {
     }));
   });
 
-  it("单 fixture 的 fail-closed outcome 计入 items_failed 且批次仍完成", async () => {
+  it("HTTP 成功但全部入库失败时不持久化为 success，按退避延后补偿", async () => {
+    const repo = new InMemoryRepository();
+    const syncLogs = recordingSyncLogs();
+    const applyFixture = vi.fn(async () => ({
+      kind: "failed" as const,
+      match_id: null,
+      anomaly_types: [],
+    }));
+    const items = Array.from({ length: 100 }, (_, index) =>
+      item(makeApiFixture({ fixtureId: 1110000 + index, statusShort: "TBD" })),
+    );
+    const service = new ProviderFixtureSyncJobService(
+      { jobLocks: repo.jobLocks, syncLogs },
+      { applyFixture },
+      { random: () => 0.5 },
+    );
+
+    await expect(
+      service.run(SyncJobType.FutureSchedule, async () => items, NOW),
+    ).resolves.toEqual({
+      kind: "deferred",
+      job_type: SyncJobType.FutureSchedule,
+      next_attempt_at: new Date(NOW.getTime() + 60_000),
+      retry_attempt: 0,
+      last_error_code: "PROVIDER_FIXTURE_FAILED",
+      items_read: 100,
+      items_changed: 0,
+      items_failed: 100,
+      failure_diagnostics: expect.any(Array),
+      failure_diagnostics_omitted: 0,
+    });
+    expect(applyFixture).toHaveBeenCalledTimes(100);
+    expect(syncLogs.update).toHaveBeenCalledWith(expect.objectContaining({
+      status: "deferred",
+      items_read: 100,
+      items_changed: 0,
+      items_failed: 100,
+      retry_attempt: 0,
+      next_attempt_at: new Date(NOW.getTime() + 60_000),
+      last_error_code: "PROVIDER_FIXTURE_FAILED",
+      failure_diagnostics_omitted: 0,
+    }));
+    expect(syncLogs.update).not.toHaveBeenCalledWith(expect.objectContaining({
+      status: "success",
+    }));
+    const update = syncLogs.update.mock.calls.at(-1)?.[0];
+    expect(update?.failure_diagnostics).toHaveLength(100);
+  });
+
+  it("部分入库成功时保留已写入结果，失败部分跨 tick 补偿且重放幂等", async () => {
+    const repo = new InMemoryRepository();
+    const scheduled = makeMatch();
+    const result = makeMatch();
+    await seedMatch(repo, scheduled, "1200001");
+    await seedMatch(repo, result, "1200002", "football_data");
+    const incompleteResult = makeApiFixture({
+      fixtureId: 1200002,
+      statusShort: "FT",
+      fulltimeHome: null,
+    });
+    incompleteResult.provider = "football_data";
+    incompleteResult.league.id = "PL";
+    const loadIncomplete = async () => [
+      item(makeApiFixture({ fixtureId: 1200001, statusShort: "TBD" })),
+      item(incompleteResult),
+    ];
+    const service = new ProviderFixtureSyncJobService(
+      { jobLocks: repo.jobLocks, syncLogs: repo.syncLogs },
+      new ProviderFixtureSyncService(repo),
+      { random: () => 0.5 },
+    );
+
+    await expect(
+      service.run(SyncJobType.FutureSchedule, loadIncomplete, NOW),
+    ).resolves.toEqual({
+      kind: "deferred",
+      job_type: SyncJobType.FutureSchedule,
+      next_attempt_at: new Date(NOW.getTime() + 60_000),
+      retry_attempt: 0,
+      last_error_code: "PROVIDER_FIXTURE_FAILED",
+      items_read: 2,
+      items_changed: 1,
+      items_failed: 1,
+      failure_diagnostics: [expect.objectContaining({
+        provider_fixture_id: "1200002",
+        outcome: "failed",
+        error_code: "INVALID_FINAL_SCORE",
+      })],
+      failure_diagnostics_omitted: 0,
+    });
+    const deferredLog = await repo.syncLogs.findLatestByJobType!(SyncJobType.FutureSchedule);
+    expect(deferredLog).toMatchObject({
+      status: "deferred",
+      items_read: 2,
+      items_changed: 1,
+      items_failed: 1,
+      retry_attempt: 0,
+      next_attempt_at: new Date(NOW.getTime() + 60_000),
+    });
+    await expect(repo.matches.findById(scheduled.match_id)).resolves.toMatchObject({
+      kickoff_confirmed: false,
+    });
+    await expect(repo.matches.findById(result.match_id)).resolves.toMatchObject({
+      match_status: MatchStatus.Finished,
+      regular_home_score: null,
+      regular_away_score: null,
+      result_version: 0,
+    });
+
+    const correctedResult = makeApiFixture({
+      fixtureId: 1200002,
+      statusShort: "FT",
+      fulltimeHome: 2,
+      fulltimeAway: 1,
+    });
+    correctedResult.provider = "football_data";
+    correctedResult.league.id = "PL";
+    const loadCorrected = async () => [
+      item(makeApiFixture({ fixtureId: 1200001, statusShort: "TBD" })),
+      item(correctedResult),
+    ];
+    const nextTick = new Date(NOW.getTime() + 60_000);
+    await expect(
+      service.run(SyncJobType.FutureSchedule, loadCorrected, nextTick),
+    ).resolves.toMatchObject({
+      kind: "completed",
+      items_read: 2,
+      items_failed: 0,
+    });
+    await expect(repo.matches.findById(result.match_id)).resolves.toMatchObject({
+      regular_home_score: 2,
+      regular_away_score: 1,
+      result_version: 1,
+    });
+
+    await expect(
+      service.run(
+        SyncJobType.FutureSchedule,
+        loadCorrected,
+        new Date(NOW.getTime() + 120_000),
+      ),
+    ).resolves.toMatchObject({
+      kind: "completed",
+      items_changed: 0,
+      items_failed: 0,
+    });
+    await expect(repo.matches.findById(result.match_id)).resolves.toMatchObject({
+      result_version: 1,
+    });
+  });
+
+  it("单 fixture 的 fail-closed outcome 计入 items_failed 并延后补偿", async () => {
     const repo = new InMemoryRepository();
     const match = makeMatch();
     await seedMatch(repo, match, "1100004");
@@ -413,11 +565,15 @@ describe("ProviderFixtureSyncJobService", () => {
     const service = new ProviderFixtureSyncJobService(
       { jobLocks: repo.jobLocks, syncLogs },
       new ProviderFixtureSyncService(repo),
+      { random: () => 0.5 },
     );
 
     await expect(service.run(SyncJobType.PostFinishVerify, load, NOW)).resolves.toEqual({
-      kind: "completed",
+      kind: "deferred",
       job_type: SyncJobType.PostFinishVerify,
+      next_attempt_at: new Date(NOW.getTime() + 60_000),
+      retry_attempt: 0,
+      last_error_code: "PROVIDER_FIXTURE_FAILED",
       items_read: 1,
       items_changed: 0,
       items_failed: 1,
@@ -440,7 +596,7 @@ describe("ProviderFixtureSyncJobService", () => {
       result_version: 0,
     });
     expect(syncLogs.update).toHaveBeenCalledWith(expect.objectContaining({
-      status: "success",
+      status: "deferred",
       items_read: 1,
       items_changed: 0,
       items_failed: 1,
@@ -715,5 +871,84 @@ describe("ProviderFixtureSyncJobService", () => {
     expect(jobLocks.acquire).not.toHaveBeenCalled();
     expect(syncLogs.insert).not.toHaveBeenCalled();
     expect(load).not.toHaveBeenCalled();
+  });
+});
+
+describe("Provider 调度联赛隔离", () => {
+  it("赛程任务为每个到期联赛分别生成 run 决策，首个联赛被跳过时不阻断其它联赛", async () => {
+    const dueLeagues = vi.fn(async (_leagueIds: readonly string[], jobType: SyncJobType) =>
+      jobType === SyncJobType.FullScheduleVerify ? ["premier_league", "la_liga"] : [],
+    );
+    const decisions = await planDueProviderJobs({
+      cloudDb: { query: vi.fn(async () => []) } as never,
+      namespace: "football_test",
+      providerRegistry: { dueLeagues } as never,
+      syncLeagueIds: ["premier_league", "la_liga"],
+      sourceIds: ["fd"],
+      profile: "test",
+      serverNow: NOW,
+    });
+
+    expect(decisions.filter((decision) => decision.task === SyncJobType.FullScheduleVerify)).toEqual([
+      { task: SyncJobType.FullScheduleVerify, action: "run", reason: "due", league_id: "premier_league" },
+      { task: SyncJobType.FullScheduleVerify, action: "run", reason: "due", league_id: "la_liga" },
+    ]);
+  });
+
+  it("调度异常时丢弃待提交的联赛成功候选，不推进业务完成时间", async () => {
+    const dueLeagues = vi.fn(async (_leagueIds: readonly string[], jobType: SyncJobType) =>
+      jobType === SyncJobType.FutureSchedule ? ["premier_league"] : [],
+    );
+    const commitPendingLeagueSuccess = vi.fn(async () => undefined);
+    const discardPendingLeagueSuccess = vi.fn();
+    const dispatchRun = vi.fn(async (jobType: string) => {
+      if (jobType === SyncJobType.FutureSchedule) throw new Error("fixture exception");
+      return {
+        kind: "completed",
+        fixtures: {
+          kind: "completed",
+          job_type: jobType,
+          items_read: 0,
+          items_changed: 0,
+          items_failed: 0,
+        },
+      };
+    });
+    const recentlySuccessful = new Set<string>([
+      SyncJobType.LiveMatch,
+      SyncJobType.NearMatch,
+      SyncJobType.PostFinishVerify,
+      SyncJobType.ProviderReconcile,
+    ]);
+
+    const result = await runDueProviderJobs({
+      cloudDb: {
+        query: vi.fn(async (_collection: string, filter: { job_type?: string }) => (
+          filter.job_type !== undefined && recentlySuccessful.has(filter.job_type)
+            ? [{ job_type: filter.job_type, status: "success", started_at: NOW }]
+            : []
+        )),
+      } as never,
+      namespace: "football_test",
+      dispatcher: { run: dispatchRun } as never,
+      providerRegistry: {
+        dueLeagues,
+        commitPendingLeagueSuccess,
+        discardPendingLeagueSuccess,
+      } as never,
+      syncLeagueIds: ["premier_league"],
+      sourceIds: ["fd"],
+      profile: "test",
+      reconcile: { run: vi.fn(async () => ({ kind: "completed" })) } as never,
+      serverNow: NOW,
+      log: vi.fn(),
+    });
+
+    expect(dispatchRun).toHaveBeenCalledWith(SyncJobType.FutureSchedule, NOW, "premier_league");
+    expect(discardPendingLeagueSuccess).toHaveBeenCalledWith(SyncJobType.FutureSchedule);
+    expect(commitPendingLeagueSuccess).not.toHaveBeenCalled();
+    expect(result.failed).toEqual(expect.arrayContaining([
+      { task: `${SyncJobType.FutureSchedule}:premier_league`, reason: "exception" },
+    ]));
   });
 });

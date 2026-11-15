@@ -1,3 +1,9 @@
+import {
+  findSupportedLeagueById,
+  findSupportedLeagueByProviderId,
+  isKickoffInLeagueSeason,
+  type ProviderLeagueRefs,
+} from "../domain/config.js";
 import { ProviderDataError } from "./http.js";
 import type { ProviderAdapter, ProviderAdapterCallOptions, ProviderAdapterLeague, ProviderHttpClient } from "./adapter.js";
 import { asArray, asIdentifier, asRecord, asText, getProviderResponse } from "./adapter.js";
@@ -23,7 +29,38 @@ function mappedStatus(status: unknown, statusCode: unknown): string {
   }
 }
 
-function mapFixture(value: unknown, league: ProviderAdapterLeague): ApiFootballFixture {
+function resolveSeason(
+  row: Record<string, unknown>,
+  sourceLeague: Record<string, unknown> | null,
+  league: ProviderAdapterLeague,
+  sourceLeagueId: string,
+  timestamp: number,
+  kickoff: string,
+  providerLeagueRefs?: ProviderLeagueRefs,
+): string {
+  const explicit =
+    asText(row.season) ??
+    asIdentifier(row.season) ??
+    asText(sourceLeague?.season) ??
+    asIdentifier(sourceLeague?.season);
+  if (explicit !== undefined) return String(explicit);
+
+  const kickoffMs = Number.isFinite(timestamp) && timestamp > 0 ? timestamp * 1000 : Date.parse(kickoff);
+  if (!Number.isFinite(kickoffMs)) return "";
+
+  const registered =
+    (league.league_id ? findSupportedLeagueById(league.league_id) : undefined) ??
+    (sourceLeagueId ? findSupportedLeagueByProviderId(sourceLeagueId, "5dollar", providerLeagueRefs) : undefined);
+  if (registered === undefined) return "";
+
+  return isKickoffInLeagueSeason(registered, new Date(kickoffMs)) ? registered.source_season_ref : "";
+}
+
+function mapFixture(
+  value: unknown,
+  league: ProviderAdapterLeague,
+  providerLeagueRefs?: ProviderLeagueRefs,
+): ApiFootballFixture {
   const row = asRecord(value);
   if (row === null) return {} as ApiFootballFixture;
   const sourceLeague = asRecord(row.league);
@@ -36,13 +73,14 @@ function mapFixture(value: unknown, league: ProviderAdapterLeague): ApiFootballF
     ? row.kickoff_ts
     : Number.isFinite(Date.parse(kickoff)) ? Math.floor(Date.parse(kickoff) / 1000) : 0;
   const id = asIdentifier(row.id) ?? "";
+  const sourceLeagueId = String(asIdentifier(sourceLeague?.id) ?? league.source_league_ref);
   return {
     provider: "5dollar",
     fixture: { id, date: kickoff, timestamp, status: { short: mappedStatus(row.status, row.status_code) } },
     league: {
-      id: asIdentifier(sourceLeague?.id) ?? league.source_league_ref,
+      id: sourceLeagueId,
       ...(asText(sourceLeague?.name) ? { name: asText(sourceLeague?.name)! } : {}),
-      season: league.season_ref,
+      season: resolveSeason(row, sourceLeague, league, sourceLeagueId, timestamp, kickoff, providerLeagueRefs),
       round: typeof row.round === "number" || typeof row.round === "string" ? String(row.round) : "",
     },
     teams: {
@@ -82,10 +120,14 @@ export class FiveDollarAdapter implements ProviderAdapter {
   private liveCache: readonly ApiFootballFixture[] | null = null;
   private liveCacheKey = "";
 
-  constructor(private readonly http: ProviderHttpClient) {}
+  constructor(
+    private readonly http: ProviderHttpClient,
+    private readonly providerLeagueRefs?: ProviderLeagueRefs,
+  ) {}
 
   async fetchSeasonFixtures(league: ProviderAdapterLeague, options?: ProviderAdapterCallOptions): Promise<readonly ApiFootballFixture[]> {
-    return this.fetchPages(`leagues/${encodeURIComponent(league.source_league_ref)}/fixtures`, {}, league, options);
+    const fixtures = await this.fetchPages(`leagues/${encodeURIComponent(league.source_league_ref)}/fixtures`, {}, league, options);
+    return fixtures.filter((fixture) => String(fixture.league.id) === league.source_league_ref);
   }
 
   async fetchFixturesByDateRange(
@@ -98,13 +140,13 @@ export class FiveDollarAdapter implements ProviderAdapter {
     for (const window of dateInstants(dateFrom, dateTo)) {
       results.push(...await this.fetchPages("fixtures", window, league, options));
     }
-    return results;
+    return results.filter((fixture) => String(fixture.league.id) === league.source_league_ref);
   }
 
   async fetchLiveFixtures(options?: ProviderAdapterCallOptions): Promise<readonly ApiFootballFixture[]> {
     const cacheKey = options?.serverNow ? options.serverNow.toISOString().slice(0, 16) : new Date().toISOString().slice(0, 16);
     if (this.liveCacheKey === cacheKey && this.liveCache !== null) return this.liveCache;
-    const league: ProviderAdapterLeague = { league_id: "", source_league_ref: "", season_ref: "2026" };
+    const league: ProviderAdapterLeague = { league_id: "", source_league_ref: "", season_ref: "" };
     this.liveCache = await this.fetchPages("fixtures", { status: "live" }, league, options);
     this.liveCacheKey = cacheKey;
     return this.liveCache;
@@ -134,7 +176,7 @@ export class FiveDollarAdapter implements ProviderAdapter {
       await options?.beforeRequest?.();
       const body = await this.http.getJson(fixturePath(path), { ...query, page: String(page), per_page: "100" });
       const parsed = parseData(body);
-      output.push(...parsed.rows.map((row) => mapFixture(row, league)));
+      output.push(...parsed.rows.map((row) => mapFixture(row, league, this.providerLeagueRefs)));
       hasMore = parsed.hasMore;
       page += 1;
     }
