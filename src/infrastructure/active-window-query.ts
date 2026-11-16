@@ -3,7 +3,7 @@ import type { Match } from "../domain/types.js";
 import { activeWindow } from "../application/provider-active-window.js";
 import { coerceMatchKickoff, kickoffMs } from "./settlement-todo-query.js";
 
-export type ActiveWindowJob = "near_match" | "live_match" | "post_finish_verify";
+export type ActiveWindowJob = "near_match" | "live_match" | "post_finish_verify" | "stale_recovery";
 
 export interface ActiveWindowQuery {
   jobType: ActiveWindowJob;
@@ -68,15 +68,18 @@ export function buildActiveWindowFilters(query: ActiveWindowQuery): ActiveWindow
           settlement_status: SettlementStatus.Waiting,
         },
       },
-      {
-        equals: { settlement_status: SettlementStatus.Pending },
-        kickoffAtLte,
-      },
-      {
-        equals: { settlement_status: SettlementStatus.Waiting },
-        kickoffAtLte,
-      },
+      ...[MatchStatus.Live, MatchStatus.Scheduled].flatMap((status) =>
+        [SettlementStatus.Pending, SettlementStatus.Waiting].map((settlement) => ({
+          equals: { match_status: status, settlement_status: settlement },
+          kickoffAtGte: new Date(nowMs - 6 * HOUR_MS), kickoffAtLte,
+        }))),
     ];
+  }
+  if (query.jobType === "stale_recovery") {
+    const kickoffAtLte = new Date(nowMs - 6 * HOUR_MS);
+    return [MatchStatus.Scheduled, MatchStatus.Live].map((status) => ({
+      equals: { match_status: status }, kickoffAtLte,
+    }));
   }
   return [];
 }

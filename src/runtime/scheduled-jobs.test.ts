@@ -11,6 +11,7 @@ import {
   UNWIRED_PERIODIC_TASKS,
   WIRED_PERIODIC_TASKS,
   planScheduledJobs,
+  planDueProviderJobs,
   runDueProviderJobs,
   runScheduledJobs,
 } from "./scheduled-jobs.js";
@@ -18,6 +19,42 @@ import type { ApplicationRuntime } from "./application-runtime.js";
 import { SYNC_TASKS_V1 } from "../sync/config.js";
 
 const NOW = new Date("2026-08-09T00:00:00.000Z");
+
+it("恢复任务按 60 分钟间隔调度", async () => {
+  const input = {
+    cloudDb: { query: vi.fn(async () => [recentSuccess("stale_recovery")]) } as unknown as Parameters<typeof planDueProviderJobs>[0]["cloudDb"],
+    namespace: "test", providerRegistry: { dueLeagues: vi.fn(async () => []) },
+    syncLeagueIds: [], sourceIds: ["fd"] as const, profile: "test" as const,
+  };
+  const decision = async (minutes: number) => (await planDueProviderJobs({ ...input, serverNow: new Date(NOW.getTime() + minutes * 60_000) })).find((row) => row.task === SyncJobType.StaleRecovery);
+  expect(await decision(59)).toMatchObject({ action: "skip", reason: "interval_not_due" });
+  expect(await decision(60)).toMatchObject({ action: "run", reason: "due" });
+});
+
+it("恢复任务延期到期后仍须等待一小时", async () => {
+  const input = {
+    cloudDb: { query: vi.fn(async () => [{ status: "deferred", started_at: NOW, next_attempt_at: new Date(NOW.getTime() + 60_000) }]) } as unknown as Parameters<typeof planDueProviderJobs>[0]["cloudDb"],
+    namespace: "test", providerRegistry: { dueLeagues: vi.fn(async () => []) },
+    syncLeagueIds: [], sourceIds: ["fd"] as const, profile: "test" as const,
+    serverNow: new Date(NOW.getTime() + 15 * 60_000),
+  };
+  expect((await planDueProviderJobs(input)).find((row) => row.task === SyncJobType.StaleRecovery)).toMatchObject({ action: "skip", reason: "interval_not_due" });
+});
+
+it.each([
+  [{ kind: "completed", items_failed: 0 }, "jobs_run", SyncJobType.StaleRecovery],
+  [{ kind: "skipped", reason: "lock_held" }, "skipped", { task: SyncJobType.StaleRecovery, reason: "lock_held" }],
+] as const)("恢复任务执行结果计入 %s", async (outcome, bucket, expected) => {
+  const result = await runDueProviderJobs({
+    cloudDb: { query: vi.fn(async (_collection: string, filter: { job_type?: string }) => filter.job_type === SyncJobType.StaleRecovery ? [] : [recentSuccess(filter.job_type ?? "")]) } as never,
+    namespace: "test", dispatcher: { run: vi.fn() } as never,
+    providerRegistry: { dueLeagues: vi.fn(async () => []) } as never,
+    syncLeagueIds: [], sourceIds: ["fd"], profile: "test",
+    reconcile: { run: vi.fn() } as never, staleRecovery: { run: vi.fn(async () => outcome) } as never,
+    serverNow: NOW, log: vi.fn(),
+  });
+  expect(result[bucket]).toEqual(expect.arrayContaining([expected]));
+});
 
 function recentSuccess(jobType: string) {
   return { job_type: jobType, status: "success", started_at: NOW };
@@ -38,6 +75,7 @@ async function runDueLiveMatch(outcome: unknown) {
     sourceIds: ["fd"],
     profile: "test",
     reconcile: { run: vi.fn(async () => ({ kind: "completed" })) } as unknown as Parameters<typeof runDueProviderJobs>[0]["reconcile"],
+    staleRecovery: { run: vi.fn(async () => ({ kind: "completed", items_failed: 0 })) } as unknown as Parameters<typeof runDueProviderJobs>[0]["staleRecovery"],
     serverNow: NOW,
     log: vi.fn(),
   });
@@ -58,6 +96,7 @@ function runtimeStub(overrides: Record<string, unknown> = {}): ApplicationRuntim
     providerRegistry: { beginTickCache: vi.fn(), endTickCache: vi.fn(), dueLeagues: vi.fn(async () => []) },
     providerDispatcher: { run: vi.fn() },
     providerReconcile: { run: vi.fn(async () => ({ kind: "completed" })) },
+    providerStaleRecovery: { run: vi.fn(async () => ({ kind: "completed", items_failed: 0 })) },
     schedulerState: {
       getSettlementFallback: vi.fn(async () => null),
       upsertSettlementFallback: vi.fn(async () => undefined),
@@ -109,6 +148,7 @@ describe("TIMER_TASK_TYPES", () => {
       SyncJobType.FutureSchedule,
       SyncJobType.FullScheduleVerify,
       SyncJobType.ProviderReconcile,
+      SyncJobType.StaleRecovery,
       "settlement",
       SyncJobType.PeriodFinalize,
       SyncJobType.DailyConsistency,

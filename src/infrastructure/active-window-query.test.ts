@@ -226,7 +226,7 @@ describe("buildActiveWindowFilters", () => {
 
   it("post_finish_verify：finished×{pending,waiting} 等值 + pending/waiting 且 kickoff_at <= now", () => {
     const fragments = buildActiveWindowFilters(query("post_finish_verify"));
-    expect(fragments).toHaveLength(4);
+    expect(fragments).toHaveLength(6);
     expect(fragments[0]!.equals).toEqual({
       match_status: MatchStatus.Finished,
       settlement_status: SettlementStatus.Pending,
@@ -237,10 +237,24 @@ describe("buildActiveWindowFilters", () => {
       settlement_status: SettlementStatus.Waiting,
     });
     expect(fragments[1]!.kickoffAtLte).toBeUndefined();
-    expect(fragments[2]!.equals).toEqual({ settlement_status: SettlementStatus.Pending });
-    expect(fragments[2]!.kickoffAtLte?.getTime()).toBe(NOW.getTime());
-    expect(fragments[3]!.equals).toEqual({ settlement_status: SettlementStatus.Waiting });
-    expect(fragments[3]!.kickoffAtLte?.getTime()).toBe(NOW.getTime());
+    expect(fragments.slice(2).map((fragment) => fragment.equals)).toEqual([
+      { match_status: MatchStatus.Live, settlement_status: SettlementStatus.Pending },
+      { match_status: MatchStatus.Live, settlement_status: SettlementStatus.Waiting },
+      { match_status: MatchStatus.Scheduled, settlement_status: SettlementStatus.Pending },
+      { match_status: MatchStatus.Scheduled, settlement_status: SettlementStatus.Waiting },
+    ]);
+    for (const fragment of fragments.slice(2)) {
+      expect(fragment.kickoffAtGte?.getTime()).toBe(at(-6 * HOUR_MS).getTime());
+      expect(fragment.kickoffAtLte?.getTime()).toBe(NOW.getTime());
+    }
+  });
+
+  it("stale_recovery：两种状态从六小时前查询", () => {
+    const fragments = buildActiveWindowFilters(query("stale_recovery"));
+    expect(fragments.map((fragment) => fragment.equals)).toEqual([
+      { match_status: MatchStatus.Scheduled }, { match_status: MatchStatus.Live },
+    ]);
+    expect(fragments.every((fragment) => fragment.kickoffAtLte?.getTime() === at(-6 * HOUR_MS).getTime())).toBe(true);
   });
 });
 
@@ -280,7 +294,7 @@ describe("数据库片段必须是 activeWindow 的超集（接线不丢更新�
     );
     expect(activeWindow(matches, NOW, "live_match")).toHaveLength(6);
   });
-  it.each(["near_match", "live_match", "post_finish_verify"] as const)(
+  it.each(["near_match", "live_match", "post_finish_verify", "stale_recovery"] as const)(
     "%s：窗口内每场比赛都能被某个片段查出来",
     (jobType) => {
       const expected = new Set(idsOf(activeWindow(FIXTURES, NOW, jobType)));
@@ -307,7 +321,7 @@ describe("数据库片段必须是 activeWindow 的超集（接线不丢更新�
 });
 
 describe("selectActiveWindow", () => {
-  it.each(["near_match", "live_match", "post_finish_verify"] as const)(
+  it.each(["near_match", "live_match", "post_finish_verify", "stale_recovery"] as const)(
     "%s 与 findBySeason 全量 + activeWindow 结果完全一致",
     (jobType) => {
       const limit = 50;

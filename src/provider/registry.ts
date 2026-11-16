@@ -413,11 +413,11 @@ export class ProviderRegistry {
     const selectedPlan = explicitSourceId ? null : this.requestPlan(league.league_id, jobType, now);
     const selected = explicitSourceId
       ? this.entryForSource(explicitSourceId, league.league_id)
-      : jobType === SyncJobType.PostFinishVerify
+      : jobType === SyncJobType.PostFinishVerify || jobType === SyncJobType.StaleRecovery
         ? this.primaryEntry(league.league_id, "result")
         : selectedPlan ? this.entryForSource(selectedPlan.source_id, league.league_id) : null;
     if (selected === null || selected === undefined) {
-      if (jobType === SyncJobType.PostFinishVerify && (this.sourceLeagues.get(league.league_id)?.length ?? 0) > 0) return [];
+      if ((jobType === SyncJobType.PostFinishVerify || jobType === SyncJobType.StaleRecovery) && (this.sourceLeagues.get(league.league_id)?.length ?? 0) > 0) return [];
       return this.legacyFetch(query, season);
     }
     if (
@@ -481,6 +481,7 @@ export class ProviderRegistry {
       return primaryFixtures;
     } catch (error) {
       if (explicitSourceId) throw error;
+      if (jobType === SyncJobType.StaleRecovery) throw error;
       if (jobType === SyncJobType.PostFinishVerify) {
         if (error instanceof ProviderBudgetDeniedError) {
           this.log?.({ event: "skipped_budget", source_id: selected.source.source_id, league_id: league.league_id, reason: error.reason });

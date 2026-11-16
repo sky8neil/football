@@ -351,15 +351,30 @@ export class CloudBaseAppRepository implements AppRepository {
       findFinishedSettledOnDay: async (day) => {
         const start = new Date(`${day}T00:00:00.000Z`);
         const end = new Date(start.getTime() + 86_400_000 - 1);
-        const filter: Record<string, unknown> = { match_status: MatchStatus.Finished, settlement_status: SettlementStatus.Settled };
-        const lower = this.db.gteFilter?.("kickoff_at", start);
-        const upper = this.db.lteFilter?.("kickoff_at", end);
-        if (lower) Object.assign(filter, lower);
-        if (upper) {
-          const existing = filter.kickoff_at as { and?: (other: unknown) => unknown } | undefined;
-          filter.kickoff_at = existing === undefined ? upper.kickoff_at : typeof existing.and === "function" ? existing.and(upper.kickoff_at) : { ...existing, ...upper.kickoff_at as object };
+        const base = { match_status: MatchStatus.Finished, settlement_status: SettlementStatus.Settled };
+        const range = (field: string): Record<string, unknown> => {
+          const lower = this.db.gteFilter?.(field, start);
+          const upper = this.db.lteFilter?.(field, end);
+          if (!lower || !upper) return {};
+          const existing = (lower as Record<string, unknown>)[field] as { and?: (other: unknown) => unknown } | undefined;
+          const next = (upper as Record<string, unknown>)[field];
+          return {
+            [field]: existing !== undefined && typeof existing.and === "function"
+              ? existing.and(next)
+              : { ...(existing as object | undefined), ...(next as object) },
+          };
+        };
+        const rows = [
+          ...await this.where<Match>("matches", { ...base, ...range("kickoff_at") }),
+          ...await this.where<Match>("matches", { ...base, ...range("finish_detected_at") }),
+        ];
+        const unique = new Map<string, Match>();
+        for (const match of rows) {
+          if (match.superseded_by != null) continue;
+          if ((match.finish_detected_at ?? match.kickoff_at).toISOString().slice(0, 10) !== day) continue;
+          unique.set(match.match_id, match);
         }
-        return (await this.where<Match>("matches", filter)).filter((match) => match.superseded_by == null && match.kickoff_at.toISOString().slice(0, 10) === day);
+        return [...unique.values()];
       },
       findByLeagueSeasonRound: async (leagueId, seasonId, roundId) => this.where<Match>("matches", { league_id: leagueId, season_id: seasonId, round_id: roundId }),
       findLive: async () => (await this.where<Match>("matches", { match_status: "live" }))
@@ -659,7 +674,7 @@ export class CloudBaseAppRepository implements AppRepository {
       }
       const page = await this.where<Match>("matches", filter, {
         order_by: "kickoff_at",
-        direction: "desc",
+        direction: query.jobType === "stale_recovery" ? "asc" : "desc",
         limit: query.limit,
       });
       for (const match of page) collected.set(match.match_id, match);

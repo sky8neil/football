@@ -34,6 +34,16 @@ function createResultComparisonRegistry() {
 describe("ProviderRegistry", () => {
   afterEach(() => vi.restoreAllMocks());
 
+  it("恢复任务的主源预算拒绝直接上报，不自动回退", async () => {
+    const config = loadProviderSources({ FOOTBALL_PROVIDER_SOURCES: "fd,of", FOOTBALL_PROVIDER_KEY_FD_1: "fd-key", FOOTBALL_PROVIDER_KEY_OF: "of-key" });
+    const budget = new ProviderBudget(config.sources, new InMemoryProviderUsageStore());
+    vi.spyOn(budget, "acquire").mockResolvedValue({ allowed: false, reason: "day_limit" });
+    const fetchImpl = vi.fn<typeof fetch>();
+    const client = new ProviderRegistry({ config, budget, fetchImpl, minimumGapMs: 0 }).asClient();
+    await expect(client.getFixtures({ leagueId: "39", season: "2026", dateFrom: "2026-10-10", dateTo: "2026-10-10", jobType: SyncJobType.StaleRecovery, serverNow: new Date("2026-10-11T12:00:00Z") })).rejects.toBeInstanceOf(ProviderBudgetDeniedError);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it("orders comparison sources by role and reports skipped budget requests", () => {
     const config = loadProviderSources({
       FOOTBALL_PROVIDER_SOURCES: "sp,of,5d,bsd,fd",

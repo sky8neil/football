@@ -15,6 +15,9 @@ import {
 } from "./config.js";
 
 describe("SYNC_TASKS_V1（规范 32.1-32.6）", () => {
+  it("stale_recovery 每 60 分钟运行", () => {
+    expect(SYNC_TASKS_V1.stale_recovery.intervalMinutes).toBe(60);
+  });
   it("future_schedule：未来 30 天、每 6 小时（test profile 12 小时）", () => {
     expect(SYNC_TASKS_V1[SyncJobType.FutureSchedule]).toMatchObject({
       lookaheadDays: 30,

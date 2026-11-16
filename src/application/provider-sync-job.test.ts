@@ -113,6 +113,14 @@ function makeDeferredLog(overrides: Partial<SyncLog> = {}): SyncLog {
 }
 
 describe("ProviderFixtureSyncJobService", () => {
+  it("恢复任务在锁内再次检查延期任务的一小时间隔", async () => {
+    const repo = new InMemoryRepository();
+    await repo.syncLogs.insert(makeDeferredLog({ job_type: SyncJobType.StaleRecovery }));
+    const load = vi.fn(async function* () { yield []; });
+    const service = new ProviderFixtureSyncJobService(repo, { applyFixture: vi.fn() }, {}, { dueIntervalMs: 60 * 60_000 });
+    expect(await service.run(SyncJobType.StaleRecovery, load, NOW)).toMatchObject({ kind: "skipped", reason: "not_due_after_lock" });
+    expect(load).not.toHaveBeenCalled();
+  });
   it("applies each batch before requesting the next and accumulates failures", async () => {
     const repo = new InMemoryRepository();
     const events: string[] = [];
@@ -993,6 +1001,7 @@ describe("Provider 调度联赛隔离", () => {
       sourceIds: ["fd"],
       profile: "test",
       reconcile: { run: vi.fn(async () => ({ kind: "completed" })) } as never,
+      staleRecovery: { run: vi.fn(async () => ({ kind: "completed", items_failed: 0 })) } as never,
       serverNow: NOW,
       log: vi.fn(),
     });

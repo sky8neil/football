@@ -71,9 +71,19 @@ describe("activeWindow", () => {
     overdue.finish_detected_at = NOW;
     expect(activeWindow([finished, overdue], NOW, SyncJobType.PostFinishVerify)).toEqual([finished]);
     const staleLive = match(new Date(NOW.getTime() - 7 * 60 * 60_000), MatchStatus.Live);
-    expect(activeWindow([staleLive], NOW, SyncJobType.PostFinishVerify)).toEqual([staleLive]);
+    expect(activeWindow([staleLive], NOW, SyncJobType.PostFinishVerify)).toEqual([]);
     expect(activeWindow([overdue], new Date("2026-10-12T00:00:00.000Z"), SyncJobType.PostFinishVerify)).toEqual([overdue]);
     overdue.settlement_status = SettlementStatus.Settled;
     expect(activeWindow([overdue], new Date("2026-10-12T00:00:00.000Z"), SyncJobType.PostFinishVerify)).toEqual([]);
+  });
+
+  it.each([MatchStatus.Scheduled, MatchStatus.Live])("将超时 %s 独占交给恢复任务", (status) => {
+    const now = new Date("2026-10-12T00:00:00.000Z");
+    const stale = { ...match(new Date(now.getTime() - 25 * 3600_000), status), canonical_match_id: "group" };
+    const boundary = match(new Date(now.getTime() - 6 * 3600_000), status);
+    const superseded = { ...stale, superseded_by: "replacement" };
+    expect(activeWindow([stale], now, SyncJobType.LiveMatch)).toEqual([]);
+    expect(activeWindow([stale], now, SyncJobType.PostFinishVerify)).toEqual([]);
+    expect(activeWindow([stale, boundary, superseded], now, SyncJobType.StaleRecovery)).toEqual([stale]);
   });
 });

@@ -36,6 +36,7 @@ async function runWithLiveMatchLog(liveMatchLog: Record<string, unknown>) {
     sourceIds: ["fd"],
     profile: "test",
     reconcile,
+    staleRecovery: { run: vi.fn(async () => ({ kind: "completed", items_failed: 0 })) } as unknown as Parameters<typeof runDueProviderJobs>[0]["staleRecovery"],
     serverNow: NOW,
     log: vi.fn(),
   });

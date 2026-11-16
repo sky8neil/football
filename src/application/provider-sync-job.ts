@@ -1,6 +1,6 @@
 import { FIXED_CONFIG_V1 } from "../domain/config.js";
 import { DomainError, internalError } from "../domain/errors.js";
-import { Provider, SCHEMA_VERSION, SyncJobStatus, type SyncJobType } from "../domain/enums.js";
+import { Provider, SCHEMA_VERSION, SyncJobStatus, SyncJobType } from "../domain/enums.js";
 import { newUuid } from "../domain/ids.js";
 import type { SyncLog } from "../domain/types.js";
 import {
@@ -364,6 +364,7 @@ export class ProviderFixtureSyncJobService {
       ? startedAt.getTime()
       : typeof startedAt === "string" ? Date.parse(startedAt) : Number.NaN;
     if (!Number.isFinite(startedMs)) return true;
+    if (jobType === SyncJobType.StaleRecovery && serverNow.getTime() - startedMs < dueIntervalMs) return false;
     if (latest.status === "deferred") {
       const nextAttemptAt = latest.next_attempt_at as Date | string | null | undefined;
       const nextAtMs = nextAttemptAt instanceof Date

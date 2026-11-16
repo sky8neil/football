@@ -20,6 +20,7 @@ import {
   MatchStatus,
   SCHEMA_VERSION,
   SettlementItemStatus,
+  SettlementStatus,
   type SettlementDocStatus,
   type SyncJobType,
 } from "../domain/enums.js";
@@ -776,7 +777,11 @@ export class InMemoryRepository implements AppRepository {
           .filter((match) => (match.canonical_match_id ?? match.match_id) === canonicalMatchId)
           .map((match) => match.match_id),
       findBySeason: (seasonId) => self.findMatchesBySeason(seasonId),
-      findFinishedSettledOnDay: async (day) => [...self.store.matchesById.values()].filter((match) => match.match_status === MatchStatus.Finished && match.settlement_status === "settled" && match.superseded_by == null && match.kickoff_at.toISOString().slice(0, 10) === day),
+      findFinishedSettledOnDay: async (day) => [...self.store.matchesById.values()].filter((match) =>
+        match.match_status === MatchStatus.Finished &&
+        match.settlement_status === SettlementStatus.Settled &&
+        match.superseded_by == null &&
+        (match.finish_detected_at ?? match.kickoff_at).toISOString().slice(0, 10) === day),
       findByLeagueSeasonRound: (leagueId, seasonId, roundId) =>
         self.findMatchesByLeagueSeasonRound(leagueId, seasonId, roundId),
       findLive: () => self.findLiveMatches(),

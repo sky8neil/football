@@ -5,6 +5,7 @@ import { cloudBaseCollectionName, type CloudBaseDb } from "../infrastructure/clo
 import { failedJobCooldownMs, providerJobIntervalMs, SYNC_TASKS_V1 } from "../sync/config.js";
 import type { ProviderFixtureFailureDiagnostic } from "../application/provider-sync-job.js";
 import type { ProviderReconcileService } from "../application/provider-reconcile.js";
+import type { ProviderStaleRecoveryService } from "../application/provider-stale-recovery.js";
 import { runSettlementTimer, type SettlementTimerOutcome } from "../application/settlement-timer.js";
 import { ProviderSyncDispatcher, type ProviderSyncJobType, type ProviderSyncOutcome } from "../application/provider-sync-dispatcher.js";
 import { DAILY_CONSISTENCY_MISMATCH_CODE } from "../application/daily-consistency-service.js";
@@ -22,6 +23,7 @@ export const TIMER_TASK_TYPES = [
   SyncJobType.FutureSchedule,
   SyncJobType.FullScheduleVerify,
   SyncJobType.ProviderReconcile,
+  SyncJobType.StaleRecovery,
   "settlement",
   SyncJobType.PeriodFinalize,
   SyncJobType.DailyConsistency,
@@ -103,6 +105,7 @@ export interface RunDueProviderJobsInput {
   sourceIds: readonly ProviderSourceId[];
   profile: "test" | "prod";
   reconcile: ProviderReconcileService;
+  staleRecovery: ProviderStaleRecoveryService;
   serverNow: Date;
   log: (entry: Record<string, unknown>) => void;
 }
@@ -173,6 +176,7 @@ export async function planDueProviderJobs(input: {
       decisions.push({ task: jobType, action: "skip", reason: "no_provider_sources" });
     }
     decisions.push({ task: SyncJobType.ProviderReconcile, action: "skip", reason: "no_provider_sources" });
+    decisions.push({ task: SyncJobType.StaleRecovery, action: "skip", reason: "no_provider_sources" });
     return decisions;
   }
 
@@ -214,6 +218,15 @@ export async function planDueProviderJobs(input: {
   } else {
     decisions.push({ task: SyncJobType.ProviderReconcile, action: "run", reason: "due" });
   }
+  const lastRecovery = await latestSyncLog(input.cloudDb, input.namespace, SyncJobType.StaleRecovery);
+  const recoveryInterval = providerJobIntervalMs(SyncJobType.StaleRecovery, input.profile);
+  // 延期待办可能早于 next_attempt_at 到期，但恢复任务本身仍受「每自然小时最多一次」约束，
+  // 因此间隔判定必须独立于 deferred 分支。
+  const recoverySkip = intervalSkip(lastRecovery, input.serverNow, recoveryInterval, failedJobCooldownMs(SyncJobType.StaleRecovery, input.profile))
+    ?? (input.serverNow.getTime() - toEpochMs(lastRecovery?.started_at) < recoveryInterval ? "interval_not_due" : undefined);
+  decisions.push(recoverySkip === undefined
+    ? { task: SyncJobType.StaleRecovery, action: "run", reason: "due" }
+    : { task: SyncJobType.StaleRecovery, action: "skip", reason: recoverySkip });
   return decisions;
 }
 
@@ -493,6 +506,22 @@ export async function runDueProviderJobs(input: RunDueProviderJobsInput): Promis
         errors.push(error);
         failed.push({ task: SyncJobType.ProviderReconcile, reason: "exception" });
         input.log({ event: "provider_schedule", job_type: SyncJobType.ProviderReconcile, outcome: "failed" });
+      }
+      continue;
+    }
+    if (decision.task === SyncJobType.StaleRecovery) {
+      try {
+        const outcome = await input.staleRecovery.run(input.serverNow);
+        if (outcome.kind === "completed") {
+          if (outcome.items_failed > 0) failed.push({ task: decision.task, reason: "items_failed", items_failed: outcome.items_failed });
+          else ran.push(decision.task);
+        } else if (outcome.kind === "skipped") skipped.push({ task: decision.task, reason: outcome.reason });
+        else deferred.push({ task: decision.task, next_attempt_at: outcome.next_attempt_at.toISOString(), retry_attempt: outcome.retry_attempt, last_error_code: outcome.last_error_code });
+        input.log({ event: "provider_schedule", job_type: decision.task, outcome: outcome.kind });
+      } catch (error) {
+        errors.push(error);
+        failed.push({ task: decision.task, reason: "exception" });
+        input.log({ event: "provider_schedule", job_type: decision.task, outcome: "failed" });
       }
       continue;
     }
@@ -781,6 +810,7 @@ export async function runScheduledJobs(input: {
         sourceIds: runtime.providerSources.sources.map((source) => source.source_id),
         profile: runtime.providerSources.sync_profile,
         reconcile: runtime.providerReconcile,
+        staleRecovery: runtime.providerStaleRecovery,
         serverNow,
         log: runtime.log,
       });

@@ -332,6 +332,26 @@ describe.each([
     await repo.providerReconcileTodos.upsert({ ...todo, todo_id: "other-source", source_id: "sp" });
     expect((await repo.providerReconcileTodos.findPending(10)).map((row) => row.todo_id).sort()).toEqual(["other-source", "version-two"]);
   });
+
+  it("selects settled matches by finish day and falls back to kickoff day", async () => {
+    const repo = createRepo();
+    const settled = { match_status: MatchStatus.Finished, settlement_status: SettlementStatus.Settled };
+    await repo.matches.insert(makeWindowMatch({
+      ...settled, match_id: "finished-yesterday",
+      kickoff_at: new Date(NOW.getTime() - 5 * 86_400_000), finish_detected_at: new Date(NOW.getTime() - 86_400_000),
+    }));
+    await repo.matches.insert(makeWindowMatch({
+      ...settled, match_id: "finished-no-detection",
+      kickoff_at: new Date(NOW.getTime() - 86_400_000), finish_detected_at: null,
+    }));
+    await repo.matches.insert(makeWindowMatch({
+      ...settled, match_id: "finished-older",
+      kickoff_at: new Date(NOW.getTime() - 3 * 86_400_000), finish_detected_at: new Date(NOW.getTime() - 3 * 86_400_000),
+    }));
+    const day = new Date(NOW.getTime() - 86_400_000).toISOString().slice(0, 10);
+    const rows = await repo.matches.findFinishedSettledOnDay(day);
+    expect(rows.map((row) => row.match_id).sort()).toEqual(["finished-no-detection", "finished-yesterday"]);
+  });
 });
 
 class RangeAwareMemoryCloudBaseDb extends MemoryCloudBaseDb {
@@ -751,13 +771,22 @@ describe("CloudBaseAppRepository.findActiveWindow", () => {
     const cloud = createCloudBaseRepository(db);
     await seed(memory);
     await seed(cloud);
-    for (const jobType of ["near_match", "live_match", "post_finish_verify"] as const) {
+    for (const jobType of ["near_match", "live_match", "post_finish_verify", "stale_recovery"] as const) {
       const query = { jobType, now: NOW, limit: 50 };
       const memoryIds = (await memory.matches.findActiveWindow(query)).map((row) => row.match_id);
       const cloudIds = (await cloud.matches.findActiveWindow(query)).map((row) => row.match_id);
       expect(cloudIds).toEqual(memoryIds);
     }
   }
+
+  it("恢复任务超出上限时优先查询最早的候选", async () => {
+    const repo = createCloudBaseRepository(new RangeAwareMemoryCloudBaseDb());
+    for (let index = 0; index < 12; index += 1) {
+      await repo.matches.insert(makeWindowMatch({ match_id: `stale-${index}`, kickoff_at: new Date(NOW.getTime() - (index + 7) * hour) }));
+    }
+    const result = await repo.matches.findActiveWindow({ jobType: "stale_recovery", now: NOW, limit: 10 });
+    expect(result.map((match) => match.match_id)).toEqual(Array.from({ length: 10 }, (_, index) => `stale-${11 - index}`));
+  });
 
   it("filters superseded rows when both records fit in the active window page", async () => {
     const repo = createCloudBaseRepository();

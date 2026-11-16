@@ -11,6 +11,7 @@ import { ProviderNearMatchService } from "../application/provider-near-match.js"
 import { ProviderLiveMatchService } from "../application/provider-live-match.js";
 import { ProviderPostFinishVerifyService } from "../application/provider-post-finish.js";
 import { ProviderReconcileService } from "../application/provider-reconcile.js";
+import { ProviderStaleRecoveryService } from "../application/provider-stale-recovery.js";
 import { ProviderSyncDispatcher } from "../application/provider-sync-dispatcher.js";
 import type { SettlementTimerOptions } from "../application/settlement-timer.js";
 import { SUPPORTED_LEAGUES } from "../domain/config.js";
@@ -45,6 +46,7 @@ export interface ApplicationRuntime {
   providerRegistry: ProviderRegistry;
   providerDispatcher: ProviderSyncDispatcher;
   providerReconcile: ProviderReconcileService;
+  providerStaleRecovery: ProviderStaleRecoveryService;
   schedulerState: SchedulerStateStore;
   periodFinalize: PeriodFinalizeService;
   dailyConsistency: DailyConsistencyService;
@@ -105,6 +107,9 @@ export function createApplicationRuntime(input: ApplicationRuntimeInput): Applic
     }, providerLeagueRefs).run(now),
   });
   const providerReconcile = new ProviderReconcileService(input.repo, providerClient, providerLeagueRefs);
+  const providerStaleRecovery = new ProviderStaleRecoveryService(input.repo, providerClient, {}, {
+    dueIntervalMs: providerJobIntervalMs(SyncJobType.StaleRecovery, profile),
+  }, providerLeagueRefs, logger);
   const schedulerState = new CloudBaseSchedulerStateStore(input.db, input.namespace);
   const periodFinalize = new PeriodFinalizeService(input.repo);
   const dailyConsistency = new DailyConsistencyService(
@@ -123,6 +128,7 @@ export function createApplicationRuntime(input: ApplicationRuntimeInput): Applic
     providerRegistry,
     providerDispatcher,
     providerReconcile,
+    providerStaleRecovery,
     schedulerState,
     periodFinalize,
     dailyConsistency,

@@ -52,7 +52,7 @@ async function loadMappingsByExternalId(
   return mappingByExternalId;
 }
 
-async function fixturesToItems(
+export async function fixturesToItems(
   repo: AppRepository,
   fixtures: readonly ApiFootballFixture[],
   ids: Set<string>,

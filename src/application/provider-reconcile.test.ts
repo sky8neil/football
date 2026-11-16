@@ -123,6 +123,22 @@ describe("ProviderReconcileService", () => {
     expect(getFixturesFromSource).toHaveBeenCalledWith("of", expect.objectContaining({ season: "2025" }));
   });
 
+  it("generates work from the finish day so late-recovered matches enter reconcile", async () => {
+    const repo = new InMemoryRepository();
+    const late = makeMatch("late-recovered", {
+      kickoff_at: new Date("2026-08-01T10:00:00.000Z"),
+      finish_detected_at: new Date("2026-08-08T20:00:00.000Z"),
+    });
+    const stale = makeMatch("stale-old", {
+      kickoff_at: new Date("2026-08-04T10:00:00.000Z"),
+      finish_detected_at: new Date("2026-08-04T12:00:00.000Z"),
+    });
+    await repo.matches.insert(late);
+    await repo.matches.insert(stale);
+    await new ProviderReconcileService(repo, { getFixturesFromSource: vi.fn(async () => []) }).run(NOW);
+    expect((await repo.providerReconcileTodos.findPending(10)).map((todo) => todo.match_id)).toEqual(["late-recovered"]);
+  });
+
   it("maps an old season using the todo season even if kickoff is years later", async () => {
     const repo = new InMemoryRepository();
     const match = makeMatch("old-season", { season_id: "2023_2024" });

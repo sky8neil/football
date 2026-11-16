@@ -36,6 +36,7 @@ export const SYNC_TASKS_V1: Partial<Record<SyncJobType, SyncTaskConfig>> & {
   near_match: SyncTaskConfig;
   live_match: SyncTaskConfig;
   post_finish_verify: SyncTaskConfig;
+  stale_recovery: SyncTaskConfig;
   period_finalize: SyncTaskConfig;
   daily_consistency: SyncTaskConfig;
   weekly_level_eval: SyncTaskConfig;
@@ -66,6 +67,7 @@ export const SYNC_TASKS_V1: Partial<Record<SyncJobType, SyncTaskConfig>> & {
     intervalMinutesByProfile: { test: 5 },
     highFrequencyUntilFirstSettlement: true,
   },
+  stale_recovery: { intervalMinutes: 60 },
   period_finalize: {
     intervalMinutes: 60,
   },
