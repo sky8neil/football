@@ -41,9 +41,12 @@ const MATCH_ID = "00000000-0000-4000-8000-000000000053";
 const PROVIDER_MATCH_ID = "4400053";
 
 function makeMatch(overrides: Partial<Match> = {}): Match {
+  const canonicalMatchIdentity = overrides.match_id ?? (MATCH_ID);
   return {
     schema_version: 1,
-    match_id: MATCH_ID,
+    match_id: canonicalMatchIdentity,
+    canonical_match_id: overrides.canonical_match_id ?? canonicalMatchIdentity,
+    superseded_by: overrides.superseded_by ?? null,
     league_id: "premier_league",
     season_id: "2026_2027",
     round_id: "01",
@@ -288,6 +291,7 @@ describe("H. result_version（规范 44-H / 12）", () => {
       prediction_id: newUuid(),
       user_id: userId,
       match_id: MATCH_ID,
+      canonical_match_id: MATCH_ID,
       idempotency_key: newUuid(),
       pred_home_score: 0,
       pred_away_score: 1,

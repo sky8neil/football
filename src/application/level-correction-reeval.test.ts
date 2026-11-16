@@ -137,6 +137,8 @@ async function addAppliedPrediction(
   const match: Match = {
     schema_version: 1,
     match_id: matchId,
+    canonical_match_id: matchId,
+    superseded_by: null,
     league_id: "premier_league",
     season_id: "2026_2027",
     round_id: "01",
@@ -169,6 +171,7 @@ async function addAppliedPrediction(
     prediction_id: predictionId,
     user_id: "u1",
     match_id: matchId,
+    canonical_match_id: matchId,
     idempotency_key: newUuid(),
     pred_home_score: 2,
     pred_away_score: 1,

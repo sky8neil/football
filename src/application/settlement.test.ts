@@ -16,11 +16,13 @@ type FinalScoreStub = { regular_home_score: number; regular_away_score: number }
 const result: FinalScoreStub = { regular_home_score: 2, regular_away_score: 1 };
 
 function makePrediction(overrides: Partial<Prediction> = {}): Prediction {
+  const canonicalMatchIdentity = overrides.match_id ?? (newUuid());
   return {
     schema_version: 1,
     prediction_id: newUuid(),
     user_id: newUuid(),
-    match_id: newUuid(),
+    match_id: canonicalMatchIdentity,
+    canonical_match_id: overrides.canonical_match_id ?? canonicalMatchIdentity,
     idempotency_key: newUuid(),
     pred_home_score: 2,
     pred_away_score: 1,

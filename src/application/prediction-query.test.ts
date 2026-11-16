@@ -43,6 +43,8 @@ function makeMatch(): Match {
   return {
     schema_version: 1,
     match_id: MATCH_ID,
+    canonical_match_id: MATCH_ID,
+    superseded_by: null,
     league_id: "premier_league",
     season_id: "2026_2027",
     round_id: "01",
@@ -78,6 +80,7 @@ function makePrediction(userId: string): Prediction {
     prediction_id: PREDICTION_ID,
     user_id: userId,
     match_id: MATCH_ID,
+    canonical_match_id: MATCH_ID,
     idempotency_key: newUuid(),
     pred_home_score: 2,
     pred_away_score: 1,
@@ -178,12 +181,14 @@ describe("PredictionHistoryQueryService 六联赛过滤", () => {
     await repo.matches.insert({
       ...makeMatch(),
       match_id: laLigaMatchId,
+      canonical_match_id: laLigaMatchId,
       league_id: "la_liga",
     });
     await repo.predictions.insert({
       ...makePrediction(USER_ID),
       prediction_id: laLigaPredictionId,
       match_id: laLigaMatchId,
+      canonical_match_id: laLigaMatchId,
       submitted_at: new Date("2026-08-08T11:00:00.000Z"),
     });
     const service = new PredictionHistoryQueryService(repo, "prediction-query-secret");
@@ -224,18 +229,19 @@ describe("PredictionHistoryQueryService 六联赛过滤", () => {
     const laLigaSecondMatchId = "00000000-0000-4000-8000-000000000014";
     const laLigaPredictionId = "00000000-0000-4000-8000-000000000023";
     const laLigaSecondPredictionId = "00000000-0000-4000-8000-000000000024";
-    await repo.matches.insert({ ...makeMatch(), match_id: laLigaMatchId, league_id: "la_liga" });
+    await repo.matches.insert({ ...makeMatch(), match_id: laLigaMatchId, canonical_match_id: laLigaMatchId, league_id: "la_liga" });
     await repo.matches.insert({
-      ...makeMatch(), match_id: laLigaSecondMatchId, league_id: "la_liga",
+      ...makeMatch(), match_id: laLigaSecondMatchId, canonical_match_id: laLigaSecondMatchId, league_id: "la_liga",
       match_status: MatchStatus.Cancelled,
     });
     await repo.predictions.insert({
       ...makePrediction(USER_ID), prediction_id: laLigaPredictionId, match_id: laLigaMatchId,
+      canonical_match_id: laLigaMatchId,
       submitted_at: new Date("2026-08-08T11:00:00.000Z"),
     });
     await repo.predictions.insert({
       ...makePrediction(USER_ID), prediction_id: laLigaSecondPredictionId,
-      match_id: laLigaSecondMatchId, submitted_at: new Date("2026-08-08T10:00:00.000Z"),
+      match_id: laLigaSecondMatchId, canonical_match_id: laLigaSecondMatchId, submitted_at: new Date("2026-08-08T10:00:00.000Z"),
     });
     const service = new PredictionHistoryQueryService(repo, "prediction-query-secret");
     const firstPage = await service.listMyPredictions(USER_ID, {

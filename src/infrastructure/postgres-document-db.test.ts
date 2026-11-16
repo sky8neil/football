@@ -99,9 +99,12 @@ function userDoc(id = "u1"): CloudBaseDocument {
 }
 
 function makeMatch(overrides: Partial<Match> = {}): Match {
+  const canonicalMatchIdentity = overrides.match_id ?? ("m1");
   return {
     schema_version: 1,
-    match_id: "m1",
+    match_id: canonicalMatchIdentity,
+    canonical_match_id: overrides.canonical_match_id ?? canonicalMatchIdentity,
+    superseded_by: overrides.superseded_by ?? null,
     league_id: "premier_league",
     season_id: "2026_2027",
     round_id: "01",

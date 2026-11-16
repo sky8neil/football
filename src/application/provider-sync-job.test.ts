@@ -26,9 +26,12 @@ const NOW = new Date("2026-08-09T00:00:00.000Z");
 
 function makeMatch(): Match {
   const kickoffAt = new Date("2026-08-09T12:00:00.000Z");
+  const matchId = newUuid();
   return {
     schema_version: 1,
-    match_id: newUuid(),
+    match_id: matchId,
+    canonical_match_id: matchId,
+    superseded_by: null,
     league_id: "premier_league",
     season_id: "2026_2027",
     round_id: "01",
@@ -109,6 +112,35 @@ function makeDeferredLog(overrides: Partial<SyncLog> = {}): SyncLog {
 }
 
 describe("ProviderFixtureSyncJobService", () => {
+  it.each([SyncJobType.FutureSchedule, SyncJobType.FullScheduleVerify])(
+    "%s 不处理已取代比赛对应的数据源记录",
+    async (jobType) => {
+      const repo = new InMemoryRepository();
+      const old = makeMatch();
+      const current = makeMatch();
+      await seedMatch(repo, old, "1100001");
+      await seedMatch(repo, current, "1100002");
+      await repo.matches.update({ ...old, canonical_match_id: current.match_id, superseded_by: current.match_id });
+      const applyFixture = vi.fn(async () => ({
+        kind: "unchanged" as const,
+        match_id: current.match_id,
+        match_status: MatchStatus.Scheduled,
+      }));
+      const service = new ProviderFixtureSyncJobService(repo, { applyFixture });
+
+      await service.run(jobType, async () => [
+        item(makeApiFixture({ fixtureId: 1100001 })),
+        item(makeApiFixture({ fixtureId: 1100002 })),
+      ], NOW);
+
+      expect(applyFixture).toHaveBeenCalledTimes(1);
+      expect(applyFixture).toHaveBeenCalledWith(
+        expect.objectContaining({ fixture: expect.objectContaining({ id: 1100002 }) }),
+        expect.anything(),
+        NOW,
+      );
+    },
+  );
   it("在 job lock 内批量应用 fixture，并记录 running/success 统计", async () => {
     const repo = new InMemoryRepository();
     const first = makeMatch();

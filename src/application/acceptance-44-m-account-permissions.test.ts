@@ -42,6 +42,8 @@ function makeMatch(): Match {
   return {
     schema_version: 1,
     match_id: "00000000-0000-4000-8000-0000000000c1",
+    canonical_match_id: "00000000-0000-4000-8000-0000000000c1",
+    superseded_by: null,
     league_id: "premier_league",
     season_id: "2026_2027",
     round_id: "01",
@@ -77,6 +79,7 @@ function makePrediction(userId: string, matchId: string): Prediction {
     prediction_id: newUuid(),
     user_id: userId,
     match_id: matchId,
+    canonical_match_id: matchId,
     idempotency_key: newUuid(),
     pred_home_score: 2,
     pred_away_score: 1,

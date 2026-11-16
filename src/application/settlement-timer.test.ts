@@ -17,9 +17,12 @@ const T2 = new Date("2026-08-08T13:00:00.000Z");
 const HOUR = 60 * 60 * 1000;
 
 function makeMatch(overrides: Partial<Match> = {}): Match {
+  const canonicalMatchIdentity = overrides.match_id ?? ("m1");
   return {
     schema_version: 1,
-    match_id: "m1",
+    match_id: canonicalMatchIdentity,
+    canonical_match_id: overrides.canonical_match_id ?? canonicalMatchIdentity,
+    superseded_by: overrides.superseded_by ?? null,
     league_id: "premier_league",
     season_id: "2026_2027",
     round_id: "01",

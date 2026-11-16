@@ -41,6 +41,12 @@ describe("第 22 节数据库索引定义", () => {
       },
       {
         collection: "predictions",
+        name: "uk_user_canonical_match",
+        fields: ["user_id", "canonical_match_id"],
+        unique: true,
+      },
+      {
+        collection: "predictions",
         name: "uk_user_idempotency",
         fields: ["user_id", "idempotency_key"],
         unique: true,

@@ -35,12 +35,14 @@ import {
   assertPredictionInvariants,
   assertPeriodAnchorImmutable,
   assertFinishDetectedImmutable,
+  assertMatchSupersessionWrite,
   assertRankingInvariants,
   assertSettlementDocumentInvariant,
   assertSettlementItemInvariant,
   assertSeasonStatsInvariants,
   assertUserCareerInvariants,
 } from "../domain/invariants.js";
+import { decodeDocument } from "./document-codec.js";
 import {
   CloudBaseDocumentNotFoundError,
   CloudBaseDuplicateKeyError,
@@ -121,8 +123,8 @@ function compositeId(...parts: (string | number)[]): string {
   return `key_${Buffer.from(JSON.stringify(parts), "utf8").toString("base64url")}`;
 }
 
-function withoutId<T>(document: CloudBaseDocument): T {
-  const { _id: _ignored, ...fields } = document;
+function withoutId<T>(collection: string, document: CloudBaseDocument): T {
+  const { _id: _ignored, ...fields } = decodeDocument(collection, document);
   return fields as T;
 }
 
@@ -309,19 +311,42 @@ export class CloudBaseAppRepository implements AppRepository {
     };
     this.matches = {
       findById: async (id) => this.byId<Match>("matches", id),
+      findIdsByCanonicalMatchId: async (canonicalMatchId) => {
+        const [group, legacy] = await Promise.all([
+          this.where<Match>("matches", { canonical_match_id: canonicalMatchId }),
+          this.where<Match>("matches", { match_id: canonicalMatchId }),
+        ]);
+        return [...new Set([...group, ...legacy]
+          .filter((match) => (match.canonical_match_id ?? match.match_id) === canonicalMatchId)
+          .map((match) => match.match_id))];
+      },
       findBySeason: async (seasonId) => this.where<Match>("matches", { season_id: seasonId }),
       findByLeagueSeasonRound: async (leagueId, seasonId, roundId) => this.where<Match>("matches", { league_id: leagueId, season_id: seasonId, round_id: roundId }),
-      findLive: async () => this.where<Match>("matches", { match_status: "live" }),
+      findLive: async () => (await this.where<Match>("matches", { match_status: "live" }))
+        .filter((match) => match.superseded_by == null),
       findSettlementTodos: async (query) => this.findSettlementTodos(query),
       findSettlementFallbackPage: async (query) => this.findSettlementFallbackPage(query),
       findActiveWindow: async (query) => this.findActiveWindow(query),
       insert: async (match) => {
         assertMatchResultVersionInvariants(match);
+        if (match.superseded_by !== null) {
+          throw internalError("新建 match 必须满足 superseded_by=null");
+        }
         await this.add("matches", match.match_id, match);
       },
       update: async (match) => {
         const old = await this.byId<Match>("matches", match.match_id);
         if (old === null) throw new DocumentNotFoundError("matches", match.match_id);
+        if (
+          old.canonical_match_id !== match.canonical_match_id ||
+          old.superseded_by !== match.superseded_by
+        ) {
+          const target = match.superseded_by === null
+            ? null
+            : await this.byId<Match>("matches", match.superseded_by);
+          const inbound = await this.where<Match>("matches", { superseded_by: match.match_id });
+          assertMatchSupersessionWrite(match, target, inbound, old);
+        }
         if (old.league_id !== match.league_id || old.season_id !== match.season_id ||
           old.round_id !== match.round_id || old.scoring_rule_version !== match.scoring_rule_version) {
           throw internalError("match 的固定身份字段不可修改");
@@ -351,6 +376,21 @@ export class CloudBaseAppRepository implements AppRepository {
     this.predictions = {
       findById: async (id) => this.byId<Prediction>("predictions", id),
       findByUserAndMatch: async (userId, matchId) => this.one<Prediction>("predictions", { user_id: userId, match_id: matchId }),
+      findByUserAndMatchIds: async (userId, matchIds) => {
+        if (matchIds.length === 0) return [];
+        const inClause = this.db.inFilter?.("match_id", matchIds);
+        if (inClause === undefined) throw new Error("match_id inFilter is required");
+        return this.where<Prediction>("predictions", {
+          user_id: userId,
+          ...inClause,
+        });
+      },
+      findByUserAndCanonicalMatch: async (userId, canonicalMatchId) => {
+        const prediction = await this.one<Prediction>("predictions", { user_id: userId, canonical_match_id: canonicalMatchId });
+        if (prediction !== null) return prediction;
+        const legacy = await this.one<Prediction>("predictions", { user_id: userId, match_id: canonicalMatchId });
+        return legacy?.canonical_match_id === canonicalMatchId ? legacy : null;
+      },
       findByUserAndIdempotencyKey: async (userId, key) => this.one<Prediction>("predictions", { user_id: userId, idempotency_key: key }),
       findByUser: async (userId) => this.where<Prediction>("predictions", { user_id: userId }),
       findByMatch: async (matchId) => this.where<Prediction>("predictions", { match_id: matchId }),
@@ -371,6 +411,7 @@ export class CloudBaseAppRepository implements AppRepository {
         const old = await this.byId<Prediction>("predictions", prediction.prediction_id);
         if (old === null) throw new DocumentNotFoundError("predictions", prediction.prediction_id);
         if (old.user_id !== prediction.user_id || old.match_id !== prediction.match_id ||
+          old.canonical_match_id !== prediction.canonical_match_id ||
           old.idempotency_key !== prediction.idempotency_key ||
           old.pred_home_score !== prediction.pred_home_score || old.pred_away_score !== prediction.pred_away_score ||
           old.derived_result !== prediction.derived_result || old.submitted_at.getTime() !== prediction.submitted_at.getTime() ||
@@ -536,11 +577,11 @@ export class CloudBaseAppRepository implements AppRepository {
 
   private async byId<T>(name: string, id: string): Promise<T | null> {
     const doc = await this.db.get(this.collection(name), id);
-    return doc === null ? null : withoutId<T>(doc);
+    return doc === null ? null : withoutId<T>(name, doc);
   }
 
   private async all<T>(name: string): Promise<T[]> {
-    return (await this.db.query(this.collection(name))).map((doc) => withoutId<T>(doc));
+    return (await this.db.query(this.collection(name))).map((doc) => withoutId<T>(name, doc));
   }
 
   private async where<T>(
@@ -548,7 +589,8 @@ export class CloudBaseAppRepository implements AppRepository {
     filter: Record<string, unknown>,
     options?: CloudBaseQueryOptions,
   ): Promise<T[]> {
-    return (await this.db.query(this.collection(name), filter, options)).map((doc) => withoutId<T>(doc));
+    return (await this.db.query(this.collection(name), filter, options))
+      .map((doc) => withoutId<T>(name, doc));
   }
 
   /**

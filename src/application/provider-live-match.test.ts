@@ -54,9 +54,12 @@ async function seedMappedMatch(
   await repo.teamProviderMappings.insert(mapping(homeTeamId, "40"));
   await repo.teamProviderMappings.insert(mapping(awayTeamId, "41"));
 
+  const matchId = newUuid();
   const match: Match = {
     schema_version: 1,
-    match_id: newUuid(),
+    match_id: matchId,
+    canonical_match_id: matchId,
+    superseded_by: null,
     league_id: MVP_SEASON.league_id,
     season_id: MVP_SEASON.season_id,
     round_id: "01",

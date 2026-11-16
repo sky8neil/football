@@ -1,6 +1,6 @@
 import { FIXED_CONFIG_V1 } from "../domain/config.js";
 import { DomainError, internalError } from "../domain/errors.js";
-import { SCHEMA_VERSION, SyncJobStatus, type SyncJobType } from "../domain/enums.js";
+import { Provider, SCHEMA_VERSION, SyncJobStatus, type SyncJobType } from "../domain/enums.js";
 import { newUuid } from "../domain/ids.js";
 import type { SyncLog } from "../domain/types.js";
 import {
@@ -337,7 +337,8 @@ export class ProviderFixtureSyncJobService {
   private readonly lockOptions: ProviderFixtureSyncLockOptions;
 
   constructor(
-    private readonly repo: Pick<AppRepository, "jobLocks" | "syncLogs">,
+    private readonly repo: Pick<AppRepository, "jobLocks" | "syncLogs"> &
+      Partial<Pick<AppRepository, "matches" | "matchProviderMappings">>,
     private readonly fixtureSync: Pick<ProviderFixtureSyncService, "applyFixture">,
     retryOptions: ProviderFixtureSyncRetryOptions = {},
     lockOptions: ProviderFixtureSyncLockOptions = {},
@@ -521,6 +522,18 @@ export class ProviderFixtureSyncJobService {
         for (const item of items) {
           await lockRenewal.assertHeld();
           try {
+            if ((jobType === "future_schedule" || jobType === "full_schedule_verify") &&
+              this.repo.matchProviderMappings !== undefined && this.repo.matches !== undefined &&
+              item.fixture?.fixture?.id !== undefined) {
+              const mapping = await this.repo.matchProviderMappings.findByProviderAndExternalId(
+                item.fixture.provider ?? Provider.ApiFootball,
+                String(item.fixture.fixture.id),
+              );
+              if (mapping !== null) {
+                const match = await this.repo.matches.findById(mapping.match_id);
+                if (match?.superseded_by != null) continue;
+              }
+            }
             const outcome = await this.fixtureSync.applyFixture(
               item.fixture,
               item.payload,

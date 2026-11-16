@@ -11,6 +11,7 @@ export function activeWindow(
 ): Match[] {
   const current = now.getTime();
   return matches.filter((match) => {
+    if (match.superseded_by != null) return false;
     const kickoff = match.kickoff_at.getTime();
     const elapsed = current - kickoff;
     if (jobType === "near_match") {

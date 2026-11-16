@@ -8,6 +8,7 @@ import {
   type ActiveWindowJob,
   type ActiveWindowQuery,
 } from "./active-window-query.js";
+import { selectSettlementTodos } from "./settlement-todo-query.js";
 
 const NOW = new Date("2026-08-09T12:00:00.000Z");
 const MINUTE_MS = 60_000;
@@ -18,9 +19,12 @@ function at(offsetMs: number): Date {
 }
 
 function makeMatch(overrides: Partial<Match> = {}): Match {
+  const matchId = overrides.match_id ?? "m1";
   return {
     schema_version: 1,
-    match_id: "m1",
+    match_id: matchId,
+    canonical_match_id: matchId,
+    superseded_by: null,
     league_id: "premier_league",
     season_id: "2026_2027",
     round_id: "01",
@@ -319,5 +323,44 @@ describe("selectActiveWindow", () => {
       "iso-early",
       "iso-late",
     ]);
+  });
+
+  it("候选只排除有 superseded_by 的旧记录，独立 canonical id 的有效记录仍保留", () => {
+    const effective = makeMatch({
+      match_id: "effective",
+      canonical_match_id: "group-id",
+      kickoff_at: NOW,
+    });
+    const superseded = makeMatch({
+      match_id: "superseded",
+      canonical_match_id: "group-id",
+      superseded_by: "effective",
+      kickoff_at: NOW,
+    });
+
+    expect(idsOf(selectActiveWindow([effective, superseded], query("live_match")))).toEqual([
+      "effective",
+    ]);
+    expect(
+      selectSettlementTodos(
+        [
+          effective,
+          superseded,
+          makeMatch({
+            ...effective,
+            match_id: "effective-finished",
+            canonical_match_id: "separate-group",
+            match_status: MatchStatus.Finished,
+            settlement_status: SettlementStatus.Pending,
+          }),
+          makeMatch({
+            ...superseded,
+            match_status: MatchStatus.Finished,
+            settlement_status: SettlementStatus.Pending,
+          }),
+        ],
+        { limit: 20 },
+      ).map((match) => match.match_id),
+    ).toEqual(["effective-finished", "superseded"]);
   });
 });

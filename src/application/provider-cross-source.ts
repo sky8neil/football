@@ -54,6 +54,7 @@ export async function ensureCrossSourceMatchMapping(
     return { match_id: null, reason: "unlinked" };
   }
   const candidates = (await repo.matches.findBySeason(activeLeagueSeason(supportedLeague, now).season_id)).filter((match) => {
+    if (match.superseded_by != null) return false;
     if (match.league_id !== supportedLeague.league_id || match.home_team_id !== home.team_id || match.away_team_id !== away.team_id) return false;
     if (candidateMatchIds && !candidateMatchIds.has(match.match_id)) return false;
     const tolerance = CROSS_SOURCE_KICKOFF_TOLERANCE_MS[match.league_id]

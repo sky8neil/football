@@ -36,9 +36,12 @@ const NOW = new Date("2026-08-09T00:00:00.000Z");
 const KICKOFF = new Date("2026-08-09T12:00:00.000Z");
 
 function makeMatch(overrides: Partial<Match> = {}): Match {
+  const canonicalMatchIdentity = overrides.match_id ?? (MATCH_ID);
   return {
     schema_version: 1,
-    match_id: MATCH_ID,
+    match_id: canonicalMatchIdentity,
+    canonical_match_id: overrides.canonical_match_id ?? canonicalMatchIdentity,
+    superseded_by: overrides.superseded_by ?? null,
     league_id: "premier_league",
     season_id: "2026_2027",
     round_id: "01",
@@ -124,6 +127,7 @@ function makePrediction(userId: string): Prediction {
     prediction_id: newUuid(),
     user_id: userId,
     match_id: MATCH_ID,
+    canonical_match_id: MATCH_ID,
     idempotency_key: `idem_${userId}`,
     pred_home_score: 2,
     pred_away_score: 1,

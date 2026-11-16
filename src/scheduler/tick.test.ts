@@ -27,9 +27,12 @@ const OWNER_ID = "instance-test-host-1";
 
 function makeMatch(): Match {
   const kickoffAt = new Date("2026-08-13T14:00:00.000Z");
+  const matchId = newUuid();
   return {
     schema_version: 1,
-    match_id: newUuid(),
+    match_id: matchId,
+    canonical_match_id: matchId,
+    superseded_by: null,
     league_id: "premier_league",
     season_id: "2026_2027",
     round_id: "01",

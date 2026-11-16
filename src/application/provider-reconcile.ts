@@ -76,6 +76,7 @@ export class ProviderReconcileService {
       const sourceProvider = sourceId === "sp" ? "sportapi" : "openfoot";
       const matches = (await this.repo.matches.findBySeason(activeLeagueSeason(league, serverNow).season_id)).filter((match) =>
         match.league_id === league.league_id &&
+        match.superseded_by == null &&
         match.settlement_status === SettlementStatus.Settled &&
         match.match_status === MatchStatus.Finished &&
         match.kickoff_at.toISOString().slice(0, 10) === yesterday,

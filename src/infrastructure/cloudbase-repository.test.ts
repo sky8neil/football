@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { GroupStatus, MatchStatus, SettlementStatus } from "../domain/enums.js";
-import type { BoardSnapshot, Group, Match, User } from "../domain/types.js";
+import type { BoardSnapshot, Group, Match, Prediction, User } from "../domain/types.js";
 import { defaultLevelState } from "../domain/types.js";
 import { GroupsService } from "../application/groups.js";
 import { COLLECTION_DEFINITIONS } from "../schema/collections.js";
@@ -104,6 +104,9 @@ class MemoryCloudBaseDb implements CloudBaseDb {
       .map(([, document]) => cloneValue(document))
       .filter((document) => Object.entries(filter).every(([field, value]) => {
         if (isLteOp(value)) return toMs(document[field]) <= toMs(value.__lte);
+        if (typeof value === "object" && value !== null && "__in" in value) {
+          return (value.__in as readonly unknown[]).includes(document[field]);
+        }
         return equal(document[field], value);
       }));
     if (options.order_by) {
@@ -126,6 +129,10 @@ class MemoryCloudBaseDb implements CloudBaseDb {
 
   async count(collection: string, filter: Record<string, unknown> = {}): Promise<number> {
     return (await this.query(collection, filter)).length;
+  }
+
+  inFilter(field: string, values: readonly string[]): Record<string, unknown> {
+    return { [field]: { __in: values } };
   }
 
   async reserveCounter(collection: string, id: string, field: string, limit: number, initial: CloudBaseDocument): Promise<boolean> {
@@ -263,9 +270,12 @@ class RangeAwareMemoryCloudBaseDb extends MemoryCloudBaseDb {
 }
 
 function makeWindowMatch(overrides: Partial<Match> = {}): Match {
+  const matchId = overrides.match_id ?? "m1";
   return {
     schema_version: 1,
-    match_id: "m1",
+    match_id: matchId,
+    canonical_match_id: matchId,
+    superseded_by: null,
     league_id: "premier_league",
     season_id: "2026_2027",
     round_id: "01",
@@ -340,6 +350,165 @@ describe("CloudBaseAppRepository", () => {
       "settlementItems", "settlements", "syncLogs", "teamProviderMappings", "teams",
       "unlocks", "userSeasonStats", "users",
     ].sort());
+  });
+
+  it("reads legacy match and prediction documents with logical identity defaults", async () => {
+    const db = new MemoryCloudBaseDb();
+    const repo = createCloudBaseRepository(db);
+    await db.add(cloudBaseCollectionName(CONFIG.resource_namespace, "matches"), "old-match", {
+      _id: "old-match",
+      match_id: "old-match",
+    });
+    await db.add(cloudBaseCollectionName(CONFIG.resource_namespace, "predictions"), "old-prediction", {
+      _id: "old-prediction",
+      match_id: "old-match",
+    });
+
+    await expect(repo.matches.findById("old-match")).resolves.toMatchObject({
+      canonical_match_id: "old-match",
+      superseded_by: null,
+    });
+    await expect(repo.predictions.findById("old-prediction")).resolves.toMatchObject({
+      canonical_match_id: "old-match",
+    });
+  });
+
+  it("inserts grouped matches and queries legacy identities with one prediction query", async () => {
+    const db = new MemoryCloudBaseDb();
+    const repo = createCloudBaseRepository(db);
+    await db.add(cloudBaseCollectionName(CONFIG.resource_namespace, "matches"), "legacy", {
+      _id: "legacy", match_id: "legacy",
+    });
+    await repo.matches.insert(makeWindowMatch({ match_id: "current", canonical_match_id: "legacy" }));
+    await expect(repo.matches.insert(makeWindowMatch({ match_id: "superseded", superseded_by: "current" })))
+      .rejects.toThrow(/superseded_by=null/);
+    await db.add(cloudBaseCollectionName(CONFIG.resource_namespace, "predictions"), "prediction", {
+      _id: "prediction", prediction_id: "prediction", user_id: USER_ID, match_id: "legacy",
+    });
+    const query = vi.spyOn(db, "query");
+    const ids = await repo.matches.findIdsByCanonicalMatchId("legacy");
+    expect(ids).toEqual(expect.arrayContaining(["legacy", "current"]));
+    expect(ids).toHaveLength(2);
+    expect(query).toHaveBeenCalledTimes(2);
+    query.mockClear();
+    const predictions = await repo.predictions.findByUserAndMatchIds(USER_ID, ids);
+    expect(predictions).toHaveLength(1);
+    expect(predictions[0]).toMatchObject({ prediction_id: "prediction", match_id: "legacy" });
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(query).toHaveBeenCalledWith(expect.any(String), {
+      user_id: USER_ID, match_id: { __in: ids },
+    }, undefined);
+    query.mockClear();
+    expect(await repo.predictions.findByUserAndMatchIds(USER_ID, [])).toEqual([]);
+    expect(query).not.toHaveBeenCalled();
+    expect(await repo.matches.findIdsByCanonicalMatchId("missing")).toEqual([]);
+  });
+
+  it("finds a legacy prediction by its defaulted canonical match id", async () => {
+    const db = new MemoryCloudBaseDb();
+    const repo = createCloudBaseRepository(db);
+    await db.add(cloudBaseCollectionName(CONFIG.resource_namespace, "predictions"), "old-prediction", {
+      _id: "old-prediction",
+      prediction_id: "old-prediction",
+      user_id: USER_ID,
+      match_id: "old-match",
+    });
+
+    await expect(repo.predictions.findByUserAndCanonicalMatch(USER_ID, "old-match"))
+      .resolves.toMatchObject({ prediction_id: "old-prediction", canonical_match_id: "old-match" });
+  });
+
+  it("rejects duplicate predictions by user and canonical match", async () => {
+    const repo = createCloudBaseRepository();
+    const prediction: Prediction = {
+      schema_version: 1,
+      prediction_id: "prediction-1",
+      user_id: USER_ID,
+      match_id: "match-1",
+      canonical_match_id: "logical-match",
+      idempotency_key: "key-1",
+      pred_home_score: 1,
+      pred_away_score: 0,
+      derived_result: "HOME",
+      submitted_at: NOW,
+      scoring_rule_version: "scoring_v1",
+      match_score: null,
+      wdl_hit: null,
+      exact_hit: null,
+      applied_result_version: 0,
+      created_at: NOW,
+      updated_at: NOW,
+    };
+    await repo.predictions.insert(prediction);
+
+    await expect(repo.predictions.insert({
+      ...prediction,
+      prediction_id: "prediction-2",
+      match_id: "match-2",
+      idempotency_key: "key-2",
+    })).rejects.toMatchObject({
+      name: "UniqueConstraintError",
+      collection: "predictions",
+      indexName: "uk_user_canonical_match",
+    });
+  });
+
+  it("rejects match identity changes that would create a supersession chain", async () => {
+    const repo = createCloudBaseRepository();
+    const old = makeWindowMatch({ match_id: "old-match" });
+    const current = makeWindowMatch({ match_id: "current-match" });
+    const next = makeWindowMatch({ match_id: "next-match" });
+    await repo.matches.insert(old);
+    await repo.matches.insert(current);
+    await repo.matches.insert(next);
+
+    await repo.matches.update({ ...old, canonical_match_id: current.match_id });
+    await repo.matches.update({ ...next, canonical_match_id: current.match_id });
+    await repo.matches.update({
+      ...old,
+      canonical_match_id: current.match_id,
+      superseded_by: current.match_id,
+    });
+
+    await expect(repo.matches.update({
+      ...current,
+      superseded_by: next.match_id,
+    })).rejects.toMatchObject({
+      code: "INTERNAL_ERROR",
+      message: expect.stringMatching(/链式关系/),
+    });
+  });
+
+  it("keeps a prediction canonical match id immutable", async () => {
+    const repo = createCloudBaseRepository();
+    const prediction: Prediction = {
+      schema_version: 1,
+      prediction_id: "prediction-immutable",
+      user_id: USER_ID,
+      match_id: "match-immutable",
+      canonical_match_id: "logical-match-before",
+      idempotency_key: "key-immutable",
+      pred_home_score: 1,
+      pred_away_score: 0,
+      derived_result: "HOME",
+      submitted_at: NOW,
+      scoring_rule_version: "scoring_v1",
+      match_score: null,
+      wdl_hit: null,
+      exact_hit: null,
+      applied_result_version: 0,
+      created_at: NOW,
+      updated_at: NOW,
+    };
+    await repo.predictions.insert(prediction);
+
+    await expect(repo.predictions.update({
+      ...prediction,
+      canonical_match_id: "logical-match-after",
+    })).rejects.toMatchObject({
+      code: "INTERNAL_ERROR",
+      message: expect.stringMatching(/不可修改/),
+    });
   });
 
   it("counts grouped crowd results with database count operations", async () => {
@@ -515,6 +684,33 @@ describe("CloudBaseAppRepository.findActiveWindow", () => {
       expect(cloudIds).toEqual(memoryIds);
     }
   }
+
+  it("filters superseded rows when both records fit in the active window page", async () => {
+    const repo = createCloudBaseRepository();
+    const effective = makeWindowMatch({ match_id: "effective", kickoff_at: NOW });
+    const old = makeWindowMatch({ match_id: "old", kickoff_at: new Date(NOW.getTime() + hour) });
+    await repo.matches.insert(effective);
+    await repo.matches.insert(old);
+    await repo.matches.update({ ...old, canonical_match_id: effective.match_id, superseded_by: effective.match_id });
+    const result = await repo.matches.findActiveWindow({ jobType: "live_match", now: NOW, limit: 2 });
+    expect(result.map((match) => match.match_id)).toEqual(["effective"]);
+  });
+
+  it("reads only one bounded page for each window filter", async () => {
+    const db = new MemoryCloudBaseDb();
+    const repo = createCloudBaseRepository(db);
+    const effective = makeWindowMatch({ match_id: "effective", kickoff_at: NOW });
+    const old = makeWindowMatch({ match_id: "old", kickoff_at: new Date(NOW.getTime() + hour) });
+    await repo.matches.insert(effective);
+    await repo.matches.insert(old);
+    await repo.matches.update({ ...old, canonical_match_id: effective.match_id, superseded_by: effective.match_id });
+    const query = vi.spyOn(db, "query");
+    expect(await repo.matches.findActiveWindow({ jobType: "live_match", now: NOW, limit: 1 })).toEqual([]);
+    expect(query).toHaveBeenCalledTimes(2);
+    for (const call of query.mock.calls) {
+      expect(call[2]).toEqual({ order_by: "kickoff_at", direction: "desc", limit: 1 });
+    }
+  });
 
   it("不支持范围查询时退化为等值条件 + 内存筛选，结果与内存仓储一致", async () => {
     await expectSameAsMemory(new MemoryCloudBaseDb());

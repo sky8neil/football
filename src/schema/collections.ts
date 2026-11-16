@@ -132,6 +132,8 @@ export const COLLECTION_DEFINITIONS: readonly CollectionDef[] = [
     collection: "matches",
     fields: {
       match_id: { type: "string", required: true, immutable: true, note: "UUID v4" },
+      canonical_match_id: { type: "string", required: true, note: "逻辑比赛分组键" },
+      superseded_by: { type: "string", nullable: true, note: "当前有效 match_id" },
       league_id: {
         type: "string",
         required: true,
@@ -220,6 +222,7 @@ export const COLLECTION_DEFINITIONS: readonly CollectionDef[] = [
       prediction_id: { type: "string", required: true, immutable: true, note: "UUID v4" },
       user_id: { type: "string", required: true, immutable: true, note: "UUID" },
       match_id: { type: "string", required: true, immutable: true, note: "UUID" },
+      canonical_match_id: { type: "string", required: true, immutable: true, note: "提交时的逻辑比赛分组键" },
       idempotency_key: { type: "string", required: true, immutable: true, note: "UUID" },
       pred_home_score: { type: "int", required: true, immutable: true, min: 0, max: 20 },
       pred_away_score: { type: "int", required: true, immutable: true, min: 0, max: 20 },
@@ -234,7 +237,7 @@ export const COLLECTION_DEFINITIONS: readonly CollectionDef[] = [
       updated_at: { type: "date", required: true },
       schema_version: { type: "int", required: true, default: 1 },
     },
-    note: "UNIQUE(user_id, match_id) + UNIQUE(user_id, idempotency_key)；不可修改/删除（8.5）",
+    note: "UNIQUE(user_id, canonical_match_id) + UNIQUE(user_id, match_id) + UNIQUE(user_id, idempotency_key)；不可修改/删除（8.5）",
   },
   {
     collection: "rankings",

@@ -56,9 +56,12 @@ function makeUser(overrides: Partial<User> = {}): User {
 }
 
 function makeMatch(overrides: Partial<Match> = {}): Match {
+  const matchId = overrides.match_id ?? newUuid();
   return {
     schema_version: 1,
-    match_id: newUuid(),
+    match_id: matchId,
+    canonical_match_id: matchId,
+    superseded_by: null,
     league_id: "premier_league",
     season_id: "2026_2027",
     round_id: "01",
@@ -90,11 +93,13 @@ function makeMatch(overrides: Partial<Match> = {}): Match {
 }
 
 function makePrediction(overrides: Partial<Prediction> = {}): Prediction {
+  const matchId = overrides.match_id ?? newUuid();
   return {
     schema_version: 1,
     prediction_id: newUuid(),
     user_id: newUuid(),
-    match_id: newUuid(),
+    match_id: matchId,
+    canonical_match_id: overrides.canonical_match_id ?? matchId,
     idempotency_key: newUuid(),
     pred_home_score: 1,
     pred_away_score: 0,
@@ -334,6 +339,54 @@ describe("InMemoryRepository - matches", () => {
 
     expect(await repo.matches.findBySeason("2026_2027")).toEqual([current]);
   });
+
+  it("允许插入已有逻辑分组，但拒绝插入已被取代的比赛", async () => {
+    const repo = new InMemoryRepository();
+    const first = makeMatch({ match_id: "group" });
+    const next = makeMatch({ match_id: "next", canonical_match_id: first.match_id });
+    await repo.matches.insert(first);
+    await repo.matches.insert(next);
+    await expect(repo.matches.findIdsByCanonicalMatchId(first.match_id)).resolves.toEqual(["group", "next"]);
+    await expect(repo.matches.findIdsByCanonicalMatchId("missing")).resolves.toEqual([]);
+    await expect(repo.matches.insert(makeMatch({ match_id: "old", superseded_by: first.match_id })))
+      .rejects.toThrow(/superseded_by=null/);
+  });
+
+  it("按自身 match_id 查找缺少 canonical_match_id 的历史比赛", async () => {
+    const repo = new InMemoryRepository();
+    const { canonical_match_id: _canonicalMatchId, ...legacyFields } = makeMatch({ match_id: "legacy" });
+    const legacy = legacyFields as Match;
+    await repo.matches.insert(legacy);
+    await expect(repo.matches.findIdsByCanonicalMatchId("legacy")).resolves.toEqual(["legacy"]);
+  });
+
+  it("写入取代关系时只允许指向同 canonical id 下的有效记录", async () => {
+    const repo = new InMemoryRepository();
+    const old = makeMatch({ match_id: "old-match" });
+    const current = makeMatch({ match_id: "current-match" });
+    await repo.matches.insert(old);
+    await repo.matches.insert(current);
+
+    await repo.matches.update({
+      ...old,
+      canonical_match_id: current.match_id,
+      superseded_by: current.match_id,
+    });
+    await expect(repo.matches.findById(old.match_id)).resolves.toMatchObject({
+      canonical_match_id: current.match_id,
+      superseded_by: current.match_id,
+    });
+
+    const next = makeMatch({ match_id: "next-match" });
+    await repo.matches.insert(next);
+    await repo.matches.update({ ...next, canonical_match_id: current.match_id });
+    await expect(
+      repo.matches.update({ ...current, superseded_by: next.match_id }),
+    ).rejects.toThrow(/superseded_by/);
+    await expect(
+      repo.matches.update({ ...next, canonical_match_id: "different-group", superseded_by: current.match_id }),
+    ).rejects.toThrow(/canonical_match_id/);
+  });
 });
 
 describe("InMemoryRepository - predictions", () => {
@@ -364,6 +417,20 @@ describe("InMemoryRepository - predictions", () => {
         makePrediction({ user_id: user.user_id, match_id: match.match_id }),
       ),
     ).rejects.toMatchObject({ collection: "predictions", indexName: "uk_user_match" });
+  });
+
+  it("同 user+canonical_match_id 重复 insert 抛逻辑比赛唯一冲突", async () => {
+    const repo = new InMemoryRepository();
+    const user = makeUser({});
+    const canonicalMatchId = newUuid();
+    await repo.predictions.insert(
+      makePrediction({ user_id: user.user_id, match_id: newUuid(), canonical_match_id: canonicalMatchId }),
+    );
+    await expect(
+      repo.predictions.insert(
+        makePrediction({ user_id: user.user_id, match_id: newUuid(), canonical_match_id: canonicalMatchId }),
+      ),
+    ).rejects.toMatchObject({ collection: "predictions", indexName: "uk_user_canonical_match" });
   });
 
   it("同 user+idempotency 重复 insert 抛 uk_user_idempotency", async () => {

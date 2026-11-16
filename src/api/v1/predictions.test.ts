@@ -19,6 +19,7 @@ function predictionResult(created: boolean): SubmitPredictionResult {
       prediction_id: "00000000-0000-4000-8000-000000000003",
       user_id: USER_ID,
       match_id: MATCH_ID,
+      canonical_match_id: MATCH_ID,
       idempotency_key: newUuid(),
       pred_home_score: 2,
       pred_away_score: 1,

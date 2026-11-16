@@ -136,6 +136,8 @@ export interface TeamProviderMapping extends BaseDoc {
 
 export interface Match extends BaseDoc {
   match_id: string;
+  canonical_match_id: string;
+  superseded_by: string | null;
   league_id: LeagueId;
   season_id: string;
   round_id: string;
@@ -192,6 +194,7 @@ export interface Prediction extends BaseDoc {
   prediction_id: string;
   user_id: string;
   match_id: string;
+  canonical_match_id: string;
   idempotency_key: string;
   pred_home_score: number;
   pred_away_score: number;

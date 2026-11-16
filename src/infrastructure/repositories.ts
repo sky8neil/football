@@ -4,7 +4,7 @@
  * 定义 repository ports、事务/锁抽象，并提供内存适配器（InMemoryRepository）作为
  * 测试与本地运行实现。接口语义对齐规范 21/22 节：
  * - users.openid 唯一（uk_openid）
- * - predictions UNIQUE(user_id, match_id)（uk_user_match）与
+ * - predictions UNIQUE(user_id, canonical_match_id) 与 UNIQUE(user_id, match_id)（uk_user_match）及
  *   UNIQUE(user_id, idempotency_key)（uk_user_idempotency）
  * - job_locks UNIQUE(lock_key)，lease 过期可接管
  * - match_results immutable 且 UNIQUE(match_id, result_version)，result_version 只允许
@@ -34,6 +34,7 @@ import {
 } from "./active-window-query.js";
 import {
   assertMatchResultVersionInvariants,
+  assertMatchSupersessionWrite,
   assertFinishDetectedImmutable,
   assertPeriodAnchorImmutable,
   assertPredictionInvariants,
@@ -262,6 +263,7 @@ export interface SyncLogRepository {
 
 export interface MatchRepository {
   findById(matchId: string): Promise<Match | null>;
+  findIdsByCanonicalMatchId(canonicalMatchId: string): Promise<string[]>;
   findBySeason(seasonId: string): Promise<Match[]>;
   findByLeagueSeasonRound(
     leagueId: string,
@@ -290,6 +292,8 @@ export interface MatchRepository {
 export interface PredictionRepository {
   findById(predictionId: string): Promise<Prediction | null>;
   findByUserAndMatch(userId: string, matchId: string): Promise<Prediction | null>;
+  findByUserAndMatchIds(userId: string, matchIds: readonly string[]): Promise<Prediction[]>;
+  findByUserAndCanonicalMatch(userId: string, canonicalMatchId: string): Promise<Prediction | null>;
   findByUserAndIdempotencyKey(
     userId: string,
     idempotencyKey: string,
@@ -495,6 +499,7 @@ interface InMemoryStore {
   providerSnapshotsById: Map<string, ProviderSnapshot>;
   matchesById: Map<string, Match>;
   predictionsByUserMatch: Map<string, Prediction>;
+  predictionsByUserCanonicalMatch: Map<string, Prediction>;
   predictionsByUserKey: Map<string, Prediction>;
   matchResultsByKey: Map<string, MatchResult>;
   settlementsById: Map<string, SettlementDoc>;
@@ -530,6 +535,7 @@ function createStore(): InMemoryStore {
     providerSnapshotsById: new Map(),
     matchesById: new Map(),
     predictionsByUserMatch: new Map(),
+    predictionsByUserCanonicalMatch: new Map(),
     predictionsByUserKey: new Map(),
     matchResultsByKey: new Map(),
     settlementsById: new Map(),
@@ -550,6 +556,10 @@ function createStore(): InMemoryStore {
 
 function userMatchKey(userId: string, matchId: string): string {
   return `${userId}\u0000${matchId}`;
+}
+
+function userCanonicalMatchKey(userId: string, canonicalMatchId: string): string {
+  return `${userId}\u0000${canonicalMatchId}`;
 }
 
 function providerMappingKey(provider: string, providerEntityId: string): string {
@@ -727,6 +737,10 @@ export class InMemoryRepository implements AppRepository {
     const self = this;
     return {
       findById: (matchId) => self.findMatchById(matchId),
+      findIdsByCanonicalMatchId: async (canonicalMatchId) =>
+        [...self.store.matchesById.values()]
+          .filter((match) => (match.canonical_match_id ?? match.match_id) === canonicalMatchId)
+          .map((match) => match.match_id),
       findBySeason: (seasonId) => self.findMatchesBySeason(seasonId),
       findByLeagueSeasonRound: (leagueId, seasonId, roundId) =>
         self.findMatchesByLeagueSeasonRound(leagueId, seasonId, roundId),
@@ -751,6 +765,13 @@ export class InMemoryRepository implements AppRepository {
     return {
       findById: (predictionId) => self.findPredictionById(predictionId),
       findByUserAndMatch: (userId, matchId) => self.findPredictionByUserAndMatch(userId, matchId),
+      findByUserAndMatchIds: async (userId, matchIds) =>
+        [...new Set(matchIds)].flatMap((matchId) => {
+          const prediction = self.store.predictionsByUserMatch.get(userMatchKey(userId, matchId));
+          return prediction === undefined ? [] : [prediction];
+        }),
+      findByUserAndCanonicalMatch: (userId, canonicalMatchId) =>
+        self.findPredictionByUserAndCanonicalMatch(userId, canonicalMatchId),
       findByUserAndIdempotencyKey: (userId, key) =>
         self.findPredictionByUserAndIdempotencyKey(userId, key),
       findByUser: (userId) => self.findPredictionsByUser(userId),
@@ -1246,7 +1267,7 @@ export class InMemoryRepository implements AppRepository {
 
   private async findLiveMatches(): Promise<Match[]> {
     return [...this.store.matchesById.values()].filter(
-      (match) => match.match_status === MatchStatus.Live,
+      (match) => match.match_status === MatchStatus.Live && match.superseded_by == null,
     );
   }
 
@@ -1267,6 +1288,9 @@ export class InMemoryRepository implements AppRepository {
       throw new UniqueConstraintError("matches", "pk_match", { match_id: match.match_id });
     }
     assertMatchResultVersionInvariants(match);
+    if (match.superseded_by !== null) {
+      throw internalError("新建 match 必须满足 superseded_by=null");
+    }
     this.store.matchesById.set(match.match_id, match);
     this.logUndo(() => {
       if (this.store.matchesById.get(match.match_id) === match) {
@@ -1279,6 +1303,19 @@ export class InMemoryRepository implements AppRepository {
     const old = this.store.matchesById.get(match.match_id);
     if (old === undefined) {
       throw new DocumentNotFoundError("matches", match.match_id);
+    }
+
+    if (
+      old.canonical_match_id !== match.canonical_match_id ||
+      old.superseded_by !== match.superseded_by
+    ) {
+      const target = match.superseded_by === null
+        ? null
+        : this.store.matchesById.get(match.superseded_by) ?? null;
+      const inbound = [...this.store.matchesById.values()].filter(
+        (item) => item.superseded_by === match.match_id,
+      );
+      assertMatchSupersessionWrite(match, target, inbound, old);
     }
 
     if (
@@ -1352,6 +1389,15 @@ export class InMemoryRepository implements AppRepository {
     return this.store.predictionsByUserMatch.get(userMatchKey(userId, matchId)) ?? null;
   }
 
+  private async findPredictionByUserAndCanonicalMatch(
+    userId: string,
+    canonicalMatchId: string,
+  ): Promise<Prediction | null> {
+    return this.store.predictionsByUserCanonicalMatch.get(
+      userCanonicalMatchKey(userId, canonicalMatchId),
+    ) ?? null;
+  }
+
   private async findPredictionByUserAndIdempotencyKey(
     userId: string,
     idempotencyKey: string,
@@ -1394,11 +1440,18 @@ export class InMemoryRepository implements AppRepository {
   private async insertPrediction(prediction: Prediction): Promise<void> {
     assertPredictionInvariants(prediction);
     const um = userMatchKey(prediction.user_id, prediction.match_id);
+    const uc = userCanonicalMatchKey(prediction.user_id, prediction.canonical_match_id);
     const uk = userKeyKey(prediction.user_id, prediction.idempotency_key);
     if (this.store.predictionsByUserMatch.has(um)) {
       throw new UniqueConstraintError("predictions", "uk_user_match", {
         user_id: prediction.user_id,
         match_id: prediction.match_id,
+      });
+    }
+    if (this.store.predictionsByUserCanonicalMatch.has(uc)) {
+      throw new UniqueConstraintError("predictions", "uk_user_canonical_match", {
+        user_id: prediction.user_id,
+        canonical_match_id: prediction.canonical_match_id,
       });
     }
     if (this.store.predictionsByUserKey.has(uk)) {
@@ -1408,10 +1461,14 @@ export class InMemoryRepository implements AppRepository {
       });
     }
     this.store.predictionsByUserMatch.set(um, prediction);
+    this.store.predictionsByUserCanonicalMatch.set(uc, prediction);
     this.store.predictionsByUserKey.set(uk, prediction);
     this.logUndo(() => {
       if (this.store.predictionsByUserMatch.get(um) === prediction) {
         this.store.predictionsByUserMatch.delete(um);
+      }
+      if (this.store.predictionsByUserCanonicalMatch.get(uc) === prediction) {
+        this.store.predictionsByUserCanonicalMatch.delete(uc);
       }
       if (this.store.predictionsByUserKey.get(uk) === prediction) {
         this.store.predictionsByUserKey.delete(uk);
@@ -1429,6 +1486,7 @@ export class InMemoryRepository implements AppRepository {
       old.prediction_id !== prediction.prediction_id ||
       old.user_id !== prediction.user_id ||
       old.match_id !== prediction.match_id ||
+      old.canonical_match_id !== prediction.canonical_match_id ||
       old.idempotency_key !== prediction.idempotency_key
     ) {
       throw new DocumentNotFoundError("predictions", prediction.prediction_id);
@@ -1449,6 +1507,10 @@ export class InMemoryRepository implements AppRepository {
     }
     assertPredictionInvariants(prediction);
     this.store.predictionsByUserMatch.set(key, prediction);
+    this.store.predictionsByUserCanonicalMatch.set(
+      userCanonicalMatchKey(prediction.user_id, prediction.canonical_match_id),
+      prediction,
+    );
     this.store.predictionsByUserKey.set(
       userKeyKey(prediction.user_id, prediction.idempotency_key),
       prediction,
@@ -1456,6 +1518,13 @@ export class InMemoryRepository implements AppRepository {
     this.logUndo(() => {
       if (this.store.predictionsByUserMatch.get(key) === prediction) {
         this.store.predictionsByUserMatch.set(key, old);
+      }
+      const keyByCanonicalMatch = userCanonicalMatchKey(
+        prediction.user_id,
+        prediction.canonical_match_id,
+      );
+      if (this.store.predictionsByUserCanonicalMatch.get(keyByCanonicalMatch) === prediction) {
+        this.store.predictionsByUserCanonicalMatch.set(keyByCanonicalMatch, old);
       }
       const keyByIdempotency = userKeyKey(prediction.user_id, prediction.idempotency_key);
       if (this.store.predictionsByUserKey.get(keyByIdempotency) === prediction) {

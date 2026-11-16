@@ -53,6 +53,8 @@ function makeActiveSettlementMatch(): Match {
   return {
     schema_version: 1,
     match_id: "00000000-0000-4000-8000-000000000011",
+    canonical_match_id: "00000000-0000-4000-8000-000000000011",
+    superseded_by: null,
     league_id: "premier_league",
     season_id: "2026_2027",
     round_id: "01",
@@ -88,6 +90,7 @@ function makePrediction(matchId: string): Prediction {
     prediction_id: "00000000-0000-4000-8000-000000000014",
     user_id: USER_ID,
     match_id: matchId,
+    canonical_match_id: matchId,
     idempotency_key: "00000000-0000-4000-8000-000000000015",
     pred_home_score: 1,
     pred_away_score: 0,

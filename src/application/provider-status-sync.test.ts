@@ -30,9 +30,12 @@ const CHANGED_PROVIDER_AWAY_TEAM_ID = "43";
 
 function makeMatch(overrides: Partial<Match> = {}): Match {
   const kickoffAt = new Date("2026-08-09T01:00:00.000Z");
+  const canonicalMatchIdentity = overrides.match_id ?? (MATCH_ID);
   return {
     schema_version: 1,
-    match_id: MATCH_ID,
+    match_id: canonicalMatchIdentity,
+    canonical_match_id: overrides.canonical_match_id ?? canonicalMatchIdentity,
+    superseded_by: overrides.superseded_by ?? null,
     league_id: "premier_league",
     season_id: "2026_2027",
     round_id: "01",
@@ -106,6 +109,7 @@ function makePrediction(matchId: string): Prediction {
     prediction_id: newUuid(),
     user_id: newUuid(),
     match_id: matchId,
+    canonical_match_id: matchId,
     idempotency_key: newUuid(),
     pred_home_score: 1,
     pred_away_score: 0,

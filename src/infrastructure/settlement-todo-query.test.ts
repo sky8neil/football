@@ -13,9 +13,12 @@ const T2 = new Date("2026-08-08T13:00:00.000Z");
 const T3 = new Date("2026-08-08T14:00:00.000Z");
 
 function makeMatch(overrides: Partial<Match> = {}): Match {
+  const canonicalMatchIdentity = overrides.match_id ?? ("m1");
   return {
     schema_version: 1,
-    match_id: "m1",
+    match_id: canonicalMatchIdentity,
+    canonical_match_id: overrides.canonical_match_id ?? canonicalMatchIdentity,
+    superseded_by: overrides.superseded_by ?? null,
     league_id: "premier_league",
     season_id: "2026_2027",
     round_id: "01",
@@ -63,6 +66,11 @@ describe("isSettlementTodoStatus", () => {
 });
 
 describe("selectSettlementTodos", () => {
+  it("keeps superseded matches in existing settlement processing", () => {
+    const old = makeMatch({ match_id: "old", superseded_by: "current" });
+    expect(selectSettlementTodos([old], { limit: 10 })).toEqual([old]);
+    expect(selectSettlementFallbackPage([old], { limit: 10 })).toEqual([old]);
+  });
   it("只返回 finished 且状态 ∈ {pending, waiting, settling, failed, correcting}", () => {
     const matches = [
       makeMatch({ match_id: "pending", settlement_status: SettlementStatus.Pending }),

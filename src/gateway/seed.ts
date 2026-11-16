@@ -79,6 +79,8 @@ function makeMatch(
   return {
     schema_version: SCHEMA_VERSION,
     match_id: matchId,
+    canonical_match_id: matchId,
+    superseded_by: null,
     league_id: SUPPORTED_LEAGUES[0].league_id,
     season_id: SUPPORTED_LEAGUES[0].season_id,
     round_id: "01",
@@ -486,6 +488,7 @@ async function seedLongPredictionHistory(
       prediction_id: newUuid(),
       user_id: userId,
       match_id: matchId,
+      canonical_match_id: matchId,
       idempotency_key: newUuid(),
       pred_home_score: 2,
       pred_away_score: index % 2,

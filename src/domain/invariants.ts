@@ -21,7 +21,7 @@ import type {
   UserSeasonStats,
 } from "./types.js";
 
-function assert(condition: boolean, message: string): void {
+function assert(condition: boolean, message: string): asserts condition {
   if (!condition) {
     throw internalError(message);
   }
@@ -309,6 +309,32 @@ export function assertMatchResultVersionInvariants(match: Match): void {
     assert(
       match.settled_result_version === match.result_version,
       "settled => settled_result_version == result_version",
+    );
+  }
+}
+
+/** 校验比赛身份归并写入不会产生失效取代指针、链式关系或环。 */
+export function assertMatchSupersessionWrite(
+  match: Match,
+  target: Match | null,
+  inboundSupersededMatches: readonly Match[],
+  previous?: Match,
+): void {
+  if (match.superseded_by !== null) {
+    assert(target !== null, "match.superseded_by 必须指向存在的 match");
+    assert(target.match_id !== match.match_id, "match.superseded_by 不得指向自身");
+    assert(
+      target.canonical_match_id === match.canonical_match_id,
+      "match.superseded_by 必须位于相同 canonical_match_id 下",
+    );
+    assert(target.superseded_by === null, "match.superseded_by 必须指向当前有效记录，禁止链式或环状指向");
+  }
+
+  if (inboundSupersededMatches.length > 0) {
+    assert(match.superseded_by === null, "已有记录指向该 match，设置 superseded_by 会产生链式关系");
+    assert(
+      previous === undefined || previous.canonical_match_id === match.canonical_match_id,
+      "已有取代记录指向该 match，不能修改其 canonical_match_id",
     );
   }
 }

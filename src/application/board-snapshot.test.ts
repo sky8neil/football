@@ -37,11 +37,13 @@ function makeUser(userId: string, overrides: Partial<User> = {}): User {
 }
 
 function makePrediction(overrides: Partial<Prediction> = {}): Prediction {
+  const canonicalMatchIdentity = overrides.match_id ?? ("match-1");
   return {
     schema_version: 1,
     prediction_id: "prediction-1",
     user_id: "career-winner",
-    match_id: "match-1",
+    match_id: canonicalMatchIdentity,
+    canonical_match_id: overrides.canonical_match_id ?? canonicalMatchIdentity,
     idempotency_key: "prediction-key-1",
     pred_home_score: 2,
     pred_away_score: 1,

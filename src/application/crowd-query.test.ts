@@ -32,9 +32,12 @@ function makeUser(status: User["status"] = UserStatus.Active): User {
 }
 
 function makeMatch(overrides: Partial<Match> = {}): Match {
+  const canonicalMatchIdentity = overrides.match_id ?? (newUuid());
   return {
     schema_version: 1,
-    match_id: newUuid(),
+    match_id: canonicalMatchIdentity,
+    canonical_match_id: overrides.canonical_match_id ?? canonicalMatchIdentity,
+    superseded_by: overrides.superseded_by ?? null,
     league_id: "premier_league",
     season_id: "2026_2027",
     round_id: "01",
@@ -73,6 +76,7 @@ function makePrediction(matchId: string, derivedResult: Prediction["derived_resu
     prediction_id: newUuid(),
     user_id: newUuid(),
     match_id: matchId,
+    canonical_match_id: matchId,
     idempotency_key: newUuid(),
     pred_home_score,
     pred_away_score,

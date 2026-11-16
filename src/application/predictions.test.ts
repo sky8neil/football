@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { FIXED_CONFIG_V1 } from "../domain/config.js";
 import { UserStatus } from "../domain/enums.js";
 import { newUuid } from "../domain/ids.js";
@@ -32,9 +32,12 @@ function makeUser(overrides: Partial<User> = {}): User {
 }
 
 function makeMatch(overrides: Partial<Match> = {}): Match {
+  const matchId = overrides.match_id ?? newUuid();
   return {
     schema_version: 1,
-    match_id: newUuid(),
+    match_id: matchId,
+    canonical_match_id: matchId,
+    superseded_by: null,
     league_id: "premier_league",
     season_id: "2026_2027",
     round_id: "01",
@@ -132,6 +135,61 @@ describe("PredictionService.submit - 成功路径", () => {
     expect(all[1]?.prediction_id).toBe(first.prediction.prediction_id);
   });
 
+  it("同一 canonical_match_id 的不同比赛记录只能提交一份预测", async () => {
+    const { repo, service, user, match } = await setup();
+    const logicalMatchId = newUuid();
+    const original = { ...match, canonical_match_id: logicalMatchId };
+    await repo.matches.update(original);
+    const rescheduled = makeMatch({ match_id: newUuid() });
+    await repo.matches.insert(rescheduled);
+    await repo.matches.update({ ...rescheduled, canonical_match_id: logicalMatchId });
+
+    const first = await service.submit(user.user_id, payload(original.match_id), NOW());
+    const duplicateCode = await codeOf(
+      service.submit(user.user_id, payload(rescheduled.match_id), NOW()),
+    );
+
+    expect(first.prediction.canonical_match_id).toBe(logicalMatchId);
+    expect(duplicateCode).toBe("PREDICTION_ALREADY_SUBMITTED");
+    expect(await repo.predictions.findByUser(user.user_id)).toHaveLength(1);
+  });
+
+  it("归并前已提交的预测仍阻止新记录重复预测", async () => {
+    const { repo, service, user, match } = await setup();
+    const first = await service.submit(user.user_id, payload(match.match_id), NOW());
+    const current = makeMatch();
+    await repo.matches.insert(current);
+    await repo.matches.update({ ...match, canonical_match_id: current.match_id, superseded_by: current.match_id });
+
+    const matchIds = await repo.matches.findIdsByCanonicalMatchId(current.match_id);
+    expect(matchIds).toEqual(expect.arrayContaining([match.match_id, current.match_id]));
+    expect(await repo.predictions.findByUserAndMatchIds(user.user_id, matchIds)).toEqual([first.prediction]);
+    const predictionsGetter = Object.getOwnPropertyDescriptor(InMemoryRepository.prototype, "predictions")!.get!;
+    const findByMatchIds = vi.fn();
+    const findByUser = vi.fn();
+    const getterSpy = vi.spyOn(InMemoryRepository.prototype, "predictions", "get").mockImplementation(function (this: InMemoryRepository) {
+      const predictions = predictionsGetter.call(this) as InMemoryRepository["predictions"];
+      return {
+        ...predictions,
+        findByUserAndMatchIds: (...args) => {
+          findByMatchIds(...args);
+          return predictions.findByUserAndMatchIds(...args);
+        },
+        findByUser: (...args) => {
+          findByUser(...args);
+          return predictions.findByUser(...args);
+        },
+      };
+    });
+    const duplicateCode = await codeOf(service.submit(user.user_id, payload(current.match_id), NOW()));
+    getterSpy.mockRestore();
+    expect(duplicateCode).toBe("PREDICTION_ALREADY_SUBMITTED");
+    expect(findByMatchIds).toHaveBeenCalledTimes(1);
+    expect(findByMatchIds).toHaveBeenCalledWith(user.user_id, expect.arrayContaining([match.match_id, current.match_id]));
+    expect(findByUser).not.toHaveBeenCalled();
+    expect(await repo.predictions.findByUser(user.user_id)).toEqual([first.prediction]);
+  });
+
   it("比分边界 0..20 允许", async () => {
     const { service, user, match } = await setup();
     const result = await service.submit(
@@ -178,6 +236,23 @@ describe("PredictionService.submit - 幂等与冲突", () => {
     expect(first.value.created).toBe(true);
     const rejectedReason = rejected[0] as PromiseRejectedResult;
     expect(rejectedReason.reason).toMatchObject({ code: "PREDICTION_ALREADY_SUBMITTED" });
+  });
+
+  it("同一逻辑比赛的不同记录并发提交只创建一条预测", async () => {
+    const { repo, service, user, match } = await setup();
+    const other = makeMatch();
+    await repo.matches.insert(other);
+    await repo.matches.update({ ...other, canonical_match_id: match.match_id });
+
+    const results = await Promise.allSettled([
+      service.submit(user.user_id, payload(match.match_id), NOW()),
+      service.submit(user.user_id, payload(other.match_id), NOW()),
+    ]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toMatchObject([
+      { reason: { code: "PREDICTION_ALREADY_SUBMITTED" } },
+    ]);
+    expect(await repo.predictions.findByUser(user.user_id)).toHaveLength(1);
   });
 });
 

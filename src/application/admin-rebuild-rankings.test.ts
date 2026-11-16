@@ -97,9 +97,12 @@ function makeSeasonStats(
 }
 
 function makeMatch(overrides: Partial<Match> = {}): Match {
+  const canonicalMatchIdentity = overrides.match_id ?? ("match-1");
   return {
     schema_version: 1,
-    match_id: "match-1",
+    match_id: canonicalMatchIdentity,
+    canonical_match_id: overrides.canonical_match_id ?? canonicalMatchIdentity,
+    superseded_by: overrides.superseded_by ?? null,
     league_id: "premier_league",
     season_id: "2026_2027",
     round_id: "01",
@@ -136,6 +139,7 @@ function makePrediction(): Prediction {
     prediction_id: "prediction-1",
     user_id: "user-1",
     match_id: "match-1",
+    canonical_match_id: "match-1",
     idempotency_key: "prediction-key-1",
     pred_home_score: 1,
     pred_away_score: 0,

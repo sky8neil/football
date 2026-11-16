@@ -47,6 +47,12 @@ export const UNIQUE_INDEXES: readonly IndexDef[] = [
   },
   {
     collection: "predictions",
+    name: "uk_user_canonical_match",
+    fields: ["user_id", "canonical_match_id"],
+    unique: true,
+  },
+  {
+    collection: "predictions",
     name: "uk_user_idempotency",
     fields: ["user_id", "idempotency_key"],
     unique: true,

@@ -29,6 +29,9 @@ function utcTimestamptzCall(schema: string, text: string): string {
 }
 
 export function postgresDocumentFieldExpr(schema: string, collection: string, field: string): string {
+  if ((collection === "predictions" || collection === "matches") && field === "canonical_match_id") {
+    return `COALESCE(${jsonText(field)}, ${jsonText("match_id")})`;
+  }
   const type = fieldType(collection, field);
   const text = jsonText(field);
   if (type === "date") return utcTimestamptzCall(schema, text);

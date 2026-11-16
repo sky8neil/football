@@ -221,6 +221,7 @@ describe("V2 list status matrix", () => {
       prediction_id: newUuid(),
       user_id: userId,
       match_id: matchId,
+      canonical_match_id: matchId,
       idempotency_key: newUuid(),
       pred_home_score: 2,
       pred_away_score: 1,

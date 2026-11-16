@@ -64,9 +64,12 @@ function makeUser(userId: string, overrides: Partial<User> = {}): User {
 }
 
 function makeMatch(matchId: string, overrides: Partial<Match> = {}): Match {
+  const canonicalMatchIdentity = overrides.match_id ?? (matchId);
   return {
     schema_version: 1,
-    match_id: matchId,
+    match_id: canonicalMatchIdentity,
+    canonical_match_id: overrides.canonical_match_id ?? canonicalMatchIdentity,
+    superseded_by: overrides.superseded_by ?? null,
     league_id: "premier_league",
     season_id: "2026_2027",
     round_id: "01",
@@ -103,11 +106,13 @@ function makePrediction(
   matchId: string,
   overrides: Partial<Prediction> = {},
 ): Prediction {
+  const canonicalMatchIdentity = overrides.match_id ?? (matchId);
   return {
     schema_version: 1,
     prediction_id: predictionId,
     user_id: userId,
-    match_id: matchId,
+    match_id: canonicalMatchIdentity,
+    canonical_match_id: overrides.canonical_match_id ?? canonicalMatchIdentity,
     idempotency_key: `${predictionId}-key`,
     pred_home_score: 2,
     pred_away_score: 1,

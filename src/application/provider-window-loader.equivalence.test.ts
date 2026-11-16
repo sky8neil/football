@@ -18,6 +18,8 @@ const LEAGUE_B = SUPPORTED_LEAGUES[5]!;
 function makeMatch(overrides: Partial<Match> & Pick<Match, "match_id" | "league_id" | "season_id" | "kickoff_at">): Match {
   return {
     schema_version: 1,
+    canonical_match_id: overrides.match_id,
+    superseded_by: null,
     round_id: "01",
     home_team_id: "home",
     away_team_id: "away",

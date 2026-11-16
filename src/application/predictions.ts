@@ -5,7 +5,7 @@
  * user active、match scheduled + kickoff_confirmed + 未关闭 + deadline > server_now、
  * 整数比分 0..20、拒绝客户端派生字段；两层幂等：
  * - 同 user+idempotency_key：同 payload → 幂等重放；不同 payload → IDEMPOTENCY_KEY_REUSED
- * - 同 user+match 已有预测（不同 key）→ PREDICTION_ALREADY_SUBMITTED
+ * - 同 user+canonical match 已有预测（不同 key）→ PREDICTION_ALREADY_SUBMITTED
  */
 import { FIXED_CONFIG_V1 } from "../domain/config.js";
 import { SCHEMA_VERSION, UserStatus } from "../domain/enums.js";
@@ -67,6 +67,7 @@ function predictionPayloadEqual(
 function buildPrediction(
   userId: string,
   matchId: string,
+  canonicalMatchId: string,
   idempotencyKey: string,
   scores: PredictionScores,
   serverNow: Date,
@@ -76,6 +77,7 @@ function buildPrediction(
     prediction_id: newUuid(),
     user_id: userId,
     match_id: matchId,
+    canonical_match_id: canonicalMatchId,
     idempotency_key: idempotencyKey,
     pred_home_score: scores.home_score,
     pred_away_score: scores.away_score,
@@ -153,7 +155,10 @@ export class PredictionService {
           throw conflictError("USER_DELETED", REJECT_MESSAGE.USER_DELETED);
         }
 
-        const byMatch = await tx.predictions.findByUserAndMatch(userId, matchId);
+        const canonicalMatchId = match.canonical_match_id ?? match.match_id;
+        const matchIds = await tx.matches.findIdsByCanonicalMatchId(canonicalMatchId);
+        if (!matchIds.includes(match.match_id)) matchIds.push(match.match_id);
+        const byMatch = (await tx.predictions.findByUserAndMatchIds(userId, matchIds))[0] ?? null;
         // 49.2 唯一判定：reason 与 list/detail 的 can_predict_reason 同源同序。
         const reason = predictRejectReason({
           user,
@@ -168,6 +173,7 @@ export class PredictionService {
         const prediction = buildPrediction(
           userId,
           matchId,
+          canonicalMatchId,
           idempotencyKey,
           scores,
           serverNow,

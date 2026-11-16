@@ -14,9 +14,12 @@ const NOW = new Date("2026-08-09T03:00:00.000Z");
 
 function makeMatch(overrides: Partial<Match> = {}): Match {
   const kickoffAt = new Date("2026-08-08T00:00:00.000Z");
+  const canonicalMatchIdentity = overrides.match_id ?? (newUuid());
   return {
     schema_version: 1,
-    match_id: newUuid(),
+    match_id: canonicalMatchIdentity,
+    canonical_match_id: overrides.canonical_match_id ?? canonicalMatchIdentity,
+    superseded_by: overrides.superseded_by ?? null,
     league_id: "premier_league",
     season_id: "2026_2027",
     round_id: "01",

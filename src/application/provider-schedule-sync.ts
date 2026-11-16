@@ -76,10 +76,13 @@ function buildMatch(
     MatchStatus.Scheduled,
     serverNow,
   );
+  const matchId = newUuid();
 
   return {
     schema_version: SCHEMA_VERSION,
-    match_id: newUuid(),
+    match_id: matchId,
+    canonical_match_id: matchId,
+    superseded_by: null,
     league_id: league.league_id,
     season_id: activeLeagueSeason(league, serverNow).season_id,
     round_id: fixture.roundId,

@@ -100,6 +100,16 @@ function fakeCatalog() {
 describe("postgres schema plan §6.1", () => {
   const plan = buildPostgresSchemaPlan(NAMESPACE, SCHEMA);
 
+  it("uses the match id fallback for the canonical prediction unique index", () => {
+    const index = plan.indexes.find((item) => item.name === "uk_user_canonical_match");
+    expect(index?.sql).toContain("COALESCE((document ->> 'canonical_match_id'), (document ->> 'match_id'))");
+  });
+
+  it("uses the match id fallback for canonical match queries", () => {
+    expect(postgresDocumentFieldExpr(SCHEMA, "matches", "canonical_match_id"))
+      .toBe("COALESCE((document ->> 'canonical_match_id'), (document ->> 'match_id'))");
+  });
+
   it("covers every COLLECTION_DEFINITIONS table as _id + jsonb, using physical aliases", () => {
     expect(plan.tables.map((item) => item.logical)).toEqual(
       COLLECTION_DEFINITIONS.map((item) => item.collection),

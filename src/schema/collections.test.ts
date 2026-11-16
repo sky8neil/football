@@ -68,6 +68,22 @@ describe("S0 Collection schema（规范 §21）", () => {
     expect(collection("matches").fields.season_id?.default).toBeUndefined();
   });
 
+  it("matches 与 predictions 存储逻辑比赛身份字段", () => {
+    expect(collection("matches").fields.canonical_match_id).toMatchObject({
+      type: "string",
+      required: true,
+    });
+    expect(collection("matches").fields.superseded_by).toMatchObject({
+      type: "string",
+      nullable: true,
+    });
+    expect(collection("predictions").fields.canonical_match_id).toMatchObject({
+      type: "string",
+      required: true,
+      immutable: true,
+    });
+  });
+
   it("rankings.period_type 仅 week，含 is_final", () => {
     expect(collection("rankings").fields.period_type?.enum).toEqual(["week"]);
     expect(collection("rankings").fields.is_final).toMatchObject({

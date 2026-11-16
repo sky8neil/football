@@ -34,9 +34,12 @@ beforeEach(() => vi.useFakeTimers({ now: NOW }));
 afterEach(() => vi.useRealTimers());
 
 function makeMatch(overrides: Partial<Match> = {}): Match {
+  const canonicalMatchIdentity = overrides.match_id ?? (newUuid());
   return {
     schema_version: 1,
-    match_id: newUuid(),
+    match_id: canonicalMatchIdentity,
+    canonical_match_id: overrides.canonical_match_id ?? canonicalMatchIdentity,
+    superseded_by: overrides.superseded_by ?? null,
     league_id: "premier_league",
     season_id: "2026_2027",
     round_id: "01",
@@ -131,11 +134,13 @@ function makeItem(overrides: Partial<SettlementItem> = {}): SettlementItem {
 }
 
 function makePrediction(matchId: string, overrides: Partial<Prediction> = {}): Prediction {
+  const canonicalMatchIdentity = overrides.match_id ?? (matchId);
   return {
     schema_version: 1,
     prediction_id: newUuid(),
     user_id: newUuid(),
-    match_id: matchId,
+    match_id: canonicalMatchIdentity,
+    canonical_match_id: overrides.canonical_match_id ?? canonicalMatchIdentity,
     idempotency_key: newUuid(),
     pred_home_score: 2,
     pred_away_score: 1,

@@ -117,6 +117,18 @@ describe("document-codec Date/JSONB 编解码", () => {
     }
   });
 
+  it("历史 Match 与 Prediction 读取时补逻辑身份默认值", () => {
+    const match = decodeDocument("matches", { _id: "old-match", match_id: "old-match" });
+    const prediction = decodeDocument("predictions", {
+      _id: "old-prediction",
+      match_id: "old-match",
+    });
+
+    expect(match.canonical_match_id).toBe("old-match");
+    expect(match.superseded_by).toBeNull();
+    expect(prediction.canonical_match_id).toBe("old-match");
+  });
+
   it("运行态 store 日期字段往返为 Date", () => {
     const usage = decodeDocument(
       "provider_usage",
