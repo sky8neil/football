@@ -2,7 +2,6 @@ import {
   activeLeagueSeason,
   findSupportedLeagueById,
   findSupportedLeagueByProviderId,
-  isKickoffInLeagueSeason,
   type ProviderLeagueRefs,
 } from "../domain/config.js";
 import { ProviderDataError } from "./http.js";
@@ -35,8 +34,6 @@ function resolveSeason(
   sourceLeague: Record<string, unknown> | null,
   league: ProviderAdapterLeague,
   sourceLeagueId: string,
-  timestamp: number,
-  kickoff: string,
   providerLeagueRefs?: ProviderLeagueRefs,
   serverNow?: Date,
 ): string {
@@ -47,18 +44,14 @@ function resolveSeason(
     asIdentifier(sourceLeague?.season);
   if (explicit !== undefined) return String(explicit);
 
-  const kickoffMs = Number.isFinite(timestamp) && timestamp > 0 ? timestamp * 1000 : Date.parse(kickoff);
-  if (!Number.isFinite(kickoffMs)) return "";
+  if (league.season_ref) return league.season_ref;
 
   const registered =
     (league.league_id ? findSupportedLeagueById(league.league_id) : undefined) ??
     (sourceLeagueId ? findSupportedLeagueByProviderId(sourceLeagueId, "5dollar", providerLeagueRefs) : undefined);
   if (registered === undefined) return "";
 
-  if (!isKickoffInLeagueSeason(registered, new Date(kickoffMs), serverNow)) return "";
-  return serverNow === undefined
-    ? registered.source_season_ref
-    : activeLeagueSeason(registered, serverNow).source_season_ref;
+  return activeLeagueSeason(registered, serverNow ?? new Date()).source_season_ref;
 }
 
 function mapFixture(
@@ -86,7 +79,7 @@ function mapFixture(
     league: {
       id: sourceLeagueId,
       ...(asText(sourceLeague?.name) ? { name: asText(sourceLeague?.name)! } : {}),
-      season: resolveSeason(row, sourceLeague, league, sourceLeagueId, timestamp, kickoff, providerLeagueRefs, serverNow),
+      season: resolveSeason(row, sourceLeague, league, sourceLeagueId, providerLeagueRefs, serverNow),
       round: typeof row.round === "number" || typeof row.round === "string" ? String(row.round) : "",
     },
     teams: {

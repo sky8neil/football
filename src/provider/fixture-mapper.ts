@@ -9,8 +9,9 @@
 import { AnomalyType } from "../domain/enums.js";
 import {
   activeLeagueSeason,
+  activeLeagueSeasonBounds,
   findSupportedLeagueByProviderId,
-  isKickoffInLeagueSeason,
+  leagueSeasonBounds,
   seasonStartYear,
   type ProviderLeagueRefs,
 } from "../domain/config.js";
@@ -266,21 +267,24 @@ export function normalizeFixture(
       }),
     );
     entityFailed = true;
-  } else if (
-    provider === "5dollar" &&
-    registeredLeague !== undefined &&
-    season === expectedSeasonRef &&
-    kickoff.kickoffAt !== null &&
-    !isKickoffInLeagueSeason(registeredLeague, kickoff.kickoffAt, now)
-  ) {
-    anomalies.push(
-      dataInvalid({
-        field: "league.season",
+  }
+
+  if (provider === "5dollar" && registeredLeague !== undefined && kickoff.kickoffAt !== null) {
+    const bounds = now === undefined
+      ? leagueSeasonBounds(registeredLeague)
+      : activeLeagueSeasonBounds(registeredLeague, now);
+    const bufferMs = 180 * 86_400_000;
+    if (bounds !== null && (
+      kickoff.kickoffAt.getTime() < bounds.start.getTime() - bufferMs ||
+      kickoff.kickoffAt.getTime() > bounds.end.getTime() + bufferMs
+    )) {
+      anomalies.push(dataInvalid({
+        field: "league.season.out_of_buffer",
         expected: expectedSeasonRef,
         actual: season,
-      }),
-    );
-    entityFailed = true;
+        kickoff_at: kickoff.kickoffAt.toISOString(),
+      }));
+    }
   }
 
   let fulltime: { home: number; away: number } | null = null;

@@ -467,20 +467,6 @@ export function activeLeagueSeasonBounds(
   return seasonBounds(activeLeagueSeason(league, now).season_id);
 }
 
-export function isKickoffInLeagueSeason(
-  league: SupportedLeague,
-  kickoffAt: Date,
-  now?: Date,
-): boolean {
-  const ms = kickoffAt.getTime();
-  if (!Number.isFinite(ms)) return false;
-  const bounds = now === undefined
-    ? leagueSeasonBounds(league)
-    : activeLeagueSeasonBounds(league, now);
-  if (bounds === null) return false;
-  return ms >= bounds.start.getTime() && ms < bounds.end.getTime();
-}
-
 export function isSupportedLeagueId(value: string): value is SupportedLeagueId {
   return findSupportedLeagueById(value) !== undefined;
 }

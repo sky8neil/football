@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { seasonStartYear } from "../domain/config.js";
+import { buildProviderLeagueRefs, seasonStartYear } from "../domain/config.js";
 import { AnomalyType } from "../domain/enums.js";
 import { makeApiFixture } from "./fixture-factory.js";
 import { normalizeFixture } from "./fixture-mapper.js";
@@ -297,7 +297,24 @@ describe("fixture normalize mapper（31.3/31.4/31.5）", () => {
     expect(result.fixture.leagueProviderId).toBe("39");
   });
 
-  it("5dollar 2025 年开球时间落在 2026_2027 赛季边界外时拒绝采纳", () => {
+  it("5dollar 12 月延期至次年 1 月的比赛在赛季窗口外 6 个月内正常入库", () => {
+    const leagueRefs = buildProviderLeagueRefs([
+      { source_id: "5d", source_league_ref: "9901", league_id: "chinese_super_league" },
+    ]);
+    const date = "2027-01-05T12:00:00.000Z";
+    const fixture = {
+      ...makeApiFixture({ leagueId: 9901, season: "2026", date, timestamp: Date.parse(date) / 1000 }),
+      provider: "5dollar" as const,
+    };
+    const result = normalizeFixture(fixture, leagueRefs, new Date("2026-12-15T00:00:00.000Z"));
+
+    expect(result.entityFailed).toBe(false);
+    expect(result.fixture.season).toBe("2026");
+    expect(result.fixture.kickoffAt?.toISOString()).toBe(date);
+    expect(result.anomalies).toEqual([]);
+  });
+
+  it("5dollar 开球时间超出赛季窗口 6 个月缓冲时只记录非阻塞诊断", () => {
     const fixture = {
       ...makeApiFixture({
         leagueId: 4160026622,
@@ -308,12 +325,18 @@ describe("fixture normalize mapper（31.3/31.4/31.5）", () => {
       provider: "5dollar" as const,
     };
     const result = normalizeFixture(fixture);
-    expect(result.entityFailed).toBe(true);
+    expect(result.entityFailed).toBe(false);
     expect(result.anomalies).toContainEqual(
-      expect.objectContaining({
+      {
         type: AnomalyType.ProviderDataInvalid,
-        details: expect.objectContaining({ field: "league.season" }),
-      }),
+        blocking: false,
+        details: {
+          field: "league.season.out_of_buffer",
+          expected: "2026",
+          actual: "2026",
+          kickoff_at: "2025-10-12T12:00:00.000Z",
+        },
+      },
     );
   });
 });
