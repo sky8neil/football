@@ -75,6 +75,8 @@
 
 ### S4：小程序休赛期 / 间歇期体验与时区修正（R7, R9, R10）
 
+> **R9 个人本联赛小结已独立拆分**：完整后端 + 前端开发合同见 [个人本联赛小结开发计划 v1.0](./PERSONAL_LEAGUE_SUMMARY_DEV_PLAN__v1.0.md)。该项不再按下文“若可获取”作为可选内容：仅在联赛赛季确认结束后展示；预测统计覆盖延期、腰斩等全部已提交场次；命中读取有效结算事实，精确比分命中单列；UI 复用现有收官卡。收官判定、数据口径、接口、双部署仓储、页面接线与验收均在独立文档维护。本段为开发入口，不代表功能已实现。
+
 1. **日期条统一按 `Asia/Shanghai` 计算 & 文案修正（R7）**：
    - 文件：[matches.js](file:///home/football/miniprogram/pages/matches/matches.js)、[matches.wxml](file:///home/football/miniprogram/pages/matches/matches.wxml)
    - 改动：
