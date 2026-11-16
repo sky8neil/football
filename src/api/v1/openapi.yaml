@@ -90,6 +90,54 @@ paths:
           $ref: '#/components/responses/RateLimited'
         '422':
           $ref: '#/components/responses/ValidationError'
+  /leagues/status:
+    get:
+      tags: [matches]
+      summary: 获取公开联赛状态
+      description: 不接受查询参数，游客可访问。
+      responses:
+        '200':
+          description: 联赛状态列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LeagueStatusEnvelope'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /predictions/summary:
+    get:
+      tags: [predictions]
+      summary: 获取当前用户的联赛小结
+      x-requires-trusted-openid: true
+      description: 仅接受 league_id 和 season_id 查询参数。
+      parameters:
+        - name: league_id
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/LeagueId'
+        - name: season_id
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 联赛小结或不可用原因
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PersonalLeagueSummaryEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
   /matches:
     get:
       tags: [matches]
@@ -960,6 +1008,59 @@ paths:
           $ref: '#/components/responses/InternalError'
 components:
   schemas:
+    LeagueStatusEnvelope:
+      type: object
+      required: [data, request_id]
+      properties:
+        request_id: { type: string }
+        data:
+          type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/LeagueStatusItem'
+    LeagueStatusItem:
+      type: object
+      required: [league_id, phase, active_season_id, has_live_match, next_kickoff_at, next_matchday, next_season_kickoff_at]
+      properties:
+        league_id: { $ref: '#/components/schemas/LeagueId' }
+        phase: { type: string, enum: [in_season, break, completed, between_seasons] }
+        active_season_id: { type: [string, 'null'] }
+        has_live_match: { type: boolean }
+        next_kickoff_at: { type: [string, 'null'], format: date-time }
+        next_matchday:
+          type: [object, 'null']
+          required: [date, kickoff_at]
+          properties:
+            date: { type: string, format: date }
+            kickoff_at: { type: string, format: date-time }
+        next_season_kickoff_at: { type: [string, 'null'], format: date-time }
+    PersonalLeagueSummaryEnvelope:
+      type: object
+      required: [data, request_id]
+      properties:
+        request_id: { type: string }
+        data: { $ref: '#/components/schemas/PersonalLeagueSummary' }
+    PersonalLeagueSummary:
+      type: object
+      required: [availability, league_id, season_id, completion_confirmed_at, ended_at, summary, reason]
+      properties:
+        availability: { type: string, enum: [available, not_available] }
+        league_id: { $ref: '#/components/schemas/LeagueId' }
+        season_id: { type: [string, 'null'] }
+        completion_confirmed_at: { type: [string, 'null'], format: date-time }
+        ended_at: { type: [string, 'null'], format: date-time }
+        summary:
+          type: [object, 'null']
+          required: [predicted_matches, wdl_hits, exact_hits, is_provisional]
+          properties:
+            predicted_matches: { type: integer }
+            wdl_hits: { type: integer }
+            exact_hits: { type: integer }
+            is_provisional: { type: boolean }
+        reason: { type: [string, 'null'] }
     SchemaVersion:
       type: integer
       const: 1

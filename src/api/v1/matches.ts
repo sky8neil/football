@@ -65,7 +65,7 @@ export function validateMatchId(value: unknown): string {
   return value;
 }
 
-function requirePublicSource(value: unknown): string {
+export function requirePublicSource(value: unknown): string {
   if (typeof value !== "string" || value.trim().length === 0) {
     throw validationError("公开读取需要可信来源标识", { field: "public_source" });
   }

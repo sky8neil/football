@@ -73,6 +73,9 @@ function fakeDatabase(missing: string[] = []) {
       async update() { return { updated: 0, stats: { updated: 0 } }; },
       doc(id: string) {
         return {
+          async set({ data }: { data: Record<string, unknown> }) {
+            documents.set(`${name}/${id}`, { ...data, _id: id });
+          },
           async get() {
             const data = documents.get(`${name}/${id}`);
             if (!data) throw Object.assign(new Error("document not exist"), { errCode: "DOCUMENT_NOT_FOUND" });
@@ -105,6 +108,19 @@ function fakeDatabase(missing: string[] = []) {
   } as unknown as CloudBaseSdkDatabase;
   return { db, documents, collectionReads: () => collectionReads };
 }
+
+describe("Cloud Function league routes", () => {
+  it("routes league status and authenticated summary through the real gateway", async () => {
+    const runtime = createCloudFunctionRuntime({ env: ENV, db: fakeDatabase().db, sdkVersion: "4.0.2", nodeVersion: "v24", log: vi.fn() });
+    const status = await runtime({ method: "GET", path: "/v1/leagues/status" }, {});
+    expect(status.result.status).toBe(200);
+    expect((status.result.body as { data: { items: unknown[] } }).data.items).toHaveLength(6);
+    const init = await runtime({ method: "POST", path: "/v1/session/init", body: { nickname: "Player" } }, { OPENID: "openid" });
+    expect(init.result.status).toBe(201);
+    const summary = await runtime({ method: "GET", path: "/v1/predictions/summary", query: { league_id: "chinese_super_league" } }, { OPENID: "openid" });
+    expect(summary.result).toMatchObject({ status: 200, body: { data: { league_id: "chinese_super_league", completion_confirmed_at: null, ended_at: null }, request_id: expect.any(String) } });
+  });
+});
 
 describe("Cloud Function runtime startup", () => {
   it("logs missing environment keys with a stable diagnostic code and no values", () => {

@@ -1,5 +1,7 @@
 import { postSessionInit } from "../api/v1/session.js";
 import { getMatch, getMatches } from "../api/v1/matches.js";
+import { getLeagueStatus } from "../api/v1/league-status.js";
+import { getPersonalLeagueSummary } from "../api/v1/personal-league-summary.js";
 import { getMatchCrowd } from "../api/v1/crowd.js";
 import { getMyPrediction, getMyPredictions, postPrediction } from "../api/v1/predictions.js";
 import {
@@ -31,6 +33,8 @@ import { assertUnknownFields, makeRequestId, mapErrorToHttp } from "../api/v1/va
 import type { RateLimiter } from "../api/v1/rate-limit.js";
 import type { SessionService } from "../application/session.js";
 import type { MatchQueryService } from "../application/match-query.js";
+import { LeagueStatusService } from "../application/league-status-service.js";
+import { PersonalLeagueSummaryService } from "../application/personal-league-summary-service.js";
 import { CrowdQueryService } from "../application/crowd-query.js";
 import { PredictionHistoryQueryService } from "../application/prediction-query.js";
 import { PredictionQueryService } from "../application/prediction-query.js";
@@ -73,6 +77,8 @@ export interface GatewayRequestInput {
   services: {
     session: Pick<SessionService, "init">;
     matches: Pick<MatchQueryService, "list" | "get">;
+    league_status?: Pick<LeagueStatusService, "list">;
+    personal_league_summary?: Pick<PersonalLeagueSummaryService, "get">;
     crowd?: Pick<CrowdQueryService, "get">;
     predictions?: Pick<PredictionService, "submit"> &
       Partial<Pick<PredictionHistoryQueryService, "listMyPredictions">> &
@@ -304,6 +310,20 @@ export async function handleGatewayRequest(
       return result;
     }
 
+    if (method === "GET" && path === "/v1/leagues/status") {
+      const identity = await resolveIdentity(trustedOpenid, input.repo);
+      const result = await getLeagueStatus(input.services.league_status ?? new LeagueStatusService(input.repo), {
+        authenticated_user_id: publicReadUserId(identity),
+        public_source: input.config.public_source,
+        query: input.query,
+        server_now: input.server_now,
+        request_id: requestId,
+        rate_limiter: input.rate_limiter,
+      });
+      logGateway(requestId, path, result.status, undefined);
+      return result;
+    }
+
     const crowdMatchId = matchCrowdIdFromPath(path);
     if (method === "GET" && crowdMatchId !== null) {
       const identity = await resolveIdentity(trustedOpenid, input.repo);
@@ -344,6 +364,19 @@ export async function handleGatewayRequest(
       const result = await postPrediction(predictions, {
         authenticated_user_id: writePredictionUserId(identity),
         body,
+        server_now: input.server_now,
+        request_id: requestId,
+        rate_limiter: input.rate_limiter,
+      });
+      logGateway(requestId, path, result.status, undefined);
+      return result;
+    }
+
+    if (method === "GET" && path === "/v1/predictions/summary") {
+      const identity = await resolveIdentity(trustedOpenid, input.repo);
+      const result = await getPersonalLeagueSummary(input.services.personal_league_summary ?? new PersonalLeagueSummaryService(input.repo), {
+        authenticated_user_id: authenticatedReadUserId(identity),
+        query: input.query,
         server_now: input.server_now,
         request_id: requestId,
         rate_limiter: input.rate_limiter,
