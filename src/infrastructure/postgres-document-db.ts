@@ -18,6 +18,7 @@ import {
 
 export const POSTGRES_IN_OP = "__in" as const;
 export const POSTGRES_LTE_OP = "__lte" as const;
+export const POSTGRES_GTE_OP = "__gte" as const;
 
 const FIELD_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
@@ -48,7 +49,7 @@ type FilterOp =
   | { kind: "eq"; field: string; value: unknown }
   | { kind: "null"; field: string }
   | { kind: "in"; field: string; values: readonly string[] }
-  | { kind: "lte"; field: string; value: unknown };
+  | { kind: "lte" | "gte"; field: string; value: unknown };
 
 function documentFieldType(logical: string, field: string): FieldType | undefined {
   return COLLECTION_DEFINITIONS.find((item) => item.collection === logical)?.fields[field]?.type;
@@ -73,7 +74,7 @@ function isOperatorObject(value: unknown): value is Record<string, unknown> {
 }
 
 export function parseDocumentFilter(filter: Record<string, unknown>): FilterOp[] {
-  return Object.entries(filter).map(([field, value]) => {
+  return Object.entries(filter).flatMap<FilterOp>(([field, value]) => {
     assertField(field);
     if (isOperatorObject(value)) {
       const keys = Object.keys(value);
@@ -84,8 +85,8 @@ export function parseDocumentFilter(filter: Record<string, unknown>): FilterOp[]
         }
         return { kind: "in", field, values };
       }
-      if (keys.length === 1 && keys[0] === POSTGRES_LTE_OP) {
-        return { kind: "lte", field, value: value[POSTGRES_LTE_OP] };
+      if (keys.length > 0 && keys.every((key) => key === POSTGRES_LTE_OP || key === POSTGRES_GTE_OP)) {
+        return keys.map((key) => ({ kind: key === POSTGRES_LTE_OP ? "lte" : "gte", field, value: value[key] }));
       }
       throw new Error(`unsupported query operator on ${field}`);
     }
@@ -124,11 +125,12 @@ function compileOps(
     const expr = postgresDocumentFieldExpr(schema, logical, op.field);
     params.push(type === "date" ? encodeQueryValue(value) : value);
     const placeholder = `$${params.length}`;
-    if (op.kind === "lte") {
-      if (type === "date") clauses.push(`${expr} <= ${placeholder}::timestamptz`);
-      else if (type === "int") clauses.push(`${expr} <= ${placeholder}::numeric`);
-      else if (type === "bool") clauses.push(`${expr} <= ${placeholder}::boolean`);
-      else clauses.push(`${expr} <= ${placeholder}`);
+    if (op.kind === "lte" || op.kind === "gte") {
+      const operator = op.kind === "lte" ? "<=" : ">=";
+      if (type === "date") clauses.push(`${expr} ${operator} ${placeholder}::timestamptz`);
+      else if (type === "int") clauses.push(`${expr} ${operator} ${placeholder}::numeric`);
+      else if (type === "bool") clauses.push(`${expr} ${operator} ${placeholder}::boolean`);
+      else clauses.push(`${expr} ${operator} ${placeholder}`);
       continue;
     }
     if (type === "date") clauses.push(`${expr} = ${placeholder}::timestamptz`);
@@ -341,6 +343,10 @@ export class PostgresDocumentDb implements CloudBaseDb {
 
   lteFilter(field: string, value: unknown): Record<string, unknown> {
     return { [field]: { [POSTGRES_LTE_OP]: value } };
+  }
+
+  gteFilter(field: string, value: unknown): Record<string, unknown> {
+    return { [field]: { [POSTGRES_GTE_OP]: value } };
   }
 
   async get(collection: string, id: string): Promise<CloudBaseDocument | null> {

@@ -594,15 +594,28 @@ export class CloudBaseAppRepository implements AppRepository {
   }
 
   /**
-   * RP09：按窗口片段分别等值查询，可选 kickoff_at 上界；合并去重后再走 selectActiveWindow。
+   * RP09：按窗口片段分别查询，合并去重后再走 selectActiveWindow。
    */
   private async findActiveWindow(query: ActiveWindowQuery): Promise<Match[]> {
     const collected = new Map<string, Match>();
     for (const fragment of buildActiveWindowFilters(query)) {
       const filter: Record<string, unknown> = { ...fragment.equals };
+      if (fragment.kickoffAtGte !== undefined) {
+        const range = this.db.gteFilter?.("kickoff_at", fragment.kickoffAtGte);
+        if (range !== undefined) Object.assign(filter, range);
+      }
       if (fragment.kickoffAtLte !== undefined) {
         const range = this.db.lteFilter?.("kickoff_at", fragment.kickoffAtLte);
-        if (range !== undefined) Object.assign(filter, range);
+        if (range !== undefined) {
+          const lower = filter.kickoff_at as { and?: (other: unknown) => unknown } | undefined;
+          if (lower !== undefined) {
+            filter.kickoff_at = typeof lower.and === "function"
+              ? lower.and(range.kickoff_at)
+              : { ...lower, ...range.kickoff_at as object };
+          } else {
+            Object.assign(filter, range);
+          }
+        }
       }
       const page = await this.where<Match>("matches", filter, {
         order_by: "kickoff_at",

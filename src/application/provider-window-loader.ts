@@ -88,11 +88,11 @@ export async function loadActiveWindowFixtures(
     const leagueMatches = candidateMatchesByLeague.get(league.league_id) ?? [];
     const earliestKickoffMs = leagueMatches.reduce(
       (acc, match) => Math.min(acc, match.kickoff_at.getTime()),
-      serverNow.getTime() - DAY_MS,
+      leagueMatches[0]!.kickoff_at.getTime(),
     );
     const latestKickoffMs = leagueMatches.reduce(
       (acc, match) => Math.max(acc, match.kickoff_at.getTime()),
-      serverNow.getTime() + DAY_MS,
+      leagueMatches[0]!.kickoff_at.getTime(),
     );
     const secondaryDates = jobType === "post_finish_verify"
       ? [...new Set(leagueMatches

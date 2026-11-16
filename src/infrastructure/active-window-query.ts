@@ -12,9 +12,10 @@ export interface ActiveWindowQuery {
   limit: number;
 }
 
-/** 单个数据库查询片段：等值条件 + 至多一个 kickoff_at 上界。 */
+/** 单个数据库查询片段：等值条件和可选 kickoff_at 上下界。 */
 export interface ActiveWindowFilterFragment {
   equals: Record<string, string>;
+  kickoffAtGte?: Date;
   /** 上界（含），作用于 kickoff_at；缺省表示不限。 */
   kickoffAtLte?: Date;
 }
@@ -35,11 +36,14 @@ export function buildActiveWindowFilters(query: ActiveWindowQuery): ActiveWindow
     }];
   }
   if (query.jobType === "live_match") {
+    const kickoffAtGte = new Date(nowMs - 6 * HOUR_MS);
+    const kickoffAtLte = new Date(nowMs + 2 * HOUR_MS);
     return [
-      { equals: { match_status: MatchStatus.Live } },
+      { equals: { match_status: MatchStatus.Live }, kickoffAtGte, kickoffAtLte },
       {
         equals: { match_status: MatchStatus.Scheduled },
-        kickoffAtLte: new Date(nowMs + 2 * HOUR_MS),
+        kickoffAtGte,
+        kickoffAtLte,
       },
     ];
   }
@@ -95,7 +99,7 @@ export function selectActiveWindow(
     const staleKickoffBefore = query.now.getTime() - 6 * HOUR_MS;
     const stale = coerced.filter(
       (match) =>
-        match.match_status === MatchStatus.Scheduled &&
+        (match.match_status === MatchStatus.Scheduled || match.match_status === MatchStatus.Live) &&
         match.kickoff_at.getTime() < staleKickoffBefore,
     );
     if (stale.length > 0) {
@@ -107,6 +111,8 @@ export function selectActiveWindow(
       }
       console.warn("[live_match_stale]", {
         count: stale.length,
+        scheduled_count: stale.filter((match) => match.match_status === MatchStatus.Scheduled).length,
+        live_count: stale.filter((match) => match.match_status === MatchStatus.Live).length,
         leagues: [...leagueCounts.entries()].map(([league_id, count]) => ({ league_id, count })),
         sample: stale.slice(0, STALE_ALERT_SAMPLE_LIMIT).map((match) => ({
           match_id: match.match_id,

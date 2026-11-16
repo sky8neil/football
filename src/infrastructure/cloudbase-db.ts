@@ -27,6 +27,7 @@ export interface CloudBaseDb {
    * 适配器不支持范围查询时返回 undefined（调用方退化为不带该条件）。
    */
   lteFilter?(field: string, value: unknown): Record<string, unknown> | undefined;
+  gteFilter?(field: string, value: unknown): Record<string, unknown> | undefined;
   /**
    * 构造「字段 in 数组」等值集合条件，返回可直接并入 query filter 的对象。
    * 适配器不支持时返回 undefined（调用方退化为逐条查询）。

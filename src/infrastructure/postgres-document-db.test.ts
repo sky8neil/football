@@ -263,6 +263,19 @@ describe("postgres document SQL compilation §6.2", () => {
     expect(compiled.sql).not.toContain("ext-1");
   });
 
+  it("实时窗口上下界同时编译为包含边界的 SQL", () => {
+    const db = createPostgresDocumentDb(async () => ({ rows: [] }), CONFIG);
+    const lower = new Date(NOW.getTime() - 6 * 60 * 60_000);
+    const upper = new Date(NOW.getTime() + 2 * 60 * 60_000);
+    const compiled = compilePostgresDocumentQuery(CONFIG, cloudBaseCollectionName(NAMESPACE, "matches"), {
+      kickoff_at: { ...db.gteFilter("kickoff_at", lower).kickoff_at as object, ...db.lteFilter("kickoff_at", upper).kickoff_at as object },
+    });
+    const field = postgresDocumentFieldExpr(SCHEMA, "matches", "kickoff_at");
+    expect(compiled.sql).toContain(`${field} >= $1::timestamptz`);
+    expect(compiled.sql).toContain(`${field} <= $2::timestamptz`);
+    expect(compiled.params).toEqual([lower.toISOString(), upper.toISOString()]);
+  });
+
   it("Date/int/bool 等值比较使用一致类型，不按文本排序", () => {
     const snapshot = compilePostgresDocumentQuery(
       CONFIG,

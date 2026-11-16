@@ -94,8 +94,8 @@ describe("loadActiveWindowFixtures", () => {
     expect(client.getFixtures).toHaveBeenCalledTimes(1);
     expect(client.getFixtures).toHaveBeenCalledWith(expect.objectContaining({
       leagueId: requestLeagueId,
-      dateFrom: "2026-10-10",
-      dateTo: "2026-10-12",
+      dateFrom: "2026-10-11",
+      dateTo: "2026-10-11",
       jobType: SyncJobType.LiveMatch,
       serverNow: NOW,
     }));
@@ -103,10 +103,11 @@ describe("loadActiveWindowFixtures", () => {
 
   it("computes fixture date ranges independently for each league", async () => {
     const historicalKickoff = new Date(NOW.getTime() - 90 * 24 * 60 * 60_000);
-    const leagueAMatch = mappedMatch("premier_league", historicalKickoff);
-    const leagueBMatch = mappedMatch("la_liga", new Date(NOW.getTime() - 60 * 60_000));
+    const leagueAMatch = mappedMatch("premier_league", historicalKickoff, { match_id: "league-a" });
+    const leagueBMatch = mappedMatch("la_liga", new Date(NOW.getTime() - 60 * 60_000), { match_id: "league-b-first" });
+    const leagueBNextMatch = mappedMatch("la_liga", new Date(NOW.getTime() + 30 * 60 * 60_000), { match_id: "league-b-last" });
     const repo = {
-      matches: { findActiveWindow: async () => [leagueAMatch, leagueBMatch] },
+      matches: { findActiveWindow: async () => [leagueAMatch, leagueBNextMatch, leagueBMatch] },
       matchProviderMappings: { findByProviderAndExternalId: async () => null },
     } as unknown as AppRepository;
     const requests: ApiFootballFixturesQuery[] = [];
@@ -122,7 +123,9 @@ describe("loadActiveWindowFixtures", () => {
     const requestA = requests.find((query) => query.leagueId === SUPPORTED_LEAGUES[0]!.api_football_league_id);
     const requestB = requests.find((query) => query.leagueId === SUPPORTED_LEAGUES[1]!.api_football_league_id);
     expect(requestA?.dateFrom).toBe(historicalKickoff.toISOString().slice(0, 10));
-    expect(requestB?.dateFrom).toBe(new Date(NOW.getTime() - 24 * 60 * 60_000).toISOString().slice(0, 10));
+    expect(requestA?.dateTo).toBe(historicalKickoff.toISOString().slice(0, 10));
+    expect(requestB?.dateFrom).toBe(leagueBMatch.kickoff_at.toISOString().slice(0, 10));
+    expect(requestB?.dateTo).toBe(leagueBNextMatch.kickoff_at.toISOString().slice(0, 10));
   });
 
   it("requests post-finish secondary dates from unchecked kickoff days and their next days", async () => {

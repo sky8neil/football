@@ -15,6 +15,7 @@ function fakeDatabase(format: "nested" | "top-level" = "nested") {
     inc(value: number) { return { __operation: "inc", value }; },
     lt(value: number) { return { __operation: "lt", value }; },
     lte(value: number | Date) { return { __operation: "lte", value }; },
+    gte(value: number | Date) { return { __operation: "gte", value }; },
   };
   const makeDatabase = (transaction = false) => ({
     command,
@@ -191,7 +192,11 @@ describe("CloudBase wx-server-sdk database adapter", () => {
     expect(withCommand.lteFilter("kickoff_at", bound)).toEqual({
       kickoff_at: { __operation: "lte", value: bound },
     });
+    expect(withCommand.gteFilter("kickoff_at", bound)).toEqual({
+      kickoff_at: { __operation: "gte", value: bound },
+    });
     const withoutCommand = new CloudBaseWxDb(fake.db, "football_test");
     expect(withoutCommand.lteFilter("kickoff_at", bound)).toBeUndefined();
+    expect(withoutCommand.gteFilter("kickoff_at", bound)).toBeUndefined();
   });
 });

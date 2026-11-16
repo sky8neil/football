@@ -166,8 +166,8 @@ describe("ProviderPostFinishVerifyService", () => {
     expect(getTeams).not.toHaveBeenCalled();
     expect(getFixtures).toHaveBeenCalledTimes(1);
     expect(getFixtures.mock.calls[0]?.[0]).toMatchObject({
-      dateFrom: "2026-08-09",
-      dateTo: "2026-08-11",
+      dateFrom: "2026-08-10",
+      dateTo: "2026-08-10",
       leagueId: MVP_SEASON.api_football_league_id,
       season: MVP_SEASON.api_football_season,
     });

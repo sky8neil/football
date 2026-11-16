@@ -17,6 +17,7 @@ type SdkCommand = {
   inc(value: number): unknown;
   lt(value: number): unknown;
   lte(value: number | Date): unknown;
+  gte(value: number | Date): unknown;
   in(values: readonly string[]): unknown;
 };
 type SdkDocument = {
@@ -196,6 +197,11 @@ export class CloudBaseWxDb implements CloudBaseDb {
   lteFilter(field: string, value: unknown): Record<string, unknown> | undefined {
     if (this.command?.lte === undefined) return undefined;
     return { [field]: this.command.lte(value as number) };
+  }
+
+  gteFilter(field: string, value: unknown): Record<string, unknown> | undefined {
+    if (this.command?.gte === undefined) return undefined;
+    return { [field]: this.command.gte(value as number) };
   }
 
   inFilter(field: string, values: readonly string[]): Record<string, unknown> | undefined {

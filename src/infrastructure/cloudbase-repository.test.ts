@@ -103,7 +103,11 @@ class MemoryCloudBaseDb implements CloudBaseDb {
       .filter(([key]) => key.startsWith(`${collection}/`))
       .map(([, document]) => cloneValue(document))
       .filter((document) => Object.entries(filter).every(([field, value]) => {
-        if (isLteOp(value)) return toMs(document[field]) <= toMs(value.__lte);
+        if (isLteOp(value) || (typeof value === "object" && value !== null && "__gte" in value)) {
+          const range = value as { __gte?: unknown; __lte?: unknown };
+          return (range.__gte === undefined || toMs(document[field]) >= toMs(range.__gte)) &&
+            (range.__lte === undefined || toMs(document[field]) <= toMs(range.__lte));
+        }
         if (typeof value === "object" && value !== null && "__in" in value) {
           return (value.__in as readonly unknown[]).includes(document[field]);
         }
@@ -264,6 +268,9 @@ function createCloudBaseRepository(db = new MemoryCloudBaseDb()): CloudBaseAppRe
 }
 
 class RangeAwareMemoryCloudBaseDb extends MemoryCloudBaseDb {
+  gteFilter(field: string, value: unknown): Record<string, unknown> {
+    return { [field]: { __gte: value } };
+  }
   lteFilter(field: string, value: unknown): Record<string, unknown> {
     return { [field]: { __lte: value } };
   }
@@ -718,6 +725,45 @@ describe("CloudBaseAppRepository.findActiveWindow", () => {
 
   it("支持 lteFilter 时结果仍与内存仓储一致", async () => {
     await expectSameAsMemory(new RangeAwareMemoryCloudBaseDb());
+  });
+
+  it("live_match 的两个查询都携带开球时间上下界", async () => {
+    const db = new RangeAwareMemoryCloudBaseDb();
+    const repo = createCloudBaseRepository(db);
+    for (const status of [MatchStatus.Live, MatchStatus.Scheduled]) {
+      for (const offset of [-6 * hour - 1, -6 * hour, 2 * hour, 2 * hour + 1]) {
+        await repo.matches.insert(makeWindowMatch({
+          match_id: `${status}-${offset}`,
+          match_status: status,
+          kickoff_at: new Date(NOW.getTime() + offset),
+        }));
+      }
+    }
+    const querySpy = vi.spyOn(db, "query");
+    const result = await repo.matches.findActiveWindow({ jobType: "live_match", now: NOW, limit: 50 });
+    expect(result.map((match) => match.match_id).sort()).toEqual([
+      `live-${-6 * hour}`, `live-${2 * hour}`,
+      `scheduled-${-6 * hour}`, `scheduled-${2 * hour}`,
+    ].sort());
+    expect(querySpy).toHaveBeenCalledTimes(2);
+    for (const call of querySpy.mock.calls) {
+      expect(call[1]).toMatchObject({ kickoff_at: {
+        __gte: new Date(NOW.getTime() - 6 * hour),
+        __lte: new Date(NOW.getTime() + 2 * hour),
+      } });
+    }
+    for (const result of querySpy.mock.results) {
+      expect(await result.value).toHaveLength(2);
+    }
+  });
+
+  it("组合 SDK 范围条件时保留 and 操作", async () => {
+    const db = new RangeAwareMemoryCloudBaseDb();
+    const and = vi.fn(() => ({ __gte: new Date(NOW.getTime() - 6 * hour), __lte: new Date(NOW.getTime() + 2 * hour) }));
+    vi.spyOn(db, "gteFilter").mockReturnValue({ kickoff_at: { and } });
+    await createCloudBaseRepository(db).matches.findActiveWindow({ jobType: "live_match", now: NOW, limit: 50 });
+    expect(and).toHaveBeenCalledTimes(2);
+    expect(and).toHaveBeenCalledWith({ __lte: new Date(NOW.getTime() + 2 * hour) });
   });
 });
 

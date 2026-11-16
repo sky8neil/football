@@ -111,6 +111,9 @@ export function createCountingDb(db: CloudBaseDb): { db: CloudBaseDb; counter: D
     if (inner.lteFilter) {
       wrapped.lteFilter = (field, value) => inner.lteFilter!(field, value);
     }
+    if (inner.gteFilter) {
+      wrapped.gteFilter = (field, value) => inner.gteFilter!(field, value);
+    }
     return wrapped;
   }
 

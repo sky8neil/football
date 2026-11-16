@@ -152,12 +152,15 @@ describe("buildActiveWindowFilters", () => {
     expect(fragments[0]!.kickoffAtLte?.getTime()).toBe(at(24 * HOUR_MS).getTime());
   });
 
-  it("live_match：live 等值 + scheduled 且 kickoff_at <= now+2h", () => {
+  it("live_match：两种状态均使用含边界的实时窗口", () => {
     const fragments = buildActiveWindowFilters(query("live_match"));
     expect(fragments).toHaveLength(2);
-    expect(fragments[0]).toEqual({ equals: { match_status: MatchStatus.Live } });
+    expect(fragments[0]!.equals).toEqual({ match_status: MatchStatus.Live });
     expect(fragments[1]!.equals).toEqual({ match_status: MatchStatus.Scheduled });
-    expect(fragments[1]!.kickoffAtLte?.getTime()).toBe(at(2 * HOUR_MS).getTime());
+    for (const fragment of fragments) {
+      expect(fragment.kickoffAtGte?.getTime()).toBe(at(-6 * HOUR_MS).getTime());
+      expect(fragment.kickoffAtLte?.getTime()).toBe(at(2 * HOUR_MS).getTime());
+    }
   });
 
   it("live_match：过滤前逐场告警超 6 小时的 scheduled 候选", () => {
@@ -187,9 +190,11 @@ describe("buildActiveWindowFilters", () => {
       // 滞留告警按轮聚合成一条，避免滞留场次多时刷爆日志。
       expect(warn).toHaveBeenCalledTimes(1);
       expect(warn).toHaveBeenCalledWith("[live_match_stale]", {
-        count: 2,
+        count: 3,
+        scheduled_count: 2,
+        live_count: 1,
         leagues: [
-          { league_id: "premier_league", count: 1 },
+          { league_id: "premier_league", count: 2 },
           { league_id: "la_liga", count: 1 },
         ],
         sample: [
@@ -202,6 +207,11 @@ describe("buildActiveWindowFilters", () => {
             match_id: "stale-two",
             league_id: "la_liga",
             kickoff_at: staleTwo.kickoff_at.toISOString(),
+          },
+          {
+            match_id: "old-live",
+            league_id: "premier_league",
+            kickoff_at: oldLive.kickoff_at.toISOString(),
           },
         ],
         server_now: NOW.toISOString(),
@@ -246,6 +256,7 @@ function applyFragments(matches: readonly Match[], jobType: ActiveWindowJob): Ma
         ([field, expected]) => (match as unknown as Record<string, unknown>)[field] === expected,
       );
       if (!equalsOk) continue;
+      if (fragment.kickoffAtGte !== undefined && match.kickoff_at.getTime() < fragment.kickoffAtGte.getTime()) continue;
       if (fragment.kickoffAtLte !== undefined) {
         const kickoff = match.kickoff_at instanceof Date
           ? match.kickoff_at.getTime()
@@ -259,6 +270,16 @@ function applyFragments(matches: readonly Match[], jobType: ActiveWindowJob): Ma
 }
 
 describe("数据库片段必须是 activeWindow 的超集（接线不丢更新）", () => {
+  it("live_match 数据库片段与内存判定在两侧边界完全一致", () => {
+    const matches = [MatchStatus.Live, MatchStatus.Scheduled].flatMap((status) =>
+      [-6 * HOUR_MS - 1, -6 * HOUR_MS, 0, 2 * HOUR_MS, 2 * HOUR_MS + 1]
+        .map((offset) => makeMatch({ match_id: `${status}-${offset}`, match_status: status, kickoff_at: at(offset) })),
+    );
+    expect(idsOf(applyFragments(matches, "live_match")).sort()).toEqual(
+      idsOf(activeWindow(matches, NOW, "live_match")).sort(),
+    );
+    expect(activeWindow(matches, NOW, "live_match")).toHaveLength(6);
+  });
   it.each(["near_match", "live_match", "post_finish_verify"] as const)(
     "%s：窗口内每场比赛都能被某个片段查出来",
     (jobType) => {

@@ -34,6 +34,7 @@ class FakeDb implements CloudBaseDb {
   }> = [];
   inFilter?: (field: string, values: readonly string[]) => Record<string, unknown> | undefined;
   lteFilter?: (field: string, value: unknown) => Record<string, unknown> | undefined;
+  gteFilter?: (field: string, value: unknown) => Record<string, unknown> | undefined;
 
   constructor(enableIn: boolean, enableLte: boolean) {
     if (enableIn) {
@@ -43,6 +44,10 @@ class FakeDb implements CloudBaseDb {
       };
     }
     if (enableLte) {
+      this.gteFilter = function gteFilter(this: FakeDb, field, value) {
+        if (this.documents === undefined) throw new Error("gteFilter lost this");
+        return { [field]: { __gte: value } };
+      };
       this.lteFilter = function lteFilter(this: FakeDb, field, value) {
         if (this.documents === undefined) throw new Error("lteFilter lost this");
         return { [field]: { __lte: value } };
@@ -77,7 +82,9 @@ class FakeDb implements CloudBaseDb {
             const right = value.__lte;
             const leftMs = left instanceof Date ? left.getTime() : new Date(String(left)).getTime();
             const rightMs = right instanceof Date ? right.getTime() : new Date(String(right)).getTime();
-            return leftMs <= rightMs;
+            const lower = "__gte" in value ? value.__gte : undefined;
+            const lowerMs = lower instanceof Date ? lower.getTime() : new Date(String(lower)).getTime();
+            return leftMs <= rightMs && (lower === undefined || leftMs >= lowerMs);
           }
           return document[field] === value;
         }),
@@ -237,12 +244,14 @@ describe("createCountingDb passthrough of inFilter/lteFilter", () => {
     await db.transaction(async (tx) => {
       expect(typeof tx.inFilter).toBe("function");
       expect(typeof tx.lteFilter).toBe("function");
+      expect(typeof tx.gteFilter).toBe("function");
       expect(tx.inFilter?.("provider_match_id", ["ext-1"])).toEqual({
         provider_match_id: { __in: ["ext-1"] },
       });
       expect(tx.lteFilter?.("kickoff_at", NOW)).toEqual({
         kickoff_at: { __lte: NOW },
       });
+      expect(tx.gteFilter?.("kickoff_at", NOW)).toEqual({ kickoff_at: { __gte: NOW } });
     });
   });
 
@@ -251,9 +260,11 @@ describe("createCountingDb passthrough of inFilter/lteFilter", () => {
     const { db } = createCountingDb(inner);
     expect(db.inFilter).toBeUndefined();
     expect(db.lteFilter).toBeUndefined();
+    expect(db.gteFilter).toBeUndefined();
     await db.transaction(async (tx) => {
       expect(tx.inFilter).toBeUndefined();
       expect(tx.lteFilter).toBeUndefined();
+      expect(tx.gteFilter).toBeUndefined();
     });
 
     const repo = new CloudBaseAppRepository(CONFIG, db);
