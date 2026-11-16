@@ -1,104 +1,50 @@
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 const source = new URL("./matches-default-league.js", import.meta.url);
 const moduleShim = { exports: {} };
 runInNewContext(readFileSync(source, "utf8"), { module: moduleShim, exports: moduleShim.exports });
-const { resolveDefaultLeague } = moduleShim.exports;
-const NOW = new Date("2026-08-10T00:00:00.000Z");
-const LEAGUE_IDS = ["premier_league", "la_liga", "serie_a", "bundesliga", "ligue_1", "chinese_super_league"];
-
-function scheduled(match_status = "scheduled") {
-  return { match_status };
-}
-
-function makeListMatches(fixtures = {}) {
-  return vi.fn(async ({ league_id }) => {
-    const fixture = fixtures[league_id];
-    if (fixture instanceof Error) throw fixture;
-    if (fixture && fixture.statusCode !== undefined) return fixture;
-    return { statusCode: 200, data: { items: fixture || [] } };
-  });
-}
+const { resolveDefaultLeagueFromStatus } = moduleShim.exports;
 
 describe("default match league", () => {
-  it("probes all six leagues in parallel with the recent and upcoming window", async () => {
-    const listMatches = makeListMatches({ premier_league: [scheduled("live")] });
-    const resultPromise = resolveDefaultLeague(listMatches, NOW);
-
-    expect(listMatches).toHaveBeenCalledTimes(6);
-    const result = await resultPromise;
-    expect(result).toEqual({ leagueId: "premier_league", activeLeagueIds: ["premier_league"] });
-    expect(listMatches.mock.calls.map(([query]) => query.league_id)).toEqual(LEAGUE_IDS);
-    for (const [query] of listMatches.mock.calls) {
-      expect(query).toEqual({
-        league_id: expect.any(String),
-        from: "2026-08-03T00:00:00.000Z",
-        to: "2026-08-31T00:00:00.000Z",
-        limit: 20,
-      });
-    }
+  it("prefers a live league over the earliest next kickoff", () => {
+    const items = [
+      { league_id: "la_liga", phase: "in_season", next_kickoff_at: "2026-08-12T00:00:00Z" },
+      { league_id: "serie_a", phase: "break", next_kickoff_at: "2026-08-11T00:00:00Z" },
+      { league_id: "bundesliga", phase: "in_season", has_live_match: true },
+    ];
+    expect(resolveDefaultLeagueFromStatus(items).leagueId).toBe("bundesliga");
   });
 
-  it("chooses the first league in the fixed order with a scheduled or live match", async () => {
-    const listMatches = makeListMatches({
-      la_liga: [scheduled("live")],
-      bundesliga: [scheduled()],
-    });
-    await expect(resolveDefaultLeague(listMatches, NOW)).resolves.toEqual({
-      leagueId: "la_liga",
-      activeLeagueIds: ["la_liga", "bundesliga"],
-    });
+  it("uses the earliest next kickoff when no league is live", () => {
+    const items = [
+      { league_id: "la_liga", phase: "in_season", next_kickoff_at: "2026-08-12T00:00:00Z" },
+      { league_id: "serie_a", phase: "break", next_kickoff_at: "2026-08-11T00:00:00Z" },
+      { league_id: "bundesliga", phase: "in_season", has_live_match: false },
+    ];
+    expect(resolveDefaultLeagueFromStatus(items).leagueId).toBe("serie_a");
   });
 
-  it("selects the Bundesliga when it is the only league with an upcoming match", async () => {
-    const listMatches = makeListMatches({ bundesliga: [scheduled()] });
-    await expect(resolveDefaultLeague(listMatches, NOW)).resolves.toEqual({
-      leagueId: "bundesliga",
-      activeLeagueIds: ["bundesliga"],
-    });
+  it("collects active leagues from in-season and break phases only", () => {
+    const items = [
+      { league_id: "premier_league", phase: "completed" },
+      { league_id: "la_liga", phase: "in_season", next_kickoff_at: "2026-08-12T00:00:00Z" },
+      { league_id: "serie_a", phase: "break" },
+      { league_id: "chinese_super_league", phase: "between_seasons" },
+    ];
+    expect(resolveDefaultLeagueFromStatus(items).activeLeagueIds).toEqual(["la_liga", "serie_a"]);
   });
 
-  it("selects the Chinese Super League when Premier League and La Liga have no upcoming matches", async () => {
-    const listMatches = makeListMatches({
-      premier_league: [{ match_status: "finished" }],
-      la_liga: [],
-      chinese_super_league: [scheduled()],
-    });
-    await expect(resolveDefaultLeague(listMatches, NOW)).resolves.toEqual({
-      leagueId: "chinese_super_league",
-      activeLeagueIds: ["chinese_super_league"],
-    });
-  });
-
-  it("falls back to the first league with any returned item when none are upcoming", async () => {
-    const listMatches = makeListMatches({
-      la_liga: [{ match_status: "finished" }],
-      bundesliga: [{ match_status: "postponed" }],
-    });
-    await expect(resolveDefaultLeague(listMatches, NOW)).resolves.toEqual({
-      leagueId: "la_liga",
-      activeLeagueIds: [],
-    });
-  });
-
-  it("treats individual request failures as leagues without a schedule", async () => {
-    const listMatches = makeListMatches({
-      premier_league: new Error("request failed"),
-      la_liga: { statusCode: 503, data: { items: [scheduled()] } },
-      serie_a: [scheduled("live")],
-    });
-    await expect(resolveDefaultLeague(listMatches, NOW)).resolves.toEqual({
-      leagueId: "serie_a",
-      activeLeagueIds: ["serie_a"],
-    });
-  });
-
-  it("defaults to the Premier League when every request is empty", async () => {
-    await expect(resolveDefaultLeague(makeListMatches(), NOW)).resolves.toEqual({
+  it("keeps the Premier League when no league reports an active phase or next kickoff", () => {
+    expect(resolveDefaultLeagueFromStatus([{ league_id: "la_liga", phase: "completed" }])).toEqual({
       leagueId: "premier_league",
       activeLeagueIds: [],
     });
+  });
+
+  it("keeps the Premier League when the status list is empty or missing", () => {
+    expect(resolveDefaultLeagueFromStatus([]).leagueId).toBe("premier_league");
+    expect(resolveDefaultLeagueFromStatus(undefined).leagueId).toBe("premier_league");
   });
 });

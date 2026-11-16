@@ -140,6 +140,7 @@ function loadHomePage({ stored } = {}) {
     if (id === "../../services/matches.js") {
       return { listMatches: () => Promise.resolve({ statusCode: 200, data: { items: [] } }) };
     }
+    if (id === "../../services/leagues.js") return { getLeagueStatus: () => Promise.resolve({ statusCode: 200, data: { items: [] } }) };
     if (id === "../../services/predictions.js") {
       return {
         createUuidV4: () => "00000000-0000-4000-8000-000000000001",
@@ -153,7 +154,7 @@ function loadHomePage({ stored } = {}) {
     if (id === "../../utils/ui-layout.js") return { headerHeight: () => 88 };
     throw new Error(`Unexpected require: ${id}`);
   });
-  const page = instantiate(config, { loadFirstPage() {} });
+  const page = instantiate(config, { loadFirstPage() { return Promise.resolve(); } });
   page.onLoad.call(page);
   return { page, ...wxStub };
 }

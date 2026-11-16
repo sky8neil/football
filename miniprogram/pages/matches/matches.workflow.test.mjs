@@ -51,6 +51,7 @@ function loadPage({ matchesResult, submitResult } = {}) {
     if (id === "../../utils/logo-registry.js") return logoRegistry;
     if (id === "../../utils/nickname.js") return nickname;
     if (id === "../../services/matches.js") return { listMatches };
+    if (id === "../../services/leagues.js") return { getLeagueStatus: () => Promise.resolve({ statusCode: 200, data: { items: [] } }) };
     if (id === "../../utils/matches-default-league.js") {
       return loadCommonJs(LEAGUE_UTIL, () => { throw new Error("Unexpected league utility dependency"); });
     }

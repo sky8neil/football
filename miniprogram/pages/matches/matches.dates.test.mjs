@@ -24,7 +24,8 @@ function loadDateHelpers() {
     if (id === "../../utils/logo-registry.js") return { getTeamLogo: () => "", getLeagueLogo: () => "" };
     if (id === "../../utils/nickname.js") return { resolveNickname: () => "", truncateNickname: (value) => value };
     if (id === "../../services/matches.js") return { listMatches: () => Promise.resolve({ statusCode: 200 }) };
-    if (id === "../../utils/matches-default-league.js") return { resolveDefaultLeague: () => Promise.resolve({}) };
+    if (id === "../../services/leagues.js") return { getLeagueStatus: () => Promise.resolve({ statusCode: 200, data: { items: [] } }) };
+    if (id === "../../utils/matches-default-league.js") return { resolveDefaultLeagueFromStatus: () => ({ leagueId: "premier_league", activeLeagueIds: [] }) };
     if (id === "../../services/predictions.js") return { createUuidV4: () => "", submitPrediction: () => Promise.resolve({}) };
     if (id === "../../utils/crowd-copy.js") return { COPY: { homeLink: "" } };
     throw new Error(`Unexpected require: ${id}`);

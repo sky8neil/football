@@ -91,8 +91,16 @@ function listMyPredictions({ limit, cursor } = {}) {
   });
 }
 
+function getMyLeagueSummary({ leagueId, seasonId } = {}) {
+  const query = {};
+  if (leagueId) query.league_id = leagueId;
+  if (seasonId) query.season_id = seasonId;
+  return request({ method: "GET", path: "/v1/predictions/summary", query });
+}
+
 module.exports = {
   createUuidV4,
   submitPrediction,
   listMyPredictions,
+  getMyLeagueSummary,
 };

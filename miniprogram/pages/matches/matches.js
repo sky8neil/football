@@ -2,8 +2,9 @@ const { headerHeight } = require("../../utils/ui-layout.js");
 const { getTeamLogo, getLeagueLogo } = require("../../utils/logo-registry.js");
 const { resolveNickname, truncateNickname } = require("../../utils/nickname.js");
 const { listMatches } = require("../../services/matches.js");
-const { resolveDefaultLeague } = require("../../utils/matches-default-league.js");
-const { createUuidV4, submitPrediction } = require("../../services/predictions.js");
+const { getLeagueStatus } = require("../../services/leagues.js");
+const { resolveDefaultLeagueFromStatus } = require("../../utils/matches-default-league.js");
+const { createUuidV4, submitPrediction, getMyLeagueSummary } = require("../../services/predictions.js");
 const { COPY: CROWD_COPY } = require("../../utils/crowd-copy.js");
 
 const LEAGUES = [
@@ -125,25 +126,18 @@ Page({
     headerHeight: headerHeight(),
     avatarText: "球",
     state: "loading", items: [], errorMessage: "", hasMore: false, nextCursor: null, loadingMore: false, nickname: "",
-    leagues: [], activeLeagueIds: [], selectedLeague: "premier_league", dates: [], selectedDate: "", nextMatch: null, offseasonInfo: null, openCount: 0, doneCount: 0, recentScore: null,
+    leagues: [], activeLeagueIds: [], leagueStatusById: {}, selectedLeague: "premier_league", dates: [], selectedDate: "", nextMatch: null, offseasonInfo: null, emptyIsBreak: false, summaryState: "loading", summarySeasonId: null, summaryReason: null, leagueSummary: null, openCount: 0, doneCount: 0, recentScore: null,
     scrollIntoView: "", resultsTransition: "results-enter",
   },
-  drafts: {}, uiStates: {}, submittedMap: {}, idempotencyKeys: {}, lastPayloads: {}, requestSerial: 0,
+  drafts: {}, uiStates: {}, submittedMap: {}, idempotencyKeys: {}, lastPayloads: {}, requestSerial: 0, statusSerial: 0, summarySerial: 0,
 
   onLoad() {
     const dates = buildDates(new Date());
     this.setData({ dates, selectedDate: dates[0].key, leagues: LEAGUES.map((item) => ({ ...item, logo: getLeagueLogo(item.id) })), nickname: truncateNickname(resolveNickname()), avatarText: Array.from(resolveNickname())[0] || "球" });
-    resolveDefaultLeague(listMatches, new Date()).then(({ leagueId, activeLeagueIds }) => {
-      const activeIds = Array.isArray(activeLeagueIds) ? activeLeagueIds : [];
-      const activeSet = new Set(activeIds);
-      this.setData({
-        activeLeagueIds: activeIds,
-        leagues: this.data.leagues.map((league) => ({ ...league, offSeason: !activeSet.has(league.id) })),
-      });
-      if (!this.userChangedLeague) this.setData({ selectedLeague: leagueId });
-      this.initialized = true;
-      this.loadFirstPage();
-    });
+    this.initialized = true;
+    this.hasShown = false;
+    this.needsDefaultLeague = true;
+    this.loadFirstPage(true);
   },
 
   onShow() {
@@ -153,16 +147,20 @@ Page({
     }
     const tabBar = this.getTabBar && this.getTabBar();
     if (tabBar) tabBar.setData({ selected: 0 });
-    if (this.initialized) this.loadFirstPage();
+    if (this.initialized && this.hasShown) this.loadFirstPage();
+    this.hasShown = true;
   },
 
   onLeagueTap(event) {
     const league = event.currentTarget.dataset.id;
     if (!league || league === this.data.selectedLeague) return;
     this.userChangedLeague = true;
+    this.needsDefaultLeague = false;
     this.closeEditors();
     this.requestSerial += 1;
-    this.setData({ selectedLeague: league, scrollIntoView: "", state: "loading", items: [], nextMatch: null, offseasonInfo: null, hasMore: false, nextCursor: null, openCount: 0, doneCount: 0, resultsTransition: "results-exit" });
+    this.statusSerial += 1;
+    this.summarySerial += 1;
+    this.setData({ selectedLeague: league, scrollIntoView: "", state: "loading", items: [], nextMatch: null, offseasonInfo: null, leagueSummary: null, summarySeasonId: null, summaryReason: null, summaryState: "loading", hasMore: false, nextCursor: null, openCount: 0, doneCount: 0, resultsTransition: "results-exit" });
     setTimeout(() => this.loadFirstPage(), 180);
   },
 
@@ -171,7 +169,9 @@ Page({
     if (!date || date === this.data.selectedDate) return;
     this.closeEditors();
     this.requestSerial += 1;
-    this.setData({ selectedDate: date, state: "loading", items: [], nextMatch: null, offseasonInfo: null, scrollIntoView: "", resultsTransition: "results-exit" });
+    this.statusSerial += 1;
+    this.summarySerial += 1;
+    this.setData({ selectedDate: date, state: "loading", items: [], nextMatch: null, offseasonInfo: null, leagueSummary: null, summarySeasonId: null, summaryReason: null, summaryState: "loading", scrollIntoView: "", resultsTransition: "results-exit" });
     setTimeout(() => this.loadFirstPage(), 180);
   },
 
@@ -181,7 +181,9 @@ Page({
     if (date === this.data.selectedDate) return;
     this.closeEditors();
     this.requestSerial += 1;
-    this.setData({ selectedDate: date, state: "loading", items: [], nextMatch: null, offseasonInfo: null, hasMore: false, nextCursor: null, scrollIntoView: "", resultsTransition: "results-exit" });
+    this.statusSerial += 1;
+    this.summarySerial += 1;
+    this.setData({ selectedDate: date, state: "loading", items: [], nextMatch: null, offseasonInfo: null, leagueSummary: null, summarySeasonId: null, summaryReason: null, summaryState: "loading", hasMore: false, nextCursor: null, scrollIntoView: "", resultsTransition: "results-exit" });
     return this.loadFirstPage();
   },
 
@@ -191,81 +193,71 @@ Page({
 
   onRetry() { this.loadFirstPage(); },
 
-  loadFirstPage() {
-    const serial = ++this.requestSerial;
-    this.setData({ state: "loading", items: [], nextMatch: null, offseasonInfo: null, hasMore: false, nextCursor: null, errorMessage: "", loadingMore: false, resultsTransition: "results-enter" });
-    return listMatches({ ...dayBounds(this.data.selectedDate), league_id: this.data.selectedLeague, limit: 100 })
-      .then((result) => {
-        if (serial !== this.requestSerial) return;
-        return this.applyListResult(result, true);
-      });
+  onPullDownRefresh() {
+    return this.loadFirstPage().finally(() => wx.stopPullDownRefresh());
   },
 
-  fetchUpcomingMatches(query) {
-    return Promise.resolve()
-      .then(() => listMatches(query))
-      .then((result) => result && result.statusCode === 200 && result.data && Array.isArray(result.data.items)
-        ? result.data.items
-        : [])
-      .catch(() => []);
+  async loadFirstPage(chooseDefault = false) {
+    const serial = ++this.requestSerial;
+    const statusSerial = ++this.statusSerial;
+    const leagueId = this.data.selectedLeague;
+    this.summarySerial += 1;
+    this.setData({ state: "loading", items: [], nextMatch: null, offseasonInfo: null, leagueSummary: null, summarySeasonId: null, summaryReason: null, summaryState: "loading", hasMore: false, nextCursor: null, errorMessage: "", loadingMore: false, resultsTransition: "results-enter" });
+    let statusResult;
+    try {
+      statusResult = await getLeagueStatus();
+    } catch (error) {
+      statusResult = null;
+    }
+    if (serial !== this.requestSerial || statusSerial !== this.statusSerial || leagueId !== this.data.selectedLeague) return;
+    const statuses = statusResult && statusResult.statusCode === 200 ? statusResult.data.items : [];
+    const leagueStatusById = {};
+    statuses.forEach((item) => { leagueStatusById[item.league_id] = item; });
+    const activeLeagueIds = statuses.filter((item) => item.phase === "in_season" || item.phase === "break").map((item) => item.league_id);
+    this.setData({ leagueStatusById, activeLeagueIds, leagues: this.data.leagues.map((league) => ({ ...league, offSeason: !!leagueStatusById[league.id] && ["completed", "between_seasons"].includes(leagueStatusById[league.id].phase) })) });
+    if ((chooseDefault || this.needsDefaultLeague) && !this.userChangedLeague) {
+      const selection = resolveDefaultLeagueFromStatus(statuses);
+      if (serial !== this.requestSerial || statusSerial !== this.statusSerial || leagueId !== this.data.selectedLeague) return;
+      this.setData({ selectedLeague: selection.leagueId });
+      this.needsDefaultLeague = false;
+    }
+    const selectedLeague = this.data.selectedLeague;
+    const result = await listMatches({ ...dayBounds(this.data.selectedDate), league_id: selectedLeague, limit: 100 });
+    if (serial !== this.requestSerial || selectedLeague !== this.data.selectedLeague) return;
+    return this.applyListResult(result, true);
   },
 
   loadEmptyStateFollowup(serial) {
     const leagueId = this.data.selectedLeague;
     const now = new Date();
-    const next30Days = new Date(now.getTime() + 30 * DAY_MS).toISOString();
-    const next120Days = new Date(now.getTime() + 120 * DAY_MS).toISOString();
-    const afterSelectedDay = dayBounds(this.data.selectedDate).to;
-
-    return this.fetchUpcomingMatches({
-      league_id: leagueId,
-      from: afterSelectedDay,
-      to: next30Days,
-      limit: 1,
-    }).then((items) => {
-      if (serial !== this.requestSerial) return;
-      if (items.length) {
-        this.setData({
-          state: "no-match",
-          nextMatch: upcomingMatchInfo(items[0], now, this.data.dates),
-          offseasonInfo: null,
-        });
-        return;
-      }
-
-      return this.fetchUpcomingMatches({
-        league_id: leagueId,
-        from: now.toISOString(),
-        to: next120Days,
-        limit: 1,
-      }).then((laterItems) => {
-        if (serial !== this.requestSerial) return;
-        const nextSeasonMatch = laterItems[0] || null;
-        const nextSeasonDate = nextSeasonMatch && nextSeasonMatch.kickoff_at
-          ? nextSeasonMatch.kickoff_at
-          : null;
-        const countdownDays = nextSeasonDate
-          ? daysBetweenBeijingDates(now, nextSeasonDate)
-          : null;
-        const leagueName = (LEAGUES.find((league) => league.id === leagueId) || {}).name || "本联赛";
-        const activeLeagueId = (Array.isArray(this.data.activeLeagueIds) ? this.data.activeLeagueIds : [])
-          .find((id) => id !== leagueId) || "";
-        const activeLeagueName = (LEAGUES.find((league) => league.id === activeLeagueId) || {}).name || "";
-
-        this.setData({
-          state: "offseason",
-          nextMatch: null,
-          offseasonInfo: {
-            title: `${leagueName} 本赛季已收官`,
-            nextSeasonDate,
-            countdownDays,
-            activeLeagueId,
-            activeLeagueName,
-          },
-        });
-      });
-    });
+    const status = this.data.leagueStatusById[leagueId];
+    if (!status || !["completed", "between_seasons"].includes(status.phase)) {
+      this.setData({ state: "no-match", nextMatch: status && status.next_matchday ? upcomingMatchInfo(status.next_matchday, now, this.data.dates) : null, emptyIsBreak: !!status && status.phase === "break", offseasonInfo: null });
+      return;
+    }
+    const nextSeasonDate = status.phase === "between_seasons" ? status.next_season_kickoff_at : null;
+    const activeLeagueId = this.data.activeLeagueIds.find((id) => id !== leagueId) || "";
+    const activeLeagueName = (LEAGUES.find((league) => league.id === activeLeagueId) || {}).name || "";
+    const leagueName = (LEAGUES.find((league) => league.id === leagueId) || {}).name || "本联赛";
+    this.setData({ state: "offseason", nextMatch: null, offseasonInfo: { leagueName, nextSeasonDate, countdownDays: nextSeasonDate ? daysBetweenBeijingDates(now, nextSeasonDate) : null, activeLeagueId, activeLeagueName } });
+    return this.loadLeagueSummary(serial, leagueId);
   },
+
+  async loadLeagueSummary(serial, leagueId) {
+    const summarySerial = ++this.summarySerial;
+    this.setData({ summaryState: "loading", leagueSummary: null, summarySeasonId: null, summaryReason: null });
+    try {
+      const result = await getMyLeagueSummary({ leagueId });
+      if (serial !== this.requestSerial || summarySerial !== this.summarySerial || leagueId !== this.data.selectedLeague) return;
+      if (result.statusCode !== 200) { this.setData({ summaryState: "error" }); return; }
+      const data = result.data;
+      this.setData({ summaryState: "ready", summarySeasonId: data.season_id, leagueSummary: data.availability === "available" ? data.summary : null, summaryReason: data.availability === "available" ? null : data.reason });
+    } catch (error) {
+      if (serial === this.requestSerial && summarySerial === this.summarySerial && leagueId === this.data.selectedLeague) this.setData({ summaryState: "error" });
+    }
+  },
+
+  onSummaryRetry() { return this.loadLeagueSummary(this.requestSerial, this.data.selectedLeague); },
 
   applyListResult(result, replace) {
     if (result.statusCode !== 200) { this.setData({ state: "error", errorMessage: result.message || String(result.code || result.statusCode), loadingMore: false, nextMatch: null, offseasonInfo: null }); return; }

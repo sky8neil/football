@@ -191,6 +191,11 @@ page { background: var(--surface-canvas); color: var(--text-primary); font-famil
 .offseason-card { border-color:var(--color-brand-soft); }
 .offseason-eyebrow { color:var(--color-brand-primary);font-size:var(--font-20);font-weight:var(--weight-bold); }
 .offseason-title { margin-top:var(--space-2); }
+.summary-title { margin-top:var(--space-5);color:var(--text-primary);font-size:var(--font-24);font-weight:var(--weight-bold); }
+.summary-stats { display:flex;flex-wrap:wrap;justify-content:center;gap:var(--space-4);margin-top:var(--space-3); }
+.summary-stat { display:flex;flex:1 1 80px;flex-direction:column;color:var(--text-secondary);font-size:var(--font-22); }
+.summary-number { color:var(--text-primary);font-size:var(--font-30);font-weight:var(--weight-bold); }
+.summary-retry,.summary-provisional { margin-top:var(--space-3);color:var(--color-brand-primary);font-size:var(--font-22); }
 .offseason-countdown { margin-top:var(--space-4);color:var(--text-secondary);font-size:var(--font-22); }
 .season-action { display:block;width:100%;min-height:var(--cta-height);margin:var(--space-5) 0 0;padding:0 var(--space-4);border:0;border-radius:var(--radius-md);background:var(--color-brand-primary);color:var(--text-on-brand);font-size:var(--font-22);font-weight:var(--weight-bold);line-height:var(--cta-height); }
 .season-rankings { background:var(--color-brand-soft);color:var(--color-brand-primary); }

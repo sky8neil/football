@@ -29,17 +29,30 @@
 点选上方日期或切换其他联赛看看</view>
     <view wx:elif="{{state === 'no-match'}}" class="no-match-card">
       <view class="empty-title">这一天暂无比赛</view>
-      <view class="empty-copy">可以跳到最近的比赛日继续预测</view>
+      <view class="empty-copy">{{emptyIsBreak ? '联赛间歇中' : (nextMatch ? '可以跳到最近的比赛日继续预测' : '点选上方日期或切换其他联赛看看')}}</view>
       <button wx:if="{{nextMatch && nextMatch.inDateStrip}}" class="season-action next-match-action" data-date="{{nextMatch.date}}" bindtap="onNextMatchTap">{{nextMatch.displayText}}</button>
       <view wx:elif="{{nextMatch}}" class="next-match-note">{{nextMatch.displayText}}</view>
     </view>
     <view wx:elif="{{state === 'offseason'}}" class="offseason-card">
-      <view class="offseason-eyebrow">本赛季已收官</view>
-      <view class="offseason-title">{{offseasonInfo.title}}</view>
+      <view class="offseason-title">本赛季已收官</view>
+      <view class="empty-copy">{{summarySeasonId ? summarySeasonId + ' 赛季 · ' : ''}}{{offseasonInfo.leagueName}}</view>
+      <view class="summary-title">我的本联赛小结</view>
+      <view wx:if="{{summaryState === 'loading'}}" class="empty-copy">正在加载个人小结</view>
+      <view wx:elif="{{summaryState === 'error'}}" class="summary-retry" bindtap="onSummaryRetry">小结暂时加载失败，重试</view>
+      <block wx:elif="{{leagueSummary}}">
+        <view wx:if="{{leagueSummary.predicted_matches > 0}}" class="summary-stats">
+          <view class="summary-stat"><text>预测场次</text><text class="summary-number">{{leagueSummary.predicted_matches}}</text></view>
+          <view class="summary-stat"><text>胜平负命中</text><text class="summary-number">{{leagueSummary.wdl_hits}}</text></view>
+          <view class="summary-stat"><text>精确比分命中</text><text class="summary-number">{{leagueSummary.exact_hits}}</text></view>
+        </view>
+        <view wx:else class="empty-copy">你本赛季还没有参与该联赛预测</view>
+        <view wx:if="{{leagueSummary.is_provisional}}" class="summary-provisional">结算更新中</view>
+      </block>
+      <view wx:else class="empty-copy">{{summaryReason === 'data_conflict' ? '数据核对中' : '小结暂不可用'}}</view>
       <view wx:if="{{offseasonInfo.nextSeasonDate}}" class="offseason-countdown">距离新赛季揭幕战还有 {{offseasonInfo.countdownDays}} 天</view>
       <view wx:else class="offseason-countdown">新赛季赛程公布后将第一时间开放预测</view>
       <button wx:if="{{offseasonInfo.activeLeagueId}}" class="season-action" data-id="{{offseasonInfo.activeLeagueId}}" bindtap="onLeagueTap">去看看正在进行的 {{offseasonInfo.activeLeagueName}} →</button>
-      <button class="season-action season-rankings" bindtap="onRankingsTap">查看本赛季最终排行榜 →</button>
+      <button class="season-action season-rankings" bindtap="onRankingsTap">查看等级赛季排行榜 →</button>
     </view>
     <view wx:elif="{{state === 'error'}}" class="error"><text>{{errorMessage}}</text><button class="retry" bindtap="onRetry">重试</button></view>
     <scroll-view wx:elif="{{state === 'list'}}" class="feed" scroll-y scroll-with-animation scroll-into-view="{{scrollIntoView}}" bindtap="onFeedTap">
