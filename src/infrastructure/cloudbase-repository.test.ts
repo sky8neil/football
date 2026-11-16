@@ -298,7 +298,9 @@ function createPostgresRepository(): CloudBaseAppRepository {
       return { rows: row ? [{ document: structuredClone(row) }] : [] };
     }
     const filters = [...sql.matchAll(/document ->> '([^']+)'\)\)?(?:::numeric)? = \$(\d+)/g)];
-    let documents = [...rows.values()].filter((row) => filters.every((match) => row[match[1]!] === params[Number(match[2]) - 1]));
+    const inFilters = [...sql.matchAll(/document ->> '([^']+)'\)\)? = ANY\(\$(\d+)::text\[\]\)/g)];
+    let documents = [...rows.values()].filter((row) => filters.every((match) => row[match[1]!] === params[Number(match[2]) - 1])
+      && inFilters.every((match) => (params[Number(match[2]) - 1] as unknown[]).includes(row[match[1]!])));
     if (sql.includes("ORDER BY")) documents = documents.sort((left, right) => String(left.kickoff_at).localeCompare(String(right.kickoff_at)));
     const limit = /LIMIT \$(\d+)/.exec(sql);
     const offset = /OFFSET \$(\d+)/.exec(sql);
@@ -326,6 +328,43 @@ describe.each([
     schema_version: 1, league_id: "league", season_id: "2026", team_id: "team", provider: "football_data",
     provider_team_id: "provider-team", source: "schedule", created_at: NOW, updated_at: NOW,
   };
+
+  it("reads all league season matches including superseded records with isolation", async () => {
+    const repo = createRepo();
+    const current = makeWindowMatch({ match_id: "current" });
+    const old = makeWindowMatch({ match_id: "old", canonical_match_id: "current" });
+    await repo.matches.insert(current);
+    await repo.matches.insert(old);
+    await repo.matches.update({ ...old, superseded_by: "current" });
+    await repo.matches.insert(makeWindowMatch({ match_id: "other-league", league_id: "la_liga" }));
+    await repo.matches.insert(makeWindowMatch({ match_id: "other-season", season_id: "2025_2026" }));
+    const extraIds = Array.from({ length: 105 }, (_, index) => `extra-${index}`);
+    for (const id of extraIds) await repo.matches.insert(makeWindowMatch({ match_id: id }));
+    expect((await repo.matches.findByLeagueSeason("premier_league", "2026_2027")).map((match) => match.match_id).sort())
+      .toEqual(["current", "old", ...extraIds].sort());
+  });
+
+  it("reads canonical predictions across batches, pages and users", async () => {
+    const repo = createRepo();
+    const ids = Array.from({ length: 105 }, (_, index) => `match-${index}`);
+    for (const id of ids) {
+      await repo.predictions.insert({
+        schema_version: 1, prediction_id: id, user_id: USER_ID, match_id: id, canonical_match_id: id,
+        idempotency_key: id, pred_home_score: 1, pred_away_score: 0, derived_result: "HOME", submitted_at: NOW,
+        scoring_rule_version: "scoring_v1", match_score: null, wdl_hit: null, exact_hit: null,
+        applied_result_version: 0, created_at: NOW, updated_at: NOW,
+      });
+    }
+    await repo.predictions.insert({
+      schema_version: 1, prediction_id: "other", user_id: USER_ID_2, match_id: ids[0]!, canonical_match_id: ids[0]!,
+      idempotency_key: "other", pred_home_score: 1, pred_away_score: 0, derived_result: "HOME", submitted_at: NOW,
+      scoring_rule_version: "scoring_v1", match_score: null, wdl_hit: null, exact_hit: null,
+      applied_result_version: 0, created_at: NOW, updated_at: NOW,
+    });
+    expect(await repo.predictions.findByUserAndCanonicalMatchIds(USER_ID, [])).toEqual([]);
+    const rows = await repo.predictions.findByUserAndCanonicalMatchIds(USER_ID, [...ids, ids[0]!]);
+    expect(rows.map((row) => row.canonical_match_id).sort()).toEqual([...ids].sort());
+  });
 
   it("reads inserted seasons by key and rejects duplicate inserts and missing updates", async () => {
     const repo = createRepo();

@@ -269,6 +269,8 @@ export interface MatchRepository {
   findById(matchId: string): Promise<Match | null>;
   findIdsByCanonicalMatchId(canonicalMatchId: string): Promise<string[]>;
   findBySeason(seasonId: string): Promise<Match[]>;
+  findByLeague(leagueId: string): Promise<Match[]>;
+  findByLeagueSeason(leagueId: string, seasonId: string): Promise<Match[]>;
   findFinishedSettledOnDay(day: string): Promise<Match[]>;
   findByLeagueSeasonRound(
     leagueId: string,
@@ -298,6 +300,7 @@ export interface PredictionRepository {
   findById(predictionId: string): Promise<Prediction | null>;
   findByUserAndMatch(userId: string, matchId: string): Promise<Prediction | null>;
   findByUserAndMatchIds(userId: string, matchIds: readonly string[]): Promise<Prediction[]>;
+  findByUserAndCanonicalMatchIds(userId: string, canonicalMatchIds: readonly string[]): Promise<Prediction[]>;
   findByUserAndCanonicalMatch(userId: string, canonicalMatchId: string): Promise<Prediction | null>;
   findByUserAndIdempotencyKey(
     userId: string,
@@ -834,6 +837,10 @@ export class InMemoryRepository implements AppRepository {
           .filter((match) => (match.canonical_match_id ?? match.match_id) === canonicalMatchId)
           .map((match) => match.match_id),
       findBySeason: (seasonId) => self.findMatchesBySeason(seasonId),
+      findByLeague: async (leagueId) => [...self.store.matchesById.values()].filter((match) => match.league_id === leagueId),
+      findByLeagueSeason: async (leagueId, seasonId) => [...self.store.matchesById.values()].filter(
+        (match) => match.league_id === leagueId && match.season_id === seasonId,
+      ),
       findFinishedSettledOnDay: async (day) => [...self.store.matchesById.values()].filter((match) =>
         match.match_status === MatchStatus.Finished &&
         match.settlement_status === SettlementStatus.Settled &&
@@ -867,6 +874,12 @@ export class InMemoryRepository implements AppRepository {
           const prediction = self.store.predictionsByUserMatch.get(userMatchKey(userId, matchId));
           return prediction === undefined ? [] : [prediction];
         }),
+      findByUserAndCanonicalMatchIds: async (userId, canonicalMatchIds) => {
+        const ids = new Set(canonicalMatchIds);
+        return [...self.store.predictionsByUserMatch.values()].filter(
+          (prediction) => prediction.user_id === userId && ids.has(prediction.canonical_match_id),
+        );
+      },
       findByUserAndCanonicalMatch: (userId, canonicalMatchId) =>
         self.findPredictionByUserAndCanonicalMatch(userId, canonicalMatchId),
       findByUserAndIdempotencyKey: (userId, key) =>

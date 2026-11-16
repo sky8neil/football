@@ -383,6 +383,8 @@ export class CloudBaseAppRepository implements AppRepository {
           .map((match) => match.match_id))];
       },
       findBySeason: async (seasonId) => this.where<Match>("matches", { season_id: seasonId }),
+      findByLeague: async (leagueId) => this.where<Match>("matches", { league_id: leagueId }),
+      findByLeagueSeason: async (leagueId, seasonId) => this.where<Match>("matches", { league_id: leagueId, season_id: seasonId }),
       findFinishedSettledOnDay: async (day) => {
         const start = new Date(`${day}T00:00:00.000Z`);
         const end = new Date(start.getTime() + 86_400_000 - 1);
@@ -474,6 +476,15 @@ export class CloudBaseAppRepository implements AppRepository {
           user_id: userId,
           ...inClause,
         });
+      },
+      findByUserAndCanonicalMatchIds: async (userId, canonicalMatchIds) => {
+        const predictions: Prediction[] = [];
+        for (const chunk of chunksOf([...new Set(canonicalMatchIds)], MAPPING_IN_CHUNK)) {
+          const inClause = this.db.inFilter?.("canonical_match_id", chunk);
+          if (inClause === undefined) throw new Error("canonical_match_id inFilter is required");
+          predictions.push(...await this.where<Prediction>("predictions", { user_id: userId, ...inClause }));
+        }
+        return predictions;
       },
       findByUserAndCanonicalMatch: async (userId, canonicalMatchId) => {
         const prediction = await this.one<Prediction>("predictions", { user_id: userId, canonical_match_id: canonicalMatchId });
