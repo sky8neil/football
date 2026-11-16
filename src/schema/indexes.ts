@@ -14,6 +14,8 @@ export interface IndexDef {
 }
 
 export const UNIQUE_INDEXES: readonly IndexDef[] = [
+  { collection: "league_seasons", name: "uk_league_seasons_league_season", fields: ["league_id", "season_id"], unique: true },
+  { collection: "season_teams", name: "uk_season_teams_league_season_team", fields: ["league_id", "season_id", "team_id"], unique: true },
   { collection: "provider_reconcile_todos", name: "uk_reconcile_match_source_version", fields: ["match_id", "source_id", "target_result_version"], unique: true },
   { collection: "users", name: "uk_openid", fields: ["openid"], unique: true },
   {
@@ -129,6 +131,7 @@ export const UNIQUE_INDEXES: readonly IndexDef[] = [
 ] as const;
 
 export const QUERY_INDEXES: readonly IndexDef[] = [
+  { collection: "season_teams", name: "ix_season_teams_league_season", fields: ["league_id", "season_id"], unique: false },
   { collection: "provider_reconcile_todos", name: "ix_reconcile_status_kickoff", fields: ["status", "kickoff_at"], unique: false },
   {
     collection: "matches",

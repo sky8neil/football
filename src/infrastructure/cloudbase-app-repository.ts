@@ -10,6 +10,7 @@ import type {
   GroupMember,
   JobLock,
   LevelHistoryEntry,
+  LeagueSeason,
   Match,
   MatchProviderMapping,
   MatchResult,
@@ -19,6 +20,7 @@ import type {
   RankingEntry,
   SettlementDoc,
   SettlementItem,
+  SeasonTeam,
   SyncLog,
   Team,
   TeamProviderMapping,
@@ -80,6 +82,7 @@ import {
   type GroupRepository,
   type JobLockRepository,
   type LevelHistoryRepository,
+  type LeagueSeasonRepository,
   type MatchProviderMappingRepository,
   type MatchRepository,
   type MatchResultRepository,
@@ -89,6 +92,7 @@ import {
   type RankingRepository,
   type SettlementItemRepository,
   type SettlementRepository,
+  type SeasonTeamRepository,
   type SyncLogRepository,
   type TeamProviderMappingRepository,
   type TeamRepository,
@@ -109,6 +113,8 @@ const PROVIDER_SUCCESS_EVENTS = new Set<ProviderSnapshot["event_type"]>([
 ]);
 
 const DETERMINISTIC_ID_INDEXES: Record<string, { name: string; fields: readonly string[] }> = {
+  league_seasons: { name: "uk_league_seasons_league_season", fields: ["league_id", "season_id"] },
+  season_teams: { name: "uk_season_teams_league_season_team", fields: ["league_id", "season_id", "team_id"] },
   deleted_openid_mappings: { name: "uk_deleted_openid", fields: ["original_openid"] },
   team_provider_mappings: { name: "uk_provider_team", fields: ["provider", "provider_team_id"] },
   match_provider_mappings: { name: "uk_provider_match", fields: ["provider", "provider_match_id"] },
@@ -170,6 +176,8 @@ function chunksOf(ids: readonly string[], size: number): string[][] {
 
 /** 所有 collection 字段沿用 schema 的 snake_case；这里只映射 CloudBase `_id`。 */
 export class CloudBaseAppRepository implements AppRepository {
+  readonly leagueSeasons: LeagueSeasonRepository;
+  readonly seasonTeams: SeasonTeamRepository;
   readonly users: UserRepository;
   readonly deletedOpenidMappings: DeletedOpenidMappingRepository;
   readonly teams: TeamRepository;
@@ -199,6 +207,33 @@ export class CloudBaseAppRepository implements AppRepository {
     private readonly config: Pick<CloudBaseRepositoryConfig, "resource_namespace">,
     private readonly db: CloudBaseDb,
   ) {
+    this.leagueSeasons = {
+      findByKey: async (leagueId, seasonId) => this.one<LeagueSeason>("league_seasons", { league_id: leagueId, season_id: seasonId }),
+      findByLeague: async (leagueId) => this.where<LeagueSeason>("league_seasons", { league_id: leagueId }),
+      insert: async (season) => this.add("league_seasons", compositeId(season.league_id, season.season_id), season),
+      update: async (season) => this.update("league_seasons", compositeId(season.league_id, season.season_id), season),
+    };
+    this.seasonTeams = {
+      findByLeagueSeason: async (leagueId, seasonId) => this.where<SeasonTeam>("season_teams", { league_id: leagueId, season_id: seasonId }),
+      upsertMany: async (teams) => {
+        for (const team of teams) {
+          const filter = { league_id: team.league_id, season_id: team.season_id, team_id: team.team_id };
+          const id = compositeId(team.league_id, team.season_id, team.team_id);
+          const existing = await this.one<SeasonTeam>("season_teams", filter);
+          if (existing) {
+            await this.update("season_teams", id, { ...team, created_at: existing.created_at });
+          } else {
+            try {
+              await this.add("season_teams", id, team);
+            } catch (error) {
+              if (!(error instanceof UniqueConstraintError) || !await this.one<SeasonTeam>("season_teams", filter)) throw error;
+              const raced = await this.one<SeasonTeam>("season_teams", filter);
+              await this.update("season_teams", id, { ...team, created_at: raced?.created_at ?? team.created_at });
+            }
+          }
+        }
+      },
+    };
     this.users = {
       findByOpenid: async (openid) => this.one<User>("users", { openid }),
       findById: async (userId) => this.byId<User>("users", userId),

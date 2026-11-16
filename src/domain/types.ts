@@ -38,6 +38,44 @@ export interface BaseDoc {
   schema_version: number;
 }
 
+export interface LeagueSeasonFormat {
+  kind: "double_round_robin" | "single_round_robin" | "custom";
+  team_count: number;
+  round_count: number;
+}
+
+export interface LeagueSeasonOverride {
+  confirmed_by: string;
+  confirmed_at: Date;
+  evidence: string;
+}
+
+export interface LeagueSeason extends BaseDoc {
+  league_id: string;
+  season_id: string;
+  format: LeagueSeasonFormat;
+  schedule_status: "uninitialized" | "partial" | "locked";
+  completion_status: "open" | "completed";
+  completion_confirmed_at: Date | null;
+  reopened_at: Date | null;
+  reopen_count: number;
+  ended_at: Date | null;
+  manual_override: LeagueSeasonOverride | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+export interface SeasonTeam extends BaseDoc {
+  league_id: string;
+  season_id: string;
+  team_id: string;
+  provider: string | null;
+  provider_team_id: string | null;
+  source: "schedule" | "map_teams" | "manual";
+  created_at: Date;
+  updated_at: Date;
+}
+
 /**
  * 注销身份映射（D-P1 方案 B，§4.5.1）。
  *

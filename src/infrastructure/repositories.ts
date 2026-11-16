@@ -62,6 +62,7 @@ import type {
   GroupMember,
   JobLock,
   LevelHistoryEntry,
+  LeagueSeason,
   Match,
   MatchProviderMapping,
   MatchResult,
@@ -71,6 +72,7 @@ import type {
   RankingEntry,
   SettlementDoc,
   SettlementItem,
+  SeasonTeam,
   SyncLog,
   Team,
   TeamProviderMapping,
@@ -441,6 +443,8 @@ export interface LevelHistoryRepository {
 }
 
 export interface UnitOfWork {
+  leagueSeasons?: LeagueSeasonRepository;
+  seasonTeams?: SeasonTeamRepository;
   providerReconcileTodos?: ProviderReconcileTodoRepository;
   users: UserRepository;
   deletedOpenidMappings: DeletedOpenidMappingRepository;
@@ -481,6 +485,18 @@ export interface UnitOfWork {
   savepoint<T>(fn: (tx: UnitOfWork) => Promise<T>): Promise<T>;
 }
 
+export interface LeagueSeasonRepository {
+  findByKey(leagueId: string, seasonId: string): Promise<LeagueSeason | null>;
+  findByLeague(leagueId: string): Promise<LeagueSeason[]>;
+  insert(season: LeagueSeason): Promise<void>;
+  update(season: LeagueSeason): Promise<void>;
+}
+
+export interface SeasonTeamRepository {
+  findByLeagueSeason(leagueId: string, seasonId: string): Promise<SeasonTeam[]>;
+  upsertMany(teams: readonly SeasonTeam[]): Promise<void>;
+}
+
 export interface ProviderReconcileTodoRepository {
   findPending(limit: number, offset?: number): Promise<ProviderReconcileTodo[]>;
   upsert(todo: ProviderReconcileTodo): Promise<void>;
@@ -494,6 +510,8 @@ export interface AppRepository extends UnitOfWork {
 }
 
 interface InMemoryStore {
+  leagueSeasonsByKey: Map<string, LeagueSeason>;
+  seasonTeamsByKey: Map<string, SeasonTeam>;
   providerReconcileTodosById: Map<string, ProviderReconcileTodo>;
   adminsByOpenid: Map<string, Admin>;
   adminsById: Map<string, Admin>;
@@ -531,6 +549,8 @@ interface InMemoryStore {
 
 function createStore(): InMemoryStore {
   return {
+    leagueSeasonsByKey: new Map(),
+    seasonTeamsByKey: new Map(),
     providerReconcileTodosById: new Map(),
     adminsByOpenid: new Map(),
     adminsById: new Map(),
@@ -643,6 +663,43 @@ export class InMemoryRepository implements AppRepository {
     if (this.undoLog !== null) {
       this.undoLog.push(undo);
     }
+  }
+
+  get leagueSeasons(): LeagueSeasonRepository {
+    const store = this.store.leagueSeasonsByKey;
+    return {
+      findByKey: async (leagueId, seasonId) => store.get(`${leagueId}|${seasonId}`) ?? null,
+      findByLeague: async (leagueId) => [...store.values()].filter((season) => season.league_id === leagueId),
+      insert: async (season) => {
+        const key = `${season.league_id}|${season.season_id}`;
+        if (store.has(key)) throw new UniqueConstraintError("league_seasons", "uk_league_seasons_league_season", { league_id: season.league_id, season_id: season.season_id });
+        store.set(key, season);
+        this.logUndo(() => { store.delete(key); });
+      },
+      update: async (season) => {
+        const key = `${season.league_id}|${season.season_id}`;
+        const old = store.get(key);
+        if (!old) throw new DocumentNotFoundError("league_seasons", key);
+        store.set(key, season);
+        this.logUndo(() => { store.set(key, old); });
+      },
+    };
+  }
+
+  get seasonTeams(): SeasonTeamRepository {
+    const store = this.store.seasonTeamsByKey;
+    return {
+      findByLeagueSeason: async (leagueId, seasonId) => [...store.values()].filter((team) => team.league_id === leagueId && team.season_id === seasonId),
+      upsertMany: async (teams) => {
+        for (const team of teams) {
+          const key = `${team.league_id}|${team.season_id}|${team.team_id}`;
+          const old = store.get(key);
+          const next = old ? { ...team, created_at: old.created_at } : team;
+          store.set(key, next);
+          this.logUndo(() => { if (old) store.set(key, old); else store.delete(key); });
+        }
+      },
+    };
   }
 
   get providerReconcileTodos(): ProviderReconcileTodoRepository {

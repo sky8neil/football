@@ -129,6 +129,8 @@ describe("postgres schema plan §6.1", () => {
         "users",
         "deleted_openid_mappings",
         "teams",
+        "league_seasons",
+        "season_teams",
         "team_provider_mappings",
         "match_provider_mappings",
         "matches",

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { GroupStatus, MatchStatus, SettlementStatus } from "../domain/enums.js";
-import type { BoardSnapshot, Group, Match, Prediction, ProviderReconcileTodo, User } from "../domain/types.js";
+import type { BoardSnapshot, Group, LeagueSeason, Match, Prediction, ProviderReconcileTodo, SeasonTeam, User } from "../domain/types.js";
 import { defaultLevelState } from "../domain/types.js";
 import { GroupsService } from "../application/groups.js";
 import { COLLECTION_DEFINITIONS } from "../schema/collections.js";
@@ -20,7 +20,7 @@ import {
   type CloudBaseQueryOptions,
   type CloudBaseRepositoryConfig,
 } from "./cloudbase-repository.js";
-import { InMemoryRepository } from "./repositories.js";
+import { DocumentNotFoundError, InMemoryRepository, UniqueConstraintError } from "./repositories.js";
 import { createPostgresDocumentDb } from "./postgres-document-db.js";
 import type { PostgresQueryFn } from "./postgres-schema.js";
 
@@ -94,6 +94,10 @@ class MemoryCloudBaseDb implements CloudBaseDb {
     const merged = { ...this.documents.get(storageKey)!, ...document, _id: id };
     this.assertUnique(collection, merged, id);
     this.documents.set(storageKey, cloneValue(merged));
+  }
+
+  async delete(collection: string, id: string): Promise<void> {
+    this.documents.delete(`${collection}/${id}`);
   }
 
   async query(
@@ -274,7 +278,12 @@ function createPostgresRepository(): CloudBaseAppRepository {
   const query: PostgresQueryFn = async (sql, params = []) => {
     if (["BEGIN", "COMMIT", "ROLLBACK"].includes(sql)) return { rows: [] };
     if (sql.startsWith("INSERT")) {
+      if (rows.has(String(params[0]))) throw { code: "23505", constraint: "pk_document" };
       rows.set(String(params[0]), structuredClone(params[1] as CloudBaseDocument));
+      return { rows: [] };
+    }
+    if (sql.startsWith("DELETE")) {
+      rows.delete(String(params[0]));
       return { rows: [] };
     }
     if (sql.startsWith("UPDATE")) {
@@ -302,6 +311,57 @@ function createPostgresRepository(): CloudBaseAppRepository {
   });
   return new CloudBaseAppRepository(CONFIG, db);
 }
+
+describe.each([
+  ["memory", () => new InMemoryRepository()],
+  ["document", () => createCloudBaseRepository()],
+  ["postgres", () => createPostgresRepository()],
+])("league seasons and season teams: %s", (_name, createRepo) => {
+  const season: LeagueSeason = {
+    schema_version: 1, league_id: "league", season_id: "2026", format: { kind: "double_round_robin", team_count: 20, round_count: 38 },
+    schedule_status: "locked", completion_status: "open", completion_confirmed_at: null, reopened_at: null, reopen_count: 0,
+    ended_at: null, manual_override: { confirmed_by: "admin", confirmed_at: NOW, evidence: "evidence" }, created_at: NOW, updated_at: NOW,
+  };
+  const team: SeasonTeam = {
+    schema_version: 1, league_id: "league", season_id: "2026", team_id: "team", provider: "football_data",
+    provider_team_id: "provider-team", source: "schedule", created_at: NOW, updated_at: NOW,
+  };
+
+  it("reads inserted seasons by key and rejects duplicate inserts and missing updates", async () => {
+    const repo = createRepo();
+    await repo.leagueSeasons.insert(season);
+    expect(await repo.leagueSeasons.findByKey("league", "2026")).toEqual(season);
+    expect(await repo.leagueSeasons.findByKey("league", "missing")).toBeNull();
+    await expect(repo.leagueSeasons.insert(season)).rejects.toBeInstanceOf(UniqueConstraintError);
+    await expect(repo.leagueSeasons.update({ ...season, season_id: "missing" })).rejects.toBeInstanceOf(DocumentNotFoundError);
+  });
+
+  it("lists seasons by league after updates", async () => {
+    const repo = createRepo();
+    const other = { ...season, season_id: "2025" };
+    const otherLeague = { ...season, league_id: "other" };
+    await repo.leagueSeasons.insert(season);
+    await repo.leagueSeasons.insert(other);
+    await repo.leagueSeasons.insert(otherLeague);
+    const completed = { ...season, completion_status: "completed" as const, completion_confirmed_at: NOW, manual_override: null };
+    await repo.leagueSeasons.update(completed);
+    expect((await repo.leagueSeasons.findByLeague("league")).map((row) => row.season_id).sort()).toEqual(["2025", "2026"]);
+    expect(await repo.leagueSeasons.findByLeague("league")).toContainEqual(completed);
+    expect((await repo.leagueSeasons.findByLeague("other")).map((row) => row.season_id)).toEqual(["2026"]);
+  });
+
+  it("upserts teams idempotently per league season", async () => {
+    const repo = createRepo();
+    const otherSeason = { ...team, season_id: "2025" };
+    const otherLeague = { ...team, league_id: "other" };
+    await repo.seasonTeams.upsertMany([team, otherSeason, otherLeague]);
+    const updated = { ...team, source: "manual" as const, provider: null, provider_team_id: null, created_at: new Date(NOW.getTime() + 60_000), updated_at: new Date(NOW.getTime() + 60_000) };
+    await repo.seasonTeams.upsertMany([updated, updated]);
+    expect(await repo.seasonTeams.findByLeagueSeason("league", "2026")).toEqual([{ ...updated, created_at: team.created_at }]);
+    expect(await repo.seasonTeams.findByLeagueSeason("league", "2025")).toEqual([otherSeason]);
+    expect(await repo.seasonTeams.findByLeagueSeason("other", "2026")).toEqual([otherLeague]);
+  });
+});
 
 describe.each([
   ["memory", () => new InMemoryRepository()],
@@ -439,9 +499,9 @@ describe("CloudBaseAppRepository", () => {
     await expect(repo.users.findByOpenid(user.openid)).resolves.toEqual(user);
     expect(Object.keys(repo).sort()).toEqual([
       "adminAuditLogs", "admins", "anomalies", "boardSnapshots", "config", "db", "deletedOpenidMappings",
-      "groupMembers", "groups", "jobLocks", "levelHistory", "matchProviderMappings",
+      "groupMembers", "groups", "jobLocks", "leagueSeasons", "levelHistory", "matchProviderMappings",
       "matchResults", "matches", "predictions", "providerReconcileTodos", "providerSnapshots", "rankings",
-      "settlementItems", "settlements", "syncLogs", "teamProviderMappings", "teams",
+      "seasonTeams", "settlementItems", "settlements", "syncLogs", "teamProviderMappings", "teams",
       "unlocks", "userSeasonStats", "users",
     ].sort());
   });

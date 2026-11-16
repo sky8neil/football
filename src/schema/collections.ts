@@ -47,6 +47,46 @@ export interface CollectionDef {
 
 export const COLLECTION_DEFINITIONS: readonly CollectionDef[] = [
   {
+    collection: "league_seasons",
+    fields: {
+      league_id: { type: "string", required: true },
+      season_id: { type: "string", required: true },
+      format: { type: "object", required: true, fields: {
+        kind: { type: "string", required: true, enum: ["double_round_robin", "single_round_robin", "custom"] },
+        team_count: { type: "int", required: true },
+        round_count: { type: "int", required: true },
+      } },
+      schedule_status: { type: "string", required: true, enum: ["uninitialized", "partial", "locked"] },
+      completion_status: { type: "string", required: true, enum: ["open", "completed"] },
+      completion_confirmed_at: { type: "date", required: true, nullable: true },
+      reopened_at: { type: "date", required: true, nullable: true },
+      reopen_count: { type: "int", required: true, default: 0 },
+      ended_at: { type: "date", required: true, nullable: true },
+      manual_override: { type: "object", required: true, nullable: true, fields: {
+        confirmed_by: { type: "string", required: true },
+        confirmed_at: { type: "date", required: true },
+        evidence: { type: "string", required: true },
+      } },
+      created_at: { type: "date", required: true, immutable: true },
+      updated_at: { type: "date", required: true },
+      schema_version: { type: "int", required: true, default: 1 },
+    },
+  },
+  {
+    collection: "season_teams",
+    fields: {
+      league_id: { type: "string", required: true },
+      season_id: { type: "string", required: true },
+      team_id: { type: "string", required: true },
+      provider: { type: "string", required: true, nullable: true },
+      provider_team_id: { type: "string", required: true, nullable: true },
+      source: { type: "string", required: true, enum: ["schedule", "map_teams", "manual"] },
+      created_at: { type: "date", required: true, immutable: true },
+      updated_at: { type: "date", required: true },
+      schema_version: { type: "int", required: true, default: 1 },
+    },
+  },
+  {
     collection: "users",
     fields: {
       user_id: { type: "string", required: true, immutable: true, note: "UUID v4" },
