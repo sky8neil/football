@@ -1,4 +1,5 @@
 import { MatchQueryService } from "../application/match-query.js";
+import { LeagueSeasonMaintenanceService } from "../application/league-season-maintenance.js";
 import { SessionService } from "../application/session.js";
 import { BoardSnapshotService } from "../application/board-snapshot.js";
 import { DailyConsistencyService } from "../application/daily-consistency-service.js";
@@ -46,6 +47,7 @@ export interface ApplicationRuntime {
   providerRegistry: ProviderRegistry;
   providerDispatcher: ProviderSyncDispatcher;
   providerReconcile: ProviderReconcileService;
+  leagueSeasons: LeagueSeasonMaintenanceService;
   providerStaleRecovery: ProviderStaleRecoveryService;
   schedulerState: SchedulerStateStore;
   periodFinalize: PeriodFinalizeService;
@@ -128,6 +130,7 @@ export function createApplicationRuntime(input: ApplicationRuntimeInput): Applic
     providerRegistry,
     providerDispatcher,
     providerReconcile,
+    leagueSeasons: new LeagueSeasonMaintenanceService(input.repo, logger),
     providerStaleRecovery,
     schedulerState,
     periodFinalize,

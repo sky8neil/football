@@ -96,6 +96,7 @@ function runtimeStub(overrides: Record<string, unknown> = {}): ApplicationRuntim
     providerRegistry: { beginTickCache: vi.fn(), endTickCache: vi.fn(), dueLeagues: vi.fn(async () => []) },
     providerDispatcher: { run: vi.fn() },
     providerReconcile: { run: vi.fn(async () => ({ kind: "completed" })) },
+    leagueSeasons: { run: vi.fn(async () => ({ seasons_checked: 0, completed: 0, reopened: 0, teams_written: 0 })) },
     providerStaleRecovery: { run: vi.fn(async () => ({ kind: "completed", items_failed: 0 })) },
     schedulerState: {
       getSettlementFallback: vi.fn(async () => null),
@@ -198,6 +199,19 @@ describe("UNWIRED_PERIODIC_TASKS", () => {
 });
 
 describe("runScheduledJobs", () => {
+  it("runs league maintenance after settlement and continues periodic jobs on failure", async () => {
+    const settlement = vi.fn(async () => []);
+    const maintenance = vi.fn(async () => { throw new Error("maintenance failed"); });
+    const runtime = runtimeStub({
+      repo: { matches: { findSettlementTodos: settlement }, settlements: { findByStatus: vi.fn(async () => []) }, rankings: { findAll: vi.fn(async () => []) } },
+      leagueSeasons: { run: maintenance },
+    });
+    const result = await runScheduledJobs({ runtime, serverNow: NOW });
+    expect(settlement.mock.invocationCallOrder[0]!).toBeLessThan(maintenance.mock.invocationCallOrder[0]!);
+    expect(result.providerData.jobs_run).toEqual(expect.arrayContaining([SyncJobType.DailyConsistency]));
+    expect(result.leagueSeasons).toBeNull();
+    expect(result.errors).toContainEqual(new Error("maintenance failed"));
+  });
   it("runs settlement after provider jobs and always ends the tick cache", async () => {
     const beginTickCache = vi.fn();
     const endTickCache = vi.fn();
@@ -227,6 +241,7 @@ describe("runScheduledJobs", () => {
       jobs_run: expect.arrayContaining([SyncJobType.PeriodFinalize, SyncJobType.DailyConsistency]),
     }));
     expect(result.settlements).toEqual([]);
+    expect(result.leagueSeasons).toEqual({ seasons_checked: 0, completed: 0, reopened: 0, teams_written: 0 });
     expect(result.errors).toEqual([]);
   });
 

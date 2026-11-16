@@ -15,6 +15,7 @@ import type { ProviderRegistry } from "../provider/registry.js";
 import type { ProviderSourceId } from "../provider/sources.js";
 import type { AppRepository } from "../infrastructure/repositories.js";
 import type { ApplicationRuntime } from "./application-runtime.js";
+import type { LeagueSeasonMaintenanceResult } from "../application/league-season-maintenance.js";
 
 export const TIMER_TASK_TYPES = [
   SyncJobType.PostFinishVerify,
@@ -793,12 +794,13 @@ export async function runDuePeriodicJobs(input: {
 export async function runScheduledJobs(input: {
   runtime: ApplicationRuntime;
   serverNow: Date;
-}): Promise<{ providerData: Record<string, unknown>; settlements: SettlementTimerOutcome[]; errors: unknown[] }> {
+}): Promise<{ providerData: Record<string, unknown>; settlements: SettlementTimerOutcome[]; leagueSeasons: LeagueSeasonMaintenanceResult | null; errors: unknown[] }> {
   const { runtime, serverNow } = input;
   runtime.providerRegistry.beginTickCache();
   const errors: unknown[] = [];
   let providerData: Record<string, unknown> = { outcome: "failed" };
   let settlements: SettlementTimerOutcome[] = [];
+  let leagueSeasons: LeagueSeasonMaintenanceResult | null = null;
   try {
     try {
       providerData = await runDueProviderJobs({
@@ -822,6 +824,11 @@ export async function runScheduledJobs(input: {
     }
     try {
       settlements = await runSettlementTimer(runtime.repo, serverNow, runtime.settlementTimerOptions);
+    } catch (error) {
+      errors.push(error);
+    }
+    try {
+      leagueSeasons = await runtime.leagueSeasons.run(serverNow);
     } catch (error) {
       errors.push(error);
     }
@@ -853,7 +860,7 @@ export async function runScheduledJobs(input: {
     } catch (error) {
       errors.push(error);
     }
-    return { providerData, settlements, errors };
+    return { providerData, settlements, leagueSeasons, errors };
   } finally {
     runtime.providerRegistry.endTickCache();
   }

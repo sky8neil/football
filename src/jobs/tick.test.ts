@@ -34,6 +34,7 @@ function handleStub(overrides: Record<string, unknown> = {}): JobsTickHandle {
     providerRegistry: { beginTickCache: vi.fn(), endTickCache: vi.fn(), dueLeagues: vi.fn(async () => []) },
     providerDispatcher: { run: vi.fn() },
     providerReconcile: { run: vi.fn(async () => ({ kind: "completed" })) },
+    leagueSeasons: { run: vi.fn(async () => ({ seasons_checked: 0, completed: 0, reopened: 0, teams_written: 0 })) },
     schedulerState: {
       getSettlementFallback: vi.fn(async () => null),
       upsertSettlementFallback: vi.fn(async () => undefined),
