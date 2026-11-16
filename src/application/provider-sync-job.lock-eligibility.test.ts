@@ -1,3 +1,4 @@
+import { singleBatch } from "./provider-sync-test-batch.js";
 import { describe, expect, it, vi } from "vitest";
 import { SyncJobType } from "../domain/enums.js";
 import { newUuid } from "../domain/ids.js";
@@ -56,7 +57,7 @@ describe("RP08 锁内二次资格确认", () => {
     const load = vi.fn(async () => []);
     const service = makeService(repo, DUE_INTERVAL_MS, { jobLocks, syncLogs });
 
-    await expect(service.run(SyncJobType.LiveMatch, load, NOW)).resolves.toEqual({
+    await expect(service.run(SyncJobType.LiveMatch, singleBatch(load), NOW)).resolves.toEqual({
       kind: "skipped",
       job_type: SyncJobType.LiveMatch,
       reason: "not_due_after_lock",
@@ -75,7 +76,7 @@ describe("RP08 锁内二次资格确认", () => {
     const load = vi.fn(async () => []);
     const service = makeService(repo, DUE_INTERVAL_MS);
 
-    await expect(service.run(SyncJobType.LiveMatch, load, NOW)).resolves.toEqual({
+    await expect(service.run(SyncJobType.LiveMatch, singleBatch(load), NOW)).resolves.toEqual({
       kind: "completed",
       job_type: SyncJobType.LiveMatch,
       items_read: 0,
@@ -96,7 +97,7 @@ describe("RP08 锁内二次资格确认", () => {
     const load = vi.fn(async () => []);
     const service = makeService(repo, DAY_MS);
 
-    await expect(service.run(SyncJobType.FullScheduleVerify, load, NOW)).resolves.toEqual({
+    await expect(service.run(SyncJobType.FullScheduleVerify, singleBatch(load), NOW)).resolves.toEqual({
       kind: "completed",
       job_type: SyncJobType.FullScheduleVerify,
       items_read: 0,
@@ -117,7 +118,7 @@ describe("RP08 锁内二次资格确认", () => {
     const load = vi.fn(async () => []);
     const service = makeService(repo, DAY_MS);
 
-    await expect(service.run(SyncJobType.FullScheduleVerify, load, NOW)).resolves.toEqual({
+    await expect(service.run(SyncJobType.FullScheduleVerify, singleBatch(load), NOW)).resolves.toEqual({
       kind: "skipped",
       job_type: SyncJobType.FullScheduleVerify,
       reason: "not_due_after_lock",
@@ -136,7 +137,7 @@ describe("RP08 锁内二次资格确认", () => {
     const load = vi.fn(async () => []);
     const service = makeService(repo, DUE_INTERVAL_MS, { syncLogs });
 
-    await expect(service.run(SyncJobType.LiveMatch, load, NOW)).resolves.toEqual({
+    await expect(service.run(SyncJobType.LiveMatch, singleBatch(load), NOW)).resolves.toEqual({
       kind: "skipped",
       job_type: SyncJobType.LiveMatch,
       reason: "not_due_after_lock",
@@ -154,7 +155,7 @@ describe("RP08 锁内二次资格确认", () => {
     const load = vi.fn(async () => []);
     const service = makeService(repo, DUE_INTERVAL_MS);
 
-    await expect(service.run(SyncJobType.LiveMatch, load, NOW)).resolves.toEqual({
+    await expect(service.run(SyncJobType.LiveMatch, singleBatch(load), NOW)).resolves.toEqual({
       kind: "completed",
       job_type: SyncJobType.LiveMatch,
       items_read: 0,
@@ -169,7 +170,7 @@ describe("RP08 锁内二次资格确认", () => {
     const load = vi.fn(async () => []);
     const service = makeService(repo, DUE_INTERVAL_MS);
 
-    await expect(service.run(SyncJobType.LiveMatch, load, NOW)).resolves.toEqual({
+    await expect(service.run(SyncJobType.LiveMatch, singleBatch(load), NOW)).resolves.toEqual({
       kind: "completed",
       job_type: SyncJobType.LiveMatch,
       items_read: 0,
@@ -188,7 +189,7 @@ describe("RP08 锁内二次资格确认", () => {
     const load = vi.fn(async () => []);
     const service = makeService(repo);
 
-    await expect(service.run(SyncJobType.LiveMatch, load, NOW)).resolves.toEqual({
+    await expect(service.run(SyncJobType.LiveMatch, singleBatch(load), NOW)).resolves.toEqual({
       kind: "completed",
       job_type: SyncJobType.LiveMatch,
       items_read: 0,
@@ -210,7 +211,7 @@ describe("RP08 锁内二次资格确认", () => {
     const service = makeService(repo, DUE_INTERVAL_MS);
 
     await expect(
-      service.run(SyncJobType.FullScheduleVerify, load, NOW, "la_liga"),
+      service.run(SyncJobType.FullScheduleVerify, singleBatch(load), NOW, "la_liga"),
     ).resolves.toEqual({
       kind: "completed",
       job_type: SyncJobType.FullScheduleVerify,
@@ -236,7 +237,7 @@ describe("RP08 锁内二次资格确认", () => {
     const service = makeService(repo, DUE_INTERVAL_MS);
 
     await expect(
-      service.run(SyncJobType.FullScheduleVerify, load, NOW, "premier_league"),
+      service.run(SyncJobType.FullScheduleVerify, singleBatch(load), NOW, "premier_league"),
     ).resolves.toEqual({
       kind: "skipped",
       job_type: SyncJobType.FullScheduleVerify,
@@ -257,7 +258,7 @@ describe("RP08 锁内二次资格确认", () => {
     const service = makeService(repo, DUE_INTERVAL_MS);
 
     await expect(
-      service.run(SyncJobType.FullScheduleVerify, load, NOW, "la_liga"),
+      service.run(SyncJobType.FullScheduleVerify, singleBatch(load), NOW, "la_liga"),
     ).resolves.toMatchObject({ kind: "completed" });
     expect(load).toHaveBeenCalledTimes(1);
   });
@@ -277,7 +278,7 @@ describe("RP08 锁内二次资格确认", () => {
     const service = makeService(repo, DUE_INTERVAL_MS);
 
     await expect(
-      service.run(SyncJobType.FullScheduleVerify, load, NOW, "la_liga"),
+      service.run(SyncJobType.FullScheduleVerify, singleBatch(load), NOW, "la_liga"),
     ).resolves.toMatchObject({ kind: "deferred", retry_attempt: 0 });
     expect(load).toHaveBeenCalledTimes(1);
   });
@@ -293,7 +294,7 @@ describe("RP08 锁内二次资格确认", () => {
     const service = makeService(repo, DUE_INTERVAL_MS);
 
     await expect(
-      service.run(SyncJobType.FullScheduleVerify, load, NOW, "la_liga"),
+      service.run(SyncJobType.FullScheduleVerify, singleBatch(load), NOW, "la_liga"),
     ).resolves.toMatchObject({ kind: "completed" });
     expect(load).toHaveBeenCalledTimes(1);
   });
@@ -312,7 +313,7 @@ describe("RP08 锁内二次资格确认", () => {
     const service = makeService(repo, DUE_INTERVAL_MS, { jobLocks, syncLogs });
 
     await expect(
-      service.executeHeldByCaller(SyncJobType.LiveMatch, load, NOW, "caller-owner"),
+      service.executeHeldByCaller(SyncJobType.LiveMatch, singleBatch(load), NOW, "caller-owner"),
     ).resolves.toEqual({
       kind: "skipped",
       job_type: SyncJobType.LiveMatch,

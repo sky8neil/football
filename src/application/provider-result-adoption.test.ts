@@ -58,4 +58,12 @@ describe("decideProviderResultAdoption", () => {
       observation("football_data", "finished"), observation("5dollar", "live", null),
     ], KICKOFF, afterGrace)).toEqual({ kind: "anomaly", reason: "finished_live_conflict" });
   });
+
+  it("counts only distinct providers with a finished score", () => {
+    const beforeGrace = new Date(KICKOFF.getTime() + 60 * 60_000);
+    expect(decideProviderResultAdoption("premier_league", [
+      observation("football_data", "finished"), observation("football_data", "finished"),
+      observation("5dollar", "live", null),
+    ], KICKOFF, beforeGrace)).toMatchObject({ kind: "adopt", compared_providers: ["football_data"] });
+  });
 });

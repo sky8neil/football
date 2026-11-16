@@ -247,6 +247,10 @@ export class ProviderResultSyncService {
         match.regular_home_score === fixture.fulltime.home &&
         match.regular_away_score === fixture.fulltime.away;
       if (sameScore) {
+        if (match.result_source === ResultSource.Provider && fixture.comparedProviders !== undefined &&
+          JSON.stringify(match.compared_providers ?? []) !== JSON.stringify(fixture.comparedProviders)) {
+          await tx.matches.update({ ...match, compared_providers: fixture.comparedProviders, updated_at: serverNow });
+        }
         await saveSnapshot(tx, match.match_id, fixture, "result_observed", payload, serverNow);
         return {
           kind: "unchanged",

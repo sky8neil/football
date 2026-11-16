@@ -31,7 +31,7 @@ export interface ProviderFixtureBatchItem {
 
 export type ProviderFixtureBatchLoader = (
   serverNow: Date,
-) => Promise<readonly ProviderFixtureBatchItem[]>;
+) => AsyncIterable<readonly ProviderFixtureBatchItem[]>;
 
 export interface ProviderFixtureSyncRetryOptions {
   /** @deprecated 已改为写 deferred 日志并返回，不再在函数内等待。 */
@@ -462,12 +462,14 @@ export class ProviderFixtureSyncJobService {
       await syncLogs.insert(runningLog);
       let attemptCount = 0;
       try {
-        let items: readonly ProviderFixtureBatchItem[];
+        let iterator: AsyncIterator<readonly ProviderFixtureBatchItem[]>;
+        let batch: IteratorResult<readonly ProviderFixtureBatchItem[]>;
         while (true) {
           await lockRenewal.assertHeld();
           attemptCount += 1;
           try {
-            items = await load(serverNow);
+            iterator = load(serverNow)[Symbol.asyncIterator]();
+            batch = await iterator.next();
             break;
           } catch (error) {
             if (!isRetryableLoaderError(error)) throw error;
@@ -508,6 +510,7 @@ export class ProviderFixtureSyncJobService {
 
         let changed = 0;
         let failed = 0;
+        let itemsRead = 0;
         const failureDiagnostics: ProviderFixtureFailureDiagnostic[] = [];
         let failureDiagnosticsOmitted = 0;
 
@@ -519,43 +522,48 @@ export class ProviderFixtureSyncJobService {
           }
         };
 
-        for (const item of items) {
-          await lockRenewal.assertHeld();
-          try {
-            if ((jobType === "future_schedule" || jobType === "full_schedule_verify") &&
-              this.repo.matchProviderMappings !== undefined && this.repo.matches !== undefined &&
-              item.fixture?.fixture?.id !== undefined) {
-              const mapping = await this.repo.matchProviderMappings.findByProviderAndExternalId(
-                item.fixture.provider ?? Provider.ApiFootball,
-                String(item.fixture.fixture.id),
-              );
-              if (mapping !== null) {
-                const match = await this.repo.matches.findById(mapping.match_id);
-                if (match?.superseded_by != null) continue;
+        while (!batch.done) {
+          itemsRead += batch.value.length;
+          for (const item of batch.value) {
+            await lockRenewal.assertHeld();
+            try {
+              if ((jobType === "future_schedule" || jobType === "full_schedule_verify") &&
+                this.repo.matchProviderMappings !== undefined && this.repo.matches !== undefined &&
+                item.fixture?.fixture?.id !== undefined) {
+                const mapping = await this.repo.matchProviderMappings.findByProviderAndExternalId(
+                  item.fixture.provider ?? Provider.ApiFootball,
+                  String(item.fixture.fixture.id),
+                );
+                if (mapping !== null) {
+                  const match = await this.repo.matches.findById(mapping.match_id);
+                  if (match?.superseded_by != null) continue;
+                }
               }
-            }
-            const outcome = await this.fixtureSync.applyFixture(
-              item.fixture,
-              item.payload,
-              serverNow,
-            );
-            if (isChanged(outcome)) {
-              changed += 1;
-            }
-            if (isFailed(outcome)) {
-              failed += 1;
-              const diagnostic = outcomeFailureDiagnostic(
-                runningLog.sync_job_id,
-                item,
-                outcome,
+              const outcome = await this.fixtureSync.applyFixture(
+                item.fixture,
+                item.payload,
+                serverNow,
               );
-              if (diagnostic !== null) recordFailure(diagnostic);
+              if (isChanged(outcome)) {
+                changed += 1;
+              }
+              if (isFailed(outcome)) {
+                failed += 1;
+                const diagnostic = outcomeFailureDiagnostic(
+                  runningLog.sync_job_id,
+                  item,
+                  outcome,
+                );
+                if (diagnostic !== null) recordFailure(diagnostic);
+              }
+            } catch (error) {
+              // 单个实体失败不影响同一批次其他实体；其事务已由 fixture service 回滚。
+              failed += 1;
+              recordFailure(exceptionFailureDiagnostic(runningLog.sync_job_id, item, error));
             }
-          } catch (error) {
-            // 单个实体失败不影响同一批次其他实体；其事务已由 fixture service 回滚。
-            failed += 1;
-            recordFailure(exceptionFailureDiagnostic(runningLog.sync_job_id, item, error));
           }
+          await lockRenewal.assertHeld();
+          batch = await iterator.next();
         }
 
         await lockRenewal.assertHeld();
@@ -570,14 +578,14 @@ export class ProviderFixtureSyncJobService {
             leagueId,
           );
           const delayMinutes = nextRetryDelayMinutes(retryAttempt);
-          const failureMessage = `provider fixture sync failed for ${failed}/${items.length} item(s)`;
+          const failureMessage = `provider fixture sync failed for ${failed}/${itemsRead} item(s)`;
           if (delayMinutes === null) {
             await syncLogs.update({
               ...runningLog,
               status: SyncJobStatus.Failed,
               attempt_count: attemptCount,
               finished_at: serverNow,
-              items_read: items.length,
+              items_read: itemsRead,
               items_changed: changed,
               items_failed: failed,
               last_error_code: PROVIDER_FIXTURE_FAILED,
@@ -587,7 +595,7 @@ export class ProviderFixtureSyncJobService {
             return {
               kind: "completed",
               job_type: jobType,
-              items_read: items.length,
+              items_read: itemsRead,
               items_changed: changed,
               items_failed: failed,
               ...failureOutput,
@@ -604,7 +612,7 @@ export class ProviderFixtureSyncJobService {
             status: SyncJobStatus.Deferred,
             attempt_count: attemptCount,
             finished_at: serverNow,
-            items_read: items.length,
+            items_read: itemsRead,
             items_changed: changed,
             items_failed: failed,
             retry_attempt: retryAttempt,
@@ -619,7 +627,7 @@ export class ProviderFixtureSyncJobService {
             next_attempt_at: nextAttemptAt,
             retry_attempt: retryAttempt,
             last_error_code: PROVIDER_FIXTURE_FAILED,
-            items_read: items.length,
+            items_read: itemsRead,
             items_changed: changed,
             items_failed: failed,
             ...failureOutput,
@@ -630,7 +638,7 @@ export class ProviderFixtureSyncJobService {
           status: SyncJobStatus.Success,
           attempt_count: attemptCount,
           finished_at: serverNow,
-          items_read: items.length,
+          items_read: itemsRead,
           items_changed: changed,
           items_failed: failed,
           ...failureOutput,
@@ -638,7 +646,7 @@ export class ProviderFixtureSyncJobService {
         return {
           kind: "completed",
           job_type: jobType,
-          items_read: items.length,
+          items_read: itemsRead,
           items_changed: changed,
           items_failed: failed,
           ...failureOutput,

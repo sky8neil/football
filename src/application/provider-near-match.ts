@@ -56,15 +56,15 @@ export class ProviderNearMatchService {
   }
 
   async run(serverNow: Date): Promise<ProviderNearMatchOutcome> {
-    const load: ProviderFixtureBatchLoader = async (loadNow) => {
-      return loadActiveWindowFixtures(
+    const load: ProviderFixtureBatchLoader = async function* (this: ProviderNearMatchService, loadNow: Date) {
+      yield await loadActiveWindowFixtures(
         this.repo,
         this.client,
         SyncJobType.NearMatch,
         loadNow,
         this.providerLeagueRefs,
       );
-    };
+    }.bind(this);
     const fixtures = await this.fixtureJob.run(
       SyncJobType.NearMatch,
       load,

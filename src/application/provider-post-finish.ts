@@ -19,7 +19,7 @@ import {
   type ProviderTeamSyncOutcome,
 } from "./provider-team-sync.js";
 import { SYNC_TASKS_V1, type SyncTaskConfig } from "../sync/config.js";
-import { loadActiveWindowFixtures } from "./provider-window-loader.js";
+import { loadPostFinishBatches, type ProviderWindowFixtureClient } from "./provider-window-loader.js";
 
 /**
  * P1-1 / P2-1（32.5）：post_finish 高频确认只持续到首次 settlement 开始。
@@ -45,6 +45,7 @@ export function includeInPostFinishHighFreq(
 
 export interface ProviderPostFinishVerifyClient
   extends PostFinishVerifyFixtureClient,
+    ProviderWindowFixtureClient,
     ProviderTeamClient {}
 
 export type ProviderPostFinishVerifyOutcome =
@@ -83,11 +84,10 @@ export class ProviderPostFinishVerifyService {
   }
 
   async run(serverNow: Date): Promise<ProviderPostFinishVerifyOutcome> {
-    const load: ProviderFixtureBatchLoader = async (loadNow) => {
-      return loadActiveWindowFixtures(
+    const load: ProviderFixtureBatchLoader = (loadNow) => {
+      return loadPostFinishBatches(
         this.repo,
         this.client,
-        SyncJobType.PostFinishVerify,
         loadNow,
         this.providerLeagueRefs,
       );

@@ -65,10 +65,10 @@ export class ProviderFullScheduleVerifyService {
     const leagueIds = leagueId === undefined ? undefined : [leagueId];
     const fullScheduleLoader = createFullScheduleVerifyLoader(this.client, leagueIds);
     let teams: ProviderTeamSyncOutcome | null = null;
-    const load: ProviderFixtureBatchLoader = async (loadNow) => {
+    const load: ProviderFixtureBatchLoader = async function* (this: ProviderFullScheduleVerifyService, loadNow: Date) {
       teams ??= await this.teamSync.sync(loadNow, SyncJobType.FullScheduleVerify, leagueIds);
-      return fullScheduleLoader(loadNow);
-    };
+      yield await fullScheduleLoader(loadNow);
+    }.bind(this);
     const fixtures = await this.fixtureJob.run(
       SyncJobType.FullScheduleVerify,
       load,

@@ -58,14 +58,15 @@ export class ProviderLiveMatchService {
   }
 
   async run(serverNow: Date): Promise<ProviderLiveMatchOutcome> {
-    const load: ProviderFixtureBatchLoader = (loadNow) =>
-      loadActiveWindowFixtures(
+    const load: ProviderFixtureBatchLoader = async function* (this: ProviderLiveMatchService, loadNow: Date) {
+      yield await loadActiveWindowFixtures(
         this.repo,
         this.client,
         SyncJobType.LiveMatch,
         loadNow,
         this.providerLeagueRefs,
       );
+    }.bind(this);
     const fixtures = await this.fixtureJob.run(
       SyncJobType.LiveMatch,
       load,

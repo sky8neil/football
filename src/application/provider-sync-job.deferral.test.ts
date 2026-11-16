@@ -1,3 +1,4 @@
+import { singleBatch } from "./provider-sync-test-batch.js";
 import { describe, expect, it, vi } from "vitest";
 import { SyncJobType } from "../domain/enums.js";
 import { newUuid } from "../domain/ids.js";
@@ -51,7 +52,7 @@ describe("ProviderFixtureSyncJobService 延期序号", () => {
       { random: () => 0.5 },
     );
 
-    await expect(service.run(SyncJobType.LiveMatch, load, NOW)).resolves.toMatchObject({
+    await expect(service.run(SyncJobType.LiveMatch, singleBatch(load), NOW)).resolves.toMatchObject({
       kind: "deferred",
       retry_attempt: 3,
     });
@@ -99,7 +100,7 @@ describe("ProviderFixtureSyncJobService 配额延期", () => {
 
     const outcome = await service.run(
       SyncJobType.FutureSchedule,
-      createFutureScheduleLoader(registry.asClient(), ["chinese_super_league"]),
+      singleBatch(createFutureScheduleLoader(registry.asClient(), ["chinese_super_league"])),
       now,
     );
 

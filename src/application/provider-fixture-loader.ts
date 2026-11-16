@@ -10,7 +10,9 @@ import type {
   ApiFootballFixture,
 } from "../provider/types.js";
 import { SYNC_TASKS_V1 } from "../sync/config.js";
-import type { ProviderFixtureBatchLoader } from "./provider-sync-job.js";
+import type { ProviderFixtureBatchItem } from "./provider-sync-job.js";
+
+type ProviderFixtureBatchLoader = (serverNow: Date) => Promise<readonly ProviderFixtureBatchItem[]>;
 
 export interface FutureScheduleFixtureClient {
   getFixtures(query: ApiFootballFixturesQuery): Promise<readonly ApiFootballFixture[]>;

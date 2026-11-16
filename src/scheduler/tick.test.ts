@@ -416,7 +416,7 @@ describe("SchedulerTick", () => {
       const job = new ProviderFixtureSyncJobService(repo, fixtureSync, {
         sleep: async () => undefined,
       });
-      const load: ProviderFixtureBatchLoader = async () => [batchItem()];
+      const load: ProviderFixtureBatchLoader = async function* () { yield [batchItem()]; };
       const runner: SchedulerRunner = (serverNow) =>
         job.run(SyncJobType.LiveMatch, load, serverNow);
       const tick = new SchedulerTick({
@@ -451,7 +451,7 @@ describe("SchedulerTick", () => {
       const job = new ProviderFixtureSyncJobService(repo, fixtureSync, {
         sleep: async () => undefined,
       });
-      const load: ProviderFixtureBatchLoader = async () => [batchItem()];
+      const load: ProviderFixtureBatchLoader = async function* () { yield [batchItem()]; };
       const runner: SchedulerRunner = (serverNow) =>
         job.executeHeldByCaller(SyncJobType.LiveMatch, load, serverNow, OWNER_ID);
       const tick = new SchedulerTick({

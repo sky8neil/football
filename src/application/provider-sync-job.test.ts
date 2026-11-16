@@ -1,3 +1,4 @@
+import { singleBatch } from "./provider-sync-test-batch.js";
 import { describe, expect, it, vi } from "vitest";
 import { FIXED_CONFIG_V1 } from "../domain/config.js";
 import { MatchStatus, SettlementStatus, SyncJobType } from "../domain/enums.js";
@@ -112,6 +113,26 @@ function makeDeferredLog(overrides: Partial<SyncLog> = {}): SyncLog {
 }
 
 describe("ProviderFixtureSyncJobService", () => {
+  it("applies each batch before requesting the next and accumulates failures", async () => {
+    const repo = new InMemoryRepository();
+    const events: string[] = [];
+    const applyFixture = vi.fn(async (fixture: ApiFootballFixture) => {
+      events.push(`apply-${fixture.fixture.id}`);
+      if (fixture.fixture.id === 2) return { kind: "failed" as const, match_id: null, anomaly_types: [] };
+      return { kind: "applied" as const, match_id: "match", result_version: 1, settlement_status: SettlementStatus.Waiting };
+    });
+    const service = new ProviderFixtureSyncJobService(repo, { applyFixture }, { random: () => 0.5 });
+    async function* load() {
+      events.push("load-first");
+      yield [item(makeApiFixture({ fixtureId: 1 })), item(makeApiFixture({ fixtureId: 2 }))];
+      events.push("load-second");
+      yield [item(makeApiFixture({ fixtureId: 3 }))];
+    }
+    const result = await service.run(SyncJobType.PostFinishVerify, load, NOW);
+    expect(events).toEqual(["load-first", "apply-1", "apply-2", "load-second", "apply-3"]);
+    expect(result).toMatchObject({ kind: "deferred", items_read: 3, items_changed: 2, items_failed: 1, failure_diagnostics: [{ provider_fixture_id: "2" }] });
+    expect(await repo.syncLogs.findLatestByJobType!(SyncJobType.PostFinishVerify)).toMatchObject({ items_read: 3, items_changed: 2, items_failed: 1 });
+  });
   it.each([SyncJobType.FutureSchedule, SyncJobType.FullScheduleVerify])(
     "%s 不处理已取代比赛对应的数据源记录",
     async (jobType) => {
@@ -128,10 +149,10 @@ describe("ProviderFixtureSyncJobService", () => {
       }));
       const service = new ProviderFixtureSyncJobService(repo, { applyFixture });
 
-      await service.run(jobType, async () => [
+      await service.run(jobType, singleBatch(async () => [
         item(makeApiFixture({ fixtureId: 1100001 })),
         item(makeApiFixture({ fixtureId: 1100002 })),
-      ], NOW);
+      ]), NOW);
 
       expect(applyFixture).toHaveBeenCalledTimes(1);
       expect(applyFixture).toHaveBeenCalledWith(
@@ -170,7 +191,7 @@ describe("ProviderFixtureSyncJobService", () => {
       { sleep: async () => undefined },
     );
 
-    await expect(service.run(SyncJobType.FutureSchedule, load, NOW)).resolves.toEqual({
+    await expect(service.run(SyncJobType.FutureSchedule, singleBatch(load), NOW)).resolves.toEqual({
       kind: "completed",
       job_type: SyncJobType.FutureSchedule,
       items_read: 2,
@@ -214,7 +235,7 @@ describe("ProviderFixtureSyncJobService", () => {
       { random: () => 0.5 },
     );
 
-    await expect(service.run(SyncJobType.LiveMatch, load, NOW)).resolves.toMatchObject({
+    await expect(service.run(SyncJobType.LiveMatch, singleBatch(load), NOW)).resolves.toMatchObject({
       kind: "deferred",
       job_type: SyncJobType.LiveMatch,
       retry_attempt: 0,
@@ -241,7 +262,7 @@ describe("ProviderFixtureSyncJobService", () => {
       new ProviderFixtureSyncService(repo),
     );
 
-    await expect(service.run(SyncJobType.LiveMatch, load, NOW)).rejects.toBe(failure);
+    await expect(service.run(SyncJobType.LiveMatch, singleBatch(load), NOW)).rejects.toBe(failure);
     expect(await repo.matches.findById(match.match_id)).toEqual(match);
     expect(await repo.jobLocks.isHeld("sync:live_match", NOW)).toBe(false);
     expect(syncLogs.update).toHaveBeenCalledWith(expect.objectContaining({
@@ -289,7 +310,7 @@ describe("ProviderFixtureSyncJobService", () => {
       { random: () => 0.5 },
     );
 
-    await expect(service.run(SyncJobType.LiveMatch, load, NOW)).resolves.toEqual({
+    await expect(service.run(SyncJobType.LiveMatch, singleBatch(load), NOW)).resolves.toEqual({
       kind: "completed",
       job_type: SyncJobType.LiveMatch,
       items_read: 0,
@@ -330,7 +351,7 @@ describe("ProviderFixtureSyncJobService", () => {
         { random: () => 0 },
       );
 
-      const outcome = await service.run(SyncJobType.LiveMatch, load, NOW);
+      const outcome = await service.run(SyncJobType.LiveMatch, singleBatch(load), NOW);
       expect(load).toHaveBeenCalledTimes(1);
       expect(outcome).toMatchObject({
         kind: "deferred",
@@ -360,7 +381,7 @@ describe("ProviderFixtureSyncJobService", () => {
       { random: () => 0.5 },
     );
 
-    await expect(service.run(SyncJobType.LiveMatch, load, NOW)).rejects.toMatchObject({
+    await expect(service.run(SyncJobType.LiveMatch, singleBatch(load), NOW)).rejects.toMatchObject({
       code: "PROVIDER_RETRY_EXHAUSTED",
     });
     expect(load).toHaveBeenCalledTimes(1);
@@ -396,7 +417,7 @@ describe("ProviderFixtureSyncJobService", () => {
       );
 
       if (testCase.retryable) {
-        await expect(service.run(SyncJobType.LiveMatch, load, NOW)).resolves.toMatchObject({
+        await expect(service.run(SyncJobType.LiveMatch, singleBatch(load), NOW)).resolves.toMatchObject({
           kind: "deferred",
         });
         expect(load, testCase.name).toHaveBeenCalledTimes(1);
@@ -404,7 +425,7 @@ describe("ProviderFixtureSyncJobService", () => {
           status: "deferred",
         }));
       } else {
-        await expect(service.run(SyncJobType.LiveMatch, load, NOW)).rejects.toBe(testCase.error);
+        await expect(service.run(SyncJobType.LiveMatch, singleBatch(load), NOW)).rejects.toBe(testCase.error);
         expect(load, testCase.name).toHaveBeenCalledTimes(1);
         expect(syncLogs.update).toHaveBeenLastCalledWith(expect.objectContaining({
           status: "failed",
@@ -425,7 +446,7 @@ describe("ProviderFixtureSyncJobService", () => {
       { sleep },
     );
 
-    await expect(service.run(SyncJobType.LiveMatch, load, NOW)).rejects.toBe(quotaError);
+    await expect(service.run(SyncJobType.LiveMatch, singleBatch(load), NOW)).rejects.toBe(quotaError);
     expect(load).toHaveBeenCalledTimes(1);
     expect(sleep).not.toHaveBeenCalled();
     expect(syncLogs.update).toHaveBeenCalledWith(expect.objectContaining({
@@ -453,7 +474,7 @@ describe("ProviderFixtureSyncJobService", () => {
     );
 
     await expect(
-      service.run(SyncJobType.FutureSchedule, async () => items, NOW),
+      service.run(SyncJobType.FutureSchedule, singleBatch(async () => items), NOW),
     ).resolves.toEqual({
       kind: "deferred",
       job_type: SyncJobType.FutureSchedule,
@@ -508,7 +529,7 @@ describe("ProviderFixtureSyncJobService", () => {
     );
 
     await expect(
-      service.run(SyncJobType.FutureSchedule, loadIncomplete, NOW),
+      service.run(SyncJobType.FutureSchedule, singleBatch(loadIncomplete), NOW),
     ).resolves.toEqual({
       kind: "deferred",
       job_type: SyncJobType.FutureSchedule,
@@ -558,7 +579,7 @@ describe("ProviderFixtureSyncJobService", () => {
     ];
     const nextTick = new Date(NOW.getTime() + 60_000);
     await expect(
-      service.run(SyncJobType.FutureSchedule, loadCorrected, nextTick),
+      service.run(SyncJobType.FutureSchedule, singleBatch(loadCorrected), nextTick),
     ).resolves.toMatchObject({
       kind: "completed",
       items_read: 2,
@@ -573,7 +594,7 @@ describe("ProviderFixtureSyncJobService", () => {
     await expect(
       service.run(
         SyncJobType.FutureSchedule,
-        loadCorrected,
+        singleBatch(loadCorrected),
         new Date(NOW.getTime() + 120_000),
       ),
     ).resolves.toMatchObject({
@@ -600,7 +621,7 @@ describe("ProviderFixtureSyncJobService", () => {
       { random: () => 0.5 },
     );
 
-    await expect(service.run(SyncJobType.PostFinishVerify, load, NOW)).resolves.toEqual({
+    await expect(service.run(SyncJobType.PostFinishVerify, singleBatch(load), NOW)).resolves.toEqual({
       kind: "deferred",
       job_type: SyncJobType.PostFinishVerify,
       next_attempt_at: new Date(NOW.getTime() + 60_000),
@@ -651,7 +672,7 @@ describe("ProviderFixtureSyncJobService", () => {
         new ProviderFixtureSyncService(repo),
       );
 
-      await expect(service.run(SyncJobType.PostFinishVerify, load, NOW)).resolves.toEqual({
+      await expect(service.run(SyncJobType.PostFinishVerify, singleBatch(load), NOW)).resolves.toEqual({
         kind: "skipped",
         job_type: SyncJobType.PostFinishVerify,
         reason: "lock_held",
@@ -689,7 +710,7 @@ describe("ProviderFixtureSyncJobService", () => {
       );
 
       await expect(
-        service.run(SyncJobType.NearMatch, async () => [], NOW),
+        service.run(SyncJobType.NearMatch, singleBatch(async () => []), NOW),
       ).resolves.toMatchObject({ kind: "completed", job_type: SyncJobType.NearMatch });
 
       const acquireCall = acquire.mock.calls[0];
@@ -731,7 +752,7 @@ describe("ProviderFixtureSyncJobService", () => {
         })) },
       );
 
-      const runPromise = service.run(SyncJobType.LiveMatch, load, NOW);
+      const runPromise = service.run(SyncJobType.LiveMatch, singleBatch(load), NOW);
       await vi.advanceTimersByTimeAsync(5 * 60_000);
       expect(renew).toHaveBeenCalledTimes(1);
       const renewCall = renew.mock.calls[0];
@@ -773,7 +794,7 @@ describe("ProviderFixtureSyncJobService", () => {
         { applyFixture },
       );
 
-      const runPromise = service.run(SyncJobType.LiveMatch, load, NOW);
+      const runPromise = service.run(SyncJobType.LiveMatch, singleBatch(load), NOW);
       await vi.advanceTimersByTimeAsync(5 * 60_000);
       expect(jobLocks.renew).toHaveBeenCalledTimes(1);
       await vi.advanceTimersByTimeAsync(5 * 60_000);
@@ -817,7 +838,7 @@ describe("ProviderFixtureSyncJobService", () => {
         })) },
       );
 
-      const runPromise = service.run(SyncJobType.LiveMatch, load, NOW);
+      const runPromise = service.run(SyncJobType.LiveMatch, singleBatch(load), NOW);
       await vi.advanceTimersByTimeAsync(5 * 60_000);
       expect(jobLocks.renew).toHaveBeenCalledTimes(1);
       await vi.advanceTimersByTimeAsync(5 * 60_000);
@@ -860,7 +881,7 @@ describe("ProviderFixtureSyncJobService", () => {
     ]);
 
     await expect(
-      service.executeHeldByCaller(SyncJobType.FutureSchedule, load, NOW, "external-owner"),
+      service.executeHeldByCaller(SyncJobType.FutureSchedule, singleBatch(load), NOW, "external-owner"),
     ).resolves.toEqual({
       kind: "completed",
       job_type: SyncJobType.FutureSchedule,
@@ -898,7 +919,7 @@ describe("ProviderFixtureSyncJobService", () => {
     );
 
     await expect(
-      service.run(SyncJobType.LiveMatch, load, new Date("invalid")),
+      service.run(SyncJobType.LiveMatch, singleBatch(load), new Date("invalid")),
     ).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
     expect(jobLocks.acquire).not.toHaveBeenCalled();
     expect(syncLogs.insert).not.toHaveBeenCalled();

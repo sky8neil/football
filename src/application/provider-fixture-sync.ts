@@ -467,6 +467,9 @@ export class ProviderFixtureSyncService {
       return { kind: "failed", match_id: match.match_id, anomaly_types: [AnomalyType.ProviderResultPending] };
     }
     if (decision.kind === "anomaly") {
+      if ((match.compared_providers?.length ?? 0) >= 2) {
+        await this.repo.matches.update({ ...match, compared_providers: [], updated_at: serverNow });
+      }
       await this.persistResultAdoptionAnomaly(match.match_id, AnomalyType.ProviderResultConflict, true, {
         reason: decision.reason,
         compared_providers: observations.map((item) => item.provider),

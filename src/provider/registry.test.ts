@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SyncJobType } from "../domain/enums.js";
-import { InMemoryProviderUsageStore, ProviderBudget } from "./budget.js";
+import { InMemoryProviderUsageStore, ProviderBudget, ProviderBudgetDeniedError } from "./budget.js";
 import { InMemoryProviderLeagueStateStore } from "./league-state.js";
 import { OpenFootAdapter } from "./openfoot-adapter.js";
 import { loadProviderSources } from "./sources.js";
@@ -33,6 +33,30 @@ function createResultComparisonRegistry() {
 
 describe("ProviderRegistry", () => {
   afterEach(() => vi.restoreAllMocks());
+
+  it("orders comparison sources by role and reports skipped budget requests", () => {
+    const config = loadProviderSources({
+      FOOTBALL_PROVIDER_SOURCES: "sp,of,5d,bsd,fd",
+      FOOTBALL_PROVIDER_KEY_SP: "sp-test",
+      FOOTBALL_PROVIDER_KEY_OF: "of-test",
+      FOOTBALL_PROVIDER_KEY_5D: "5d-test",
+      FOOTBALL_PROVIDER_KEY_BSD: "bsd-test",
+      FOOTBALL_PROVIDER_KEY_FD: "fd-test",
+    });
+    const log = vi.fn();
+    const client = new ProviderRegistry({ config, log }).asClient();
+    expect(client.getResultComparisonSources("premier_league")).toEqual([
+      { sourceId: "5d", role: "secondary" }, { sourceId: "of", role: "secondary" },
+    ]);
+    expect(client.getResultComparisonSources("chinese_super_league")).toEqual([
+      { sourceId: "of", role: "secondary" }, { sourceId: "sp", role: "fallback" },
+    ]);
+    client.recordComparisonSkipped("of", "chinese_super_league", new ProviderBudgetDeniedError("day_limit"));
+    expect(log).toHaveBeenCalledWith({
+      event: "provider_comparison_skipped", diag_code: "DIAG_PROVIDER_FALLBACK_ACTIVE",
+      source_id: "of", league_id: "chinese_super_league", reason: "day_limit",
+    });
+  });
 
   it("charges each OpenFoot reconcile page to the reconcile pool", async () => {
     const config = loadProviderSources({ FOOTBALL_PROVIDER_SOURCES: "of", FOOTBALL_PROVIDER_KEY_OF: "test-key", FOOTBALL_SYNC_PROFILE: "test" });
@@ -485,6 +509,14 @@ describe("ProviderRegistry", () => {
       serverNow: new Date("2026-10-13T12:00:00.000Z"),
     });
 
+    expect(adapterCall).not.toHaveBeenCalled();
+    for (const date of secondaryDates) {
+      await registry.asClient().getFixturesFromSource("of", {
+        leagueId: "39", season: "2026", dateFrom: date, dateTo: date,
+        jobType: SyncJobType.PostFinishVerify, serverNow: new Date("2026-10-13T12:00:00.000Z"),
+      });
+    }
+
     expect(adapterCall.mock.calls.map(([, dateFrom, dateTo]) => [dateFrom, dateTo])).toEqual(
       secondaryDates.map((date) => [date, date]),
     );
@@ -521,6 +553,12 @@ describe("ProviderRegistry", () => {
       dateTo: "2026-10-12",
       jobType: SyncJobType.PostFinishVerify,
       serverNow: new Date("2026-10-13T12:00:00.000Z"),
+    });
+
+    expect(adapterCall).not.toHaveBeenCalled();
+    await registry.asClient().getFixturesFromSource("of", {
+      leagueId: "39", season: "2026", dateFrom: "2026-10-10", dateTo: "2026-10-12",
+      jobType: SyncJobType.PostFinishVerify, serverNow: new Date("2026-10-13T12:00:00.000Z"),
     });
 
     expect(adapterCall).toHaveBeenCalledTimes(1);

@@ -70,10 +70,10 @@ export class ProviderFutureScheduleService {
     const leagueIds = leagueId === undefined ? undefined : [leagueId];
     const futureScheduleLoader = createFutureScheduleLoader(this.client, leagueIds);
     let teams: ProviderTeamSyncOutcome | null = null;
-    const load: ProviderFixtureBatchLoader = async (loadNow) => {
+    const load: ProviderFixtureBatchLoader = async function* (this: ProviderFutureScheduleService, loadNow: Date) {
       teams ??= await this.teamSync.sync(loadNow, SyncJobType.FutureSchedule, leagueIds);
-      return futureScheduleLoader(loadNow);
-    };
+      yield await futureScheduleLoader(loadNow);
+    }.bind(this);
     const fixtures = await this.fixtureJob.run(
       SyncJobType.FutureSchedule,
       load,

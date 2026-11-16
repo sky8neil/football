@@ -22,6 +22,8 @@ export interface ProviderRegistryClient {
   getSeasonFixtures(query: ApiFootballSeasonFixturesQuery): Promise<readonly ApiFootballFixture[]>;
   getTeams(query: ApiFootballTeamQuery): Promise<readonly ApiFootballTeam[]>;
   getFixturesFromSource(sourceId: ProviderSourceId, query: ApiFootballFixturesQuery): Promise<readonly ApiFootballFixture[]>;
+  getResultComparisonSources(leagueId: string): readonly { sourceId: ProviderSourceId; role: "secondary" | "fallback" }[];
+  recordComparisonSkipped(sourceId: ProviderSourceId, leagueId: string, error: unknown): void;
   orderLeagues?(leagueIds: readonly string[], jobType: ProviderBudgetJob, now: Date): Promise<string[]>;
 }
 
@@ -385,6 +387,16 @@ export class ProviderRegistry {
         if (!league || !this.source(sourceId)) return [];
         return this.fetchQuery(query, sourceId);
       },
+      getResultComparisonSources: (leagueId) => (this.sourceLeagues.get(leagueId) ?? []).flatMap((entry) =>
+        entry.roles.result === "secondary" || entry.roles.result === "fallback"
+          ? [{ sourceId: entry.source.source_id, role: entry.roles.result }] : [])
+        .sort((left, right) => Number(left.role === "fallback") - Number(right.role === "fallback") ||
+          Number(right.sourceId === "5d") - Number(left.sourceId === "5d")),
+      recordComparisonSkipped: (sourceId, leagueId, error) => this.log?.({
+        event: "provider_comparison_skipped", diag_code: "DIAG_PROVIDER_FALLBACK_ACTIVE",
+        source_id: sourceId, league_id: leagueId,
+        reason: error instanceof ProviderBudgetDeniedError ? error.reason : "provider_unavailable",
+      }),
       orderLeagues: (leagueIds, jobType, now) => this.orderLeagues(leagueIds, jobType, now),
     };
   }
@@ -401,8 +413,13 @@ export class ProviderRegistry {
     const selectedPlan = explicitSourceId ? null : this.requestPlan(league.league_id, jobType, now);
     const selected = explicitSourceId
       ? this.entryForSource(explicitSourceId, league.league_id)
-      : selectedPlan ? this.entryForSource(selectedPlan.source_id, league.league_id) : null;
-    if (selected === null || selected === undefined) return this.legacyFetch(query, season);
+      : jobType === SyncJobType.PostFinishVerify
+        ? this.primaryEntry(league.league_id, "result")
+        : selectedPlan ? this.entryForSource(selectedPlan.source_id, league.league_id) : null;
+    if (selected === null || selected === undefined) {
+      if (jobType === SyncJobType.PostFinishVerify && (this.sourceLeagues.get(league.league_id)?.length ?? 0) > 0) return [];
+      return this.legacyFetch(query, season);
+    }
     if (
       jobType === SyncJobType.LiveMatch &&
       selected.source.source_id !== "5d" &&
@@ -458,19 +475,15 @@ export class ProviderRegistry {
           hint: "检查联赛赛季参数是否已过期",
         });
       }
-      if (jobType !== SyncJobType.PostFinishVerify || !("dateFrom" in query) || !query.dateFrom || !query.dateTo) {
-        return primaryFixtures;
-      }
-      const comparisons = await this.fetchResultComparisons(league.league_id, selected.source.source_id, query, jobType, false);
-      return [...primaryFixtures, ...comparisons.fixtures];
+      return primaryFixtures;
     } catch (error) {
+      if (explicitSourceId) throw error;
       if (jobType === SyncJobType.PostFinishVerify) {
         if (error instanceof ProviderBudgetDeniedError) {
           this.log?.({ event: "skipped_budget", source_id: selected.source.source_id, league_id: league.league_id, reason: error.reason });
         }
-        const comparisons = await this.fetchResultComparisons(league.league_id, selected.source.source_id, query, jobType, true);
-        if (error instanceof ProviderBudgetDeferredError && !comparisons.executed) throw error;
-        return comparisons.fixtures;
+        if (error instanceof ProviderBudgetDeferredError) throw error;
+        return [];
       }
       if (error instanceof ProviderBudgetDeniedError && jobType !== SyncJobType.LiveMatch) {
         this.log?.({ event: "skipped_budget", source_id: selected.source.source_id, league_id: league.league_id, reason: error.reason });
@@ -498,55 +511,6 @@ export class ProviderRegistry {
       }
       return fallbackFixtures;
     }
-  }
-
-  private async fetchResultComparisons(
-    leagueId: string,
-    primarySourceId: ProviderSourceId,
-    query: ApiFootballFixturesQuery | ApiFootballSeasonFixturesQuery,
-    jobType: ProviderBudgetJob,
-    includeFallbacks: boolean,
-  ): Promise<{ fixtures: ApiFootballFixture[]; executed: boolean }> {
-    if ("secondaryDates" in query && query.secondaryDates?.length === 0) return { fixtures: [], executed: false };
-    if (!("dateFrom" in query) || !query.dateFrom || !query.dateTo) return { fixtures: [], executed: false };
-    const entries = (this.sourceLeagues.get(leagueId) ?? []).filter((entry) =>
-      entry.source.source_id !== primarySourceId &&
-      (entry.roles.result === "secondary" || (includeFallbacks && entry.roles.result === "fallback")),
-    );
-    const results: ApiFootballFixture[] = [];
-    let executed = false;
-    for (const entry of entries) {
-      const now = query.serverNow ?? new Date();
-      const fetchDateRange = async (dateFrom: string, dateTo: string) => {
-        try {
-          const rows = await this.withRequest(entry.source.source_id, jobType, now, () =>
-            entry.adapter.fetchFixturesByDateRange(
-              entry.league,
-              dateFrom,
-              dateTo,
-              this.callOptions(entry, jobType, now),
-            ),
-            leagueId,
-          );
-          executed = true;
-          results.push(...rows.filter((fixture) => fixture.fixture?.status?.short !== "NS"));
-        } catch (error) {
-          this.log?.({
-            event: "provider_comparison_skipped",
-            diag_code: "DIAG_PROVIDER_FALLBACK_ACTIVE",
-            source_id: entry.source.source_id,
-            league_id: leagueId,
-            reason: error instanceof ProviderBudgetDeniedError ? error.reason : "provider_unavailable",
-          });
-        }
-      };
-      if ("secondaryDates" in query && query.secondaryDates !== undefined) {
-        for (const date of query.secondaryDates) await fetchDateRange(date, date);
-      } else {
-        await fetchDateRange(query.dateFrom, query.dateTo);
-      }
-    }
-    return { fixtures: results, executed };
   }
 
   private async legacyFetch(

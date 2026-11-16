@@ -1,3 +1,4 @@
+import { singleBatch } from "./provider-sync-test-batch.js";
 import { describe, expect, it, vi } from "vitest";
 import { SyncJobType } from "../domain/enums.js";
 import { InMemoryRepository } from "../infrastructure/repositories.js";
@@ -79,7 +80,7 @@ describe("RP08-2 租约围栏", () => {
       { renewal: { proofTtlMs: 0, now: () => NOW.getTime() } },
     );
 
-    await expect(service.run(SyncJobType.LiveMatch, load, NOW)).rejects.toMatchObject({
+    await expect(service.run(SyncJobType.LiveMatch, singleBatch(load), NOW)).rejects.toMatchObject({
       code: "PROVIDER_SYNC_LEASE_LOST",
     });
     expect(syncLogs.update).not.toHaveBeenCalledWith(expect.objectContaining({ status: "success" }));
@@ -104,7 +105,7 @@ describe("RP08-2 租约围栏", () => {
     );
     const load = vi.fn(async () => [item(1100001), item(1100002)]);
 
-    await expect(service.run(SyncJobType.LiveMatch, load, NOW)).rejects.toMatchObject({
+    await expect(service.run(SyncJobType.LiveMatch, singleBatch(load), NOW)).rejects.toMatchObject({
       code: "PROVIDER_SYNC_LEASE_LOST",
     });
     expect(applyFixture).toHaveBeenCalledTimes(1);
@@ -126,7 +127,7 @@ describe("RP08-2 租约围栏", () => {
       { renewal: { proofTtlMs: 0, now: () => NOW.getTime() } },
     );
 
-    await expect(service.run(SyncJobType.LiveMatch, load, NOW)).rejects.toBe(failure);
+    await expect(service.run(SyncJobType.LiveMatch, singleBatch(load), NOW)).rejects.toBe(failure);
     expect(syncLogs.update).not.toHaveBeenCalled();
   });
 
@@ -138,7 +139,7 @@ describe("RP08-2 租约围栏", () => {
       new ProviderFixtureSyncService(repo),
     );
 
-    await expect(service.run(SyncJobType.LiveMatch, load, NOW)).resolves.toEqual({
+    await expect(service.run(SyncJobType.LiveMatch, singleBatch(load), NOW)).resolves.toEqual({
       kind: "completed",
       job_type: SyncJobType.LiveMatch,
       items_read: 0,
@@ -174,7 +175,7 @@ describe("RP08-2 租约围栏", () => {
     );
     const load = vi.fn(async () => [item(1100001), item(1100002), item(1100003)]);
 
-    await expect(service.run(SyncJobType.LiveMatch, load, NOW)).resolves.toMatchObject({
+    await expect(service.run(SyncJobType.LiveMatch, singleBatch(load), NOW)).resolves.toMatchObject({
       kind: "completed",
       items_read: 3,
     });

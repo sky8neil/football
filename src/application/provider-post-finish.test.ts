@@ -13,6 +13,7 @@ import { InMemoryRepository } from "../infrastructure/repositories.js";
 import { makeApiFixture } from "../provider/fixture-factory.js";
 import type { ApiFootballFixture } from "../provider/types.js";
 import { ProviderPostFinishVerifyService } from "./provider-post-finish.js";
+import { ProviderFixtureSyncService } from "./provider-fixture-sync.js";
 
 const NOW = new Date("2026-08-10T12:34:56.000Z");
 const KICKOFF_OVER_24_HOURS_AGO = new Date("2026-08-10T10:00:00.000Z");
@@ -97,6 +98,45 @@ async function seedMappedMatch(
 }
 
 describe("ProviderPostFinishVerifyService", () => {
+  it("副源 apply 一致后立即停止请求后续副源", async () => {
+    const repo = new InMemoryRepository();
+    await seedMappedMatch(repo, "1200049");
+    const mapping = await repo.matchProviderMappings.findByProviderAndExternalId(Provider.FootballData, "1200049");
+    await repo.matchProviderMappings.insert({
+      schema_version: 1, match_id: mapping!.match_id, provider: Provider.FiveDollar,
+      provider_match_id: "1200050", created_at: NOW, updated_at: NOW,
+    });
+    const makeFixture = (id: number, provider: typeof Provider.FootballData | typeof Provider.FiveDollar) => {
+      const fixture = makeApiFixture({ fixtureId: id, statusShort: "FT", date: KICKOFF_OVER_24_HOURS_AGO.toISOString(), timestamp: KICKOFF_OVER_24_HOURS_AGO.getTime() / 1000 });
+      fixture.provider = provider;
+      fixture.league.id = provider === Provider.FiveDollar ? "4160026622" : "PL";
+      return fixture;
+    };
+    const getFixturesFromSource = vi.fn(async (source: string, query: { dateFrom?: string }) =>
+      source === "5d" && query.dateFrom === "2026-08-10" ? [makeFixture(1200050, Provider.FiveDollar)] : []);
+    const service = new ProviderPostFinishVerifyService(repo, {
+      getTeams: vi.fn(async () => []),
+      getFixtures: vi.fn(async () => [makeFixture(1200049, Provider.FootballData)]),
+      getFixturesFromSource,
+      getResultComparisonSources: () => [
+        { sourceId: "5d", role: "secondary" }, { sourceId: "of", role: "secondary" },
+      ],
+    });
+    const outcome = await service.run(NOW);
+    expect(outcome).toMatchObject({ kind: "completed", fixtures: { items_read: 2, items_failed: 0 } });
+    expect(getFixturesFromSource.mock.calls.map(([source, query]) => [source, query.dateFrom])).toEqual([
+      ["5d", "2026-08-10"], ["5d", "2026-08-11"],
+    ]);
+    expect((await repo.matches.findById(mapping!.match_id))?.compared_providers).toEqual([Provider.FootballData, Provider.FiveDollar]);
+    const corrected = makeFixture(1200049, Provider.FootballData);
+    corrected.score!.fulltime!.home = 3;
+    const conflict = await new ProviderFixtureSyncService(repo).applyFixture(corrected, { fixture: corrected }, new Date(NOW.getTime() + 60_000));
+    expect(conflict).toMatchObject({ kind: "conflict", result_version: 1 });
+    expect(await repo.matches.findById(mapping!.match_id)).toMatchObject({
+      result_version: 1, regular_home_score: 2, compared_providers: [],
+    });
+  });
+
   it("串联固定赛季球队 mapping、post_finish_verify loader 与 fixture 同步", async () => {
     const repo = new InMemoryRepository();
     await seedMappedMatch(repo, "1200041");

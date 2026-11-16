@@ -48,13 +48,13 @@ export function decideProviderResultAdoption(
   const authority: Provider = league?.league_id === "chinese_super_league" ? "bsd" : "football_data";
   const authoritative = finished.find((entry) => entry.provider === authority);
   if (authoritative?.score) {
-    return { kind: "adopt", provider: authority, compared_providers: values.map((entry) => entry.provider), score: authoritative.score };
+    return { kind: "adopt", provider: authority, compared_providers: finished.map((entry) => entry.provider), score: authoritative.score };
   }
 
   const fiveDollar = finished.find((entry) => entry.provider === "5dollar");
   const openFoot = finished.find((entry) => entry.provider === "openfoot");
   if (fiveDollar && openFoot && fiveDollar.score && openFoot.score && scoreKey(fiveDollar.score) === scoreKey(openFoot.score)) {
-    return { kind: "adopt", provider: "5dollar", compared_providers: values.map((entry) => entry.provider), score: fiveDollar.score };
+    return { kind: "adopt", provider: "5dollar", compared_providers: finished.map((entry) => entry.provider), score: fiveDollar.score };
   }
   return { kind: "wait", reason: "non_authoritative_single_source" };
 }
