@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { activeLeagueSeason, SUPPORTED_LEAGUES } from "../domain/config.js";
-import { MatchStatus, SettlementStatus } from "../domain/enums.js";
+import { MatchStatus, SettlementStatus, SyncJobType } from "../domain/enums.js";
 import type { Match } from "../domain/types.js";
 import { InMemoryRepository } from "../infrastructure/repositories.js";
 import { ProviderReconcileService } from "./provider-reconcile.js";
@@ -45,6 +45,17 @@ function makeMatch(matchId: string, overrides: Partial<Match> = {}): Match {
 }
 
 describe("ProviderReconcileService", () => {
+  it("charges fixture requests to provider_reconcile", async () => {
+    const repo = new InMemoryRepository();
+    await repo.matches.insert(makeMatch("match"));
+    const getFixturesFromSource = vi.fn(async () => []);
+    const service = new ProviderReconcileService(repo, { getFixturesFromSource });
+
+    await service.run(NOW);
+
+    expect(getFixturesFromSource).toHaveBeenCalledWith("of", expect.objectContaining({ jobType: SyncJobType.ProviderReconcile }));
+  });
+
   it("does not query a superseded match as a reconcile candidate", async () => {
     const repo = new InMemoryRepository();
     const old = makeMatch("old-match");

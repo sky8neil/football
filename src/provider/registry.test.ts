@@ -34,6 +34,23 @@ function createResultComparisonRegistry() {
 describe("ProviderRegistry", () => {
   afterEach(() => vi.restoreAllMocks());
 
+  it("charges each OpenFoot reconcile page to the reconcile pool", async () => {
+    const config = loadProviderSources({ FOOTBALL_PROVIDER_SOURCES: "of", FOOTBALL_PROVIDER_KEY_OF: "test-key", FOOTBALL_SYNC_PROFILE: "test" });
+    const budget = new ProviderBudget(config.sources, new InMemoryProviderUsageStore());
+    const acquire = vi.spyOn(budget, "acquire");
+    let pages = 0;
+    const fetchImpl: typeof fetch = async () => new Response(JSON.stringify({ data: [], meta: { pagination: { next_cursor: ++pages === 1 ? "next" : null } } }), { status: 200 });
+    const client = new ProviderRegistry({ config, budget, fetchImpl, minimumGapMs: 0 }).asClient();
+    const now = new Date("2026-10-11T12:00:00.000Z");
+
+    await client.getFixturesFromSource("of", { leagueId: "39", season: "2026", dateFrom: "2026-10-11", dateTo: "2026-10-11", jobType: SyncJobType.ProviderReconcile, serverNow: now });
+
+    expect(pages).toBe(2);
+    expect(acquire).toHaveBeenCalledTimes(2);
+    expect(acquire).toHaveBeenNthCalledWith(1, "of", SyncJobType.ProviderReconcile, now, expect.any(String), expect.any(String));
+    expect(acquire).toHaveBeenNthCalledWith(2, "of", SyncJobType.ProviderReconcile, now, expect.any(String), expect.any(String));
+  });
+
   it("routes each league to its own adapter and authentication key", async () => {
     const config = loadProviderSources({
       FOOTBALL_PROVIDER_SOURCES: "fd,bsd",

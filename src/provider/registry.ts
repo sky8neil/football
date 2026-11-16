@@ -747,7 +747,8 @@ function roleForJob(job: ProviderBudgetJob): keyof SourceLeagueEntry["roles"] {
 
 function asBudgetJob(value: SyncJobType | undefined): ProviderBudgetJob {
   return value === SyncJobType.PostFinishVerify || value === SyncJobType.LiveMatch ||
-    value === SyncJobType.NearMatch || value === SyncJobType.FullScheduleVerify
+    value === SyncJobType.NearMatch || value === SyncJobType.FullScheduleVerify ||
+    value === SyncJobType.ProviderReconcile || value === SyncJobType.StaleRecovery
     ? value
     : SyncJobType.FutureSchedule;
 }

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { SyncJobType } from "../domain/enums.js";
 import { loadProviderSources } from "./sources.js";
-import { InMemoryProviderUsageStore, ProviderBudget } from "./budget.js";
+import { InMemoryProviderUsageStore, ProviderBudget, type ProviderUsageBucket } from "./budget.js";
 
 const source = loadProviderSources({
   FOOTBALL_PROVIDER_SOURCES: "bsd",
@@ -33,27 +33,70 @@ describe("ProviderBudget", () => {
     });
   });
 
-  it("reserves OpenFoot daily quota for provider reconciliation", async () => {
+  it.each([[120, 72, 12, 36], [40, 24, 4, 12], [11, 6, 1, 4]])("isolates OpenFoot daily pools for cap %i", async (cap, windowCap, recoveryCap, reconcileCap) => {
+    const configured = { ...openFootSource, max_per_minute: 200, daily_cap: cap, monthly_cap: null };
+    const now = new Date("2026-10-11T12:00:00.000Z");
+    const budget = new ProviderBudget([configured], new InMemoryProviderUsageStore());
+    const pools = [
+      [SyncJobType.PostFinishVerify, windowCap],
+      [SyncJobType.StaleRecovery, recoveryCap],
+      [SyncJobType.ProviderReconcile, reconcileCap],
+    ] as const;
+
+    expect(windowCap + recoveryCap + reconcileCap).toBe(cap);
+    for (const [job, limit] of pools) {
+      for (let i = 0; i < limit; i += 1) {
+        await expect(budget.acquire("of", job, now)).resolves.toMatchObject({ allowed: true });
+      }
+      await expect(budget.acquire("of", job, now)).resolves.toMatchObject({ allowed: false, reason: "day_limit" });
+    }
+    await expect(budget.usageSnapshot(now)).resolves.toMatchObject({ of: { used: cap, cap } });
+  });
+
+  it("isolates OpenFoot monthly pools and allocates rounding remainder to reconciliation", async () => {
+    const configured = { ...openFootSource, max_per_minute: 200, daily_cap: 0, monthly_cap: 11 };
+    const now = new Date("2026-10-11T12:00:00.000Z");
+    const budget = new ProviderBudget([configured], new InMemoryProviderUsageStore());
+    for (const [job, limit] of [[SyncJobType.PostFinishVerify, 6], [SyncJobType.StaleRecovery, 1], [SyncJobType.ProviderReconcile, 4]] as const) {
+      for (let i = 0; i < limit; i += 1) {
+        await expect(budget.acquire("of", job, now)).resolves.toMatchObject({ allowed: true });
+      }
+      await expect(budget.acquire("of", job, now)).resolves.toMatchObject({ allowed: false, reason: "month_limit" });
+    }
+    await expect(budget.usageSnapshot(now)).resolves.toMatchObject({ of: { month_used: 11 } });
+  });
+
+  it.each(["day", "month"] as const)("enforces the OpenFoot total %s cap even with pool quota remaining", async (type) => {
+    const configured = { ...openFootSource, max_per_minute: 200, daily_cap: 10, monthly_cap: 10 };
+    const now = new Date("2026-10-11T12:00:00.000Z");
+    const store = new InMemoryProviderUsageStore();
+    const bucket: ProviderUsageBucket = type === "day"
+      ? { source_id: "of", bucket_type: "day", bucket_key: "2026-10-11", bucket_start: new Date("2026-10-11T00:00:00.000Z") }
+      : { source_id: "of", bucket_type: "month", bucket_key: "2026-10", bucket_start: new Date("2026-10-01T00:00:00.000Z") };
+    for (let i = 0; i < 10; i += 1) await store.reserve(bucket, 10);
+    const budget = new ProviderBudget([configured], store);
+    await expect(budget.acquire("of", SyncJobType.ProviderReconcile, now)).resolves.toMatchObject({ allowed: false, reason: `${type}_limit` });
+    await expect(budget.usageSnapshot(now)).resolves.toMatchObject({ of: { used: type === "day" ? 10 : 0, month_used: type === "month" ? 10 : 0, minute_used: 0 } });
+  });
+
+  it("keeps window and recovery pools available after reconciliation is exhausted", async () => {
+    const configured = { ...openFootSource, max_per_minute: 200, daily_cap: 10, monthly_cap: null };
+    const now = new Date("2026-10-11T12:00:00.000Z");
+    const budget = new ProviderBudget([configured], new InMemoryProviderUsageStore());
+    for (let i = 0; i < 3; i += 1) await expect(budget.acquire("of", SyncJobType.ProviderReconcile, now)).resolves.toMatchObject({ allowed: true });
+    await expect(budget.acquire("of", SyncJobType.ProviderReconcile, now)).resolves.toMatchObject({ allowed: false, reason: "day_limit" });
+    await expect(budget.acquire("of", SyncJobType.PostFinishVerify, now)).resolves.toMatchObject({ allowed: true });
+    await expect(budget.acquire("of", SyncJobType.StaleRecovery, now)).resolves.toMatchObject({ allowed: true });
+  });
+
+  it("retains the OpenFoot full schedule verification limit", async () => {
     const configured = { ...openFootSource, max_per_minute: 200, daily_cap: 120 };
     const now = new Date("2026-10-11T12:00:00.000Z");
-    const postFinishBudget = new ProviderBudget([configured], new InMemoryProviderUsageStore());
-
-    for (let i = 0; i < 102; i += 1) {
-      await expect(postFinishBudget.acquire("of", SyncJobType.PostFinishVerify, now)).resolves.toMatchObject({ allowed: true });
-    }
-    await expect(postFinishBudget.acquire("of", SyncJobType.PostFinishVerify, now)).resolves.toMatchObject({
-      allowed: false,
-      reason: "day_limit",
-    });
-
-    const reconcileBudget = new ProviderBudget([configured], new InMemoryProviderUsageStore());
+    const budget = new ProviderBudget([configured], new InMemoryProviderUsageStore());
     for (let i = 0; i < 60; i += 1) {
-      await expect(reconcileBudget.acquire("of", SyncJobType.FullScheduleVerify, now)).resolves.toMatchObject({ allowed: true });
+      await expect(budget.acquire("of", SyncJobType.FullScheduleVerify, now)).resolves.toMatchObject({ allowed: true });
     }
-    await expect(reconcileBudget.acquire("of", SyncJobType.FullScheduleVerify, now)).resolves.toMatchObject({
-      allowed: false,
-      reason: "day_limit",
-    });
+    await expect(budget.acquire("of", SyncJobType.FullScheduleVerify, now)).resolves.toMatchObject({ allowed: false, reason: "day_limit" });
   });
 
   it("rejects exhausted daily quota with the real reset time and no extra reservation", async () => {

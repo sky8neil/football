@@ -89,7 +89,7 @@ export class ProviderReconcileService {
           dateTo: yesterday,
           leagueId: league.api_football_league_id,
           season: activeLeagueSeason(league, serverNow).api_football_season,
-          jobType: SyncJobType.FullScheduleVerify,
+          jobType: SyncJobType.ProviderReconcile,
           serverNow,
         });
       } catch {

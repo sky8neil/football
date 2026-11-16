@@ -29,6 +29,8 @@ const PRIORITY: Record<ProviderBudgetJob, number> = {
   near_match: 2,
   future_schedule: 3,
   full_schedule_verify: 4,
+  provider_reconcile: 4,
+  stale_recovery: 0,
 };
 
 function roleForJob(jobType: ProviderBudgetJob): keyof ProviderSource["leagues"][number]["roles"] {

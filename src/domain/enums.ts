@@ -158,6 +158,7 @@ export const SyncJobType = {
   NearMatch: "near_match",
   LiveMatch: "live_match",
   PostFinishVerify: "post_finish_verify",
+  StaleRecovery: "stale_recovery",
   ProviderReconcile: "provider_reconcile",
   PeriodFinalize: "period_finalize",
   DailyConsistency: "daily_consistency",

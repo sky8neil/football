@@ -7,7 +7,10 @@ export type ProviderBudgetJob =
   | typeof SyncJobType.LiveMatch
   | typeof SyncJobType.NearMatch
   | typeof SyncJobType.FutureSchedule
-  | typeof SyncJobType.FullScheduleVerify;
+  | typeof SyncJobType.FullScheduleVerify
+  | typeof SyncJobType.ProviderReconcile
+  | typeof SyncJobType.StaleRecovery;
+type OpenFootPool = typeof SyncJobType.PostFinishVerify | typeof SyncJobType.StaleRecovery | typeof SyncJobType.ProviderReconcile;
 type BudgetLimitReason = "hour_limit" | "day_limit" | "month_limit";
 
 export class ProviderBudgetDeniedError extends ProviderError {
@@ -34,6 +37,7 @@ export interface ProviderUsageBucket {
   bucket_start: Date;
   key_id?: string;
   league_id?: string;
+  pool?: OpenFootPool;
 }
 
 export interface ProviderUsageStore {
@@ -47,13 +51,24 @@ export type ProviderBudgetDecision =
   | { allowed: false; reason: "source_unconfigured" | "minute_limit" | "hour_limit" | "day_limit" | "month_limit" | "provider_quota" | "provider_cooldown"; key_id?: string; retry_at?: Date };
 
 const PRIORITY_SHARE: Record<ProviderBudgetJob, number> = {
-  // 保留至少 15% 的 OpenFoot 日额度给每日 provider_reconcile；该份额也作用于月桶（of 无 hourly_cap）。
   [SyncJobType.PostFinishVerify]: 0.85,
   [SyncJobType.LiveMatch]: 0.9,
   [SyncJobType.NearMatch]: 0.7,
   [SyncJobType.FutureSchedule]: 0.5,
   [SyncJobType.FullScheduleVerify]: 0.5,
+  [SyncJobType.ProviderReconcile]: 0.5,
+  [SyncJobType.StaleRecovery]: 0.85,
 };
+
+function openFootPool(job: ProviderBudgetJob): OpenFootPool | undefined {
+  return job === SyncJobType.PostFinishVerify || job === SyncJobType.StaleRecovery || job === SyncJobType.ProviderReconcile ? job : undefined;
+}
+
+function openFootPoolLimit(cap: number, pool: OpenFootPool): number {
+  const window = Math.floor(cap * 0.6);
+  const recovery = Math.floor(cap * 0.1);
+  return pool === SyncJobType.PostFinishVerify ? window : pool === SyncJobType.StaleRecovery ? recovery : cap - window - recovery;
+}
 
 function makeBucket(
   sourceId: ProviderSourceId,
@@ -168,7 +183,8 @@ export class InMemoryProviderUsageStore implements ProviderUsageStore {
 export function usageBucketId(bucket: ProviderUsageBucket): string {
   const keyPart = bucket.key_id ? `_${bucket.key_id.replace(/[^a-zA-Z0-9]/g, "")}` : "";
   const leaguePart = bucket.league_id ? `_league_${bucket.league_id.replace(/[^a-zA-Z0-9]/g, "")}` : "";
-  return `provider_usage_${bucket.source_id}_${bucket.bucket_type}${keyPart}${leaguePart}_${bucket.bucket_key.replace(/[^0-9]/g, "")}`;
+  const poolPart = bucket.pool ? `_pool_${bucket.pool}` : "";
+  return `provider_usage_${bucket.source_id}_${bucket.bucket_type}${keyPart}${leaguePart}${poolPart}_${bucket.bucket_key.replace(/[^0-9]/g, "")}`;
 }
 
 export class ProviderBudget {
@@ -230,7 +246,8 @@ export class ProviderBudget {
     const keyMinute = sourceId === "fd" ? minuteBucket(sourceId, now, key.key_id) : minute;
     const day = dayBucket(source, now);
     const share = PRIORITY_SHARE[jobType];
-    const dailyLimit = source.daily_cap > 0 ? Math.floor(source.daily_cap * share) : 0;
+    const pool = sourceId === "of" ? openFootPool(jobType) : undefined;
+    const dailyLimit = source.daily_cap > 0 ? pool ? openFootPoolLimit(source.daily_cap, pool) : Math.floor(source.daily_cap * share) : 0;
     if (!await this.store.reserve(minute, source.max_per_minute, now)) {
       return { allowed: false, reason: "minute_limit", key_id: key.key_id, retry_at: nextMinuteStart(now) };
     }
@@ -244,7 +261,7 @@ export class ProviderBudget {
       reserved.push(keyMinute);
     }
     const reserve = async (bucket: ProviderUsageBucket, cap: number, reason: BudgetLimitReason, retryAt: Date) => {
-      if (!await this.store.reserve(bucket, Math.floor(cap * share), now)) {
+      if (!await this.store.reserve(bucket, cap, now)) {
         for (const item of reserved) await this.store.release(item);
         return { allowed: false, reason, key_id: key.key_id, retry_at: retryAt } as ProviderBudgetDecision;
       }
@@ -253,16 +270,25 @@ export class ProviderBudget {
     };
 
     if (source.hourly_cap !== null) {
-      const denied = await reserve(hourBucket(sourceId, now), source.hourly_cap, "hour_limit", nextHourStart(now));
+      const denied = await reserve(hourBucket(sourceId, now), Math.floor(source.hourly_cap * share), "hour_limit", nextHourStart(now));
       if (denied) return denied;
     }
-    if (dailyLimit > 0) {
-      const denied = await reserve(day, source.daily_cap, "day_limit", nextDayStart(source, now));
+    if (dailyLimit > 0 || (pool && source.daily_cap > 0)) {
+      const denied = await reserve(day, pool ? source.daily_cap : dailyLimit, "day_limit", nextDayStart(source, now));
       if (denied) return denied;
+      if (pool) {
+        const poolDenied = await reserve({ ...day, pool }, dailyLimit, "day_limit", nextDayStart(source, now));
+        if (poolDenied) return poolDenied;
+      }
     }
     if (source.monthly_cap !== null) {
-      const denied = await reserve(monthBucket(sourceId, now), source.monthly_cap, "month_limit", nextMonthStart(now));
+      const month = monthBucket(sourceId, now);
+      const denied = await reserve(month, pool ? source.monthly_cap : Math.floor(source.monthly_cap * share), "month_limit", nextMonthStart(now));
       if (denied) return denied;
+      if (pool) {
+        const poolDenied = await reserve({ ...month, pool }, openFootPoolLimit(source.monthly_cap, pool), "month_limit", nextMonthStart(now));
+        if (poolDenied) return poolDenied;
+      }
     }
 
     if (leagueId) {
