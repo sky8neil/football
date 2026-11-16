@@ -11,6 +11,7 @@ import { ScoringRuleVersion, UnlockConfigVersion } from "./enums.js";
  * 上线前必须改为真实上线周；上线后只追加，不回改。
  */
 export const RANKING_FIRST_PERIOD_KEY = "2026-W31";
+export const SUMMARY_UPCOMING_WINDOW_DAYS = 14;
 
 export const FIXED_CONFIG_V1 = {
   schema_version: 1,
