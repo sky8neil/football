@@ -4,6 +4,8 @@ import { MatchStatus, SettlementStatus, SyncJobType } from "../domain/enums.js";
 import type { Match } from "../domain/types.js";
 import { InMemoryRepository } from "../infrastructure/repositories.js";
 import { ProviderReconcileService } from "./provider-reconcile.js";
+import { ProviderBudgetDeniedError } from "../provider/budget.js";
+import type { ApiFootballFixture } from "../provider/types.js";
 
 const NOW = new Date("2026-08-09T12:00:00.000Z");
 
@@ -44,7 +46,119 @@ function makeMatch(matchId: string, overrides: Partial<Match> = {}): Match {
   return match;
 }
 
+function fixture(id: string, match: Match, provider: ApiFootballFixture["provider"] = "openfoot"): ApiFootballFixture {
+  return {
+    provider,
+    fixture: { id, date: match.kickoff_at.toISOString(), timestamp: match.kickoff_at.getTime() / 1000, status: { short: "FT" } },
+    league: { id: "comp_premier_league_eng", season: "2026" },
+    teams: { home: { id: "home" }, away: { id: "away" } },
+    score: { fulltime: { home: 1, away: 0 } },
+  };
+}
+
+async function mapFixture(repo: InMemoryRepository, match: Match, id: string) {
+  await repo.matchProviderMappings.insert({ schema_version: 1, match_id: match.match_id, provider: "openfoot", provider_match_id: id, created_at: NOW, updated_at: NOW });
+}
+
 describe("ProviderReconcileService", () => {
+  it("continues historical pending work after budget exhaustion and never repeats completed work", async () => {
+    const repo = new InMemoryRepository();
+    const older = makeMatch("older", { kickoff_at: new Date("2026-08-07T10:00:00Z") });
+    const newer = makeMatch("newer");
+    await repo.matches.insert(older);
+    await repo.matches.insert(newer);
+    await mapFixture(repo, older, "older-external");
+    await mapFixture(repo, newer, "newer-external");
+    await repo.providerReconcileTodos.upsert({ todo_id: "old-todo", match_id: older.match_id, canonical_match_id: older.match_id, league_id: older.league_id, season_id: older.season_id, source_id: "of", target_result_version: 1, kickoff_at: older.kickoff_at, status: "pending", attempts: 0, last_error_code: null, last_attempt_at: null, completed_at: null, created_at: NOW, updated_at: NOW, schema_version: 1 });
+    const getFixturesFromSource = vi.fn()
+      .mockResolvedValueOnce([fixture("older-external", older)])
+      .mockRejectedValueOnce(new ProviderBudgetDeniedError("day_limit"))
+      .mockResolvedValueOnce([fixture("newer-external", newer)]);
+    const service = new ProviderReconcileService(repo, { getFixturesFromSource });
+    await service.run(NOW);
+    expect((await repo.providerReconcileTodos.findPending(10)).map((todo) => todo.match_id)).toEqual(["newer"]);
+    await service.run(new Date("2026-08-10T12:00:00Z"));
+    expect(await repo.providerReconcileTodos.findPending(10)).toEqual([]);
+    await service.run(new Date("2026-08-10T13:00:00Z"));
+    expect(getFixturesFromSource).toHaveBeenCalledTimes(3);
+  });
+
+  it.each(["missing", "unmapped", "primary"])("keeps %s observations pending and increments attempts across runs", async (kind) => {
+    const repo = new InMemoryRepository();
+    const match = makeMatch("match");
+    await repo.matches.insert(match);
+    const fixtures = kind === "missing" ? [] : [fixture("unmapped", match, kind === "primary" ? "football_data" : "openfoot")];
+    if (kind === "primary") {
+      fixtures[0]!.league = { id: "PL", season: "2026", round: "1" };
+      await repo.matchProviderMappings.insert({ schema_version: 1, match_id: match.match_id, provider: "football_data", provider_match_id: "unmapped", created_at: NOW, updated_at: NOW });
+    }
+    const service = new ProviderReconcileService(repo, { getFixturesFromSource: vi.fn(async () => fixtures) });
+    await service.run(NOW);
+    await service.run(NOW);
+    const todos = await repo.providerReconcileTodos.findPending(10);
+    expect(todos).toHaveLength(1);
+    expect(todos[0]).toMatchObject({ attempts: 2, status: "pending", last_error_code: expect.any(String) });
+  });
+
+  it("does not skip a fresh observation after existing two-source agreement", async () => {
+    const repo = new InMemoryRepository();
+    const match = makeMatch("match", { compared_providers: ["football_data", "openfoot"] });
+    await repo.matches.insert(match);
+    await mapFixture(repo, match, "external");
+    const getFixturesFromSource = vi.fn(async () => [fixture("external", match)]);
+    const service = new ProviderReconcileService(repo, { getFixturesFromSource });
+    await service.run(NOW);
+    await service.run(NOW);
+    expect(getFixturesFromSource).toHaveBeenCalledTimes(1);
+    expect(await repo.providerReconcileTodos.findPending(10)).toEqual([]);
+  });
+
+  it("generates work for yesterday even when the competitive season differs from the calendar season", async () => {
+    const repo = new InMemoryRepository();
+    const match = makeMatch("postponed", { season_id: "2025_2026" });
+    await repo.matches.insert(match);
+    const getFixturesFromSource = vi.fn(async () => []);
+    await new ProviderReconcileService(repo, { getFixturesFromSource }).run(NOW);
+    expect((await repo.providerReconcileTodos.findPending(10))[0]).toMatchObject({ match_id: "postponed", season_id: "2025_2026", attempts: 1 });
+    expect(getFixturesFromSource).toHaveBeenCalledWith("of", expect.objectContaining({ season: "2025" }));
+  });
+
+  it("maps an old season using the todo season even if kickoff is years later", async () => {
+    const repo = new InMemoryRepository();
+    const match = makeMatch("old-season", { season_id: "2023_2024" });
+    await repo.matches.insert(match);
+    for (const team of ["home", "away"]) await repo.teamProviderMappings.insert({ schema_version: 1, team_id: team, provider: "openfoot", provider_team_id: team, created_at: NOW, updated_at: NOW });
+    const observed = fixture("old-fixture", match);
+    observed.league.season = "2023/24";
+    await new ProviderReconcileService(repo, { getFixturesFromSource: vi.fn(async () => [observed]) }).run(NOW);
+    expect(await repo.providerReconcileTodos.findPending(10)).toEqual([]);
+    expect(await repo.matchProviderMappings.findByProviderAndExternalId("openfoot", "old-fixture")).toMatchObject({ match_id: "old-season" });
+  });
+
+  it("completes only observed matches in a shared response and retains conflicts", async () => {
+    const repo = new InMemoryRepository();
+    const first = makeMatch("first");
+    const second = makeMatch("second");
+    await repo.matches.insert(first);
+    await repo.matches.insert(second);
+    await mapFixture(repo, first, "first-external");
+    const observed = fixture("first-external", first);
+    observed.score = { fulltime: { home: 2, away: 0 } };
+    const outcome = await new ProviderReconcileService(repo, { getFixturesFromSource: vi.fn(async () => [observed]) }).run(NOW);
+    expect(outcome).toMatchObject({ items_read: 1, conflicts: 1 });
+    expect((await repo.providerReconcileTodos.findPending(10)).map((todo) => todo.match_id)).toEqual(["second"]);
+    expect(await repo.providerSnapshots.findByEntity("match", first.match_id)).toEqual(expect.arrayContaining([expect.objectContaining({ event_type: "provider_conflict" })]));
+    expect((await repo.providerReconcileTodos.findPending(10))[0]).toMatchObject({ attempts: 1, last_error_code: expect.any(String) });
+  });
+
+  it("records request failures and keeps Chinese Super League work on sportapi", async () => {
+    const repo = new InMemoryRepository();
+    await repo.matches.insert(makeMatch("china", { league_id: "chinese_super_league", season_id: "2026" }));
+    const getFixturesFromSource = vi.fn(async () => { throw new Error("offline"); });
+    await new ProviderReconcileService(repo, { getFixturesFromSource }).run(NOW);
+    expect(getFixturesFromSource).toHaveBeenCalledWith("sp", expect.objectContaining({ jobType: SyncJobType.ProviderReconcile }));
+    expect(await repo.providerReconcileTodos.findPending(10)).toEqual([expect.objectContaining({ match_id: "china", source_id: "sp", attempts: 1, last_error_code: "PROVIDER_REQUEST_FAILED" })]);
+  });
   it("charges fixture requests to provider_reconcile", async () => {
     const repo = new InMemoryRepository();
     await repo.matches.insert(makeMatch("match"));

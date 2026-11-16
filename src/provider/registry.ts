@@ -1,4 +1,4 @@
-import { SUPPORTED_LEAGUES } from "../domain/config.js";
+import { activeProviderSeasonRef, SUPPORTED_LEAGUES } from "../domain/config.js";
 import type { ApiFootballFixturesQuery, ApiFootballSeasonFixturesQuery, ApiFootballTeamQuery, ProviderHttpClient as LegacyProviderHttpClient } from "./http.js";
 import { ApiFootballClient, ProviderHttpError, ProviderQuotaExceededError } from "./http.js";
 import type { ApiFootballFixture, ApiFootballTeam } from "./types.js";
@@ -429,11 +429,14 @@ export class ProviderRegistry {
     }
     const trackLeagueInBudget = !(jobType === SyncJobType.LiveMatch && selected.source.source_id === "5d");
     const callOptions = this.callOptions(selected, jobType, now, trackLeagueInBudget);
+    const requestLeague = jobType === SyncJobType.ProviderReconcile && /^\d{4}$/.test(query.season)
+      ? { ...selected.league, season_ref: activeProviderSeasonRef(league, selected.source.source_id, new Date(`${query.season}-08-01T00:00:00.000Z`)) }
+      : selected.league;
     const fetch = async (): Promise<readonly ApiFootballFixture[]> => {
       if (season || !("dateFrom" in query) || query.dateFrom === undefined || query.dateTo === undefined) {
-        return selected.adapter.fetchSeasonFixtures(selected.league, callOptions);
+        return selected.adapter.fetchSeasonFixtures(requestLeague, callOptions);
       }
-      return selected.adapter.fetchFixturesByDateRange(selected.league, query.dateFrom, query.dateTo, callOptions);
+      return selected.adapter.fetchFixturesByDateRange(requestLeague, query.dateFrom, query.dateTo, callOptions);
     };
     try {
       let primaryFixtures: readonly ApiFootballFixture[];

@@ -132,16 +132,6 @@ export async function loadActiveWindowFixtures(
       (acc, match) => Math.max(acc, match.kickoff_at.getTime()),
       leagueMatches[0]!.kickoff_at.getTime(),
     );
-    const secondaryDates = jobType === "post_finish_verify"
-      ? [...new Set(leagueMatches
-        .filter((match) => !(match.result_version > 0 && (match.compared_providers?.length ?? 0) >= 2))
-        .flatMap((match) => {
-          const kickoffDate = match.kickoff_at.toISOString().slice(0, 10);
-          const nextDate = new Date(new Date(`${kickoffDate}T00:00:00.000Z`).getTime() + DAY_MS)
-            .toISOString().slice(0, 10);
-          return [kickoffDate, nextDate];
-        }))].sort()
-      : undefined;
     const fixtures = await client.getFixtures({
       dateFrom: new Date(earliestKickoffMs).toISOString().slice(0, 10),
       dateTo: new Date(latestKickoffMs).toISOString().slice(0, 10),
@@ -149,7 +139,6 @@ export async function loadActiveWindowFixtures(
       season: activeLeagueSeason(league, serverNow).api_football_season,
       jobType,
       serverNow,
-      ...(secondaryDates === undefined ? {} : { secondaryDates }),
     });
     result.push(...await fixturesToItems(repo, fixtures, ids, serverNow, providerLeagueRefs));
   }

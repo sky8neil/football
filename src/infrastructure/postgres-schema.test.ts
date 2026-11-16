@@ -200,6 +200,7 @@ describe("postgres schema plan §6.1", () => {
       "ix_predictions_user_submitted:submitted_at",
       "ix_provider_league_state_success:last_success_at",
       "ix_provider_usage_source_bucket:bucket_start",
+      "ix_reconcile_status_kickoff:kickoff_at",
       "ix_scheduler_state_updated:updated_at",
       "ix_settlements_status_updated:updated_at",
       "ix_snapshots_entity:created_at",

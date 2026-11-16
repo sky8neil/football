@@ -1,7 +1,7 @@
-import { MatchStatus, SCHEMA_VERSION, SettlementStatus, SyncJobStatus, SyncJobType } from "../domain/enums.js";
-import { activeLeagueSeason, SUPPORTED_LEAGUES, type ProviderLeagueRefs } from "../domain/config.js";
+import { SCHEMA_VERSION, SyncJobStatus, SyncJobType } from "../domain/enums.js";
+import { SUPPORTED_LEAGUES, type ProviderLeagueRefs } from "../domain/config.js";
 import { newUuid } from "../domain/ids.js";
-import type { ProviderSnapshot, SyncLog } from "../domain/types.js";
+import type { ProviderReconcileTodo, ProviderSnapshot, SyncLog } from "../domain/types.js";
 import type { AppRepository } from "../infrastructure/repositories.js";
 import type { ApiFootballFixturesQuery } from "../provider/http.js";
 import type { ApiFootballFixture } from "../provider/types.js";
@@ -10,6 +10,8 @@ import { normalizeFixture } from "../provider/fixture-mapper.js";
 import { ensureCrossSourceMatchMapping } from "./provider-cross-source.js";
 import { persistAnomalyInTransaction } from "./anomaly-persistence.js";
 import { AnomalyType } from "../domain/enums.js";
+import { ProviderBudgetDeniedError } from "../provider/budget.js";
+import { ProviderError, ProviderQuotaExceededError } from "../provider/http.js";
 
 export interface ProviderReconcileClient {
   getFixturesFromSource(sourceId: ProviderSourceId, query: ApiFootballFixturesQuery): Promise<readonly ApiFootballFixture[]>;
@@ -67,50 +69,92 @@ export class ProviderReconcileService {
   }
 
   private async reconcile(serverNow: Date): Promise<Extract<ProviderReconcileOutcome, { kind: "completed" }>> {
-    const yesterday = new Date(serverNow.getTime() - 24 * 60 * 60_000).toISOString().slice(0, 10);
+    const todoRepo = this.repo.providerReconcileTodos;
+    if (!todoRepo) throw new Error("provider reconcile todo repository unavailable");
+    const yesterdayAt = new Date(serverNow.getTime() - 24 * 60 * 60_000);
+    const yesterday = yesterdayAt.toISOString().slice(0, 10);
     let itemsRead = 0;
     let conflicts = 0;
     let skipped = 0;
-    for (const league of SUPPORTED_LEAGUES) {
-      const sourceId: ProviderSourceId = league.league_id === "chinese_super_league" ? "sp" : "of";
-      const sourceProvider = sourceId === "sp" ? "sportapi" : "openfoot";
-      const matches = (await this.repo.matches.findBySeason(activeLeagueSeason(league, serverNow).season_id)).filter((match) =>
-        match.league_id === league.league_id &&
-        match.superseded_by == null &&
-        match.settlement_status === SettlementStatus.Settled &&
-        match.match_status === MatchStatus.Finished &&
-        match.kickoff_at.toISOString().slice(0, 10) === yesterday,
-      );
-      if (matches.length === 0) continue;
+    for (const match of await this.repo.matches.findFinishedSettledOnDay(yesterday)) {
+      if (SUPPORTED_LEAGUES.some((league) => league.league_id === match.league_id)) {
+        const sourceId = match.league_id === "chinese_super_league" ? "sp" : "of";
+        await todoRepo.upsert({
+          todo_id: newUuid(), match_id: match.match_id, canonical_match_id: match.canonical_match_id,
+          league_id: match.league_id, season_id: match.season_id, source_id: sourceId,
+          target_result_version: match.result_version, kickoff_at: match.kickoff_at, status: "pending", attempts: 0,
+          last_error_code: null, last_attempt_at: null, completed_at: null, created_at: serverNow, updated_at: serverNow,
+          schema_version: SCHEMA_VERSION,
+        });
+      }
+    }
+    const todos: ProviderReconcileTodo[] = [];
+    for (;;) {
+      const page = await todoRepo.findPending(100, todos.length);
+      todos.push(...page);
+      if (page.length < 100) break;
+    }
+    const groups = new Map<string, ProviderReconcileTodo[]>();
+    for (const todo of todos) {
+      const key = JSON.stringify([todo.source_id, todo.league_id, todo.season_id, todo.kickoff_at.toISOString().slice(0, 10)]);
+      const group = groups.get(key) ?? [];
+      group.push(todo);
+      groups.set(key, group);
+    }
+    for (const group of groups.values()) {
+      const first = group[0]!;
+      const league = SUPPORTED_LEAGUES.find((row) => row.league_id === first.league_id);
+      if (!league) {
+        for (const todo of group) await todoRepo.recordFailure(todo.todo_id, "LEAGUE_NOT_FOUND", serverNow);
+        skipped += group.length;
+        continue;
+      }
+      const sourceProvider = first.source_id === "sp" ? "sportapi" : "openfoot";
+      const day = first.kickoff_at.toISOString().slice(0, 10);
+      const season = first.season_id.split("_")[0]!;
       let fixtures: readonly ApiFootballFixture[];
       try {
-        fixtures = await this.client.getFixturesFromSource(sourceId, {
-          dateFrom: yesterday,
-          dateTo: yesterday,
+        fixtures = await this.client.getFixturesFromSource(first.source_id, {
+          dateFrom: day,
+          dateTo: day,
           leagueId: league.api_football_league_id,
-          season: activeLeagueSeason(league, serverNow).api_football_season,
+          season,
           jobType: SyncJobType.ProviderReconcile,
           serverNow,
         });
-      } catch {
-        skipped += matches.length;
+      } catch (error) {
+        const code = error instanceof ProviderError ? error.code : "PROVIDER_REQUEST_FAILED";
+        for (const todo of group) await todoRepo.recordFailure(todo.todo_id, code, serverNow);
+        skipped += group.length;
+        if (error instanceof ProviderBudgetDeniedError || error instanceof ProviderQuotaExceededError) break;
         continue;
       }
+      const remaining = new Map(group.map((todo) => [todo.todo_id, todo]));
+      let mappingFailed = false;
       for (const fixture of fixtures) {
-        const normalized = normalizeFixture(fixture, this.providerLeagueRefs, serverNow);
-        if (normalized.entityFailed || normalized.fixture.fulltime === null) continue;
+        const normalized = normalizeFixture(fixture, this.providerLeagueRefs, new Date(`${season}-08-01T00:00:00.000Z`));
+        if (normalized.entityFailed || normalized.fixture.fulltime === null || normalized.fixture.provider !== sourceProvider) continue;
         const mapping = await ensureCrossSourceMatchMapping(
           this.repo,
           normalized.fixture,
           serverNow,
-          new Set(matches.map((match) => match.match_id)),
+          new Set(group.map((todo) => todo.match_id)),
           this.providerLeagueRefs,
+          first.season_id,
         );
-        if (!mapping.match_id) continue;
-        const match = matches.find((candidate) => candidate.match_id === mapping.match_id);
+        if (!mapping.match_id) { mappingFailed = true; continue; }
+        const matchedTodos = [...remaining.values()].filter((todo) => todo.match_id === mapping.match_id);
+        if (matchedTodos.length === 0) continue;
+        const match = await this.repo.matches.findById(mapping.match_id);
         if (!match) continue;
         itemsRead += 1;
-        if (match.regular_home_score === normalized.fixture.fulltime.home && match.regular_away_score === normalized.fixture.fulltime.away) continue;
+        if (match.regular_home_score === normalized.fixture.fulltime.home && match.regular_away_score === normalized.fixture.fulltime.away) {
+          for (const todo of matchedTodos) {
+            await todoRepo.markDone(todo.todo_id, serverNow);
+            remaining.delete(todo.todo_id);
+          }
+          continue;
+        }
         conflicts += 1;
         const snapshot: ProviderSnapshot = {
           schema_version: SCHEMA_VERSION,
@@ -138,7 +182,13 @@ export class ProviderReconcileService {
             observed_score: normalized.fixture.fulltime,
           }, serverNow);
         });
+        for (const todo of matchedTodos) {
+          await todoRepo.markDone(todo.todo_id, serverNow);
+          remaining.delete(todo.todo_id);
+        }
       }
+      for (const todo of remaining.values()) await todoRepo.recordFailure(todo.todo_id, mappingFailed ? "MATCH_MAPPING_UNRESOLVED" : "MATCH_NOT_OBSERVED", serverNow);
+      skipped += remaining.size;
     }
     return { kind: "completed", items_read: itemsRead, conflicts, skipped };
   }

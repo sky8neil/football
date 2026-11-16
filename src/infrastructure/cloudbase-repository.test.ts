@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { GroupStatus, MatchStatus, SettlementStatus } from "../domain/enums.js";
-import type { BoardSnapshot, Group, Match, Prediction, User } from "../domain/types.js";
+import type { BoardSnapshot, Group, Match, Prediction, ProviderReconcileTodo, User } from "../domain/types.js";
 import { defaultLevelState } from "../domain/types.js";
 import { GroupsService } from "../application/groups.js";
 import { COLLECTION_DEFINITIONS } from "../schema/collections.js";
@@ -21,6 +21,8 @@ import {
   type CloudBaseRepositoryConfig,
 } from "./cloudbase-repository.js";
 import { InMemoryRepository } from "./repositories.js";
+import { createPostgresDocumentDb } from "./postgres-document-db.js";
+import type { PostgresQueryFn } from "./postgres-schema.js";
 
 const NOW = new Date("2026-08-09T12:00:00.000Z");
 const CURSOR_SECRET = "test-group-cursor-secret";
@@ -267,6 +269,71 @@ function createCloudBaseRepository(db = new MemoryCloudBaseDb()): CloudBaseAppRe
   return new CloudBaseAppRepository(CONFIG, db);
 }
 
+function createPostgresRepository(): CloudBaseAppRepository {
+  const rows = new Map<string, CloudBaseDocument>();
+  const query: PostgresQueryFn = async (sql, params = []) => {
+    if (["BEGIN", "COMMIT", "ROLLBACK"].includes(sql)) return { rows: [] };
+    if (sql.startsWith("INSERT")) {
+      rows.set(String(params[0]), structuredClone(params[1] as CloudBaseDocument));
+      return { rows: [] };
+    }
+    if (sql.startsWith("UPDATE")) {
+      const id = String(params[0]);
+      const existing = rows.get(id);
+      if (!existing) return { rows: [] };
+      rows.set(id, { ...existing, ...structuredClone(params[1] as CloudBaseDocument) });
+      return { rows: [{ _id: id }] };
+    }
+    if (sql.includes("WHERE _id = $1")) {
+      const row = rows.get(String(params[0]));
+      return { rows: row ? [{ document: structuredClone(row) }] : [] };
+    }
+    const filters = [...sql.matchAll(/document ->> '([^']+)'\)\)?(?:::numeric)? = \$(\d+)/g)];
+    let documents = [...rows.values()].filter((row) => filters.every((match) => row[match[1]!] === params[Number(match[2]) - 1]));
+    if (sql.includes("ORDER BY")) documents = documents.sort((left, right) => String(left.kickoff_at).localeCompare(String(right.kickoff_at)));
+    const limit = /LIMIT \$(\d+)/.exec(sql);
+    const offset = /OFFSET \$(\d+)/.exec(sql);
+    const start = offset ? Number(params[Number(offset[1]) - 1]) : 0;
+    documents = documents.slice(start, limit ? start + Number(params[Number(limit[1]) - 1]) : undefined);
+    return { rows: documents.map((document) => ({ document: structuredClone(document) })) };
+  };
+  const db = createPostgresDocumentDb(query, { schema: "football_test", namespace: CONFIG.resource_namespace }, {
+    connect: async () => ({ query, release: () => {} }),
+  });
+  return new CloudBaseAppRepository(CONFIG, db);
+}
+
+describe.each([
+  ["memory", () => new InMemoryRepository()],
+  ["document", () => createCloudBaseRepository()],
+  ["postgres", () => createPostgresRepository()],
+])("provider reconcile todos: %s", (_name, createRepo) => {
+  it("upserts by match/source/version, sorts, retains attempts, and completes individually", async () => {
+    const repo = createRepo();
+    const todo: ProviderReconcileTodo = {
+      todo_id: "first", match_id: "match", canonical_match_id: "canonical", league_id: "premier_league",
+      season_id: "2026_2027", source_id: "of", target_result_version: 1, kickoff_at: NOW,
+      status: "pending", attempts: 0, last_error_code: null, last_attempt_at: null,
+      completed_at: null, created_at: NOW, updated_at: NOW, schema_version: 1,
+    };
+    await repo.providerReconcileTodos.upsert(todo);
+    await repo.providerReconcileTodos.recordFailure(todo.todo_id, "MISSING", NOW);
+    await repo.providerReconcileTodos.upsert({ ...todo, todo_id: "duplicate" });
+    await repo.providerReconcileTodos.upsert({ ...todo, todo_id: "earlier", match_id: "other", kickoff_at: new Date(NOW.getTime() - 1000) });
+    const pending = await repo.providerReconcileTodos.findPending(1);
+    expect(pending.map((row) => row.todo_id)).toEqual(["earlier"]);
+    await repo.providerReconcileTodos.markDone("earlier", NOW);
+    expect(await repo.providerReconcileTodos.findPending(10)).toEqual([{ ...todo, attempts: 1, last_error_code: "MISSING", last_attempt_at: NOW }]);
+    await repo.providerReconcileTodos.markDone("first", NOW);
+    expect(await repo.providerReconcileTodos.findPending(10)).toEqual([]);
+    await repo.providerReconcileTodos.upsert({ ...todo, todo_id: "duplicate-again" });
+    expect(await repo.providerReconcileTodos.findPending(10)).toEqual([]);
+    await repo.providerReconcileTodos.upsert({ ...todo, todo_id: "version-two", target_result_version: 2 });
+    await repo.providerReconcileTodos.upsert({ ...todo, todo_id: "other-source", source_id: "sp" });
+    expect((await repo.providerReconcileTodos.findPending(10)).map((row) => row.todo_id).sort()).toEqual(["other-source", "version-two"]);
+  });
+});
+
 class RangeAwareMemoryCloudBaseDb extends MemoryCloudBaseDb {
   gteFilter(field: string, value: unknown): Record<string, unknown> {
     return { [field]: { __gte: value } };
@@ -353,7 +420,7 @@ describe("CloudBaseAppRepository", () => {
     expect(Object.keys(repo).sort()).toEqual([
       "adminAuditLogs", "admins", "anomalies", "boardSnapshots", "config", "db", "deletedOpenidMappings",
       "groupMembers", "groups", "jobLocks", "levelHistory", "matchProviderMappings",
-      "matchResults", "matches", "predictions", "providerSnapshots", "rankings",
+      "matchResults", "matches", "predictions", "providerReconcileTodos", "providerSnapshots", "rankings",
       "settlementItems", "settlements", "syncLogs", "teamProviderMappings", "teams",
       "unlocks", "userSeasonStats", "users",
     ].sort());

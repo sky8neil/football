@@ -134,6 +134,24 @@ export interface TeamProviderMapping extends BaseDoc {
   updated_at: Date;
 }
 
+export interface ProviderReconcileTodo extends BaseDoc {
+  todo_id: string;
+  match_id: string;
+  canonical_match_id: string;
+  league_id: string;
+  season_id: string;
+  source_id: "of" | "sp";
+  target_result_version: number;
+  kickoff_at: Date;
+  status: "pending" | "done";
+  attempts: number;
+  last_error_code: string | null;
+  last_attempt_at: Date | null;
+  completed_at: Date | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
 export interface Match extends BaseDoc {
   match_id: string;
   canonical_match_id: string;

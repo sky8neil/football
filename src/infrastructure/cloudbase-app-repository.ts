@@ -1,4 +1,4 @@
-import { MatchStatus, SCHEMA_VERSION, SettlementItemStatus } from "../domain/enums.js";
+import { MatchStatus, SCHEMA_VERSION, SettlementItemStatus, SettlementStatus } from "../domain/enums.js";
 import { internalError } from "../domain/errors.js";
 import type {
   Admin,
@@ -15,6 +15,7 @@ import type {
   MatchResult,
   Prediction,
   ProviderSnapshot,
+  ProviderReconcileTodo,
   RankingEntry,
   SettlementDoc,
   SettlementItem,
@@ -84,6 +85,7 @@ import {
   type MatchResultRepository,
   type PredictionRepository,
   type ProviderSnapshotRepository,
+  type ProviderReconcileTodoRepository,
   type RankingRepository,
   type SettlementItemRepository,
   type SettlementRepository,
@@ -174,6 +176,7 @@ export class CloudBaseAppRepository implements AppRepository {
   readonly teamProviderMappings: TeamProviderMappingRepository;
   readonly matchProviderMappings: MatchProviderMappingRepository;
   readonly providerSnapshots: ProviderSnapshotRepository;
+  readonly providerReconcileTodos: ProviderReconcileTodoRepository;
   readonly admins: AdminRepository;
   readonly adminAuditLogs: AdminAuditLogRepository;
   readonly anomalies: AnomalyRepository;
@@ -257,6 +260,30 @@ export class CloudBaseAppRepository implements AppRepository {
       findByMatchId: async (matchId) => this.where<MatchProviderMapping>("match_provider_mappings", { match_id: matchId }),
       insert: async (mapping) => this.add("match_provider_mappings", compositeId(mapping.provider, mapping.provider_match_id), mapping),
     };
+    this.providerReconcileTodos = {
+      findPending: async (limit, offset = 0) => this.where<ProviderReconcileTodo>("provider_reconcile_todos", { status: "pending" }, { order_by: "kickoff_at", direction: "asc", limit, offset }),
+      upsert: async (todo) => {
+        const filter = { match_id: todo.match_id, source_id: todo.source_id, target_result_version: todo.target_result_version };
+        if (await this.one<ProviderReconcileTodo>("provider_reconcile_todos", filter)) return;
+        try {
+          await this.add("provider_reconcile_todos", todo.todo_id, todo);
+        } catch (error) {
+          if (!(error instanceof UniqueConstraintError) || !await this.one<ProviderReconcileTodo>("provider_reconcile_todos", filter)) throw error;
+        }
+      },
+      markDone: async (todoId, now) => this.db.transaction(async (txDb) => {
+        const repo = new CloudBaseAppRepository(this.config, txDb);
+        const todo = await repo.byId<ProviderReconcileTodo>("provider_reconcile_todos", todoId);
+        if (!todo) throw new DocumentNotFoundError("provider_reconcile_todos", todoId);
+        await repo.update("provider_reconcile_todos", todoId, { ...todo, status: "done", completed_at: now, updated_at: now });
+      }),
+      recordFailure: async (todoId, errorCode, now) => this.db.transaction(async (txDb) => {
+        const repo = new CloudBaseAppRepository(this.config, txDb);
+        const todo = await repo.byId<ProviderReconcileTodo>("provider_reconcile_todos", todoId);
+        if (!todo) throw new DocumentNotFoundError("provider_reconcile_todos", todoId);
+        await repo.update("provider_reconcile_todos", todoId, { ...todo, attempts: todo.attempts + 1, last_error_code: errorCode, last_attempt_at: now, updated_at: now });
+      }),
+    };
     this.providerSnapshots = {
       findByEntity: async (entityType, entityId) => this.where<ProviderSnapshot>("provider_snapshots", { entity_type: entityType, entity_id: entityId }),
       findLatestSuccessByEntity: async (entityType, entityId) => {
@@ -321,6 +348,19 @@ export class CloudBaseAppRepository implements AppRepository {
           .map((match) => match.match_id))];
       },
       findBySeason: async (seasonId) => this.where<Match>("matches", { season_id: seasonId }),
+      findFinishedSettledOnDay: async (day) => {
+        const start = new Date(`${day}T00:00:00.000Z`);
+        const end = new Date(start.getTime() + 86_400_000 - 1);
+        const filter: Record<string, unknown> = { match_status: MatchStatus.Finished, settlement_status: SettlementStatus.Settled };
+        const lower = this.db.gteFilter?.("kickoff_at", start);
+        const upper = this.db.lteFilter?.("kickoff_at", end);
+        if (lower) Object.assign(filter, lower);
+        if (upper) {
+          const existing = filter.kickoff_at as { and?: (other: unknown) => unknown } | undefined;
+          filter.kickoff_at = existing === undefined ? upper.kickoff_at : typeof existing.and === "function" ? existing.and(upper.kickoff_at) : { ...existing, ...upper.kickoff_at as object };
+        }
+        return (await this.where<Match>("matches", filter)).filter((match) => match.superseded_by == null && match.kickoff_at.toISOString().slice(0, 10) === day);
+      },
       findByLeagueSeasonRound: async (leagueId, seasonId, roundId) => this.where<Match>("matches", { league_id: leagueId, season_id: seasonId, round_id: roundId }),
       findLive: async () => (await this.where<Match>("matches", { match_status: "live" }))
         .filter((match) => match.superseded_by == null),

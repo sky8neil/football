@@ -66,6 +66,7 @@ import type {
   MatchResult,
   Prediction,
   ProviderSnapshot,
+  ProviderReconcileTodo,
   RankingEntry,
   SettlementDoc,
   SettlementItem,
@@ -265,6 +266,7 @@ export interface MatchRepository {
   findById(matchId: string): Promise<Match | null>;
   findIdsByCanonicalMatchId(canonicalMatchId: string): Promise<string[]>;
   findBySeason(seasonId: string): Promise<Match[]>;
+  findFinishedSettledOnDay(day: string): Promise<Match[]>;
   findByLeagueSeasonRound(
     leagueId: string,
     seasonId: string,
@@ -438,6 +440,7 @@ export interface LevelHistoryRepository {
 }
 
 export interface UnitOfWork {
+  providerReconcileTodos?: ProviderReconcileTodoRepository;
   users: UserRepository;
   deletedOpenidMappings: DeletedOpenidMappingRepository;
   /** Provider 同步适配器未实现时由应用层 Fail Closed。 */
@@ -477,12 +480,20 @@ export interface UnitOfWork {
   savepoint<T>(fn: (tx: UnitOfWork) => Promise<T>): Promise<T>;
 }
 
+export interface ProviderReconcileTodoRepository {
+  findPending(limit: number, offset?: number): Promise<ProviderReconcileTodo[]>;
+  upsert(todo: ProviderReconcileTodo): Promise<void>;
+  markDone(todoId: string, now: Date): Promise<void>;
+  recordFailure(todoId: string, errorCode: string, now: Date): Promise<void>;
+}
+
 export interface AppRepository extends UnitOfWork {
   jobLocks: JobLockRepository;
   withTransaction<T>(fn: (tx: UnitOfWork) => Promise<T>): Promise<T>;
 }
 
 interface InMemoryStore {
+  providerReconcileTodosById: Map<string, ProviderReconcileTodo>;
   adminsByOpenid: Map<string, Admin>;
   adminsById: Map<string, Admin>;
   adminAuditLogsById: Map<string, AdminAuditLog>;
@@ -519,6 +530,7 @@ interface InMemoryStore {
 
 function createStore(): InMemoryStore {
   return {
+    providerReconcileTodosById: new Map(),
     adminsByOpenid: new Map(),
     adminsById: new Map(),
     adminAuditLogsById: new Map(),
@@ -632,6 +644,28 @@ export class InMemoryRepository implements AppRepository {
     }
   }
 
+  get providerReconcileTodos(): ProviderReconcileTodoRepository {
+    const store = this.store.providerReconcileTodosById;
+    const change = (todoId: string, update: (todo: ProviderReconcileTodo) => ProviderReconcileTodo) => {
+      const old = store.get(todoId);
+      if (!old) throw new DocumentNotFoundError("provider_reconcile_todos", todoId);
+      store.set(todoId, update(old));
+      this.logUndo(() => { store.set(todoId, old); });
+    };
+    return {
+      findPending: async (limit, offset = 0) => [...store.values()].filter((todo) => todo.status === "pending")
+        .sort((left, right) => left.kickoff_at.getTime() - right.kickoff_at.getTime()).slice(offset, offset + limit),
+      upsert: async (todo) => {
+        if ([...store.values()].some((row) => row.match_id === todo.match_id && row.source_id === todo.source_id && row.target_result_version === todo.target_result_version)) return;
+        if (store.has(todo.todo_id)) throw new UniqueConstraintError("provider_reconcile_todos", "pk_todo", { todo_id: todo.todo_id });
+        store.set(todo.todo_id, todo);
+        this.logUndo(() => { store.delete(todo.todo_id); });
+      },
+      markDone: async (todoId, now) => change(todoId, (todo) => ({ ...todo, status: "done", completed_at: now, updated_at: now })),
+      recordFailure: async (todoId, errorCode, now) => change(todoId, (todo) => ({ ...todo, attempts: todo.attempts + 1, last_error_code: errorCode, last_attempt_at: now, updated_at: now })),
+    };
+  }
+
   get users(): UserRepository {
     const self = this;
     return {
@@ -742,6 +776,7 @@ export class InMemoryRepository implements AppRepository {
           .filter((match) => (match.canonical_match_id ?? match.match_id) === canonicalMatchId)
           .map((match) => match.match_id),
       findBySeason: (seasonId) => self.findMatchesBySeason(seasonId),
+      findFinishedSettledOnDay: async (day) => [...self.store.matchesById.values()].filter((match) => match.match_status === MatchStatus.Finished && match.settlement_status === "settled" && match.superseded_by == null && match.kickoff_at.toISOString().slice(0, 10) === day),
       findByLeagueSeasonRound: (leagueId, seasonId, roundId) =>
         self.findMatchesByLeagueSeasonRound(leagueId, seasonId, roundId),
       findLive: () => self.findLiveMatches(),

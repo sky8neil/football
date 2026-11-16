@@ -33,6 +33,7 @@ export async function ensureCrossSourceMatchMapping(
   now: Date,
   candidateMatchIds?: ReadonlySet<string>,
   providerLeagueRefs?: ProviderLeagueRefs,
+  seasonId?: string,
 ): Promise<{ match_id: string | null; reason: "mapped" | "unlinked" | "ambiguous" | "not_secondary" }> {
   const provider = fixture.provider as Provider | undefined;
   if (!provider || !CROSS_SOURCE_PROVIDERS.has(provider)) return { match_id: null, reason: "not_secondary" };
@@ -53,7 +54,7 @@ export async function ensureCrossSourceMatchMapping(
     await recordUnlinked(repo, provider, fixture, now, "team_mapping_missing");
     return { match_id: null, reason: "unlinked" };
   }
-  const candidates = (await repo.matches.findBySeason(activeLeagueSeason(supportedLeague, now).season_id)).filter((match) => {
+  const candidates = (await repo.matches.findBySeason(seasonId ?? activeLeagueSeason(supportedLeague, now).season_id)).filter((match) => {
     if (match.superseded_by != null) return false;
     if (match.league_id !== supportedLeague.league_id || match.home_team_id !== home.team_id || match.away_team_id !== away.team_id) return false;
     if (candidateMatchIds && !candidateMatchIds.has(match.match_id)) return false;

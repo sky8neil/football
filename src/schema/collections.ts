@@ -71,6 +71,27 @@ export const COLLECTION_DEFINITIONS: readonly CollectionDef[] = [
     note: "career_* 为可重建缓存；事实来源是 settlements / settlement_items（0.5）",
   },
   {
+    collection: "provider_reconcile_todos",
+    fields: {
+      todo_id: { type: "string", required: true, immutable: true },
+      match_id: { type: "string", required: true },
+      canonical_match_id: { type: "string", required: true },
+      league_id: { type: "string", required: true },
+      season_id: { type: "string", required: true },
+      source_id: { type: "string", required: true },
+      target_result_version: { type: "int", required: true },
+      kickoff_at: { type: "date", required: true },
+      status: { type: "string", required: true, enum: ["pending", "done"] },
+      attempts: { type: "int", required: true, min: 0 },
+      last_error_code: { type: "string", required: true, nullable: true },
+      last_attempt_at: { type: "date", required: true, nullable: true },
+      completed_at: { type: "date", required: true, nullable: true },
+      created_at: { type: "date", required: true, immutable: true },
+      updated_at: { type: "date", required: true },
+      schema_version: { type: "int", required: true, default: 1 },
+    },
+  },
+  {
     collection: "user_season_stats",
     fields: {
       user_id: { type: "string", required: true, note: "UUID" },

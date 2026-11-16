@@ -75,6 +75,17 @@ describe("ProviderRegistry", () => {
     expect(acquire).toHaveBeenNthCalledWith(2, "of", SyncJobType.ProviderReconcile, now, expect.any(String), expect.any(String));
   });
 
+  it("labels historical reconcile observations with their requested season", async () => {
+    const config = loadProviderSources({ FOOTBALL_PROVIDER_SOURCES: "of", FOOTBALL_PROVIDER_KEY_OF: "test-key" });
+    const fetchImpl: typeof fetch = async () => new Response(JSON.stringify({
+      data: [{ id: "old", competitionId: "comp_premier_league_eng", kickoffAt: "2024-10-01T12:00:00Z", status: "finished", homeTeam: { id: "h" }, awayTeam: { id: "a" }, score: { home: 1, away: 0 } }],
+      meta: { pagination: { next_cursor: null } },
+    }), { status: 200 });
+    const client = new ProviderRegistry({ config, fetchImpl, minimumGapMs: 0 }).asClient();
+    const fixtures = await client.getFixturesFromSource("of", { leagueId: "39", season: "2024", dateFrom: "2024-10-01", dateTo: "2024-10-01", jobType: SyncJobType.ProviderReconcile, serverNow: new Date("2026-10-01T12:00:00Z") });
+    expect(fixtures[0]?.league.season).toBe("2024/25");
+  });
+
   it("routes each league to its own adapter and authentication key", async () => {
     const config = loadProviderSources({
       FOOTBALL_PROVIDER_SOURCES: "fd,bsd",
@@ -494,7 +505,7 @@ describe("ProviderRegistry", () => {
     expect(requestCount).toBe(2);
   });
 
-  it("calls the result secondary adapter once per requested secondary date", async () => {
+  it("calls the result secondary adapter once per requested date", async () => {
     const adapterCall = vi.spyOn(OpenFootAdapter.prototype, "fetchFixturesByDateRange");
     const { registry, requests } = createResultComparisonRegistry();
     const secondaryDates = ["2026-10-10", "2026-10-12"];
@@ -504,7 +515,6 @@ describe("ProviderRegistry", () => {
       season: "2026",
       dateFrom: "2026-10-10",
       dateTo: "2026-10-12",
-      secondaryDates,
       jobType: SyncJobType.PostFinishVerify,
       serverNow: new Date("2026-10-13T12:00:00.000Z"),
     });
@@ -524,25 +534,7 @@ describe("ProviderRegistry", () => {
       .toEqual(secondaryDates);
   });
 
-  it("does not call a result secondary adapter for an empty secondary date list", async () => {
-    const adapterCall = vi.spyOn(OpenFootAdapter.prototype, "fetchFixturesByDateRange");
-    const { registry, requests } = createResultComparisonRegistry();
-
-    await registry.asClient().getFixtures({
-      leagueId: "39",
-      season: "2026",
-      dateFrom: "2026-10-10",
-      dateTo: "2026-10-12",
-      secondaryDates: [],
-      jobType: SyncJobType.PostFinishVerify,
-      serverNow: new Date("2026-10-13T12:00:00.000Z"),
-    });
-
-    expect(adapterCall).not.toHaveBeenCalled();
-    expect(requests.filter((url) => url.hostname === "openfootapi.com")).toHaveLength(0);
-  });
-
-  it("keeps a single result secondary range call when secondary dates are undefined", async () => {
+  it("keeps a single result secondary range call per range query", async () => {
     const adapterCall = vi.spyOn(OpenFootAdapter.prototype, "fetchFixturesByDateRange");
     const { registry, requests } = createResultComparisonRegistry();
 

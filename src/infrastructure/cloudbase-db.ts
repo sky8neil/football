@@ -74,6 +74,7 @@ export const COLLECTION_ALIASES: Readonly<Record<string, string>> = {
   team_provider_mappings: "team_src_map",
   match_provider_mappings: "match_src_map",
   provider_snapshots: "provider_snaps",
+  provider_reconcile_todos: "reconcile_todos",
   provider_key_state: "provider_keys",
   provider_league_state: "provider_leagues",
   deleted_openid_mappings: "deleted_openids",
