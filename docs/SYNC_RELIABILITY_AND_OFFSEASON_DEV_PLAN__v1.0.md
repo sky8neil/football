@@ -1,5 +1,7 @@
 # 同步可靠性、换季机制与休赛期体验开发计划 v1.0
 
+> **开发执行约束（优先于本文其他表述）**：只关心功能性问题；忽略安全性、防御性问题；不进行过度开发；不尝试做未经授权的测试工作。
+
 > 依据需求文档：[SYNC_RELIABILITY_AND_OFFSEASON_REQUIREMENTS__v1.0.md](./SYNC_RELIABILITY_AND_OFFSEASON_REQUIREMENTS__v1.0.md)
 > 关联专题合同：[个人本联赛小结：后端与前端开发计划 v1.0](./PERSONAL_LEAGUE_SUMMARY_DEV_PLAN__v1.0.md)
 > 关联基线约束：[Provider 同步完整性与多源接线优化开发文档 v1.0](./PROVIDER_SYNC_RELIABILITY_DEV_PLAN__v1.0.md)
