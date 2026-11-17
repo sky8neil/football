@@ -35,15 +35,24 @@
    - 规则：
      - 同步入库阶段即确定比赛的唯一逻辑身份（写入 `canonical_match_id` 作为统计分组键），并在存在被取代旧记录时由旧记录通过 `superseded_by` 指向当前有效比赛的 `match_id`。
      - 当前有效记录的 `canonical_match_id` 可以等于自身的 `match_id`，也可以是独立分组 ID；`superseded_by` 必须指向同一 `canonical_match_id` 下、自身未被取代（`superseded_by == null`）的记录，**禁止链式或环状指向**。
-     - 归并依据：相同外部数据源比赛 ID，或同一联赛、同一竞技赛季、同一轮次、相同主客队的改期/重赛记录在确认关联后归并到同一逻辑比赛。
+     - 归并依据：相同外部数据源比赛 ID，或同一联赛、同一竞技赛季、同一轮次、相同主客队的改期记录在确认关联后归并到同一逻辑比赛。重赛须确认沿用同一次预测资格，不能仅因主客队相同就自动归并。
+     - 逻辑身份一旦确定即保持稳定，更换来源比赛 ID、开球时间或有效记录不重新分配 `canonical_match_id`。当前双循环联赛可按 `(league_id, season_id, home_team_id, away_team_id)` 查找候选，再结合轮次、来源映射与改期依据确认；此候选条件不是所有赛制通用的自动合并规则。
      - **保留不删除**：被取代的历史记录（如改期前的 `postponed` 记录）保留在库中，不物理删除，也不在归并动作中擅自改写既有预测或结算事实。
-2. **退出同步候选集**：
+2. **赛程发现与已有来源映射的处理闭环**：
+   - 来源比赛 ID 已有映射：解析到现有比赛；若该记录已被取代，沿 `superseded_by` 解析到当前有效记录后处理，避免更新继续落在历史旧记录上。保留来源映射与历史事实的可追溯关系。
+   - 来源比赛 ID 新增：先按目标竞技赛季查找逻辑比赛候选；唯一确认属于同一场时关联已有逻辑身份，按改期规则更新赛程或建立取代关系，不因新来源 ID 直接新增独立逻辑比赛或预测资格。没有对应比赛时才新建；多个候选或证据冲突时保留待核对记录，不自动合并。
+   - 有预测的归并须验证原预测可通过正常结算链路使用有效比赛赛果；唯一预测迁移、重复预测复核均按个人小结计划 §3.2 执行。
+3. **退出同步候选集**：
    - 所有同步、恢复与核对候选仅按 `superseded_by != null` 排除被取代记录；`canonical_match_id` 仅作分组键，不作排除条件。
-3. **存量中超 2026 改期记录处理**：
+4. **存量中超 2026 改期记录处理**：
    - 核查中超 2026 现有 240 场 `finished/settled` 比赛之外的 6 条同联赛、同轮次、同主客队但 `match_id` 不同的 `postponed` 历史记录：
-     - 确认其与对应已完场比赛的关联关系后写入 `superseded_by` / `canonical_match_id`；
+     - 逐组核对来源比赛 ID、开球时间、轮次、来源映射和赛果关联，确认原赛程及改期后有效记录；不能仅凭 `finished` 状态自动认定有效记录。确认关联后写入 `superseded_by` / `canonical_match_id`；
      - 在 S6 上线前核查这 6 条旧记录上是否存在用户预测记录，并按 [个人本联赛小结开发计划 §3](./PERSONAL_LEAGUE_SUMMARY_DEV_PLAN__v1.0.md#3-统计口径) 的确定口径处理。
-4. **逻辑比赛只能预测一次**：第一批同步接入预测提交链路与两种部署仓储，以 `(user_id, canonical_match_id)` 约束唯一预测；改期、更换 `match_id` 或新增取代记录不重新开放预测。提交时解析到当前逻辑身份，并通过事务/唯一约束或部署等价的原子机制防止旧、新记录并发产生两份预测；同一幂等请求重放沿用原响应，新的重复提交按现有重复预测约定拒绝。归并发现存量重复预测时先复核处置，禁止自动挑选有利结果或叠加结算；具体统计口径见个人小结计划 §3.2。
+5. **旧数据读取兼容与物理回填**：
+   - 现有 `document-codec.ts` 对比赛缺失的 `canonical_match_id` 回落到 `match_id`、缺失的 `superseded_by` 补 `null`；预测缺失的 `canonical_match_id` 同样回落到 `match_id`。PostgreSQL 与 CloudBase 读取均保留此兼容，不把缺字段误判为整季合并成一场。
+   - 物理回填用于统一持久数据与索引查询，仅补缺失字段，保留已有逻辑身份及取代关系；预测身份以关联比赛的已确认逻辑身份为准，不对已归并比赛机械回填为旧 `match_id`。迁移预览与正式执行见 S6。
+   - 缺字段回填与身份归并分开列示：回填不覆盖已有字段；已确认归并如需统一两条记录原有的不同身份，必须在预览中明确旧值、新值及受影响预测，经确认后一次性统一，后续来源变更继续沿用该身份。
+6. **逻辑比赛只能预测一次**：第一批同步接入预测提交链路与两种部署仓储，以 `(user_id, canonical_match_id)` 约束唯一预测；改期、更换 `match_id` 或新增取代记录不重新开放预测。提交时解析到当前逻辑身份，并通过事务/唯一约束或部署等价的原子机制防止旧、新记录并发产生两份预测；同一幂等请求重放沿用原响应，新的重复提交按现有重复预测约定拒绝。归并发现存量重复预测时先复核处置，禁止自动挑选有利结果或叠加结算；具体统计口径见个人小结计划 §3.2。
 
 ---
 
@@ -99,13 +108,15 @@
 1. **数据源赛季与竞技赛季两层分离（长期机制，不硬编码两年）**：
    - 文件：[config.ts](file:///home/football/src/domain/config.ts)、[fixture-mapper.ts](file:///home/football/src/provider/fixture-mapper.ts)、[fivedollar-adapter.ts](file:///home/football/src/provider/fivedollar-adapter.ts)（及竞技赛季配置/持久化模块）
    - 规则：
-     - **第一层：数据源赛季（Provider Season）**：`activeLeagueSeason(league, now)` 等日历推导逻辑**仅用于决定向外部数据源请求哪一个赛季的赛程/赛果**，不代表竞技赛季已收官，也不决定小程序页面或个人小结展示哪一个赛季。
+     - **第一层：数据源赛季（Provider Season）**：每次同步任务明确携带目标竞技赛季 `season_id`，再生成对应渠道的 `provider_season_refs` / `season_ref`。`activeLeagueSeason(league, now)` 只为未显式指定赛季的日常任务选择默认目标，不代表收官或页面展示季；历史对账、超时恢复与跨年补赛使用各自所属的目标赛季，不能被执行当天的默认赛季覆盖。
      - **换季规则**：内部 `season_id` 按联赛赛制规则（自然年 `YYYY` / 跨年 `YYYY_YYYY`）自动推进生成，并可由外部配置或数据库赛季记录覆盖；同时复用 [PROVIDER_SYNC_RELIABILITY_DEV_PLAN PS08](./PROVIDER_SYNC_RELIABILITY_DEV_PLAN__v1.0.md#ps08openfoot-赛季表达统一) 的双层表达，将**内部 `season_id`** 与 **各数据源查询赛季引用（`provider_season_refs`）** 明确分离。
      - **第二层：竞技赛季（Competitive Season）**：比赛所属的竞技赛季**以数据源返回所属赛季为准**，彻底移除入库与同步链路上用开球时间边界（`isKickoffInLeagueSeason`）反推或校验赛季归属的逻辑：
        - 修改 [fixture-mapper.ts](file:///home/football/src/provider/fixture-mapper.ts)（针对 `5dollar` 的 `isKickoffInLeagueSeason` 校验）：当数据源明确提供赛季字段且匹配请求赛季时直接采信，不再因开球时间落在日历窗口外（如 12 月延期到次年 1 月）而标记 `league.season` 异常导致整条比赛入库失败；
        - 修改 [fivedollar-adapter.ts](file:///home/football/src/provider/fivedollar-adapter.ts)：当数据源未提供赛季字段时，按调用该接口时携带的数据源查询赛季参数归属，不再调用 `isKickoffInLeagueSeason` 过滤返回空串；
        - 开球时间仅做宽松合理性检查（例如以目标赛季起止前后各留 6 个月缓冲），超出仅记录诊断告警，不拒绝入库；将 `isKickoffInLeagueSeason` 标记为弃用，确认无其他调用后清理。
        - 补充单测：12 月延期到次年 1 月的比赛在 `fixture-mapper` 与 `fivedollar-adapter` 下均能正常入库并归属原赛季。
+     - **S3c：目标赛季贯穿请求、映射、发现与入库**：修改 `sources.ts` 的静态赛季取值，并同步修改赛程发现的 `buildMatch()` 等入库路径；来源明确返回赛季且与目标相符时采信，缺少赛季字段时使用本次请求的目标竞技赛季，明确不符时走现有赛季冲突诊断，不静默改归当前季。不得只改请求参数，入库却继续使用 `activeLeagueSeason(league, serverNow)`。
+     - 验证：新季日常任务自动使用新季渠道引用；换季后旧季对账/恢复仍请求旧季；旧季补赛首次发现时仍写入旧季，球队映射、逻辑身份候选和 `season_teams` 也使用同一目标季；12 月延期到次年 1 月不换归属。不新增通用赛季调度框架。
      - 竞技赛季的持久化记录（`league_seasons`）、收官核验与状态流转由 [个人本联赛小结开发计划 §4](./PERSONAL_LEAGUE_SUMMARY_DEV_PLAN__v1.0.md#4-联赛结束判定与赛季选择) 统一定义，在第二批落地。
 2. **参赛球队名单持久化与升班马未映射明确告警（R5）**：
    - 文件：[provider-cross-source.ts](file:///home/football/src/application/provider-cross-source.ts)、`src/scripts/`
@@ -173,10 +184,14 @@
 ### S6：上线前门禁配置、存量数据核验与分批切换（R1, R8）
 
 1. **门禁配置与运行边界（R8）**：
-   - `RANKING_FIRST_PERIOD_KEY`（[config.ts](file:///home/football/src/domain/config.ts)）：第一批上线前替换占位值 `2026-W31`，按实际正式上线计分周配置。
+   - **`RANKING_FIRST_PERIOD_KEY` 最后单独决定**：当前不改占位值，不按执行当天周次自动推定，不与比赛身份归并、换季、小结开发或迁移绑定为同一步骤。全部其他工作完成后，再由用户按正式计分口径确定并单独配置、验收。
    - `ops/vps/football-jobs.timer`：保持每 15 分钟一次；如需提频，另行重算各渠道预算后变更。基线见 [Provider 计划 PS10](./PROVIDER_SYNC_RELIABILITY_DEV_PLAN__v1.0.md#ps10timer-模板与运行边界)。
 2. **存量数据核验与身份关联（R1）**：
-   - 按 S0 核验中超 2026 的 240 场 `finished/settled` 与 6 条旧改期记录，完成身份关联及必要的预测处置，保留历史记录和正常结算事实。
+   - **先完成 S0 持续归并链路与 S3c，再迁移存量**，避免只清理现有 6 组、后续同步再次产生重复。
+   - 提供一次性迁移脚本，默认 `--dry-run` 只读：按目标部署/库生成缺字段统计及逐组变更清单，列明旧记录、有效记录、逻辑身份、判定依据与受影响来源映射、赛果、预测/结算关联；候选不明确或有重复预测时单列待复核，不静默处理。预览数量以当次查询为准，不硬编码 1998 行或假定所有部署预测均为 0。
+   - 预览确认后才正式执行：先备份目标数据，在部署支持的事务或等价原子机制中完成缺字段回填与已确认归并，不删除历史、不覆盖已确认的逻辑关联；存量身份冲突仅按 S0 已确认归并清单统一，不擅自改写正常结算事实；保留迁移前后清单及按清单回滚步骤。重复执行应无新增变更；执行时重新核对预览依据，变化项重新预览。
+   - 按 S0 逐组确认中超 2026 的 240 场 `finished/settled` 与 6 条旧改期记录，完成身份关联及必要的预测处置；各部署分别检查预测是否存在，不能将 `football_dev` 的查询结果外推到其他账本。
+   - 迁移后先核验有效逻辑比赛集合与完整性，再由正常赛季维护任务决定能否收官，不手工强制设为 `completed`；检查旧来源更新到达有效记录、改期不重开预测、原预测正常结算、重复执行幂等。
    - 执行受控 `node dist/jobs/tick.js` 验证：超时异常滞留场次退出 `live_match` 并恢复健康状态，`post_finish_verify` 与 `provider_reconcile` 按新预算隔离规则正常运行。
 3. **分批全量构建、测试与切换**：
    - **第一批（S0 + S1 + S2 + S3）**：完成全部相关单测、全量 `tsc --noEmit` / `tsconfig.build.json` / `tsconfig.cloudfunction.json` 与 `vitest run`；在 VPS 完成身份归并验证与受控 `tick.js` 后，开启/重启 `football-jobs.timer` 与 `football-gateway.service` / `football-gateway-bridge.service`。
