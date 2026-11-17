@@ -9,9 +9,10 @@ import { loadActiveWindowFixtures } from "./provider-window-loader.js";
 const NOW = new Date("2026-10-11T12:00:00.000Z");
 const LEAGUE = SUPPORTED_LEAGUES[0]!;
 
-function mappedMatch(matchId: string, leagueId = LEAGUE.league_id): Match {
+function mappedMatch(matchId: string, leagueId: string = LEAGUE.league_id): Match {
   return {
     league_id: leagueId,
+    season_id: leagueId === "chinese_super_league" ? "2026" : "2026_2027",
     match_id: matchId,
     kickoff_at: new Date(NOW.getTime() - 60 * 60_000),
     match_status: MatchStatus.Scheduled,
@@ -91,7 +92,7 @@ describe("loadActiveWindowFixtures batch mapping (RP11)", () => {
     expect(findByProviderAndExternalIds.mock.calls[0]?.[0]).toBe(Provider.ApiFootball);
     expect(findByProviderAndExternalIds.mock.calls[0]?.[1]).toEqual(["ext-1", "ext-2", "ext-3", "ext-4", "ext-5"]);
     expect(findByProviderAndExternalId).toHaveBeenCalledTimes(0);
-    expect(result).toEqual(fixtures.map((item) => ({ fixture: item, payload: { fixture: item } })));
+    expect(result).toEqual(fixtures.map((item) => ({ fixture: item, payload: { fixture: item }, seasonId: "2026_2027" })));
   });
 
   it("批量查询与逐条查询产出的 payload 数组相等", async () => {

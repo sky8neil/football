@@ -41,7 +41,7 @@ function mapMatch(value: unknown, league: ProviderAdapterLeague): ApiFootballFix
     },
     league: {
       id: asText(row.competitionId) ?? league.source_league_ref,
-      season: league.season_ref,
+      season: asIdentifier(row.season) ?? league.season_ref,
       round: round ?? "",
     },
     teams: {
@@ -75,7 +75,7 @@ export class OpenFootAdapter implements ProviderAdapter {
 
   async fetchSeasonFixtures(league: ProviderAdapterLeague, options?: ProviderAdapterCallOptions): Promise<readonly ApiFootballFixture[]> {
     const registered = findSupportedLeagueById(league.league_id);
-    const season = registered === undefined
+    const season = registered === undefined || league.target_season_id !== undefined
       ? league.season_ref
       : activeProviderSeasonRef(registered, "of", options?.serverNow ?? new Date());
     return this.fetchMatches(league, { competition: league.source_league_ref, season }, options);
@@ -89,7 +89,7 @@ export class OpenFootAdapter implements ProviderAdapter {
   ): Promise<readonly ApiFootballFixture[]> {
     const output: ApiFootballFixture[] = [];
     for (const date of dayStrings(dateFrom, dateTo)) {
-      output.push(...await this.fetchMatches(league, { competition: league.source_league_ref, date }, options));
+      output.push(...await this.fetchMatches(league, { competition: league.source_league_ref, date, ...(league.target_season_id === undefined ? {} : { season: league.season_ref }) }, options));
     }
     return output;
   }

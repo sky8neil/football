@@ -138,7 +138,7 @@ function league(
   return {
     league_id,
     source_league_ref: supported?.provider_refs[sourceId] ?? "",
-    season_ref: supported?.source_season_ref ?? supported?.api_football_season ?? "2026",
+    season_ref: supported?.source_season_ref ?? supported?.api_football_season ?? "",
     roles: { schedule, kickoff, live, result, reconcile },
   };
 }

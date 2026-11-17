@@ -1,4 +1,4 @@
-import { activeLeagueSeason, SUPPORTED_LEAGUES, findSupportedLeagueById, type ProviderLeagueRefs } from "../domain/config.js";
+import { SUPPORTED_LEAGUES, findSupportedLeagueById, type ProviderLeagueRefs } from "../domain/config.js";
 import type { SyncJobType } from "../domain/enums.js";
 import type { MatchProviderMapping } from "../domain/types.js";
 import type { AppRepository } from "../infrastructure/repositories.js";
@@ -58,6 +58,7 @@ export async function fixturesToItems(
   ids: Set<string>,
   serverNow: Date,
   providerLeagueRefs?: ProviderLeagueRefs,
+  seasonId?: string,
 ): Promise<ProviderFixtureBatchItem[]> {
   const mappings = repo.matchProviderMappings;
   if (!mappings) return [];
@@ -66,7 +67,7 @@ export async function fixturesToItems(
   for (const fixture of fixtures) {
     const fixtureId = fixture.fixture?.id;
     if (fixtureId === undefined || String(fixtureId).length === 0) {
-      result.push({ fixture, payload: { fixture } });
+      result.push({ fixture, payload: { fixture }, ...(seasonId === undefined ? {} : { seasonId }) });
       continue;
     }
     const provider = (fixture.provider ?? "api_football") as Provider;
@@ -74,14 +75,14 @@ export async function fixturesToItems(
       ? await mappings.findByProviderAndExternalId(provider, String(fixtureId))
       : mappingByExternalId.get(String(fixtureId)) ?? null;
     if (mapping && ids.has(mapping.match_id)) {
-      result.push({ fixture, payload: { fixture } });
+      result.push({ fixture, payload: { fixture }, ...(seasonId === undefined ? {} : { seasonId }) });
       continue;
     }
     if (provider !== "5dollar" && provider !== "openfoot" && provider !== "sportapi") continue;
-    const normalized = normalizeFixture(fixture, providerLeagueRefs, serverNow);
+    const normalized = normalizeFixture(fixture, providerLeagueRefs, serverNow, seasonId);
     if (normalized.entityFailed) continue;
-    const crossMatch = await ensureCrossSourceMatchMapping(repo, normalized.fixture, serverNow, ids, providerLeagueRefs);
-    if (crossMatch.match_id !== null && ids.has(crossMatch.match_id)) result.push({ fixture, payload: { fixture } });
+    const crossMatch = await ensureCrossSourceMatchMapping(repo, normalized.fixture, serverNow, ids, providerLeagueRefs, seasonId);
+    if (crossMatch.match_id !== null && ids.has(crossMatch.match_id)) result.push({ fixture, payload: { fixture }, ...(seasonId === undefined ? {} : { seasonId }) });
   }
   return result;
 }
@@ -101,14 +102,10 @@ export async function loadActiveWindowFixtures(
   const mappings = repo.matchProviderMappings;
   if (mappings === undefined) return [];
 
-  const candidateMatchIds = new Map<string, Set<string>>();
   const candidateMatchesByLeague = new Map<string, typeof matches>();
   for (const match of matches) {
     const league = findSupportedLeagueById(match.league_id);
     if (league === undefined) continue;
-    const ids = candidateMatchIds.get(league.league_id) ?? new Set<string>();
-    ids.add(match.match_id);
-    candidateMatchIds.set(league.league_id, ids);
     const leagueMatches = candidateMatchesByLeague.get(league.league_id) ?? [];
     leagueMatches.push(match);
     candidateMatchesByLeague.set(league.league_id, leagueMatches);
@@ -121,26 +118,29 @@ export async function loadActiveWindowFixtures(
   for (const leagueId of orderedIds) {
     const league = SUPPORTED_LEAGUES.find((row) => row.league_id === leagueId);
     if (!league) continue;
-    const ids = candidateMatchIds.get(league.league_id);
-    if (ids === undefined || ids.size === 0) continue;
-    const leagueMatches = candidateMatchesByLeague.get(league.league_id) ?? [];
-    const earliestKickoffMs = leagueMatches.reduce(
-      (acc, match) => Math.min(acc, match.kickoff_at.getTime()),
-      leagueMatches[0]!.kickoff_at.getTime(),
-    );
-    const latestKickoffMs = leagueMatches.reduce(
-      (acc, match) => Math.max(acc, match.kickoff_at.getTime()),
-      leagueMatches[0]!.kickoff_at.getTime(),
-    );
-    const fixtures = await client.getFixtures({
-      dateFrom: new Date(earliestKickoffMs).toISOString().slice(0, 10),
-      dateTo: new Date(latestKickoffMs).toISOString().slice(0, 10),
-      leagueId: league.api_football_league_id,
-      season: activeLeagueSeason(league, serverNow).api_football_season,
-      jobType,
-      serverNow,
-    });
-    result.push(...await fixturesToItems(repo, fixtures, ids, serverNow, providerLeagueRefs));
+    const allLeagueMatches = candidateMatchesByLeague.get(league.league_id) ?? [];
+    for (const seasonId of new Set(allLeagueMatches.map((match) => match.season_id))) {
+      const leagueMatches = allLeagueMatches.filter((match) => match.season_id === seasonId);
+      const ids = new Set(leagueMatches.map((match) => match.match_id));
+      const earliestKickoffMs = leagueMatches.reduce(
+        (acc, match) => Math.min(acc, match.kickoff_at.getTime()),
+        leagueMatches[0]!.kickoff_at.getTime(),
+      );
+      const latestKickoffMs = leagueMatches.reduce(
+        (acc, match) => Math.max(acc, match.kickoff_at.getTime()),
+        leagueMatches[0]!.kickoff_at.getTime(),
+      );
+      const fixtures = await client.getFixtures({
+        dateFrom: new Date(earliestKickoffMs).toISOString().slice(0, 10),
+        dateTo: new Date(latestKickoffMs).toISOString().slice(0, 10),
+        leagueId: league.api_football_league_id,
+        season: seasonId.split("_")[0]!,
+        seasonId,
+        jobType,
+        serverNow,
+      });
+      result.push(...await fixturesToItems(repo, fixtures, ids, serverNow, providerLeagueRefs, seasonId));
+    }
   }
   return result;
 }
@@ -168,25 +168,28 @@ export async function* loadPostFinishBatches(
         .filter((match) => match.league_id === leagueId && match.superseded_by == null &&
           !(match.result_version > 0 && new Set(match.compared_providers ?? []).size >= 2));
       if (matches.length === 0) break;
-      const dates = [...new Set(matches.flatMap((match) => {
-        const date = match.kickoff_at.toISOString().slice(0, 10);
-        return [date, new Date(new Date(`${date}T00:00:00.000Z`).getTime() + DAY_MS).toISOString().slice(0, 10)];
-      }))].sort();
-      const fixtures: ApiFootballFixture[] = [];
-      for (const date of dates) {
-        try {
-          const rows = await client.getFixturesFromSource(source.sourceId, {
-            dateFrom: date, dateTo: date, leagueId: league.api_football_league_id,
-            season: activeLeagueSeason(league, serverNow).api_football_season,
-            jobType: "post_finish_verify", serverNow,
-          });
-          if (source.role === "secondary") secondarySucceeded = true;
-          fixtures.push(...rows.filter((fixture) => fixture.fixture?.status?.short !== "NS"));
-        } catch (error) {
-          client.recordComparisonSkipped?.(source.sourceId, leagueId, error);
+      for (const seasonId of new Set(matches.map((match) => match.season_id))) {
+        const seasonMatches = matches.filter((match) => match.season_id === seasonId);
+        const dates = [...new Set(seasonMatches.flatMap((match) => {
+          const date = match.kickoff_at.toISOString().slice(0, 10);
+          return [date, new Date(new Date(`${date}T00:00:00.000Z`).getTime() + DAY_MS).toISOString().slice(0, 10)];
+        }))].sort();
+        const fixtures: ApiFootballFixture[] = [];
+        for (const date of dates) {
+          try {
+            const rows = await client.getFixturesFromSource(source.sourceId, {
+              dateFrom: date, dateTo: date, leagueId: league.api_football_league_id,
+              season: seasonId.split("_")[0]!, seasonId,
+              jobType: "post_finish_verify", serverNow,
+            });
+            if (source.role === "secondary") secondarySucceeded = true;
+            fixtures.push(...rows.filter((fixture) => fixture.fixture?.status?.short !== "NS"));
+          } catch (error) {
+            client.recordComparisonSkipped?.(source.sourceId, leagueId, error);
+          }
         }
+        yield await fixturesToItems(repo, fixtures, new Set(seasonMatches.map((match) => match.match_id)), serverNow, providerLeagueRefs, seasonId);
       }
-      yield await fixturesToItems(repo, fixtures, new Set(matches.map((match) => match.match_id)), serverNow, providerLeagueRefs);
     }
   }
 }

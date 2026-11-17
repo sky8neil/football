@@ -13,6 +13,7 @@ import {
   findSupportedLeagueByProviderId,
   leagueSeasonBounds,
   seasonStartYear,
+  seasonBounds,
   type ProviderLeagueRefs,
 } from "../domain/config.js";
 import { parseKickoff, KICKOFF_TOLERANCE_MS } from "./kickoff.js";
@@ -116,10 +117,29 @@ function emptyFixture(): NormalizedFixture {
   };
 }
 
+// 显式目标赛季要求起始年相同；来源提供跨年结束年时也必须一致。
+function matchesExplicitTargetSeason(season: string, seasonId: string, actualYear: number | null, expectedYear: number | null): boolean {
+  const explicitSeason = /^(\d{4})[\/_](\d{2}|\d{4})$/.exec(season);
+  const targetEnd = seasonId.match(/^\d{4}_(\d{4})$/)?.[1];
+  const endMatches = explicitSeason === null || (targetEnd !== undefined &&
+    (explicitSeason[2] === targetEnd || explicitSeason[2] === targetEnd.slice(-2)));
+  return Number(explicitSeason?.[1] ?? actualYear) === expectedYear && endMatches;
+}
+
+// 日历口径有当前时间时允许起始年相差一年；否则严格比较静态配置。
+function matchesCalendricSeason(season: string, expectedSeasonRef: string | null, actualYear: number | null, expectedYear: number | null, now?: Date): boolean {
+  return now === undefined
+    ? season === expectedSeasonRef
+    : actualYear !== null && expectedYear !== null
+      ? Math.abs(actualYear - expectedYear) <= 1
+      : season === expectedSeasonRef;
+}
+
 export function normalizeFixture(
   raw: ApiFootballFixture,
   providerLeagueRefs?: ProviderLeagueRefs,
   now?: Date,
+  seasonId?: string,
 ): NormalizeFixtureResult {
   if (!isRecord(raw) || !isRecord(raw.fixture)) {
     return {
@@ -181,31 +201,27 @@ export function normalizeFixture(
     entityFailed = true;
   }
 
-  const seasonValue = raw.league?.season;
+  const seasonValue = seasonId !== undefined && raw.season_inferred === true ? undefined : raw.league?.season;
   const season =
     typeof seasonValue === "string" && seasonValue.length > 0
       ? seasonValue
       : typeof seasonValue === "number" && Number.isInteger(seasonValue)
         ? String(seasonValue)
         : null;
-  const expectedSeasonRef = registeredLeague === undefined
+  const expectedSeasonRef = seasonId !== undefined ? String(seasonStartYear(seasonId) ?? seasonId) : registeredLeague === undefined
     ? null
     : now === undefined
       ? registeredLeague.source_season_ref
       : activeLeagueSeason(registeredLeague, now).source_season_ref;
   const actualYear = season === null ? null : seasonStartYear(season);
   const expectedYear = expectedSeasonRef === null ? null : seasonStartYear(expectedSeasonRef);
-  const matchesExpectedSeason = season !== null && (
-    now === undefined
-      ? season === expectedSeasonRef
-      : actualYear !== null && expectedYear !== null
-        ? Math.abs(actualYear - expectedYear) <= 1
-        : season === expectedSeasonRef
-  );
-  if (season === null) {
+  const matchesExpectedSeason = season !== null && (seasonId !== undefined
+    ? matchesExplicitTargetSeason(season, seasonId, actualYear, expectedYear)
+    : matchesCalendricSeason(season, expectedSeasonRef, actualYear, expectedYear, now));
+  if (season === null && seasonId === undefined) {
     anomalies.push(dataInvalid({ field: "league.season" }));
     entityFailed = true;
-  } else if (registeredLeague !== undefined && !matchesExpectedSeason) {
+  } else if (season !== null && registeredLeague !== undefined && !matchesExpectedSeason) {
     anomalies.push(
       dataInvalid({
         field: "league.season",
@@ -270,7 +286,7 @@ export function normalizeFixture(
   }
 
   if (provider === "5dollar" && registeredLeague !== undefined && kickoff.kickoffAt !== null) {
-    const bounds = now === undefined
+    const bounds = seasonId !== undefined ? seasonBounds(seasonId) : now === undefined
       ? leagueSeasonBounds(registeredLeague)
       : activeLeagueSeasonBounds(registeredLeague, now);
     const bufferMs = 180 * 86_400_000;

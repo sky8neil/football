@@ -8,7 +8,7 @@ const now = new Date("2026-10-12T12:00:00.000Z");
 
 function setup(leagueId = "premier_league") {
   const matches = ["2026-10-10", "2026-10-12"].map((date, index) => ({
-    match_id: `match-${index}`, league_id: leagueId, kickoff_at: new Date(`${date}T10:00:00Z`),
+    match_id: `match-${index}`, league_id: leagueId, season_id: leagueId === "chinese_super_league" ? "2026" : "2026_2027", kickoff_at: new Date(`${date}T10:00:00Z`),
     match_status: MatchStatus.Finished, settlement_status: SettlementStatus.Pending,
     result_version: 1, compared_providers: ["primary"], superseded_by: null,
   } as unknown as Match));

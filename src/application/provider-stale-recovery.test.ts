@@ -19,7 +19,7 @@ async function drain(generator: AsyncGenerator<unknown>): Promise<void> {
 
 function setup(count = 1) {
   let matches = Array.from({ length: count }, (_, index) => ({
-    match_id: `match-${index}`, league_id: index === 1 ? "la_liga" : "premier_league",
+    match_id: `match-${index}`, league_id: index === 1 ? "la_liga" : "premier_league", season_id: "2026_2027",
     kickoff_at: new Date("2026-10-10T23:00:00.000Z"), match_status: MatchStatus.Scheduled,
   } as Match));
   const findActiveWindow = vi.fn(async ({ limit }: { limit: number }) => matches.filter((match) => match.match_status !== MatchStatus.Finished).slice(0, limit));
@@ -35,7 +35,7 @@ describe("stale recovery loader", () => {
   it("主源恢复终态后不请求 of，下一轮没有候选", async () => {
     const context = setup();
     const batches = loadStaleRecoveryBatches(context.repo, context.client, now);
-    expect((await batches.next()).value).toEqual([{ fixture, payload: { fixture } }]);
+    expect((await batches.next()).value).toEqual([{ fixture, payload: { fixture }, seasonId: "2026_2027" }]);
     context.finish();
     await batches.next();
     expect(context.client.getFixturesFromSource).not.toHaveBeenCalled();
@@ -59,7 +59,7 @@ describe("stale recovery loader", () => {
   });
 
   it("单轮只同步最早的十场候选", async () => {
-    const matches = Array.from({ length: 12 }, (_, index) => ({ match_id: `match-${index}`, league_id: "premier_league", kickoff_at: new Date("2026-10-10T23:00:00.000Z") } as Match));
+    const matches = Array.from({ length: 12 }, (_, index) => ({ match_id: `match-${index}`, league_id: "premier_league", season_id: "2026_2027", kickoff_at: new Date("2026-10-10T23:00:00.000Z") } as Match));
     const repo = {
       matches: { findActiveWindow: async ({ limit }: { limit: number }) => matches.slice(0, limit) },
       matchProviderMappings: { findByProviderAndExternalId: async (_provider: string, id: string) => ({ match_id: `match-${id}` }) },
@@ -78,13 +78,16 @@ describe("stale recovery loader", () => {
     expect(context.client.log).toHaveBeenCalledWith(expect.objectContaining({ event: "provider_stale_recovery_exhausted", remaining: 2 }));
   });
 
-  it("同步真实完场结果后退出后续恢复候选", async () => {
+  it.each([
+    { label: "当前赛季", runNow: now, date: "2026-10-10T23:00:00.000Z", seasonId: "2026_2027" },
+    { label: "旧赛季跨年恢复", runNow: new Date("2027-01-02T12:00:00Z"), date: "2026-12-31T23:00:00.000Z", seasonId: "2025_2026" },
+  ])("$label 的请求与入库沿用比赛赛季", async ({ runNow, date, seasonId }) => {
     const repo = new InMemoryRepository();
     const matchId = newUuid();
-    const kickoff = new Date("2026-10-10T23:00:00.000Z");
+    const kickoff = new Date(date);
     const match: Match = {
       schema_version: 1, match_id: matchId, canonical_match_id: matchId, superseded_by: null,
-      league_id: "premier_league", season_id: "2026_2027", round_id: "01",
+      league_id: "premier_league", season_id: seasonId, round_id: "01",
       home_team_id: newUuid(), away_team_id: newUuid(), kickoff_at: kickoff, kickoff_confirmed: true,
       prediction_deadline_at: new Date(kickoff.getTime() - 600_000), prediction_closed_at: null,
       period_anchor_at: null, match_status: MatchStatus.Live, settlement_status: SettlementStatus.Pending,
@@ -98,12 +101,14 @@ describe("stale recovery loader", () => {
     const finalFixture = makeApiFixture({ statusShort: "FT", date: kickoff.toISOString(), timestamp: kickoff.getTime() / 1000 });
     finalFixture.provider = "football_data";
     finalFixture.league.id = "PL";
-    const client = { getFixtures: vi.fn(async (query: ApiFootballFixturesQuery) => query.dateFrom === "2026-10-10" ? [finalFixture] : []), getFixturesFromSource: vi.fn(async () => []) };
+    finalFixture.league.season = seasonId.split("_")[0]!;
+    const client = { getFixtures: vi.fn(async (query: ApiFootballFixturesQuery) => query.dateFrom === date.slice(0, 10) ? [finalFixture] : []), getFixturesFromSource: vi.fn(async () => []) };
     const service = new ProviderStaleRecoveryService(repo, client);
-    const outcome = await service.run(now);
+    const outcome = await service.run(runNow);
     expect(outcome).toMatchObject({ kind: "completed", items_failed: 0 });
-    expect(await repo.matches.findById(matchId)).toMatchObject({ match_status: MatchStatus.Finished });
-    expect(await repo.matches.findActiveWindow({ jobType: "stale_recovery", now: new Date(now.getTime() + 24 * 3600_000), limit: 10 })).toEqual([]);
+    expect(client.getFixtures).toHaveBeenCalledWith(expect.objectContaining({ season: seasonId.split("_")[0], seasonId }));
+    expect(await repo.matches.findById(matchId)).toMatchObject({ match_status: MatchStatus.Finished, season_id: seasonId });
+    expect(await repo.matches.findActiveWindow({ jobType: "stale_recovery", now: new Date(runNow.getTime() + 24 * 3600_000), limit: 10 })).toEqual([]);
     expect(client.getFixturesFromSource).not.toHaveBeenCalled();
   });
 });

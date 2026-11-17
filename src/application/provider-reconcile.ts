@@ -119,6 +119,7 @@ export class ProviderReconcileService {
           dateTo: day,
           leagueId: league.api_football_league_id,
           season,
+          seasonId: first.season_id,
           jobType: SyncJobType.ProviderReconcile,
           serverNow,
         });
@@ -132,7 +133,7 @@ export class ProviderReconcileService {
       const remaining = new Map(group.map((todo) => [todo.todo_id, todo]));
       let mappingFailed = false;
       for (const fixture of fixtures) {
-        const normalized = normalizeFixture(fixture, this.providerLeagueRefs, new Date(`${season}-08-01T00:00:00.000Z`));
+        const normalized = normalizeFixture(fixture, this.providerLeagueRefs, serverNow, first.season_id);
         if (normalized.entityFailed || normalized.fixture.fulltime === null || normalized.fixture.provider !== sourceProvider) continue;
         const mapping = await ensureCrossSourceMatchMapping(
           this.repo,

@@ -204,6 +204,16 @@ describe("fixture normalize mapper（31.3/31.4/31.5）", () => {
     );
   });
 
+  it("显式目标赛季要求起始年及提供的结束年一致", () => {
+    for (const [season, accepted] of [
+      ["2025", true], ["2025/26", true], ["2025_2026", true],
+      ["2025/27", false], ["2026", false], ["unknown", false],
+    ] as const) {
+      const result = normalizeFixture(makeApiFixture({ season }), undefined, undefined, "2025_2026");
+      expect(result.anomalies.some((anomaly) => anomaly.details.field === "league.season"), season).toBe(!accepted);
+    }
+  });
+
   it("按传入 now 接受当前或相邻赛季，并拒绝更远赛季", () => {
     const now = new Date("2027-07-02T00:00:00.000Z");
 

@@ -1,4 +1,4 @@
-import { activeLeagueSeason, SUPPORTED_LEAGUES, type SupportedLeague } from "../domain/config.js";
+import { activeLeagueSeason, SUPPORTED_LEAGUES, type SupportedLeague, type SupportedLeagueId } from "../domain/config.js";
 import { Provider, SCHEMA_VERSION, SyncJobType, TeamStatus } from "../domain/enums.js";
 import { internalError, validationError } from "../domain/errors.js";
 import { newUuid } from "../domain/ids.js";
@@ -80,10 +80,12 @@ export class ProviderTeamSyncService {
     serverNow: Date,
     jobType: typeof SyncJobType.FutureSchedule | typeof SyncJobType.FullScheduleVerify = SyncJobType.FutureSchedule,
     leagueIds?: readonly string[],
+    targetSeasons?: Partial<Record<SupportedLeagueId, string>>,
   ): Promise<ProviderTeamSyncOutcome> {
     assertValidServerNow(serverNow);
     const batches: Array<{
       league: SupportedLeague;
+      seasonId: string;
       teams: readonly ApiFootballTeam[];
     }> = [];
     let teamsRead = 0;
@@ -91,16 +93,18 @@ export class ProviderTeamSyncService {
       ? SUPPORTED_LEAGUES.filter((league) => leagueIds.includes(league.league_id))
       : SUPPORTED_LEAGUES;
     for (const league of leagues) {
+      const seasonId = targetSeasons?.[league.league_id] ?? activeLeagueSeason(league, serverNow).season_id;
       const providerTeams = await this.client.getTeams({
         leagueId: league.api_football_league_id,
-        season: activeLeagueSeason(league, serverNow).api_football_season,
+        season: seasonId.split("_")[0]!,
+        ...(targetSeasons?.[league.league_id] === undefined ? {} : { seasonId }),
         jobType,
         serverNow,
       });
       if (!Array.isArray(providerTeams)) {
         throw new ProviderDataError("provider teams response must be an array");
       }
-      batches.push({ league, teams: providerTeams });
+      batches.push({ league, seasonId, teams: providerTeams });
       teamsRead += providerTeams.length;
     }
 
@@ -110,6 +114,7 @@ export class ProviderTeamSyncService {
       let teamsUnchanged = 0;
 
       for (const batch of batches) {
+        const seasonTeams = await tx.seasonTeams?.findByLeagueSeason(batch.league.league_id, batch.seasonId) ?? [];
         for (const raw of batch.teams) {
           const parsed = parseProviderTeam(raw);
           const existingMapping =
@@ -122,6 +127,9 @@ export class ProviderTeamSyncService {
             const existingTeam = await tx.teams.findById(existingMapping.team_id);
             if (existingTeam === null) {
               throw internalError("Provider team mapping 指向不存在的 team");
+            }
+            if (tx.seasonTeams && !seasonTeams.some((team) => team.team_id === existingMapping.team_id)) {
+              await tx.seasonTeams.upsertMany([{ schema_version: SCHEMA_VERSION, league_id: batch.league.league_id, season_id: batch.seasonId, team_id: existingMapping.team_id, source: "map_teams", provider: parsed.provider, provider_team_id: parsed.provider_team_id, created_at: serverNow, updated_at: serverNow }]);
             }
             teamsUnchanged += 1;
             continue;
@@ -151,6 +159,7 @@ export class ProviderTeamSyncService {
 
           await tx.teams.insert(team);
           await tx.teamProviderMappings.insert(mapping);
+          await tx.seasonTeams?.upsertMany([{ schema_version: SCHEMA_VERSION, league_id: batch.league.league_id, season_id: batch.seasonId, team_id: teamId, source: "map_teams", provider: parsed.provider, provider_team_id: parsed.provider_team_id, created_at: serverNow, updated_at: serverNow }]);
           teamsCreated += 1;
         }
       }

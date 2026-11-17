@@ -96,6 +96,12 @@ describe("ProviderRegistry", () => {
     expect(fixtures[0]?.league.season).toBe("2024/25");
   });
 
+  it("旧赛季对账按目标季发送 OpenFoot 日期请求", async () => {
+    const { registry, requests } = createResultComparisonRegistry();
+    await registry.asClient().getFixturesFromSource("of", { leagueId: "39", season: "2023", seasonId: "2023_2024", dateFrom: "2026-10-01", dateTo: "2026-10-01", jobType: SyncJobType.ProviderReconcile, serverNow: new Date("2026-10-01T12:00:00Z") });
+    expect(requests[0]?.searchParams.get("season")).toBe("2023/24");
+  });
+
   it("routes each league to its own adapter and authentication key", async () => {
     const config = loadProviderSources({
       FOOTBALL_PROVIDER_SOURCES: "fd,bsd",

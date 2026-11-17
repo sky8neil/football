@@ -16,11 +16,7 @@ export async function resolveEffectiveMatch(repo: Pick<UnitOfWork, "matches">, m
   throw internalError("比赛取代关系异常");
 }
 
-export async function findRescheduleCandidates(
-  repo: Pick<UnitOfWork, "matches">,
-  input: { leagueId: string; seasonId: string; homeTeamId: string; awayTeamId: string },
-): Promise<Match[]> {
-  const matches = await repo.matches.findByLeagueSeason(input.leagueId, input.seasonId);
+export function filterByTeamPair(matches: readonly Match[], input: { leagueId: string; seasonId: string; homeTeamId: string; awayTeamId: string }): Match[] {
   return matches.filter((match) => match.superseded_by == null &&
     match.league_id === input.leagueId && match.season_id === input.seasonId && match.home_team_id === input.homeTeamId &&
     match.away_team_id === input.awayTeamId);

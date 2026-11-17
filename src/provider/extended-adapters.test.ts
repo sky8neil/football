@@ -37,6 +37,12 @@ function fiveDollarRow(id: number, leagueId = "4160026622") {
 }
 
 describe("FiveDollarAdapter", () => {
+  it("直播缓存推断的赛季不会覆盖显式旧目标季", async () => {
+    const { client } = mockHttp(() => ({ data: [fiveDollarRow(1)], pagination: { has_more: false } }));
+    const [fixture] = await new FiveDollarAdapter(client).fetchLiveFixtures({ jobType: "live_match", serverNow: NOW });
+    expect(fixture?.season_inferred).toBe(true);
+    expect(normalizeFixture(fixture!, undefined, NOW, "2025_2026").anomalies.some((anomaly) => anomaly.details.field === "league.season")).toBe(false);
+  });
   it("splits date ranges into 24-hour windows, follows pages, and maps fixture fields", async () => {
     const responses = [
       { data: [fiveDollarRow(1)], pagination: { has_more: true } },
@@ -240,6 +246,14 @@ describe("SportApiAdapter", () => {
 });
 
 describe("BSD stage and status mapping", () => {
+  it("跨年补赛缺少来源赛季时使用请求赛季", async () => {
+    const { client } = mockHttp(() => ({ results: [
+      { id: 1, stage: "regular-season", league_id: 52, event_date: "2027-01-05T12:00:00Z", status: "notstarted", home_team_id: 10, away_team_id: 11 },
+      { id: 2, stage: "regular-season", league_id: 52, season: "2027", event_date: "2027-01-05T13:00:00Z", status: "notstarted", home_team_id: 10, away_team_id: 11 },
+    ], next: null }));
+    const fixtures = await new BsdAdapter(client).fetchFixturesByDateRange(CSL, "2027-01-05", "2027-01-05");
+    expect(fixtures.map((fixture) => fixture.league.season)).toEqual(["2026", "2027"]);
+  });
   it("maps notstarted and ignores non-regular-season rows", async () => {
     const log = vi.fn();
     const { client } = mockHttp(() => ({

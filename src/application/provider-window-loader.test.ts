@@ -11,6 +11,7 @@ const NOW = new Date("2026-10-11T12:00:00.000Z");
 function mappedMatch(leagueId: string, kickoffAt: Date, overrides: Partial<Match> = {}): Match {
   return {
     league_id: leagueId,
+    season_id: leagueId === "chinese_super_league" ? "2026" : "2026_2027",
     match_id: "match-id",
     kickoff_at: kickoffAt,
     match_status: MatchStatus.Scheduled,
@@ -32,6 +33,19 @@ function repository(match: Match | null, provider: Provider, providerMatchId: st
 }
 
 describe("loadActiveWindowFixtures", () => {
+  it("同一联赛的不同赛季分别请求各自的目标季", async () => {
+    const matches = [
+      mappedMatch("premier_league", NOW, { match_id: "old", season_id: "2025_2026" }),
+      mappedMatch("premier_league", NOW, { match_id: "new", season_id: "2026_2027" }),
+    ];
+    const repo = { matches: { findActiveWindow: async () => matches }, matchProviderMappings: {} } as unknown as AppRepository;
+    const client = { getFixtures: vi.fn(async (_query: ApiFootballFixturesQuery) => []) };
+    await loadActiveWindowFixtures(repo, client, SyncJobType.LiveMatch, NOW);
+    expect(client.getFixtures.mock.calls.map(([query]) => query)).toEqual([
+      expect.objectContaining({ season: "2025", seasonId: "2025_2026" }),
+      expect.objectContaining({ season: "2026", seasonId: "2026_2027" }),
+    ]);
+  });
   it("makes zero provider calls when the local league has no active match", async () => {
     const client = { getFixtures: vi.fn(async () => []) };
     const repo = repository(null, Provider.FootballData, "fd-1");
@@ -73,7 +87,7 @@ describe("loadActiveWindowFixtures", () => {
     const client = { getFixtures: vi.fn(async () => [fixture]) };
 
     await expect(loadActiveWindowFixtures(repo, client, SyncJobType.LiveMatch, NOW)).resolves.toEqual([
-      { fixture, payload: { fixture } },
+      { fixture, payload: { fixture }, seasonId: leagueId === "chinese_super_league" ? "2026" : "2026_2027" },
     ]);
     expect(client.getFixtures).toHaveBeenCalledTimes(1);
     expect(client.getFixtures).toHaveBeenCalledWith(expect.objectContaining({

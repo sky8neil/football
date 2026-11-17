@@ -14,7 +14,7 @@ import type { Match, ProviderSnapshot } from "../domain/types.js";
 import type { AppRepository, UnitOfWork } from "../infrastructure/repositories.js";
 import { ProviderDataError } from "../provider/http.js";
 import type { NormalizedFixture as ProviderFixture } from "../provider/fixture-mapper.js";
-import { findRescheduleCandidates } from "./match-identity.js";
+import { filterByTeamPair } from "./match-identity.js";
 
 const warnedMatchIdentities = new Set<string>();
 
@@ -55,6 +55,7 @@ function buildMatch(
   awayTeamId: string,
   serverNow: Date,
   providerLeagueRefs?: ProviderLeagueRefs,
+  seasonId?: string,
 ): Match {
   if (fixture.kickoffAt === null || fixture.roundId == null) {
     throw internalError("Provider 赛程发现只接受 mapper 已验证的 kickoff 和 round");
@@ -87,7 +88,7 @@ function buildMatch(
     canonical_match_id: matchId,
     superseded_by: null,
     league_id: league.league_id,
-    season_id: activeLeagueSeason(league, serverNow).season_id,
+    season_id: seasonId ?? activeLeagueSeason(league, serverNow).season_id,
     round_id: fixture.roundId,
     home_team_id: homeTeamId,
     away_team_id: awayTeamId,
@@ -147,6 +148,7 @@ export class ProviderScheduleSyncService {
     fixture: ProviderFixture,
     payload: Record<string, unknown>,
     serverNow: Date,
+    seasonId?: string,
   ): Promise<ProviderScheduleSyncOutcome> {
     assertValidServerNow(serverNow);
     const result = await this.repo.withTransaction(async (tx) => {
@@ -196,13 +198,12 @@ export class ProviderScheduleSyncService {
         awayMapping.team_id,
         serverNow,
         this.providerLeagueRefs,
+        seasonId,
       );
       const cacheKey = `${match.league_id}:${match.season_id}`;
       const seasonMatches = this.seasonMatches.get(cacheKey) ??
         await tx.matches.findByLeagueSeason(match.league_id, match.season_id);
-      const cachedCandidates = await findRescheduleCandidates({
-        matches: { ...tx.matches, findByLeagueSeason: async () => seasonMatches },
-      }, {
+      const cachedCandidates = filterByTeamPair(seasonMatches, {
         leagueId: match.league_id,
         seasonId: match.season_id,
         homeTeamId: match.home_team_id,

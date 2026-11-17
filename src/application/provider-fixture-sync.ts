@@ -10,7 +10,7 @@ import { internalError } from "../domain/errors.js";
 import { newUuid } from "../domain/ids.js";
 import { validateMatchTransition } from "../domain/match-state-machine.js";
 import type { ProviderSnapshot } from "../domain/types.js";
-import type { ProviderLeagueRefs } from "../domain/config.js";
+import { activeLeagueSeason, findSupportedLeagueByProviderId, type ProviderLeagueRefs } from "../domain/config.js";
 import type { ApiFootballFixture } from "../provider/types.js";
 import { normalizeFixture, type MapperAnomaly, type NormalizedFixture } from "../provider/fixture-mapper.js";
 import type { AppRepository, UnitOfWork } from "../infrastructure/repositories.js";
@@ -322,9 +322,12 @@ export class ProviderFixtureSyncService {
     rawFixture: ApiFootballFixture,
     payload: Record<string, unknown>,
     serverNow: Date,
+    seasonId?: string,
   ): Promise<ProviderFixtureSyncOutcome> {
     assertValidServerNow(serverNow);
-    const normalized = normalizeFixture(rawFixture, this.providerLeagueRefs, serverNow);
+    const league = findSupportedLeagueByProviderId(String(rawFixture?.league?.id ?? ""), rawFixture?.provider ?? Provider.ApiFootball, this.providerLeagueRefs);
+    const targetSeasonId = seasonId ?? (league === undefined ? undefined : activeLeagueSeason(league, serverNow).season_id);
+    const normalized = normalizeFixture(rawFixture, this.providerLeagueRefs, serverNow, targetSeasonId);
     if (normalized.entityFailed) {
       const outcome = await persistMapperFailure(
         this.repo,
@@ -352,6 +355,7 @@ export class ProviderFixtureSyncService {
         serverNow,
         undefined,
         this.providerLeagueRefs,
+        targetSeasonId,
       );
       if (mapping.match_id === null) {
         return { kind: "failed", match_id: null, anomaly_types: [AnomalyType.ProviderDataInvalid] };
@@ -370,6 +374,7 @@ export class ProviderFixtureSyncService {
             normalized.fixture,
             payload,
             serverNow,
+            targetSeasonId,
           );
           if (normalized.fixture.status.kind === MatchStatus.Scheduled) {
             await this.evaluateAfterFixture(

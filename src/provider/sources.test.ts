@@ -3,6 +3,12 @@ import { findSupportedLeagueById, findSupportedLeagueByProviderId, providerSeaso
 import { loadProviderSources } from "./sources.js";
 
 describe("loadProviderSources", () => {
+  it("保留来源的静态赛季配置", () => {
+    const env = { FOOTBALL_PROVIDER_SOURCES: "fd,of", FOOTBALL_PROVIDER_KEY_FD: "fd-secret", FOOTBALL_PROVIDER_KEY_OF: "of-secret", FOOTBALL_SYNC_LEAGUES: "premier_league" };
+    const original = loadProviderSources(env);
+    expect(original.sources.find((source) => source.source_id === "of")?.leagues[0]?.season_ref).toBe("2026");
+  });
+
   it("binds independent credentials and request configuration to each source", () => {
     const config = loadProviderSources({
       FOOTBALL_PROVIDER_SOURCES: "fd,bsd",

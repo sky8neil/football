@@ -15,14 +15,14 @@ describe("window service batch adapters", () => {
   ] as const)("%s yields exactly one unchanged fixture batch", async (jobType, Service) => {
     const fixture = makeApiFixture({ fixtureId: 1 });
     const repo = {
-      matches: { findActiveWindow: vi.fn(async () => [{ match_id: "match", league_id: "premier_league", kickoff_at: now }]), findLive: vi.fn(async () => []) },
+      matches: { findActiveWindow: vi.fn(async () => [{ match_id: "match", league_id: "premier_league", season_id: "2026_2027", kickoff_at: now }]), findLive: vi.fn(async () => []) },
       matchProviderMappings: { findByProviderAndExternalId: vi.fn(async () => ({ match_id: "match" })) },
     } as unknown as AppRepository;
     const getFixtures = vi.fn(async () => [fixture]);
     const run = vi.spyOn(ProviderFixtureSyncJobService.prototype, "run").mockImplementation(async (_job, load, loadNow) => {
       const batches = [];
       for await (const batch of load(loadNow)) batches.push(batch);
-      expect(batches).toEqual([[{ fixture, payload: { fixture } }]]);
+      expect(batches).toEqual([[{ fixture, payload: { fixture }, seasonId: "2026_2027" }]]);
       return { kind: "completed", job_type: jobType, items_read: 1, items_changed: 0, items_failed: 0 };
     });
     try {

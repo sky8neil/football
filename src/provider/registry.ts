@@ -1,4 +1,4 @@
-import { activeProviderSeasonRef, SUPPORTED_LEAGUES } from "../domain/config.js";
+import { targetProviderSeasonRef, SUPPORTED_LEAGUES } from "../domain/config.js";
 import type { ApiFootballFixturesQuery, ApiFootballSeasonFixturesQuery, ApiFootballTeamQuery, ProviderHttpClient as LegacyProviderHttpClient } from "./http.js";
 import { ApiFootballClient, ProviderHttpError, ProviderQuotaExceededError } from "./http.js";
 import type { ApiFootballFixture, ApiFootballTeam } from "./types.js";
@@ -380,7 +380,9 @@ export class ProviderRegistry {
         if (entry === null || entry === undefined) return this.legacyClient?.getTeams(query) ?? [];
         const now = query.serverNow ?? new Date();
         const jobType = asBudgetJob(query.jobType);
-        return this.withRequest(entry.source.source_id, jobType, now, () => entry.adapter.fetchTeams(entry.league, this.callOptions(entry, jobType, now)), league.league_id);
+        const target = query.seasonId ?? (/^\d{4}$/.test(query.season) && /^\d{4}_\d{4}$/.test(league.season_id) ? `${query.season}_${Number(query.season) + 1}` : query.season);
+        const requestLeague = { ...entry.league, target_season_id: target, season_ref: targetProviderSeasonRef(league, entry.source.source_id, target) };
+        return this.withRequest(entry.source.source_id, jobType, now, () => entry.adapter.fetchTeams(requestLeague, this.callOptions(entry, jobType, now)), league.league_id);
       },
       getFixturesFromSource: async (sourceId, query) => {
         const league = SUPPORTED_LEAGUES.find((row) => row.api_football_league_id === query.leagueId);
@@ -429,9 +431,9 @@ export class ProviderRegistry {
     }
     const trackLeagueInBudget = !(jobType === SyncJobType.LiveMatch && selected.source.source_id === "5d");
     const callOptions = this.callOptions(selected, jobType, now, trackLeagueInBudget);
-    const requestLeague = jobType === SyncJobType.ProviderReconcile && /^\d{4}$/.test(query.season)
-      ? { ...selected.league, season_ref: activeProviderSeasonRef(league, selected.source.source_id, new Date(`${query.season}-08-01T00:00:00.000Z`)) }
-      : selected.league;
+    const target = query.seasonId ?? (/^\d{4}$/.test(query.season) && /^\d{4}_\d{4}$/.test(league.season_id)
+      ? `${query.season}_${Number(query.season) + 1}` : query.season);
+    const requestLeague = { ...selected.league, target_season_id: target, season_ref: targetProviderSeasonRef(league, selected.source.source_id, target) };
     const fetch = async (): Promise<readonly ApiFootballFixture[]> => {
       if (season || !("dateFrom" in query) || query.dateFrom === undefined || query.dateTo === undefined) {
         return selected.adapter.fetchSeasonFixtures(requestLeague, callOptions);
@@ -499,10 +501,11 @@ export class ProviderRegistry {
       if (fallback === null || fallback === undefined) throw error;
       this.log?.({ event: "fallback_used", diag_code: "DIAG_PROVIDER_FALLBACK_ACTIVE", source_id: fallback.source.source_id, failed_source_id: selected.source.source_id, league_id: league.league_id, job_type: jobType, reason: fallbackReason });
       const fallbackOptions = this.callOptions(fallback, jobType, now);
+      const fallbackLeague = { ...fallback.league, target_season_id: target, season_ref: targetProviderSeasonRef(league, fallback.source.source_id, target) };
       const fallbackFixtures = await this.withRequest(fallback.source.source_id, jobType, now, () =>
         season || !("dateFrom" in query) || query.dateFrom === undefined || query.dateTo === undefined
-          ? fallback.adapter.fetchSeasonFixtures(fallback.league, fallbackOptions)
-          : fallback.adapter.fetchFixturesByDateRange(fallback.league, query.dateFrom, query.dateTo, fallbackOptions), league.league_id);
+          ? fallback.adapter.fetchSeasonFixtures(fallbackLeague, fallbackOptions)
+          : fallback.adapter.fetchFixturesByDateRange(fallbackLeague, query.dateFrom, query.dateTo, fallbackOptions), league.league_id);
       if (season && fallbackFixtures.length === 0) {
         this.log?.({
           diag_code: "DIAG_PROVIDER_NO_DATA",

@@ -106,6 +106,14 @@ async function loadFreshEnsureCrossSourceMatchMapping() {
 }
 
 describe("ensureCrossSourceMatchMapping", () => {
+  it("显式目标季用于候选查找，未指定时使用当前赛季", async () => {
+    const old = makeRepo({ matches: [makeMatch({ season_id: "2023_2024" })] });
+    await expect(ensureCrossSourceMatchMapping(old.repo, fixture(), NOW, undefined, undefined, "2023_2024")).resolves.toMatchObject({ match_id: MATCH_ID });
+    expect(old.repo.matches.findBySeason).toHaveBeenCalledWith("2023_2024");
+    const current = makeRepo();
+    await ensureCrossSourceMatchMapping(current.repo, fixture(), NOW);
+    expect(current.repo.matches.findBySeason).toHaveBeenCalledWith("2026_2027");
+  });
   it("returns an existing match mapping without looking up teams", async () => {
     const { repo, teamMappings } = makeRepo({ existingMapping: { match_id: "known-match" } });
     await expect(ensureCrossSourceMatchMapping(repo, fixture(), NOW)).resolves.toEqual({ match_id: "known-match", reason: "mapped" });

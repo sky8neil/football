@@ -1,6 +1,6 @@
 import { ProviderDataError } from "./http.js";
 import type { ProviderAdapter, ProviderAdapterCallOptions, ProviderAdapterLeague, ProviderHttpClient } from "./adapter.js";
-import { asArray, asIdentifier, asRecord, asText, utcDate } from "./adapter.js";
+import { asArray, asIdentifier, asRecord, asText } from "./adapter.js";
 import type { ApiFootballFixture, ApiFootballTeam } from "./types.js";
 
 function mapStatus(status: unknown): string {
@@ -38,7 +38,7 @@ function mapEvent(value: unknown, league: ProviderAdapterLeague): ApiFootballFix
   const kickoff = asText(event.event_date) ?? "";
   const homeName = asText(event.home_team);
   const awayName = asText(event.away_team);
-  const dateSeason = utcDate(kickoff).slice(0, 4) || league.season_ref;
+  const dateSeason = asIdentifier(event.season) ?? league.season_ref;
   const status = mapStatus(event.status);
   return {
     provider: "bsd",

@@ -25,6 +25,13 @@ function orphanMapping(providerTeamId: string): TeamProviderMapping {
 }
 
 describe("ProviderTeamSyncService", () => {
+  it("球队同步按指定旧赛季请求并维护参赛名单", async () => {
+    const repo = new InMemoryRepository();
+    const getTeams = vi.fn(async () => [providerTeam(40, "Home FC")]);
+    await new ProviderTeamSyncService(repo, { getTeams }).sync(new Date("2027-01-02T00:00:00Z"), SyncJobType.FutureSchedule, ["premier_league"], { premier_league: "2025_2026" });
+    expect(getTeams).toHaveBeenCalledWith(expect.objectContaining({ season: "2025", seasonId: "2025_2026" }));
+    expect(await repo.seasonTeams.findByLeagueSeason("premier_league", "2025_2026")).toHaveLength(1);
+  });
   it("遍历六联赛查询，并首次创建带 league_id 的 active team 与 Provider mapping", async () => {
     const repo = new InMemoryRepository();
     const getTeams = vi.fn(async (query: { leagueId: string; season: string }) => {

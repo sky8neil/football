@@ -42,7 +42,7 @@ function mapFixture(value: unknown, league: ProviderAdapterLeague): ApiFootballF
     league: {
       id: fixtureLeagueId(row),
       ...(asText(row.league_name) ? { name: asText(row.league_name)! } : {}),
-      season: league.season_ref,
+      season: asIdentifier(row.season) ?? league.season_ref,
       round: "",
     },
     teams: {

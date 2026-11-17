@@ -8,6 +8,8 @@ import { makeApiFixture } from "../provider/fixture-factory.js";
 import type { ApiFootballFixture } from "../provider/types.js";
 import { ProviderFixtureSyncService } from "./provider-fixture-sync.js";
 import { resolveEffectiveMatch } from "./match-identity.js";
+import { ProviderScheduleSyncService } from "./provider-schedule-sync.js";
+import { normalizeFixture } from "../provider/fixture-mapper.js";
 
 const NOW = new Date("2026-08-10T12:00:00.000Z");
 
@@ -51,6 +53,34 @@ async function seedTeams(repo: InMemoryRepository): Promise<{
 }
 
 describe("Provider schedule discovery", () => {
+  it("跨年补赛发现时归入目标赛季且不写入参赛名单", async () => {
+    const repo = new InMemoryRepository();
+    await seedTeams(repo);
+    const raw = makeApiFixture({ fixtureId: 1190001, statusShort: "NS", date: "2027-01-10T12:00:00.000Z", timestamp: Date.parse("2027-01-10T12:00:00.000Z") / 1000 });
+    raw.league.season = 2025;
+    const fixture = normalizeFixture(raw).fixture;
+    const result = await new ProviderScheduleSyncService(repo).discover(fixture, {}, new Date("2027-01-02T00:00:00Z"), "2025_2026");
+    expect((await repo.matches.findById(result.match_id))?.season_id).toBe("2025_2026");
+    expect(await repo.seasonTeams.findByLeagueSeason("premier_league", "2025_2026")).toEqual([]);
+  });
+  it("显式目标季与来源赛季不符时记录 league.season 诊断", async () => {
+    const repo = new InMemoryRepository();
+    await seedTeams(repo);
+    const raw = makeApiFixture({ fixtureId: 1190002, statusShort: "NS" });
+    const result = await new ProviderFixtureSyncService(repo).applyFixture(raw, {}, new Date("2027-01-02T00:00:00Z"), "2025_2026");
+    expect(result.kind).toBe("failed");
+    expect(await repo.matchProviderMappings.findByProviderAndExternalId(Provider.ApiFootball, "1190002")).toBeNull();
+    expect(normalizeFixture(raw, undefined, new Date("2027-01-02T00:00:00Z"), "2025_2026").anomalies).toEqual(expect.arrayContaining([expect.objectContaining({ details: expect.objectContaining({ field: "league.season" }) })]));
+  });
+  it("来源未返回赛季时发现记录使用显式目标季", async () => {
+    const repo = new InMemoryRepository();
+    await seedTeams(repo);
+    const raw = makeApiFixture({ fixtureId: 1190003, statusShort: "NS" });
+    delete (raw.league as { season?: unknown }).season;
+    const result = await new ProviderFixtureSyncService(repo).applyFixture(raw, {}, new Date("2027-01-02T00:00:00Z"), "2025_2026");
+    expect(result.kind).toBe("applied");
+    if (result.match_id) expect((await repo.matches.findById(result.match_id))?.season_id).toBe("2025_2026");
+  });
   it.each([MatchStatus.Scheduled, MatchStatus.Postponed])("新来源 ID 归并非终态候选 %s 并保留历史字段", async (status) => {
     const repo = new InMemoryRepository();
     await seedTeams(repo);

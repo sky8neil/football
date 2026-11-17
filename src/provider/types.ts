@@ -26,6 +26,7 @@ export interface ApiFootballScorePeriod {
 export interface ApiFootballFixture {
   /** Source tag for fixtures normalized by the multi-provider adapters. */
   provider?: "api_football" | "football_data" | "bsd" | "5dollar" | "openfoot" | "sportapi";
+  season_inferred?: boolean;
   fixture: {
     id: number | string;
     /** ISO 8601 时间字符串 */

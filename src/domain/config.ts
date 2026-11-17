@@ -336,6 +336,16 @@ export function seasonStartYear(seasonId: string): number | null {
   return naturalYear ? Number(naturalYear[1]) : null;
 }
 
+export function targetProviderSeasonRef(league: SupportedLeague, sourceId: ProviderLeagueSourceId, seasonId: string): string {
+  const year = seasonStartYear(seasonId);
+  if (year === null) throw new Error(`invalid season_id: ${seasonId}`);
+  if (seasonId === league.season_id) return league.provider_season_refs[sourceId] ?? league.source_season_ref;
+  if (/^\d{4}_\d{4}$/.test(seasonId) && sourceId === "of" && league.provider_season_refs.of !== null) {
+    return `${year}/${String(year + 1).slice(-2)}`;
+  }
+  return String(year);
+}
+
 /** 按 UTC 时间推导该联赛当前赛季标识；无法解析联赛形态时返回 league.season_id。 */
 export function deriveSeasonId(league: SupportedLeague, now: Date): string {
   if (!Number.isFinite(now.getTime())) return league.season_id;

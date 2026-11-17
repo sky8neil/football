@@ -75,6 +75,7 @@ function mapFixture(
   const sourceLeagueId = String(asIdentifier(sourceLeague?.id) ?? league.source_league_ref);
   return {
     provider: "5dollar",
+    ...(league.season_ref === "" && row.season == null && sourceLeague?.season == null ? { season_inferred: true } : {}),
     fixture: { id, date: kickoff, timestamp, status: { short: mappedStatus(row.status, row.status_code) } },
     league: {
       id: sourceLeagueId,

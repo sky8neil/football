@@ -27,6 +27,7 @@ import { assertValidServerNow } from "./period-finalize.js";
 export interface ProviderFixtureBatchItem {
   fixture: ApiFootballFixture;
   payload: Record<string, unknown>;
+  seasonId?: string;
 }
 
 export type ProviderFixtureBatchLoader = (
@@ -528,11 +529,9 @@ export class ProviderFixtureSyncJobService {
           for (const item of batch.value) {
             await lockRenewal.assertHeld();
             try {
-              const outcome = await this.fixtureSync.applyFixture(
-                item.fixture,
-                item.payload,
-                serverNow,
-              );
+              const outcome = item.seasonId === undefined
+                ? await this.fixtureSync.applyFixture(item.fixture, item.payload, serverNow)
+                : await this.fixtureSync.applyFixture(item.fixture, item.payload, serverNow, item.seasonId);
               if (isChanged(outcome)) {
                 changed += 1;
               }

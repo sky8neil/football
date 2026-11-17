@@ -146,7 +146,9 @@ describe("ProviderReconcileService", () => {
     for (const team of ["home", "away"]) await repo.teamProviderMappings.insert({ schema_version: 1, team_id: team, provider: "openfoot", provider_team_id: team, created_at: NOW, updated_at: NOW });
     const observed = fixture("old-fixture", match);
     observed.league.season = "2023/24";
-    await new ProviderReconcileService(repo, { getFixturesFromSource: vi.fn(async () => [observed]) }).run(NOW);
+    const getFixturesFromSource = vi.fn(async () => [observed]);
+    await new ProviderReconcileService(repo, { getFixturesFromSource }).run(NOW);
+    expect(getFixturesFromSource).toHaveBeenCalledWith("of", expect.objectContaining({ season: "2023", seasonId: "2023_2024" }));
     expect(await repo.providerReconcileTodos.findPending(10)).toEqual([]);
     expect(await repo.matchProviderMappings.findByProviderAndExternalId("openfoot", "old-fixture")).toMatchObject({ match_id: "old-season" });
   });

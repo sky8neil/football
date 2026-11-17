@@ -11,6 +11,7 @@ export interface ProviderAdapterLeague {
   league_id: string;
   source_league_ref: string;
   season_ref: string;
+  target_season_id?: string;
 }
 
 export interface ProviderHttpResponse {

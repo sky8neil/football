@@ -76,6 +76,7 @@ export interface ProviderHttpClient {
 }
 
 export interface ApiFootballFixturesQuery {
+  seasonId?: string;
   dateFrom?: string;
   dateTo?: string;
   fixtureId?: string;
@@ -87,6 +88,7 @@ export interface ApiFootballFixturesQuery {
 }
 
 export interface ApiFootballSeasonFixturesQuery {
+  seasonId?: string;
   leagueId: string;
   season: string;
   jobType?: SyncJobType;
@@ -94,6 +96,7 @@ export interface ApiFootballSeasonFixturesQuery {
 }
 
 export interface ApiFootballTeamQuery {
+  seasonId?: string;
   leagueId: string;
   season: string;
   jobType?: SyncJobType;
