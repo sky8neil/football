@@ -121,7 +121,7 @@ miniprogram/services/auth.js                wx.login、会话缓存
 miniprogram/utils/auth-storage.js           会话缓存读写
 ops/vps/football-api.service                API unit 模板
 ops/vps/football-jobs.service               单轮任务 unit 模板
-ops/vps/football-jobs.timer                 10 分钟调度模板
+ops/vps/football-jobs.timer                 3 分钟调度模板
 ops/vps/Caddyfile                           专用站点片段
 ops/vps/football.env.example                无真实凭据配置模板
 ```
@@ -580,10 +580,10 @@ TimeoutStartSec=1800
 ```ini
 # football-jobs.timer
 [Unit]
-Description=Run Football jobs every ten minutes
+Description=Run Football jobs every three minutes
 
 [Timer]
-OnCalendar=*-*-* *:00/10:00
+OnCalendar=*-*-* *:00/3:00
 Persistent=true
 Unit=football-jobs.service
 
@@ -660,7 +660,7 @@ npm run cloudfunction:build
 
 ```bash
 systemd-analyze verify ops/vps/football-api.service ops/vps/football-jobs.service ops/vps/football-jobs.timer
-systemd-analyze calendar '*-*-* *:00/10:00'
+systemd-analyze calendar '*-*-* *:00/3:00'
 caddy validate --config ops/vps/Caddyfile --adapter caddyfile
 curl --fail 'https://api.example.com/v1/matches?status=scheduled'
 systemctl status football-api.service football-jobs.timer

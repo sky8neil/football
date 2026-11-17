@@ -400,8 +400,8 @@ predictions                0
 
 ### 11.5 未完成 / 未验证项（如实标记）
 
-1. **CloudBase 部署未核验**：本机缺少 CloudBase 凭据文件，双部署一致性、`uk_user_canonical_match` 索引创建状态仍待上线前在真实环境确认。
+1. **CloudBase 部署未核验（用户 2026-11-17 决策：待定）**：本机缺少 CloudBase 凭据文件，双部署一致性、`uk_user_canonical_match` 索引创建状态仍待发布前在真实环境确认。
 2. **真实微信开发者工具未执行**：窄屏布局、三个数字、0 值文案、精确命中标签、加载/失败/重试与等级赛季排行榜入口的实际渲染未人工确认。
-3. **登录态 HTTP 验证未执行**：`/v1/predictions/summary` 需要登录身份，当前库 `users = 0`、`predictions = 0`，只能靠单测覆盖；`/v1/leagues/status` 的游客路径可在重启后做真实 HTTP 验证。
-4. **`RANKING_FIRST_PERIOD_KEY`** 仍为占位 `2026-W31`，按用户要求最后单独拍板。
+3. **登录态 HTTP 验证未执行**：`/v1/predictions/summary` 需要登录身份，当前库 `users = 0`、`predictions = 0`，只能靠单测覆盖；`/v1/leagues/status` 的游客路径已做真实 HTTP 验证（200，6 联赛，中超 `completed`）。
+4. **`RANKING_FIRST_PERIOD_KEY`** 仍为占位 `2026-W31`；用户 2026-11-17 决策：**等小程序正式发布后再定**，取发布所在周。
 5. `season_teams` 历史 112 行的 `source` 仍为旧值 `schedule`，数值本身正确，待下一轮 `future_schedule` 由 `team-sync` 以 `map_teams` 重写。
