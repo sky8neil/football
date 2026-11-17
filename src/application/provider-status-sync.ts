@@ -1,3 +1,4 @@
+import { resolveEffectiveMatch } from "./match-identity.js";
 import {
   AnomalyType,
   MatchStatus,
@@ -218,7 +219,7 @@ export class ProviderStatusSyncService {
       if (mapping === null) {
         throw notFoundError("MATCH");
       }
-      const match = await tx.matches.findById(mapping.match_id);
+      const match = await resolveEffectiveMatch(tx, mapping.match_id);
       if (match === null) {
         throw internalError("Provider match mapping 指向不存在的 match");
       }
@@ -402,7 +403,7 @@ export class ProviderStatusSyncService {
       if (matchMapping === null) {
         throw notFoundError("MATCH");
       }
-      const match = await tx.matches.findById(matchMapping.match_id);
+      const match = await resolveEffectiveMatch(tx, matchMapping.match_id);
       if (match === null) {
         throw internalError("Provider match mapping 指向不存在的 match");
       }
@@ -511,7 +512,7 @@ export class ProviderStatusSyncService {
       if (mapping === null) {
         throw notFoundError("MATCH");
       }
-      const match = await tx.matches.findById(mapping.match_id);
+      const match = await resolveEffectiveMatch(tx, mapping.match_id);
       if (match === null) {
         throw internalError("Provider match mapping 指向不存在的 match");
       }
@@ -686,7 +687,7 @@ export class ProviderStatusSyncService {
       if (mapping === null) {
         throw notFoundError("MATCH");
       }
-      const match = await tx.matches.findById(mapping.match_id);
+      const match = await resolveEffectiveMatch(tx, mapping.match_id);
       if (match === null) {
         throw internalError("Provider match mapping 指向不存在的 match");
       }
@@ -834,7 +835,7 @@ export class ProviderStatusSyncService {
       if (mapping === null) {
         throw notFoundError("MATCH");
       }
-      const match = await tx.matches.findById(mapping.match_id);
+      const match = await resolveEffectiveMatch(tx, mapping.match_id);
       if (match === null) {
         throw internalError("Provider match mapping 指向不存在的 match");
       }
@@ -962,7 +963,7 @@ export class ProviderStatusSyncService {
       if (mapping === null) {
         throw notFoundError("MATCH");
       }
-      const match = await tx.matches.findById(mapping.match_id);
+      const match = await resolveEffectiveMatch(tx, mapping.match_id);
       if (match === null) {
         throw internalError("Provider match mapping 指向不存在的 match");
       }

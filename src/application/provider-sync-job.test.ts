@@ -142,7 +142,7 @@ describe("ProviderFixtureSyncJobService", () => {
     expect(await repo.syncLogs.findLatestByJobType!(SyncJobType.PostFinishVerify)).toMatchObject({ items_read: 3, items_changed: 2, items_failed: 1 });
   });
   it.each([SyncJobType.FutureSchedule, SyncJobType.FullScheduleVerify])(
-    "%s 不处理已取代比赛对应的数据源记录",
+    "%s 将旧来源记录交给比赛同步解析有效记录",
     async (jobType) => {
       const repo = new InMemoryRepository();
       const old = makeMatch();
@@ -162,12 +162,33 @@ describe("ProviderFixtureSyncJobService", () => {
         item(makeApiFixture({ fixtureId: 1100002 })),
       ]), NOW);
 
-      expect(applyFixture).toHaveBeenCalledTimes(1);
+      expect(applyFixture).toHaveBeenCalledTimes(2);
+      expect(applyFixture).toHaveBeenCalledWith(
+        expect.objectContaining({ fixture: expect.objectContaining({ id: 1100001 }) }),
+        expect.anything(),
+        NOW,
+      );
       expect(applyFixture).toHaveBeenCalledWith(
         expect.objectContaining({ fixture: expect.objectContaining({ id: 1100002 }) }),
         expect.anything(),
         NOW,
       );
+    },
+  );
+  it.each([SyncJobType.FutureSchedule, SyncJobType.FullScheduleVerify])(
+    "%s 悬空映射交给比赛同步并记录失败项",
+    async (jobType) => {
+      const repo = new InMemoryRepository();
+      const matchId = newUuid();
+      await repo.matchProviderMappings.insert({
+        schema_version: 1, match_id: matchId, provider: "api_football", provider_match_id: "1100001", created_at: NOW, updated_at: NOW,
+      });
+      const fixtureSync = new ProviderFixtureSyncService(repo);
+      const applyFixture = vi.spyOn(fixtureSync, "applyFixture");
+      const service = new ProviderFixtureSyncJobService(repo, fixtureSync, { random: () => 0.5 });
+      const result = await service.run(jobType, singleBatch(async () => [item(makeApiFixture({ fixtureId: 1100001 }))]), NOW);
+      expect(applyFixture).toHaveBeenCalledTimes(1);
+      expect(result).toMatchObject({ items_read: 1, items_failed: 1, failure_diagnostics: [{ provider_fixture_id: "1100001" }] });
     },
   );
   it("在 job lock 内批量应用 fixture，并记录 running/success 统计", async () => {

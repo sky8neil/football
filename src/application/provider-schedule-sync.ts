@@ -14,6 +14,9 @@ import type { Match, ProviderSnapshot } from "../domain/types.js";
 import type { AppRepository, UnitOfWork } from "../infrastructure/repositories.js";
 import { ProviderDataError } from "../provider/http.js";
 import type { NormalizedFixture as ProviderFixture } from "../provider/fixture-mapper.js";
+import { findRescheduleCandidates } from "./match-identity.js";
+
+const warnedMatchIdentities = new Set<string>();
 
 export type ProviderScheduleSyncOutcome = {
   kind: "applied";
@@ -133,6 +136,8 @@ function discoveredSnapshot(
 
 /** 首次发现合法 fixture 时建立内部 match 与 Provider mapping；状态由调用方另行应用。 */
 export class ProviderScheduleSyncService {
+  private readonly seasonMatches = new Map<string, Match[]>();
+
   constructor(
     private readonly repo: AppRepository,
     private readonly providerLeagueRefs?: ProviderLeagueRefs,
@@ -144,7 +149,7 @@ export class ProviderScheduleSyncService {
     serverNow: Date,
   ): Promise<ProviderScheduleSyncOutcome> {
     assertValidServerNow(serverNow);
-    return this.repo.withTransaction(async (tx) => {
+    const result = await this.repo.withTransaction(async (tx) => {
       requirePorts(tx);
       if (fixture.kickoffAt === null) {
         throw internalError("Provider 赛程发现只接受 mapper 已验证的 kickoff");
@@ -192,7 +197,55 @@ export class ProviderScheduleSyncService {
         serverNow,
         this.providerLeagueRefs,
       );
+      const cacheKey = `${match.league_id}:${match.season_id}`;
+      const seasonMatches = this.seasonMatches.get(cacheKey) ??
+        await tx.matches.findByLeagueSeason(match.league_id, match.season_id);
+      const cachedCandidates = await findRescheduleCandidates({
+        matches: { ...tx.matches, findByLeagueSeason: async () => seasonMatches },
+      }, {
+        leagueId: match.league_id,
+        seasonId: match.season_id,
+        homeTeamId: match.home_team_id,
+        awayTeamId: match.away_team_id,
+      });
+      const candidates = (await Promise.all(cachedCandidates.map((item) => tx.matches.findById(item.match_id))))
+        .filter((item): item is Match => item !== null && item.superseded_by == null &&
+          item.league_id === match.league_id && item.season_id === match.season_id &&
+          item.home_team_id === match.home_team_id && item.away_team_id === match.away_team_id);
+      const candidate = candidates[0];
+      const terminal = candidate !== undefined && (
+        candidate.match_status === MatchStatus.Finished ||
+        candidate.match_status === MatchStatus.Cancelled ||
+        candidate.match_status === MatchStatus.Abandoned
+      );
+      const merge = candidates.length === 1 && candidate !== undefined && !terminal;
+      if (merge) match.canonical_match_id = candidate.canonical_match_id;
+      if (candidates.length > 1 || (candidates.length === 1 && terminal)) {
+        const provider = fixture.provider ?? Provider.ApiFootball;
+        const key = `${provider}:${fixture.providerMatchId}`;
+        if (!warnedMatchIdentities.has(key)) {
+          warnedMatchIdentities.add(key);
+          console.warn("[match_identity_needs_review]", {
+            league_id: match.league_id,
+            season_id: match.season_id,
+            round_id: match.round_id,
+            provider,
+            provider_match_id: fixture.providerMatchId,
+            home_team_id: match.home_team_id,
+            away_team_id: match.away_team_id,
+            candidate_match_ids: candidates.map((item) => item.match_id),
+            reason: candidates.length > 1 ? "ambiguous_candidates" : "terminal_candidate",
+          });
+        }
+      }
       await tx.matches.insert(match);
+      if (merge) {
+        const incoming = await tx.matches.findByLeagueSeason(match.league_id, match.season_id);
+        for (const previous of incoming.filter((item) => item.superseded_by === candidate.match_id)) {
+          await tx.matches.update({ ...previous, superseded_by: match.match_id, updated_at: serverNow });
+        }
+        await tx.matches.update({ ...candidate, superseded_by: match.match_id, updated_at: serverNow });
+      }
       await tx.matchProviderMappings.insert({
         schema_version: SCHEMA_VERSION,
         match_id: match.match_id,
@@ -205,11 +258,14 @@ export class ProviderScheduleSyncService {
         discoveredSnapshot(match.match_id, fixture, payload, serverNow),
       );
 
-      return {
+      return { cacheKey, seasonMatches, match, merge, outcome: {
         kind: "applied" as const,
         match_id: match.match_id,
         match_status: MatchStatus.Scheduled,
-      };
+      } };
     });
+    if (result.merge) this.seasonMatches.delete(result.cacheKey);
+    else this.seasonMatches.set(result.cacheKey, [...result.seasonMatches, result.match]);
+    return result.outcome;
   }
 }

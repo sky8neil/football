@@ -528,18 +528,6 @@ export class ProviderFixtureSyncJobService {
           for (const item of batch.value) {
             await lockRenewal.assertHeld();
             try {
-              if ((jobType === "future_schedule" || jobType === "full_schedule_verify") &&
-                this.repo.matchProviderMappings !== undefined && this.repo.matches !== undefined &&
-                item.fixture?.fixture?.id !== undefined) {
-                const mapping = await this.repo.matchProviderMappings.findByProviderAndExternalId(
-                  item.fixture.provider ?? Provider.ApiFootball,
-                  String(item.fixture.fixture.id),
-                );
-                if (mapping !== null) {
-                  const match = await this.repo.matches.findById(mapping.match_id);
-                  if (match?.superseded_by != null) continue;
-                }
-              }
               const outcome = await this.fixtureSync.applyFixture(
                 item.fixture,
                 item.payload,

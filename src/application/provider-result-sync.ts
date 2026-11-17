@@ -1,3 +1,4 @@
+import { resolveEffectiveMatch } from "./match-identity.js";
 import {
   AnomalyType,
   MatchStatus,
@@ -213,7 +214,7 @@ export class ProviderResultSyncService {
       if (mapping === null) {
         throw notFoundError("MATCH");
       }
-      const match = await tx.matches.findById(mapping.match_id);
+      const match = await resolveEffectiveMatch(tx, mapping.match_id);
       if (match === null) {
         throw internalError("Provider match mapping 指向不存在的 match");
       }

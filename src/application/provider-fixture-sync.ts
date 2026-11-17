@@ -1,3 +1,4 @@
+import { resolveEffectiveMatch } from "./match-identity.js";
 import {
   AnomalyType,
   MatchStatus,
@@ -110,7 +111,8 @@ async function persistMapperFailure(
       provider,
       providerMatchId,
     );
-    if (mapping !== null && (await tx.matches.findById(mapping.match_id)) === null) {
+    const match = mapping === null ? null : await resolveEffectiveMatch(tx, mapping.match_id);
+    if (mapping !== null && match === null) {
       throw internalError("Provider match mapping 指向不存在的 match");
     }
 
@@ -119,7 +121,7 @@ async function persistMapperFailure(
       snapshot_id: newUuid(),
       provider,
       entity_type: "match",
-      entity_id: mapping?.match_id ?? null,
+      entity_id: match?.match_id ?? null,
       provider_entity_id: providerMatchId,
       event_type: "provider_error",
       payload,
@@ -128,11 +130,11 @@ async function persistMapperFailure(
     await tx.providerSnapshots.insert(snapshot);
 
     const uniqueAnomalies = groupedAnomalies(anomalies);
-    if (mapping !== null) {
+    if (match !== null) {
       for (const anomaly of uniqueAnomalies) {
         await persistAnomalyInTransaction(
           tx,
-          mapping.match_id,
+          match.match_id,
           anomaly.type,
           { open: true, blocking: anomaly.blocking },
           anomalyDetails(providerMatchId, rawStatus, anomaly),
@@ -145,7 +147,6 @@ async function persistMapperFailure(
       // 使 FINISHED_NO_SCORE 的时间谓词（finish_detected_at + 20min）可被触发。
       // 与合法 FT 路径对齐：首次 finished 时补 period_anchor_at / prediction_closed_at。
       if (uniqueAnomalies.some((anomaly) => anomaly.type === AnomalyType.InvalidFinalScore)) {
-        const match = await tx.matches.findById(mapping.match_id);
         if (
           match !== null &&
           validateMatchTransition(match.match_status, MatchStatus.Finished)
@@ -176,7 +177,7 @@ async function persistMapperFailure(
 
     return {
       kind: "failed",
-      match_id: mapping?.match_id ?? null,
+      match_id: match?.match_id ?? null,
       anomaly_types: uniqueAnomalies.map((anomaly) => anomaly.type),
     };
   });
@@ -449,7 +450,7 @@ export class ProviderFixtureSyncService {
     const provider = (fixture.provider ?? Provider.ApiFootball) as Provider;
     const matchMapping = await this.repo.matchProviderMappings?.findByProviderAndExternalId(provider, fixture.providerMatchId);
     if (!matchMapping) return { kind: "failed", match_id: null, anomaly_types: [AnomalyType.ProviderDataInvalid] };
-    const match = await this.repo.matches.findById(matchMapping.match_id);
+    const match = await resolveEffectiveMatch(this.repo, matchMapping.match_id);
     if (!match) return { kind: "failed", match_id: matchMapping.match_id, anomaly_types: [AnomalyType.ProviderDataInvalid] };
     const observation = toResultObservation(fixture, provider, serverNow);
     await this.persistResultObservation(match.match_id, fixture.providerMatchId, observation, serverNow);

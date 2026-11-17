@@ -212,6 +212,39 @@ function withSettlementWriteGuard(
 }
 
 describe("ProviderFixtureSyncService", () => {
+  it("旧来源 ID 的采纳赛果观测写入有效记录", async () => {
+    const repo = new InMemoryRepository();
+    const original = makeMatch();
+    await seedMatch(repo, original, "1199001");
+    const effectiveId = newUuid();
+    await repo.matches.insert({ ...original, match_id: effectiveId });
+    await repo.matches.update({ ...original, superseded_by: effectiveId });
+    const result = await new ProviderFixtureSyncService(repo).applyFixture(
+      makeFixture("1199001", "FT", { home: 2, away: 1 }), {}, NOW,
+    );
+    expect(result).toMatchObject({ kind: "failed", match_id: effectiveId, anomaly_types: [AnomalyType.ProviderResultPending] });
+    expect(await repo.providerSnapshots.findByEntity("match", effectiveId)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ event_type: "result_observed", provider_entity_id: "1199001" }),
+    ]));
+    expect(await repo.providerSnapshots.findByEntity("match", original.match_id)).toEqual([]);
+    expect(await repo.matches.findById(original.match_id)).toEqual({ ...original, superseded_by: effectiveId });
+  });
+
+  it("旧来源 ID 的无效赛果和异常写入有效记录", async () => {
+    const repo = new InMemoryRepository();
+    const original = makeMatch();
+    await seedMatch(repo, original, "1199002");
+    const effectiveId = newUuid();
+    await repo.matches.insert({ ...original, match_id: effectiveId });
+    await repo.matches.update({ ...original, superseded_by: effectiveId });
+    const result = await new ProviderFixtureSyncService(repo).applyFixture(
+      makeFixture("1199002", "FT", { home: null, away: null }), {}, NOW,
+    );
+    expect(result).toMatchObject({ kind: "failed", match_id: effectiveId, anomaly_types: [AnomalyType.InvalidFinalScore] });
+    expect(await repo.matches.findById(effectiveId)).toMatchObject({ match_status: MatchStatus.Finished });
+    expect(await repo.anomalies.findByKey(`${effectiveId}:${AnomalyType.InvalidFinalScore}`)).not.toBeNull();
+    expect(await repo.matches.findById(original.match_id)).toEqual({ ...original, superseded_by: effectiveId });
+  });
   it("无效 server_now 在 fixture 主入口和事实写入前 Fail Closed", async () => {
     const repo = new InMemoryRepository();
     const match = makeMatch();

@@ -219,6 +219,16 @@ function withSettlementWriteGuard(
 }
 
 describe("ProviderStatusSyncService", () => {
+  it("旧来源 ID 的状态更新落到有效记录", async () => {
+    const { repo, match } = await setup();
+    const effectiveId = newUuid();
+    await repo.matches.insert({ ...match, match_id: effectiveId });
+    await repo.matches.update({ ...match, superseded_by: effectiveId });
+    const outcome = await new ProviderStatusSyncService(repo).applyLiveFixture(makeFixture(), {}, SECOND_NOW);
+    expect(outcome).toMatchObject({ kind: "applied", match_id: effectiveId });
+    expect(await repo.matches.findById(effectiveId)).toMatchObject({ match_status: MatchStatus.Live });
+    expect(await repo.matches.findById(MATCH_ID)).toEqual({ ...match, superseded_by: effectiveId });
+  });
   it("无效 server_now 在 scheduled 状态同步前 Fail Closed", async () => {
     const { repo, match } = await setup();
     const invalidNow = new Date(Number.NaN);

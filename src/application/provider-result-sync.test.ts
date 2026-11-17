@@ -149,6 +149,18 @@ function withSettlementWriteGuard(
 }
 
 describe("ProviderResultSyncService", () => {
+  it("旧来源 ID 的赛果观测落到有效记录", async () => {
+    const repo = await setup();
+    const original = (await repo.matches.findById(MATCH_ID))!;
+    const effectiveId = newUuid();
+    await repo.matches.insert({ ...original, match_id: effectiveId });
+    await repo.matches.update({ ...original, superseded_by: effectiveId });
+    const outcome = await new ProviderResultSyncService(repo).applyFinishedFixture(makeFixture(), {}, NOW);
+    expect(outcome).toMatchObject({ kind: "applied", match_id: effectiveId });
+    expect(await repo.matchResults.findLatestByMatch(effectiveId)).toMatchObject({ match_id: effectiveId });
+    expect(await repo.providerSnapshots.findByEntity("match", effectiveId)).toEqual([expect.objectContaining({ event_type: "result_observed" })]);
+    expect(await repo.matches.findById(MATCH_ID)).toEqual({ ...original, superseded_by: effectiveId });
+  });
   it("无效 server_now 在事务和 Provider 事实写入前 Fail Closed", async () => {
     const repo = await setup();
     const transactionSpy = vi.spyOn(repo, "withTransaction");
