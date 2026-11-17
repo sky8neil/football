@@ -377,6 +377,7 @@ Page({
     const fallbackSeasonId = previousAvailableSeason(payloadAvailableLevelSeasons, currentLevelSeasonId);
     if (
       this.data.board === "season" &&
+      this.data.scope === "global" &&
       replace === true &&
       this.userChangedSeason !== true &&
       this.autoSeasonFallback !== true &&

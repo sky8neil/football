@@ -171,6 +171,31 @@ describe("ranking season empty-board fallback", () => {
     expect(services.rankings.listRankings).toHaveBeenCalledOnce();
   });
 
+  it("does not fall back when the empty board is a group-scope board", () => {
+    const { page, services } = loadPage();
+    page.setData({ scope: "group", groupId: "group-1" });
+
+    page.applyListResult({ statusCode: 200, data: seasonPayload() }, true);
+
+    expect(page.autoSeasonFallback).toBe(false);
+    expect(page.data.scope).toBe("group");
+    expect(page.data.selectedLevelSeasonId).toBe("2026_2027");
+    expect(page.loadFirstPage).not.toHaveBeenCalled();
+    expect(services.rankings.listRankings).not.toHaveBeenCalled();
+  });
+
+  it("does not fall back when the request fails", () => {
+    const { page, services } = loadPage();
+
+    page.applyListResult({ statusCode: 500, code: "INTERNAL_ERROR", message: "boom" }, true);
+
+    expect(page.autoSeasonFallback).toBe(false);
+    expect(page.data.selectedLevelSeasonId).toBe(null);
+    expect(page.data.state).toBe("error");
+    expect(page.loadFirstPage).not.toHaveBeenCalled();
+    expect(services.rankings.listRankings).not.toHaveBeenCalled();
+  });
+
   it("does not fall back for a paginated response", () => {
     const { page, services } = loadPage();
     page.setData({
