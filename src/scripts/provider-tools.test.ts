@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const MAP_SCRIPT = resolve(REPO_ROOT, "scripts/providers-map-teams.mjs");
 const LOGO_SCRIPT = resolve(REPO_ROOT, "scripts/logos-check.mjs");
+const SCHEMA_SCRIPT = resolve(REPO_ROOT, "scripts/cloudbase-schema.mjs");
 
 function withInput(value: unknown, run: (path: string) => void) {
   const directory = mkdtempSync(resolve(tmpdir(), "football-provider-tools-"));
@@ -93,13 +94,41 @@ describe("logos:check command", () => {
 
 describe("cloudbase:schema command", () => {
   it("lists the provider state collections and unique indexes from the built schema", () => {
-    const output = execFileSync("npm", ["run", "cloudbase:schema", "--", "--namespace", "football_test"], {
-      cwd: REPO_ROOT,
-      encoding: "utf8",
-    });
+    const directory = mkdtempSync(resolve(tmpdir(), "football-schema-build-"));
+    try {
+      writeFileSync(resolve(directory, "package.json"), '{"type":"module"}\n');
+      execFileSync(process.execPath, [resolve(REPO_ROOT, "node_modules/typescript/bin/tsc"), "-p", "tsconfig.build.json", "--outDir", directory], {
+        cwd: REPO_ROOT,
+        encoding: "utf8",
+      });
+      const output = execFileSync(process.execPath, [SCHEMA_SCRIPT, "--dist", directory, "--namespace", "football_test"], {
+        cwd: REPO_ROOT,
+        encoding: "utf8",
+      });
 
-    expect(output).toContain("football_test_provider_usage");
-    expect(output).toContain("football_test_provider_keys uk_provider_key_state_key_id unique=true fields=[key_id:asc]");
-    expect(output).toContain("football_test_provider_leagues uk_provider_league_state_source_job_league unique=true fields=[source_id:asc, job_type:asc, league_id:asc]");
+      expect(output).toContain("football_test_provider_usage");
+      expect(output).toContain("football_test_provider_keys uk_provider_key_state_key_id unique=true fields=[key_id:asc]");
+      expect(output).toContain("football_test_provider_leagues uk_provider_league_state_source_job_league unique=true fields=[source_id:asc, job_type:asc, league_id:asc]");
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("reports missing or invalid dist directories", () => {
+    const directory = mkdtempSync(resolve(tmpdir(), "football-schema-invalid-"));
+    try {
+      for (const distArgs of [["--dist"], ["--dist", "--namespace", "football_test"]]) {
+        const result = spawnSync(process.execPath, [SCHEMA_SCRIPT, ...distArgs], { cwd: REPO_ROOT, encoding: "utf8" });
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toContain("Provide --dist <dir>");
+      }
+      for (const invalidPath of [resolve(directory, "missing"), SCHEMA_SCRIPT]) {
+        const result = spawnSync(process.execPath, [SCHEMA_SCRIPT, "--dist", invalidPath], { cwd: REPO_ROOT, encoding: "utf8" });
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toContain("Dist directory does not exist or is not a directory");
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 });
