@@ -345,4 +345,63 @@ UI 至少检查窄屏布局、三个数字、0 值、精确命中标签、加载
 - [ ] 补入实际执行命令、测试结果及人工检查范围，不预填“通过”。
 - [ ] 总计划保留入口；收官、小结与阶段接口规则在本文维护，待确认参数已明确。
 
-切片按 P0–P4 独立提交，回滚按依赖反序。首版不擅自删除历史比赛或更改正常结算事实；对新增表/集合、索引与必要的旧改期记录预测迁移均单独记录迁移与回滚方案。本文件当前仅为设计，以上条目尚未验收。
+切片按 P0–P4 独立提交，回滚按依赖反序。首版不擅自删除历史比赛或更改正常结算事实；对新增表/集合、索引与必要的旧改期记录预测迁移均单独记录迁移与回滚方案。
+
+---
+
+## 11. 验收记录（P5 独立复核）
+
+本节记录 2026-11-17 在 `feat/resource-point-opt` 分支上的实际执行结果，命令与输出均为当次真实产出。
+
+### 11.1 执行命令与结果
+
+| 命令 | 结果 |
+|---|---|
+| `npm run typecheck` | 退出 0 |
+| `npx tsc -p tsconfig.build.json --noEmit` | 退出 0 |
+| `npx tsc -p tsconfig.cloudfunction.json --noEmit` | 退出 0 |
+| `npx tsc -p tsconfig.cloudfunction.json --noEmit --listFiles` | 传递引入 `league-season-status.ts`、`league-season-summary.ts`、`league-season-maintenance.ts`、`league-status-service.ts`、`personal-league-summary-service.ts`、`api/v1/league-status.ts`、`api/v1/personal-league-summary.ts`，CloudBase 入口打包覆盖新模块 |
+| `npx vitest run`（全量） | 231 文件通过 / 6 跳过；2254 项通过 / 23 跳过 |
+
+> 更正：§P5 原计划命令 `node --test miniprogram/pages/matches/matches.offseason.test.mjs` 不成立 —— 该文件从 `vitest` 导入 `describe/it/expect`，`node --test` 会因 “Vitest failed to access its internal state” 直接失败。正确命令为 `npx vitest run miniprogram/pages/matches/matches.offseason.test.mjs`（14 项通过）。
+
+### 11.2 业务验收项与证据
+
+| 验收项 | 证据 | 结果 |
+|---|---|---|
+| 旧数据解码后身份正确 | `src/infrastructure/document-codec.test.ts:120`「历史 Match 与 Prediction 读取时补逻辑身份默认值」，该文件 9 项通过 | 通过 |
+| 新增来源 ID 不产生第二次预测资格 | `src/application/predictions.test.ts:138`「同一 `canonical_match_id` 的不同比赛记录只能提交一份预测」、`:157`「归并前已提交的预测仍阻止新记录重复预测」，该文件 27 项通过 | 通过 |
+| 旧来源更新到达有效记录 | `src/application/provider-status-sync.test.ts:222`「旧来源 ID 的状态更新落到有效记录」，该文件 30 项通过；`src/application/match-identity.test.ts` 覆盖一跳/三跳取代解析 | 通过 |
+| 已有唯一预测可正常结算 | `src/application/settlement-item-application-service.test.ts`（14 项）含 §15.2「首次 0 -> v3 真实 apply：prediction applied_result_version=3」 | 通过 |
+| 重复预测冲突先复核 | `src/application/match-identity-migration.test.ts:40`「reviews duplicate predictions without choosing either update」、`:58` 入向取代无法安全重定向时列入复核；`src/domain/league-season-summary.test.ts:75`「blocks duplicate predictions instead of combining or selecting hits」 | 通过 |
+| 迁移重复执行无新增修改 | `src/application/match-identity-migration.test.ts:50`「is idempotent after applying the plan in memory」；生产库执行后重跑 `--dry-run` 得 `match_updates 0 / prediction_updates 0 / review 0` | 通过 |
+| 换季后旧季补赛首次发现仍归旧季 | `src/application/provider-schedule-sync.test.ts:56`「跨年补赛发现时归入目标赛季且不写入参赛名单」、`:75`「来源未返回赛季时发现记录使用显式目标季」 | 通过 |
+| 中超归并后由维护任务核验并自行收官 | 见 §11.4，未手工写入 `completed` | 通过 |
+
+### 11.3 VPS PostgreSQL 核验（schema `football_dev`）
+
+```
+matches 总数            1998
+含 canonical_match_id   1998（100%）
+superseded_by 非空         6
+predictions                0
+```
+
+### 11.4 中超 2026 收官链路
+
+维护任务（`leagueSeasons.run`）实际输出：
+
+```json
+{"event":"league_season_transition","league_id":"chinese_super_league","season_id":"2026","from":"open","to":"completed"}
+{"event":"league_season_maintenance_result","seasons_checked":6,"completed":1,"reopened":0}
+```
+
+库侧落值：`schedule_status = locked`、`completion_status = completed`、`completion_confirmed_at = 2026-11-17T03:35:10.465Z`、`reopen_count = 0`。中超 2026 比赛 246 条，其中 240 条为有效记录、6 条改期旧记录 `superseded_by` 已指向有效记录。
+
+### 11.5 未完成 / 未验证项（如实标记）
+
+1. **CloudBase 部署未核验**：本机缺少 CloudBase 凭据文件，双部署一致性、`uk_user_canonical_match` 索引创建状态仍待上线前在真实环境确认。
+2. **真实微信开发者工具未执行**：窄屏布局、三个数字、0 值文案、精确命中标签、加载/失败/重试与等级赛季排行榜入口的实际渲染未人工确认。
+3. **登录态 HTTP 验证未执行**：`/v1/predictions/summary` 需要登录身份，当前库 `users = 0`、`predictions = 0`，只能靠单测覆盖；`/v1/leagues/status` 的游客路径可在重启后做真实 HTTP 验证。
+4. **`RANKING_FIRST_PERIOD_KEY`** 仍为占位 `2026-W31`，按用户要求最后单独拍板。
+5. `season_teams` 历史 112 行的 `source` 仍为旧值 `schedule`，数值本身正确，待下一轮 `future_schedule` 由 `team-sync` 以 `map_teams` 重写。
