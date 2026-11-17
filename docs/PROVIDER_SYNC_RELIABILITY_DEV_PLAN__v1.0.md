@@ -246,6 +246,7 @@
 **涉及文件：**`ops/vps/football-jobs.timer`、`ops/vps/README.md`。
 
 1. 调度周期为**已确认的 3 分钟**：`OnCalendar=*-*-* *:00/3:00`。模板与实际安装一致。（2026-11-17 复核确认；早期"10 分钟模板 / 15 分钟安装"的口径作废，不再作为运行边界依据。）
+   - **部署目标差异**：`SCHEDULER_TICK_MINUTES = { vps: 3, cloudbase: 15 }`。3 分钟是 VPS systemd timer 的粒度；CloudBase 部署目标仍按 15 分钟唤醒。文档中的"3 分钟"仅指 VPS。
 2. 保留原有 Persistent、随机延迟设置；不改实际安装的 unit。
 3. README 说明：短退避与更短的比分轮询只在下次 tick 唤起时执行，3 分钟调度是刷新频率上限。
 4. 提出频需另行重算各渠道预算（`of` 120 次/日、`5d` hourly_cap 40 等），不在本期启用。
