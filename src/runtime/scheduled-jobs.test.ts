@@ -96,7 +96,7 @@ function runtimeStub(overrides: Record<string, unknown> = {}): ApplicationRuntim
     providerRegistry: { beginTickCache: vi.fn(), endTickCache: vi.fn(), dueLeagues: vi.fn(async () => []) },
     providerDispatcher: { run: vi.fn() },
     providerReconcile: { run: vi.fn(async () => ({ kind: "completed" })) },
-    leagueSeasons: { run: vi.fn(async () => ({ seasons_checked: 0, completed: 0, reopened: 0, teams_written: 0 })) },
+    leagueSeasons: { run: vi.fn(async () => ({ seasons_checked: 0, completed: 0, reopened: 0 })) },
     providerStaleRecovery: { run: vi.fn(async () => ({ kind: "completed", items_failed: 0 })) },
     schedulerState: {
       getSettlementFallback: vi.fn(async () => null),
@@ -241,7 +241,7 @@ describe("runScheduledJobs", () => {
       jobs_run: expect.arrayContaining([SyncJobType.PeriodFinalize, SyncJobType.DailyConsistency]),
     }));
     expect(result.settlements).toEqual([]);
-    expect(result.leagueSeasons).toEqual({ seasons_checked: 0, completed: 0, reopened: 0, teams_written: 0 });
+    expect(result.leagueSeasons).toEqual({ seasons_checked: 0, completed: 0, reopened: 0 });
     expect(result.errors).toEqual([]);
   });
 

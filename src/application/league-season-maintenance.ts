@@ -8,7 +8,6 @@ export interface LeagueSeasonMaintenanceResult {
   seasons_checked: number;
   completed: number;
   reopened: number;
-  teams_written: number;
 }
 
 export class LeagueSeasonMaintenanceService {
@@ -18,22 +17,16 @@ export class LeagueSeasonMaintenanceService {
     const seasons = this.repo.leagueSeasons;
     const teams = this.repo.seasonTeams;
     if (!seasons || !teams) throw new Error("league season repositories unavailable");
-    const result = { seasons_checked: 0, completed: 0, reopened: 0, teams_written: 0 };
+    const result = { seasons_checked: 0, completed: 0, reopened: 0 };
     for (const league of SUPPORTED_LEAGUES) {
       const known = await seasons.findByLeague(league.league_id);
       const seasonIds = [...new Set([...known.map((row) => row.season_id), activeLeagueSeason(league, serverNow).season_id])];
       for (const seasonId of seasonIds) {
         const matches = (await this.repo.matches.findBySeason(seasonId)).filter((match) => match.league_id === league.league_id);
-        const teamIds = [...new Set(matches.filter((match) => match.superseded_by == null)
-          .flatMap((match) => [match.home_team_id, match.away_team_id]))].sort();
-        const existingTeams = await teams.findByLeagueSeason(league.league_id, seasonId);
-        const existingIds = existingTeams.map((row) => row.team_id).sort();
-        if (teamIds.length !== existingIds.length || teamIds.some((teamId, index) => teamId !== existingIds[index])) {
-          await teams.upsertMany(teamIds.map((teamId) => (existingTeams.find((row) => row.team_id === teamId) ?? {
-            schema_version: SCHEMA_VERSION, league_id: league.league_id, season_id: seasonId, team_id: teamId,
-            source: "schedule" as const, provider: null, provider_team_id: null, created_at: serverNow, updated_at: serverNow,
-          })));
-          result.teams_written += teamIds.length;
+        const teamIds = [...new Set((await teams.findByLeagueSeason(league.league_id, seasonId)).map((team) => team.team_id))].sort();
+        if (teamIds.length === 0) {
+          this.log?.({ event: "league_season_roster_missing", league_id: league.league_id, season_id: seasonId,
+            matches: matches.filter((match) => match.superseded_by == null).length });
         }
         result.seasons_checked++;
         const format: LeagueSeasonFormat = { kind: "double_round_robin", round_count: league.round_max, team_count: league.round_max / 2 + 1 };
