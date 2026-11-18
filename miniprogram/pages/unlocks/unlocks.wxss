@@ -13,3 +13,15 @@
 .error {
   min-height: 80rpx;
 }
+
+.empty-title {
+  font-weight: 600;
+}
+
+.empty-copy {
+  margin-top: 16rpx;
+}
+
+.empty button {
+  margin-top: 24rpx;
+}

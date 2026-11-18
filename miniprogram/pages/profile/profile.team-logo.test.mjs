@@ -6,7 +6,7 @@ function load(cache = {}) {
   const listMatches = vi.fn();
   runInNewContext(readFileSync(new URL("./profile.js", import.meta.url), "utf8"), {
     Page: value => { definition = value; },
-    require: name => name.includes("matches.js") ? { listMatches } : name.includes("logo-registry") ? { PLACEHOLDER: "placeholder.png", getTeamLogo: (league, team) => league + "/" + team.name + ".png" } : { headerHeight: () => 88 },
+    require: name => name.includes("matches.js") ? { listMatches } : name.includes("logo-registry") ? { PLACEHOLDER: "placeholder.png", getTeamLogo: (league, team) => league + "/" + team.name + ".png" } : name.includes("level-presentation") ? { buildLevelView: () => ({}) } : name.includes("team-presentation") ? { presentTeam: (team) => ({ teamId: team && team.team_id, nameZh: "球队资料待补全", logo: "", missing: true }) } : name.includes("team-registry") ? { findTeam: () => null } : { headerHeight: () => 88 },
     wx: { getStorageSync: key => cache[key], setStorageSync: (key, value) => { cache[key] = value; } },
   });
   const page = { ...definition, data: structuredClone(definition.data), setData(value) { Object.assign(this.data, value); } };

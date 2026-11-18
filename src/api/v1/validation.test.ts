@@ -124,7 +124,7 @@ describe("mapErrorToHttp", () => {
     const mapped = mapErrorToHttp(new Error("boom"), "req-2");
     expect(mapped.status).toBe(500);
     expect(mapped.body.code).toBe("INTERNAL_ERROR");
-    expect(mapped.body.message).toBe("服务器内部错误");
+    expect(mapped.body.message).toBe("服务器内部错误，请稍后重试");
   });
 
   it("envelope 携带 request_id 与 details", () => {

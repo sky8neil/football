@@ -6,6 +6,7 @@ const PAGE = new URL("./rankings.js", import.meta.url);
 const CONFIG = new URL("../../config.js", import.meta.url);
 const COPY = new URL("../../utils/rankings-copy.js", import.meta.url);
 const MODEL = new URL("../../utils/rankings-view-model.js", import.meta.url);
+const LEVEL_SEASON = new URL("../../utils/level-season.js", import.meta.url);
 
 function loadCommonJs(url, dependencies = {}) {
   const module = { exports: {} };
@@ -39,6 +40,7 @@ function loadPage() {
     "../../utils/rankings-view-model.js": viewModel,
     "../../utils/ui-layout.js": { headerHeight: () => 88 },
     "../../utils/rankings-copy.js": copy,
+    "../../utils/level-season.js": loadCommonJs(LEVEL_SEASON),
   };
   runInNewContext(readFileSync(PAGE, "utf8"), {
     Page: (value) => { definition = value; },

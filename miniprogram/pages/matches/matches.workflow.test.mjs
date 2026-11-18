@@ -49,6 +49,16 @@ function loadPage({ matchesResult, submitResult } = {}) {
   const nickname = { resolveNickname: () => "球友", truncateNickname: (value) => value };
   loadCommonJs(MATCHES_JS, (id) => {
     if (id === "../../utils/logo-registry.js") return logoRegistry;
+    if (id === "../../utils/team-presentation.js") {
+      return {
+        presentTeam: (team, leagueId) => ({
+          teamId: team && team.team_id,
+          nameZh: "球队资料待补全",
+          logo: logoRegistry.getTeamLogo(leagueId, team),
+          missing: true,
+        }),
+      };
+    }
     if (id === "../../utils/nickname.js") return nickname;
     if (id === "../../services/matches.js") return { listMatches };
     if (id === "../../services/leagues.js") return { getLeagueStatus: () => Promise.resolve({ statusCode: 200, data: { items: [] } }) };
@@ -60,6 +70,22 @@ function loadPage({ matchesResult, submitResult } = {}) {
     }
     if (id === "../../utils/crowd-copy.js") return { COPY: { homeLink: "大家怎么选 ›" } };
     if (id === "../../utils/ui-layout.js") return { headerHeight: () => 88 };
+    if (id === "../../utils/match-presentation.js") {
+      return loadCommonJs(join(HERE, "..", "..", "utils", "match-presentation.js"), () => {
+        throw new Error("match-presentation has no dependencies");
+      });
+    }
+    if (id === "../../utils/match-card-state.js") {
+      return loadCommonJs(join(HERE, "..", "..", "utils", "match-card-state.js"), () => {
+        throw new Error("match-card-state has no dependencies");
+      });
+    }
+    if (id === "../../utils/rankings-view-model.js") return { currentSeasonId: () => "2026_2027" };
+    if (id === "../../utils/level-season.js") {
+      return loadCommonJs(join(HERE, "..", "..", "utils", "level-season.js"), () => {
+        throw new Error("level-season has no dependencies");
+      });
+    }
     throw new Error(`Unexpected require: ${id}`);
   });
   const page = Object.assign({}, pageConfig, {

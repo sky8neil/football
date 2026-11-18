@@ -3,9 +3,12 @@ const { getMyLevels } = require("../../services/levels.js");
 const { listMyGroups, createGroup } = require("../../services/groups.js");
 const { getMatchDetail, listMatches } = require("../../services/matches.js");
 const { getTeamLogo, PLACEHOLDER } = require("../../utils/logo-registry.js");
+const { presentTeam } = require("../../utils/team-presentation.js");
+const { findTeam } = require("../../utils/team-registry.js");
 const { listMyPredictions } = require("../../services/predictions.js");
 const { formatShanghaiKickoff } = require("../../utils/prediction-history.js");
 const { headerHeight } = require("../../utils/ui-layout.js");
+const { buildLevelView } = require("../../utils/level-presentation.js");
 const LEVEL_NAMES = ["", "青训新人", "潜力新星", "崭露头角", "坐稳主力", "球队核心", "顶级球星"];
 const COPY = require("../../utils/rankings-copy.js");
 
@@ -35,6 +38,13 @@ function applyErrorState(page, result) {
     page.setData({
       state: "rateLimited",
       errorMessage: result.message || result.code,
+    });
+    return true;
+  }
+  if (result.statusCode === 500 || result.code === "INTERNAL_ERROR") {
+    page.setData({
+      state: "error",
+      errorMessage: "暂时无法读取你的等级数据，请稍后重试",
     });
     return true;
   }
@@ -117,18 +127,27 @@ Page({
       const level = Number(profile.career_level) || 1;
       const nextThreshold = ({2: 80, 3: 170, 4: 380, 5: 630})[level] ?? null;
       const points = career.b_points == null ? null : Number(career.b_points);
+      const levelView = buildLevelView({
+        level,
+        bPoints: points,
+        isRated: career.is_rated,
+        remainingToRated: career.remaining_to_rated,
+        nextThreshold,
+      });
       const progressPercent = points === null ? 0 : nextThreshold === null ? (level === 6 ? 100 : 0) : nextThreshold === 0 ? 0 : Math.min(100, Math.floor(points / nextThreshold * 100));
       const startLevel = Math.min(4, Math.max(1, level - 1));
       this.setData({
         userId: profile.user_id,
         favoriteTeamId: profile.favorite_team_id || null,
         favoriteTeamLogo: profile.favorite_team_id && wx.getStorageSync("team_logo:" + profile.favorite_team_id) || PLACEHOLDER,
-        maxLevel: level === 6,
         levelName: LEVEL_NAMES[level],
         seasonLevelName: LEVEL_NAMES[Number(profile.season_level) || 1],
-        bPoints: points === null ? "待评估" : String(points),
-        nextThreshold, progressPercent, progressDegrees: progressPercent * 3.6,
-        remainingPoints: nextThreshold === null || points === null ? null : Math.max(0, nextThreshold - points),
+        progressDegrees: progressPercent * 3.6,
+        levelViewState: levelView.state,
+        levelViewTitle: levelView.title,
+        levelViewDetail: levelView.detail,
+        levelProgressPercent: levelView.progressPercent,
+        levelShowProgress: levelView.showProgress,
         performanceText: career.is_rated ? "以每周评估结果为准" : "还需 " + (career.remaining_to_rated || 0) + " 场有效预测定级",
         levelPath: [startLevel, startLevel + 1, startLevel + 2].map(value => ({level:value, name:LEVEL_NAMES[value], kind:value === level ? "current" : value === level + 1 ? "next" : ""})),
         state: "ready",
@@ -137,7 +156,7 @@ Page({
         avatarText: Array.from(profile.nickname || "球")[0] || "球",
         favoriteTeamText: profile.favorite_team_id === null || profile.favorite_team_id === undefined
           ? "未设置"
-          : (wx.getStorageSync("team_name:" + profile.favorite_team_id) || "已选择球队"),
+          : ((findTeam(profile.favorite_team_id) || {}).name_zh || wx.getStorageSync("team_name:" + profile.favorite_team_id) || "已选择球队"),
         careerPoints: String(profile.career_points),
         careerValidPredictions: String(profile.career_valid_predictions),
         careerExactHits: String(profile.career_exact_hits),
@@ -184,7 +203,10 @@ Page({
           const teamLogo = getTeamLogo(match.league_id, team);
           wx.setStorageSync("team_name:" + teamId, team.name);
           wx.setStorageSync("team_logo:" + teamId, teamLogo);
-          this.setData({ favoriteTeamText: team.name, favoriteTeamLogo: teamLogo });
+          this.setData({
+            favoriteTeamText: (findTeam(teamId) || {}).name_zh || team.name,
+            favoriteTeamLogo: teamLogo,
+          });
           return;
         }
         cursor = (payload.page || {}).next_cursor || null;
@@ -216,11 +238,13 @@ Page({
       this.setData({ recentState: "ready", recentPredictions: items.map((item, index) => {
         const detail = details[index];
         const match = detail && detail.statusCode === 200 && detail.data || {};
+        const homePresented = presentTeam(match.home_team, item.league_id);
+        const awayPresented = presentTeam(match.away_team, item.league_id);
         return ({
-        homeName: match.home_team && match.home_team.name || "主队",
-        awayName: match.away_team && match.away_team.name || "客队",
-        homeLogo: getTeamLogo(item.league_id, match.home_team),
-        awayLogo: getTeamLogo(item.league_id, match.away_team),
+        homeNameZh: homePresented.nameZh,
+        awayNameZh: awayPresented.nameZh,
+        homeLogo: homePresented.logo,
+        awayLogo: awayPresented.logo,
         ...item,
         kickoffText: formatShanghaiKickoff(item.kickoff_at),
         predictionText: item.pred_home_score + " : " + item.pred_away_score,

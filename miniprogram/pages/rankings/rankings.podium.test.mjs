@@ -5,7 +5,11 @@ function load(board) {
   let config;
   runInNewContext(readFileSync(new URL("./rankings.js", import.meta.url), "utf8"), {
     Page: value => { config = value; },
-    require: name => name.includes("rankings-view-model") ? { buildRankingViewModel: () => ({ weekOptions: [], showPodium: true }) } : { headerHeight: () => 88 },
+    require: name => {
+      if (name.includes("rankings-view-model")) return { buildRankingViewModel: () => ({ weekOptions: [], showPodium: true }) };
+      if (name.includes("level-season")) return { formatLevelSeasonLabel: () => "" };
+      return { headerHeight: () => 88 };
+    },
   });
   return { ...config, data: { ...structuredClone(config.data), board }, setData(value) { Object.assign(this.data, value); } };
 }

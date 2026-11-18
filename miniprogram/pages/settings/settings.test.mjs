@@ -11,7 +11,7 @@ function load({ transport = "http" } = {}) {
   const wx = { getStorageSync: vi.fn(), setStorageSync: vi.fn(), navigateBack: vi.fn(), showToast: vi.fn(), showModal: vi.fn(), reLaunch: vi.fn() };
   runInNewContext(readFileSync(new URL("./settings.js", import.meta.url), "utf8"), {
     Page: value => { definition = value; }, wx,
-    require: name => name.includes("profile") ? { getMyProfile, updateMyProfile } : name.includes("matches") ? { listMatches } : name.includes("nickname") ? { storeNickname } : name.includes("auth") ? { clearAuth } : name.includes("config") ? { transport } : { getTeamLogo: () => "logo.png" },
+    require: name => name.includes("profile") ? { getMyProfile, updateMyProfile } : name.includes("matches") ? { listMatches } : name.includes("nickname") ? { storeNickname } : name.includes("auth") ? { clearAuth } : name.includes("config") ? { transport } : name.includes("team-presentation") ? { presentTeam: (team) => ({ teamId: team && team.team_id, nameZh: "球队资料待补全", logo: "logo.png", missing: true }) } : name.includes("team-registry") ? { findTeam: () => null } : { getTeamLogo: () => "logo.png" },
   });
   const page = { ...definition, data: structuredClone(definition.data), setData(value) { Object.assign(this.data, value); } };
   return { page, getMyProfile, updateMyProfile, listMatches, storeNickname, clearAuth, wx };

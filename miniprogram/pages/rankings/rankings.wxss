@@ -83,6 +83,19 @@ view {letter-spacing:0!important}
 .hero-metrics>view:last-child .html-small {opacity:.8}
 .personal-status {margin-top:15px;padding-top:12px;border-top:1px solid rgba(255,255,255,.22);font-size:11px;line-height:1.7}
 .hero .personal-status .html-p {font-size:11px;margin:0}
+.page .hero .history-season-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  margin-top: 10px;
+  padding: 0 16px;
+  border-radius: 10px;
+  background: var(--deep-accent, #b9f08f);
+  color: var(--navy-900, #0e2d20);
+  font-size: 13px;
+  font-weight: 700;
+}
 .list-heading {align-items:flex-start;gap:12px}
 .list-heading .html-small {text-align:right;max-width:145px}
 .exploration-1 .content {padding-bottom:135px}
@@ -225,6 +238,19 @@ button::after { border:0; }
 .secondary-content { position:relative;z-index:1; padding-top:var(--native-header-height,88px); }
 .content { padding-top:6px; }
 .state-panel,.loading { padding:32px 16px;text-align:center; }
+.state-panel .go-predict {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+  margin-top: 16px;
+  padding: 0 24px;
+  border-radius: 10px;
+  background: var(--cta-background);
+  color: var(--text-on-brand);
+  font-size: 14px;
+  font-weight: 700;
+}
 .html-b { font-weight:700; }
 .html-small { font-size:10px; }
 .html-h1,.html-h2,.html-p { margin:0; }

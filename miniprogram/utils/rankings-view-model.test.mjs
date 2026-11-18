@@ -125,4 +125,46 @@ describe("rankings view model", () => {
     expect(model.buildWeekOptions("2026-W02", "2025-W52").map((item) => item.key))
       .toEqual(["2026-W02", "2026-W01", "2025-W52"]);
   });
+
+  it("keeps empty copy board-specific and never promises first place", () => {
+    const emptyPayload = { entry_count: 0, available_boards: ["week", "career", "strength", "season"] };
+    const week = model.buildRankingViewModel({ board: "week", scope: "global", payload: emptyPayload });
+    const strength = model.buildRankingViewModel({ board: "strength", scope: "global", payload: emptyPayload });
+    const career = model.buildRankingViewModel({ board: "career", scope: "global", payload: emptyPayload });
+    const season = model.buildRankingViewModel({ board: "season", scope: "global", payload: emptyPayload });
+    const group = model.buildRankingViewModel({ board: "week", scope: "group", payload: emptyPayload });
+    for (const result of [week, strength, career, season, group]) {
+      expect(result.emptyText).not.toContain("你就是第一名");
+    }
+    expect(week.emptyText).not.toBe(strength.emptyText);
+    expect(strength.emptyText).toContain("50");
+    expect(week.emptyText).toContain("第一场预测结算后");
+  });
+
+  it("does not claim a missing prediction when me is null", () => {
+    const result = model.buildRankingViewModel({
+      board: "week",
+      scope: "global",
+      payload: { entry_count: 0, me: null, available_boards: ["week"] },
+    });
+    expect(result.standingStatus).toBe(copy.standingNeutral);
+    expect(result.standingStatus).not.toMatch(/没有预测/);
+    expect(result.emptyText).not.toMatch(/没有预测/);
+    expect(result.standingStatus).not.toMatch(/待结算/);
+    expect(result.emptyText).not.toMatch(/待结算/);
+  });
+
+  it("states a ranked place once without repeating the rank", () => {
+    const result = model.buildRankingViewModel({
+      board: "week",
+      scope: "global",
+      payload: {
+        entry_count: 20,
+        me: { status: "ranked", rank: 2 },
+        available_boards: ["week", "career", "strength"],
+      },
+    });
+    expect(result.standingStatus).toBe("你位于全站第 2 名。");
+    expect(result.standingStatus).not.toContain("排名第");
+  });
 });

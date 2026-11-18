@@ -29,12 +29,22 @@ function loadPage({ detail, crowd } = {}) {
   } })));
   const copy = loadCommonJs(join(HERE, "..", "..", "utils", "crowd-copy.js"), {});
   const vm = loadCommonJs(join(HERE, "..", "..", "utils", "crowd-view-model.js"), { "./crowd-copy.js": copy });
+  const presentation = loadCommonJs(join(HERE, "..", "..", "utils", "match-presentation.js"), {});
   loadCommonJs(join(HERE, "match-detail.js"), {
     "../../services/matches.js": { getMatchDetail, getMatchCrowd },
     "../../services/predictions.js": { createUuidV4: () => "uuid", submitPrediction: vi.fn() },
     "../../utils/logo-registry.js": { getTeamLogo: () => "" },
+    "../../utils/team-presentation.js": {
+      presentTeam: (team) => ({
+        teamId: team && team.team_id,
+        nameZh: "球队资料待补全",
+        logo: "",
+        missing: true,
+      }),
+    },
     "../../utils/crowd-view-model.js": vm,
     "../../utils/crowd-copy.js": copy,
+    "../../utils/match-presentation.js": presentation,
   });
   const page = Object.assign({}, pageConfig, {
     data: JSON.parse(JSON.stringify(pageConfig.data)),

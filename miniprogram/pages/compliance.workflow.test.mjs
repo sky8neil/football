@@ -85,7 +85,7 @@ describe("compliance review functional regressions", () => {
     expect(wx.navigateTo).toHaveBeenCalledWith({ url: "/pages/groups/detail?group_id=created-group&created=1&owned_count=1" });
   });
 
-  it("continues history paging to the end and exposes the terminal message", async () => {
+  it("pages history only when 加载更多 is tapped and exposes the terminal message", async () => {
     const prediction = (id) => ({
       prediction_id: id, match_id: id, kickoff_at: new Date().toISOString(),
       league_id: "premier_league", match_status: "finished", match_score: 3,
@@ -99,11 +99,14 @@ describe("compliance review functional regressions", () => {
       } });
     const { page } = loadPage("my-predictions/my-predictions.js", { predictions: { listMyPredictions } });
     page.onLoad();
-    await vi.waitFor(() => expect(page.data.items).toHaveLength(2));
-    expect(listMyPredictions).toHaveBeenLastCalledWith({ cursor: "next-page" });
-    expect(page.data.hasMore).toBe(false);
+    await vi.waitFor(() => expect(page.data.items).toHaveLength(1));
+    expect(listMyPredictions).toHaveBeenCalledTimes(1);
+    expect(page.data.hasMore).toBe(true);
     expect(page.data.endText).toBe("没有更早的预测了");
     page.onMore();
+    await vi.waitFor(() => expect(page.data.items).toHaveLength(2));
+    expect(listMyPredictions).toHaveBeenLastCalledWith({ cursor: "next-page" });
     expect(listMyPredictions).toHaveBeenCalledTimes(2);
+    expect(page.data.hasMore).toBe(false);
   });
 });

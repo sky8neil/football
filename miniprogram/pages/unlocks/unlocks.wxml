@@ -1,6 +1,10 @@
 <view class="page">
   <view wx:if="{{state === 'loading'}}" class="loading"></view>
-  <view wx:elif="{{state === 'empty'}}" class="empty">暂无解锁记录</view>
+  <view wx:elif="{{state === 'empty'}}" class="empty">
+    <view class="empty-title">暂无解锁记录</view>
+    <view class="empty-copy">解锁按生涯积分达标后自动记录；已解锁记录不会因赛果修正而回收。</view>
+    <button bindtap="onGoPredict">去预测</button>
+  </view>
   <view wx:elif="{{state === 'unauthorized'}}" class="error">{{errorMessage}}</view>
   <view wx:elif="{{state === 'userNotFound'}}" class="error">{{errorMessage}}</view>
   <view wx:elif="{{state === 'userDeleted'}}" class="error">{{errorMessage}}</view>

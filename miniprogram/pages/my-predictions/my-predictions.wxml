@@ -2,8 +2,8 @@
   <image class="stadium-background" src="/assets/images/home-pitch-bg.webp" mode="aspectFill" />
   <view class="stadium-overlay"></view>
   <view class="secondary-content">
-  <view class="page-title">最近预测</view>
-  <view class="page-subtitle">回顾最近 8 周的预测记录</view>
+  <view class="page-title">我的预测记录</view>
+  <view class="page-subtitle">按比赛周分组，最新的排在前</view>
   <view wx:if="{{state === 'loading'}}" class="loading"></view>
   <view wx:elif="{{state === 'unauthorized'}}" class="state-panel">
     <text>登录后查看你的预测</text>
@@ -31,14 +31,14 @@
         bindtap="onCardTap"
       >
         <view class="card-head">
-          <view class="league"><image src="{{prediction.leagueLogo}}" mode="aspectFit"></image><text>{{prediction.leagueName}} · {{prediction.round_id}}</text></view>
+          <view class="league"><image src="{{prediction.leagueLogo}}" mode="aspectFit"></image><text>{{prediction.leagueRoundText}}</text></view>
           <text class="status">{{prediction.statusText}}</text>
         </view>
         <view class="match-row">
           <view class="teams-inline">
-            <view class="team"><image src="{{prediction.homeLogo}}" mode="aspectFit"></image><text>{{prediction.homeName}}</text></view>
+            <view class="team"><image src="{{prediction.homeLogo}}" mode="aspectFit"></image><text>{{prediction.homeNameZh}}</text></view>
             <text class="versus">vs</text>
-            <view class="team away"><image src="{{prediction.awayLogo}}" mode="aspectFit"></image><text>{{prediction.awayName}}</text></view>
+            <view class="team away"><image src="{{prediction.awayLogo}}" mode="aspectFit"></image><text>{{prediction.awayNameZh}}</text></view>
           </view>
           <text class="prediction-points">{{prediction.pointsText}}</text>
         </view>

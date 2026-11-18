@@ -1,12 +1,9 @@
-const { listMatches } = require("../../services/matches.js");
 const { listMyPredictions } = require("../../services/predictions.js");
 const COPY = require("../../utils/rankings-copy.js");
-const { getTeamLogo, getLeagueLogo } = require("../../utils/logo-registry.js");
-const {
-  formatShanghaiKickoff,
-  groupPredictionsByWeek,
-  hasReachedEightWeekHistory,
-} = require("../../utils/prediction-history.js");
+const { getLeagueLogo } = require("../../utils/logo-registry.js");
+const { presentTeam } = require("../../utils/team-presentation.js");
+const { groupPredictionsByWeek } = require("../../utils/prediction-history.js");
+const { formatRound, formatKickoff } = require("../../utils/match-presentation.js");
 
 const LEAGUE_NAMES = {
   premier_league: "英超",
@@ -24,7 +21,6 @@ const MATCH_STATUS = {
   cancelled: "取消",
   abandoned: "腰斩",
 };
-const MATCH_QUERY_WINDOW_MS = 89 * 24 * 60 * 60 * 1000;
 
 function formatScore(home, away) {
   return home === null || home === undefined || away === null || away === undefined
@@ -32,11 +28,12 @@ function formatScore(home, away) {
     : `${home} : ${away}`;
 }
 
-function presentItem(item, matches) {
-  const match = matches[item.match_id] || {};
-  const homeTeam = match.home_team || {};
-  const awayTeam = match.away_team || {};
+function presentItem(item) {
   const leagueId = item.league_id;
+  const homePresented = presentTeam({ team_id: item.home_team_id }, leagueId);
+  const awayPresented = presentTeam({ team_id: item.away_team_id }, leagueId);
+  const leagueName = LEAGUE_NAMES[leagueId] || "比赛";
+  const roundText = formatRound(item.round_id);
   const points = item.match_score === null ? "待结算" : `+${item.match_score}`;
   const resultText = item.exact_hit === true
     ? "精确命中"
@@ -45,38 +42,21 @@ function presentItem(item, matches) {
       : item.match_score === null ? "等待比赛结算" : "未命中";
   return {
     ...item,
-    homeName: homeTeam.name || "主队",
-    awayName: awayTeam.name || "客队",
-    homeLogo: getTeamLogo(leagueId, homeTeam),
-    awayLogo: getTeamLogo(leagueId, awayTeam),
+    homeNameZh: homePresented.nameZh,
+    awayNameZh: awayPresented.nameZh,
+    homeLogo: homePresented.logo,
+    awayLogo: awayPresented.logo,
     leagueLogo: getLeagueLogo(leagueId),
-    leagueName: LEAGUE_NAMES[leagueId] || "比赛",
-    kickoffText: formatShanghaiKickoff(item.kickoff_at),
+    leagueName,
+    roundText,
+    leagueRoundText: roundText ? `${leagueName} · ${roundText}` : leagueName,
+    kickoffText: formatKickoff(item.kickoff_at),
     predictionText: `${item.pred_home_score} : ${item.pred_away_score}`,
     actualText: formatScore(item.regular_home_score, item.regular_away_score),
     pointsText: points,
     resultText,
     statusText: MATCH_STATUS[item.match_status] || item.match_status,
   };
-}
-
-async function resolveMatchFacts(items) {
-  const times = items.map((item) => Date.parse(item.kickoff_at || "")).filter(Number.isFinite);
-  if (times.length === 0) return {};
-  const from = Math.min(...times);
-  const until = Math.max(...times) + 1;
-  const facts = {};
-  for (let cursor = from; cursor < until; cursor += MATCH_QUERY_WINDOW_MS) {
-    const end = Math.min(until, cursor + MATCH_QUERY_WINDOW_MS);
-    const result = await listMatches({
-      from: new Date(cursor).toISOString(),
-      to: new Date(end).toISOString(),
-      limit: 100,
-    });
-    if (result.statusCode !== 200 || !result.data || !Array.isArray(result.data.items)) continue;
-    for (const match of result.data.items) facts[match.match_id] = match;
-  }
-  return facts;
 }
 
 Page({
@@ -111,9 +91,7 @@ Page({
       loadingMore: false,
     });
     return listMyPredictions({ limit: 20 }).then((result) =>
-      this.applyListResult(result, true, serial).then(() => {
-        if (result.statusCode === 200) this.loadNextPage(true, serial);
-      }),
+      this.applyListResult(result, true, serial),
     );
   },
 
@@ -141,20 +119,19 @@ Page({
     const payload = result.data || {};
     const rawItems = Array.isArray(payload.items) ? payload.items : [];
     const page = payload.page || {};
-    return resolveMatchFacts(rawItems).then((matches) => {
-      if (serial !== this.requestSerial) return;
-      const nextItems = rawItems.map((item) => presentItem(item, matches));
-      const items = replace ? nextItems : this.data.items.concat(nextItems);
-      this.setData({
-        state: items.length === 0 ? "empty" : "list",
-        items,
-        weeks: groupPredictionsByWeek(items),
-        hasMore: page.has_more === true,
-        nextCursor: page.next_cursor === undefined ? null : page.next_cursor,
-        errorMessage: "",
-        loadingMore: false,
-      });
+    if (serial !== this.requestSerial) return Promise.resolve();
+    const nextItems = rawItems.map((item) => presentItem(item));
+    const items = replace ? nextItems : this.data.items.concat(nextItems);
+    this.setData({
+      state: items.length === 0 ? "empty" : "list",
+      items,
+      weeks: groupPredictionsByWeek(items),
+      hasMore: page.has_more === true,
+      nextCursor: page.next_cursor === undefined ? null : page.next_cursor,
+      errorMessage: "",
+      loadingMore: false,
     });
+    return Promise.resolve();
   },
 
   onCardTap(event) {
@@ -163,21 +140,14 @@ Page({
   },
 
   onMore() {
-    this.loadNextPage(false, this.requestSerial);
+    this.loadNextPage(this.requestSerial);
   },
 
-  loadNextPage(continueUntilHistoryWindow, serial = this.requestSerial) {
+  loadNextPage(serial = this.requestSerial) {
     if (this.data.loadingMore || !this.data.hasMore || this.data.nextCursor === null) return;
-    if (continueUntilHistoryWindow && hasReachedEightWeekHistory(this.data.items, Date.now())) return;
     const cursor = this.data.nextCursor;
     this.setData({ loadingMore: true, errorMessage: "" });
-    listMyPredictions({ cursor }).then((result) =>
-      this.applyListResult(result, false, serial).then(() => {
-        if (continueUntilHistoryWindow && result.statusCode === 200 && serial === this.requestSerial) {
-          this.loadNextPage(true, serial);
-        }
-      }),
-    );
+    listMyPredictions({ cursor }).then((result) => this.applyListResult(result, false, serial));
   },
 
   onSessionTap() {

@@ -45,6 +45,9 @@ function capturePage(filePath, modules) {
   loadCommonJs(filePath, (id) => {
     if (Object.prototype.hasOwnProperty.call(modules, id)) return modules[id];
     if (id === "../../utils/ui-layout.js") return { headerHeight: () => 88 };
+    if (id === "../../utils/level-season.js") {
+      return { formatLevelSeasonLabel: (value) => String(value || "").replace("_", "—") + " 赛季" };
+    }
     throw new Error("Unexpected require: " + id);
   });
   return config;

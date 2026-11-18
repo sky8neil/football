@@ -52,7 +52,7 @@ import { AdminRetrySettlementService } from "../application/admin-retry-settleme
 import { AdminRebuildUserStatsService } from "../application/admin-rebuild-user-stats.js";
 import { AdminRebuildRankingsService } from "../application/admin-rebuild-rankings.js";
 import { UserStatus } from "../domain/enums.js";
-import { conflictError, validationError } from "../domain/errors.js";
+import { DomainError, conflictError, validationError } from "../domain/errors.js";
 import type { AppRepository } from "../infrastructure/repositories.js";
 import type { AuthSessionStore } from "../infrastructure/postgres-auth-sessions.js";
 import { issueWechatSession } from "./auth.js";
@@ -699,6 +699,14 @@ export async function handleGatewayRequest(
     throw validationError("不支持的请求");
   } catch (err) {
     const mapped = mapErrorToHttp(err, requestId);
+    if (mapped.status === 500) {
+      console.error({
+        request_id: requestId,
+        path,
+        message: err instanceof Error ? err.message : String(err),
+        details: err instanceof DomainError ? err.details : null,
+      });
+    }
     logGateway(requestId, path, mapped.status, mapped.body.code);
     return mapped;
   }

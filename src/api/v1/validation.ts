@@ -17,7 +17,7 @@ export interface HttpErrorEnvelope {
   code: string;
   message: string;
   request_id: string;
-  details: ErrorDetails;
+  details?: ErrorDetails;
 }
 
 export interface MappedHttpError {
@@ -97,6 +97,16 @@ export function mapErrorToHttp(error: unknown, requestId: string): MappedHttpErr
       : status === 500
         ? "INTERNAL_ERROR"
         : error.code;
+    if (status === 500) {
+      return {
+        status,
+        body: {
+          code,
+          message: "服务器内部错误，请稍后重试",
+          request_id: requestId,
+        },
+      };
+    }
     return {
       status,
       body: {
@@ -111,9 +121,8 @@ export function mapErrorToHttp(error: unknown, requestId: string): MappedHttpErr
     status: 500,
     body: {
       code: "INTERNAL_ERROR",
-      message: "服务器内部错误",
+      message: "服务器内部错误，请稍后重试",
       request_id: requestId,
-      details: null,
     },
   };
 }

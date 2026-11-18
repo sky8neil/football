@@ -1,14 +1,5 @@
-const EIGHT_WEEKS_MS = 8 * 7 * 24 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const SHANGHAI_OFFSET_MS = 8 * 60 * 60 * 1000;
-
-function hasReachedEightWeekHistory(items, nowMs) {
-  const cutoff = nowMs - EIGHT_WEEKS_MS;
-  return items.some((item) => {
-    const kickoffMs = Date.parse(item.kickoff_at || "");
-    return Number.isFinite(kickoffMs) && kickoffMs <= cutoff;
-  });
-}
 
 function isoWeekKey(value) {
   const time = Date.parse(value || "");
@@ -51,4 +42,4 @@ function groupPredictionsByWeek(items) {
   }));
 }
 
-module.exports = { formatShanghaiKickoff, groupPredictionsByWeek, hasReachedEightWeekHistory, isoWeekKey };
+module.exports = { formatShanghaiKickoff, groupPredictionsByWeek, isoWeekKey };

@@ -80,6 +80,31 @@ function isInSeasonOpeningWindow(levelSeasonId, serverNow) {
   return start !== null && Number.isFinite(now) && now >= start && now < start + 28 * DAY_MS;
 }
 
+function buildStandingStatus(input = {}) {
+  const me = input.me;
+  const scope = input.scope || "global";
+  if (me == null || typeof me !== "object") {
+    return COPY.standingNeutral;
+  }
+  if (me.status === "ranked") {
+    const place = scope === "group" ? "群内" : "全站";
+    if (Number.isSafeInteger(me.rank) && me.rank <= 20) {
+      return `你位于${place}第 ${me.rank} 名。`;
+    }
+    if (me.top_percent != null) {
+      return `你位于${place}前 ${me.top_percent}%。`;
+    }
+    return "已入榜。";
+  }
+  if (me.status === "below_threshold") {
+    return `还差 ${me.remaining_valid_predictions} 场有效预测参与排名。`;
+  }
+  if (me.status === "not_eligible") {
+    return "参与满 2 个等级赛季后开放。";
+  }
+  return COPY.standingNeutral;
+}
+
 function buildRankingViewModel(input = {}) {
   const payload = input.payload || {};
   const board = input.board || payload.board || "week";
@@ -126,6 +151,14 @@ function buildRankingViewModel(input = {}) {
   const titleKind = count >= rankingThinBoardThreshold
     ? "top20"
     : count > 0 ? "all_n" : "none";
+  const boardName = COPY.boardNames[board] || COPY.pageTitle;
+  const emptyText = emptyKind === "week_global"
+    ? COPY.emptyGlobal(boardName)
+    : emptyKind === "week_group"
+      ? COPY.emptyGroup(boardName)
+      : emptyKind === "generic"
+        ? (board === "strength" ? COPY.emptyStrength(boardName) : COPY.emptyBoard(boardName))
+        : "";
   return {
     currentLevelSeasonId: currentSeasonId(input.serverNow),
     tabs: availableBoards,
@@ -136,11 +169,8 @@ function buildRankingViewModel(input = {}) {
       ? scope === "group" ? COPY.groupTop : COPY.globalTop
       : titleKind === "all_n" ? COPY.allPeople(count) : "",
     emptyKind,
-    emptyText: emptyKind === "week_global"
-      ? COPY.emptyGlobal(COPY.boardNames[board] || COPY.pageTitle)
-      : emptyKind === "week_group"
-        ? COPY.emptyGroup(COPY.boardNames[board] || COPY.pageTitle)
-        : emptyKind === "generic" ? COPY.emptyGeneric : "",
+    emptyText,
+    standingStatus: buildStandingStatus({ me: payload.me, scope }),
     notices,
     updatedText: formatUpdatedAt(payload.updated_at, input.serverNow),
     guestPlaceholder: input.guest === true,
@@ -153,6 +183,8 @@ function buildRankingViewModel(input = {}) {
 module.exports = {
   buildWeekOptions,
   buildRankingViewModel,
+  buildStandingStatus,
+  currentSeasonId,
   formatUpdatedAt,
   isInSeasonOpeningWindow,
 };

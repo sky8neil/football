@@ -7,24 +7,7 @@ runInNewContext(readFileSync(new URL("./prediction-history.js", import.meta.url)
   module,
   exports: module.exports,
 });
-const { formatShanghaiKickoff, groupPredictionsByWeek, hasReachedEightWeekHistory, isoWeekKey } = module.exports;
-
-describe("hasReachedEightWeekHistory", () => {
-  const now = Date.parse("2026-10-06T00:00:00.000Z");
-  const cutoff = now - 8 * 7 * 24 * 60 * 60 * 1000;
-
-  it("stops at a prediction kicked off exactly eight weeks ago", () => {
-    expect(hasReachedEightWeekHistory([
-      { kickoff_at: new Date(cutoff).toISOString() },
-    ], now)).toBe(true);
-  });
-
-  it("keeps paging when the oldest prediction is newer than eight weeks", () => {
-    expect(hasReachedEightWeekHistory([
-      { kickoff_at: new Date(cutoff + 1).toISOString() },
-    ], now)).toBe(false);
-  });
-});
+const { formatShanghaiKickoff, groupPredictionsByWeek, isoWeekKey } = module.exports;
 
 describe("prediction week grouping", () => {
   it("groups by the match kickoff's Beijing ISO week", () => {

@@ -134,4 +134,8 @@ Page({
     }
     this.loadPage();
   },
+
+  onGoPredict() {
+    wx.switchTab({ url: "/pages/matches/matches" });
+  },
 });

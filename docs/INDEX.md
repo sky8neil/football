@@ -4,6 +4,10 @@
 
 ## 需求与业务规范
 
+- [MINIPROGRAM_UX_REQUIREMENTS__v1.0.md](MINIPROGRAM_UX_REQUIREMENTS__v1.0.md)：2026-11-17 小程序截图与测试报告整改需求，含 112 支球队两站一致中文定名、验收条件和暂缓范围。
+- [MINIPROGRAM_UX_DEV_PLAN__v1.0.md](MINIPROGRAM_UX_DEV_PLAN__v1.0.md)：对应逐项开发方案、调用链核查、测试矩阵与实施边界。
+- [TEAM_NAME_EVIDENCE__v1.0.md](TEAM_NAME_EVIDENCE__v1.0.md)：112 支球队中文定名的取证记录，含证据网站、URL、页面标题与查询日期。
+
 - `MVP__v1.0.md`：业务规则唯一来源，包含冻结决策。
 - `PROJECT_REQUIREMENTS__v1.0.md`：阶段需求与门禁基线。
 - `C0_H5_MINIMUM_USER_SCOPE_DECISION__v1.0.md`：首版用户范围与 H5 决策。

@@ -3,6 +3,7 @@ import { InMemoryRateLimiter } from "../api/v1/rate-limit.js";
 import type { RateLimiter } from "../api/v1/rate-limit.js";
 import { SessionService } from "../application/session.js";
 import { MatchQueryService } from "../application/match-query.js";
+import { DomainError } from "../domain/errors.js";
 import type { AuthSessionRecord, AuthSessionStore } from "../infrastructure/postgres-auth-sessions.js";
 import { InMemoryRepository } from "../infrastructure/repositories.js";
 import { handleGatewayRequest, type GatewayRequestInput } from "./assemble.js";
@@ -589,5 +590,41 @@ describe("handleGatewayRequest S7 routes", () => {
       data: { items: [], page: { next_cursor: null, has_more: false } },
       request_id: expect.any(String),
     });
+  });
+});
+
+describe("handleGatewayRequest internal error logging", () => {
+  it("logs the original assertion on 500 without leaking it in the response", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const assertion = "career_level_state.last_eval_n <= 300";
+    const harness = makeHarness();
+    const response = await handleGatewayRequest({
+      method: "GET",
+      path: "/v1/matches",
+      query: {},
+      body: undefined,
+      server_now: NOW,
+      config: harness.config,
+      request_id: "req-internal",
+      services: {
+        session: harness.session,
+        matches: {
+          list: async () => {
+            throw new DomainError("INTERNAL_ERROR", assertion, { field: "last_eval_n" });
+          },
+          get: async () => {
+            throw new Error("unused");
+          },
+        },
+      },
+      repo: harness.repo,
+      rate_limiter: harness.rateLimiter,
+    });
+
+    expect(response.status).toBe(500);
+    expect(JSON.stringify(response.body)).not.toContain(assertion);
+    expect(spy).toHaveBeenCalled();
+    expect(JSON.stringify(spy.mock.calls)).toContain(assertion);
+    spy.mockRestore();
   });
 });

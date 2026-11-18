@@ -1,8 +1,9 @@
 const { getMatchDetail, getMatchCrowd } = require("../../services/matches.js");
 const { createUuidV4, submitPrediction } = require("../../services/predictions.js");
-const { getTeamLogo } = require("../../utils/logo-registry.js");
+const { presentTeam } = require("../../utils/team-presentation.js");
 const { crowdPlan, crowdCard } = require("../../utils/crowd-view-model.js");
 const { COPY } = require("../../utils/crowd-copy.js");
+const { formatRound, formatKickoff } = require("../../utils/match-presentation.js");
 
 const REASON_TEXT = {
   AUTH_REQUIRED: "登录后可提交预测",
@@ -61,20 +62,6 @@ function reasonText(reason) {
   return REASON_TEXT[reason] || reason;
 }
 
-function formatShanghaiTime(value) {
-  if (!value) return "";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "";
-  return date.toLocaleString("zh-CN", {
-    timeZone: "Asia/Shanghai",
-    month: "numeric",
-    day: "numeric",
-    weekday: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
-
 function derivedResult(home, away) {
   if (Number(home) > Number(away)) return "主胜";
   if (Number(home) < Number(away)) return "客胜";
@@ -103,10 +90,15 @@ Page({
     awayScore: 0,
     derivedResultText: "平局",
     kickoffText: "",
+    roundText: "",
     deadlineText: "",
     statusText: "",
     homeLogo: "",
     awayLogo: "",
+    homeNameZh: "",
+    awayNameZh: "",
+    homeMissing: false,
+    awayMissing: false,
     crowdState: "idle",
     crowdKind: "hidden",
     crowdTitle: COPY.title,
@@ -184,13 +176,15 @@ Page({
       this.ensureIntentKey();
     }
     const myPrediction = match.my_prediction || null;
+    const homePresented = presentTeam(match.home_team, match.league_id);
+    const awayPresented = presentTeam(match.away_team, match.league_id);
     this.setData({
       state: "ready",
       match,
       regularScoreText: formatRegularScore(match),
       myPrediction,
       // 同 deadlineText：submitted_at 是云端 ISO 字符串，必须格式化后再插值。
-      submittedText: myPrediction ? formatShanghaiTime(myPrediction.submitted_at) : "",
+      submittedText: myPrediction ? formatKickoff(myPrediction.submitted_at) : "",
       myPredictionScore: myPrediction
         ? myPrediction.pred_home_score + " - " + myPrediction.pred_away_score
         : "",
@@ -214,12 +208,17 @@ Page({
       errorMessage: "",
       formError: "",
       submitting: false,
-      homeLogo: getTeamLogo(match.league_id, match.home_team),
-      awayLogo: getTeamLogo(match.league_id, match.away_team),
-      kickoffText: formatShanghaiTime(match.kickoff_at),
+      homeLogo: homePresented.logo,
+      awayLogo: awayPresented.logo,
+      homeNameZh: homePresented.nameZh,
+      awayNameZh: awayPresented.nameZh,
+      homeMissing: homePresented.missing,
+      awayMissing: awayPresented.missing,
+      kickoffText: formatKickoff(match.kickoff_at),
+      roundText: formatRound(match.round_id),
       // 截止时间必须格式化后再上屏：云端返回的是 ISO 字符串，
       // 直接在 WXML 里插值会把 2026-11-06T19:50:00.000Z 原样显示给用户。
-      deadlineText: formatShanghaiTime(match.prediction_deadline_at),
+      deadlineText: formatKickoff(match.prediction_deadline_at),
       statusText: STATUS_TEXT[match.match_status] || match.match_status,
       derivedResultText: derivedResult(this.data.homeScore, this.data.awayScore),
     });

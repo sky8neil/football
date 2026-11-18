@@ -1,11 +1,16 @@
 const { headerHeight } = require("../../utils/ui-layout.js");
-const { getTeamLogo, getLeagueLogo } = require("../../utils/logo-registry.js");
+const { getLeagueLogo } = require("../../utils/logo-registry.js");
+const { presentTeam } = require("../../utils/team-presentation.js");
 const { resolveNickname, truncateNickname } = require("../../utils/nickname.js");
 const { listMatches } = require("../../services/matches.js");
 const { getLeagueStatus } = require("../../services/leagues.js");
 const { resolveDefaultLeagueFromStatus } = require("../../utils/matches-default-league.js");
 const { createUuidV4, submitPrediction, getMyLeagueSummary } = require("../../services/predictions.js");
 const { COPY: CROWD_COPY } = require("../../utils/crowd-copy.js");
+const { formatRound } = require("../../utils/match-presentation.js");
+const { buildCardState } = require("../../utils/match-card-state.js");
+const { currentSeasonId } = require("../../utils/rankings-view-model.js");
+const { formatLevelSeasonLabel } = require("../../utils/level-season.js");
 
 const LEAGUES = [
   { id: "premier_league", name: "英超" },
@@ -16,12 +21,6 @@ const LEAGUES = [
   { id: "chinese_super_league", name: "中超" },
 ];
 const WEEKDAYS = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
-const REASON_TEXT = { ALREADY_SUBMITTED: "已锁定 · 不可修改", AUTH_REQUIRED: "需登录后预测", USER_DELETED: "账号已注销", KICKOFF_UNCONFIRMED: "开球未确认", NOT_SCHEDULED: "非可预测赛程", CLOSED: "预测已关闭" };
-const RESULT_TEXT = {
-  hit3: { reasonChip: "+3 赛果命中", chipClass: "hit3" },
-  hit12: { reasonChip: "+12 精确命中", chipClass: "hit12" },
-  miss: { reasonChip: "+0 未命中", chipClass: "miss" },
-};
 const scope = (league, date, matchId) => `${league}:${date}:${matchId}`;
 const pad = (n) => (n < 10 ? `0${n}` : String(n));
 const WEEKDAY_INDEX = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
@@ -64,6 +63,17 @@ function dayBounds(key) {
   };
 }
 
+function buildHintText({ selectedDate, todayKey, openCount, doneCount, hasMore }) {
+  let dateLabel = "今天";
+  if (selectedDate !== todayKey) {
+    const parts = String(selectedDate || "").split("-");
+    dateLabel = `${Number(parts[1])} 月 ${Number(parts[2])} 日`;
+  }
+  const plus = hasMore ? "+" : "";
+  const suffix = hasMore ? "（继续加载可看全部）" : "";
+  return `${dateLabel} · 待预测 ${openCount}${plus} 场 · 已预测 ${doneCount}${plus} 场${suffix}`;
+}
+
 function daysBetweenBeijingDates(from, to) {
   const start = beijingParts(from);
   const end = beijingParts(to);
@@ -95,45 +105,20 @@ function upcomingMatchInfo(item, now, dates) {
   };
 }
 
-function statusView(item) {
-  const reason = item.can_predict_reason;
-  if (item.match_status === "live") return { cardClass: "is-live", stateClass: "live", stateText: "进行中" };
-  if (item.match_status === "finished") return { cardClass: "is-done", stateClass: "done", stateText: "完场" };
-  if (["postponed", "cancelled", "abandoned"].includes(item.match_status)) return { cardClass: "is-closed", stateClass: "closed", stateText: item.match_status === "postponed" ? "延期" : item.match_status === "cancelled" ? "取消" : "腰斩" };
-  if (reason === "ALREADY_SUBMITTED") return { cardClass: "is-submitted", stateClass: "lock", stateText: "已提交" };
-  if (item.match_status === "scheduled" && item.can_predict && reason === null) return { cardClass: "is-open", stateClass: "", stateText: "未开赛" };
-  return { cardClass: "is-closed", stateClass: "closed", stateText: "未开赛" };
-}
-
-function reasonChip(item) {
-  if (item.result_type && RESULT_TEXT[item.result_type]) return RESULT_TEXT[item.result_type];
-  if (item.can_predict && item.can_predict_reason === null) return { reasonChip: "", chipClass: "" };
-  if (item.match_status === "live") return { reasonChip: "预测已关闭", chipClass: "live" };
-  if (REASON_TEXT[item.can_predict_reason]) return { reasonChip: REASON_TEXT[item.can_predict_reason], chipClass: item.can_predict_reason === "ALREADY_SUBMITTED" ? "lock" : "closed" };
-  if (item.match_status === "finished") return { reasonChip: "已结束", chipClass: "lock" };
-  return { reasonChip: "", chipClass: "" };
-}
-
-function formatPrediction(prediction) {
-  if (!prediction) return "";
-  const home = prediction.home === undefined ? prediction.pred_home_score : prediction.home;
-  const away = prediction.away === undefined ? prediction.pred_away_score : prediction.away;
-  return `我的预测 ${home} : ${away}`;
-}
-
 Page({
   data: {
     headerHeight: headerHeight(),
     avatarText: "球",
     state: "loading", items: [], errorMessage: "", hasMore: false, nextCursor: null, loadingMore: false, nickname: "",
-    leagues: [], activeLeagueIds: [], leagueStatusById: {}, selectedLeague: "premier_league", dates: [], selectedDate: "", nextMatch: null, offseasonInfo: null, emptyIsBreak: false, summaryState: "loading", summarySeasonId: null, summaryReason: null, leagueSummary: null, openCount: 0, doneCount: 0, recentScore: null,
+    leagues: [], activeLeagueIds: [], leagueStatusById: {}, selectedLeague: "premier_league", dates: [], selectedDate: "", nextMatch: null, offseasonInfo: null, emptyIsBreak: false, summaryState: "loading", summarySeasonId: null, summaryReason: null, leagueSummary: null, openCount: 0, doneCount: 0, hintText: "", recentScore: null, levelSeasonLabel: "",
     scrollIntoView: "", resultsTransition: "results-enter",
   },
   drafts: {}, uiStates: {}, submittedMap: {}, idempotencyKeys: {}, lastPayloads: {}, requestSerial: 0, statusSerial: 0, summarySerial: 0,
 
   onLoad() {
     const dates = buildDates(new Date());
-    this.setData({ dates, selectedDate: dates[0].key, leagues: LEAGUES.map((item) => ({ ...item, logo: getLeagueLogo(item.id) })), nickname: truncateNickname(resolveNickname()), avatarText: Array.from(resolveNickname())[0] || "球" });
+    const levelSeasonLabel = formatLevelSeasonLabel(currentSeasonId(new Date().toISOString()));
+    this.setData({ dates, selectedDate: dates[0].key, leagues: LEAGUES.map((item) => ({ ...item, logo: getLeagueLogo(item.id) })), nickname: truncateNickname(resolveNickname()), avatarText: Array.from(resolveNickname())[0] || "球", levelSeasonLabel });
     this.initialized = true;
     this.hasShown = false;
     this.needsDefaultLeague = true;
@@ -160,7 +145,7 @@ Page({
     this.requestSerial += 1;
     this.statusSerial += 1;
     this.summarySerial += 1;
-    this.setData({ selectedLeague: league, scrollIntoView: "", state: "loading", items: [], nextMatch: null, offseasonInfo: null, leagueSummary: null, summarySeasonId: null, summaryReason: null, summaryState: "loading", hasMore: false, nextCursor: null, openCount: 0, doneCount: 0, resultsTransition: "results-exit" });
+    this.setData({ selectedLeague: league, scrollIntoView: "", state: "loading", items: [], nextMatch: null, offseasonInfo: null, leagueSummary: null, summarySeasonId: null, summaryReason: null, summaryState: "loading", hasMore: false, nextCursor: null, openCount: 0, doneCount: 0, hintText: "", resultsTransition: "results-exit" });
     setTimeout(() => this.loadFirstPage(), 180);
   },
 
@@ -265,31 +250,58 @@ Page({
     const rawItems = Array.isArray(payload.items) ? payload.items : [];
     const items = (replace ? rawItems : this.data.items.concat(rawItems)).map((item) => this.decorateItem(item));
     const page = payload.page || {};
-    this.setData({ state: items.length ? "list" : "empty", items, nextMatch: null, offseasonInfo: null, hasMore: page.has_more === true, nextCursor: page.next_cursor || null, errorMessage: "", loadingMore: false, openCount: items.filter((item) => item.showPredict).length, doneCount: items.filter((item) => item.can_predict_reason === "ALREADY_SUBMITTED").length });
+    const hasMore = page.has_more === true;
+    const openCount = items.filter((item) => item.showPredict).length;
+    const doneCount = items.filter((item) => item.can_predict_reason === "ALREADY_SUBMITTED").length;
+    const today = beijingParts();
+    this.setData({
+      state: items.length ? "list" : "empty",
+      items,
+      nextMatch: null,
+      offseasonInfo: null,
+      hasMore,
+      nextCursor: page.next_cursor || null,
+      errorMessage: "",
+      loadingMore: false,
+      openCount,
+      doneCount,
+      hintText: buildHintText({
+        selectedDate: this.data.selectedDate,
+        todayKey: today ? today.key : "",
+        openCount,
+        doneCount,
+        hasMore,
+      }),
+    });
     if (replace && items.length === 0) return this.loadEmptyStateFollowup(this.requestSerial);
   },
 
   decorateItem(item) {
     const kick = beijingParts(item.kickoff_at);
-    const view = statusView(item);
     const key = scope(this.data.selectedLeague, this.data.selectedDate, item.match_id);
     const draft = this.drafts[key] || { home: 0, away: 0 };
     const submitted = this.submittedMap[key];
-    const chip = submitted ? { reasonChip: "已锁定 · 不可修改", chipClass: "lock" } : reasonChip(item);
+    const cardState = buildCardState(item, submitted);
     const hasScore = item.regular_home_score !== null && item.regular_home_score !== undefined && item.regular_away_score !== null && item.regular_away_score !== undefined;
     const uiState = submitted ? "submitted_locked" : (this.uiStates[key] || "collapsed");
-    return Object.assign({}, item, view, chip, {
+    const leagueName = (LEAGUES.find((league) => league.id === item.league_id) || {}).name || "比赛";
+    const roundText = formatRound(item.round_id);
+    const leagueId = item.league_id || this.data.selectedLeague;
+    const homePresented = presentTeam(item.home_team, leagueId);
+    const awayPresented = presentTeam(item.away_team, leagueId);
+    return Object.assign({}, item, cardState, {
       key, uiState, editorVisible: uiState !== "collapsed", draft,
       crowdLinkText: CROWD_COPY.homeLink,
-      showPredict: item.can_predict === true && item.can_predict_reason === null && !submitted,
-      homeLogo: getTeamLogo(item.league_id || this.data.selectedLeague, item.home_team),
-      awayLogo: getTeamLogo(item.league_id || this.data.selectedLeague, item.away_team),
+      homeLogo: homePresented.logo,
+      awayLogo: awayPresented.logo,
+      homeNameZh: homePresented.nameZh,
+      awayNameZh: awayPresented.nameZh,
+      homeMissing: homePresented.missing,
+      awayMissing: awayPresented.missing,
       timeText: item.display_time || (kick ? `${pad(kick.hour)}:${pad(kick.minute)}` : "--:--"),
-      metaText: `${(LEAGUES.find((league) => league.id === item.league_id) || {}).name || "比赛"} · ${item.round_id || "本轮"}`,
+      metaText: roundText ? `${leagueName} · ${roundText}` : leagueName,
       scoreText: hasScore ? `${item.regular_home_score} : ${item.regular_away_score}` : "VS",
-      scoreSub: item.can_predict_reason === "ALREADY_SUBMITTED" ? "已锁定" : item.match_status === "live" ? "LIVE" : item.match_status === "finished" ? (hasScore ? "FT" : "待结算") : item.display_time || (kick ? `${pad(kick.hour)}:${pad(kick.minute)}` : ""),
       bugClass: item.match_status === "live" || item.match_status === "finished" ? "dark" : "",
-      predText: submitted ? formatPrediction(submitted) : item.can_predict_reason === "ALREADY_SUBMITTED" ? "已提交预测 · 查看详情" : item.match_status === "scheduled" ? "未开赛" : "未预测",
       derivedResult: draft.home > draft.away ? "主胜" : draft.home < draft.away ? "客胜" : "平局",
       submitError: this.data.submitErrors ? this.data.submitErrors[key] : "",
     });
@@ -385,4 +397,4 @@ Page({
   },
 });
 
-if (typeof module !== "undefined") module.exports = { buildDates, beijingParts };
+if (typeof module !== "undefined") module.exports = { buildDates, beijingParts, buildHintText };

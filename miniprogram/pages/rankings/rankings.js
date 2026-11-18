@@ -4,6 +4,7 @@ const { getMyLevels } = require("../../services/levels.js");
 const { listMyGroups } = require("../../services/groups.js");
 const { buildRankingViewModel } = require("../../utils/rankings-view-model.js");
 const { headerHeight } = require("../../utils/ui-layout.js");
+const { formatLevelSeasonLabel } = require("../../utils/level-season.js");
 const COPY = require("../../utils/rankings-copy.js");
 
 function displayTeamId(value) {
@@ -91,9 +92,12 @@ Page({
     weekOptionLabels: [],
     selectedWeekIndex: 0,
     availableLevelSeasons: [],
+    seasonOptionLabels: [],
     selectedLevelSeasonId: null,
+    selectedSeasonLabel: "",
     currentLevelSeasonId: null,
     selectedSeasonIndex: 0,
+    showHistorySeasonEntry: false,
     entryCount: 0,
     view: {},
     podiumItems: [],
@@ -158,6 +162,10 @@ Page({
         this.setData({ state: "userDeleted", errorMessage: profileResult.message || "账号已注销" });
         return;
       }
+      if (profileResult.statusCode === 500 || profileResult.code === "INTERNAL_ERROR") {
+        this.setData({ state: "error", errorMessage: "暂时无法读取排行榜数据，请稍后重试" });
+        return;
+      }
       if (profileResult.statusCode !== 200) {
         this.setData({ state: "error", errorMessage: profileResult.message || "读取个人资料失败" });
         return;
@@ -170,6 +178,10 @@ Page({
         const levelsResult = results[1];
         if (groupsResult.statusCode !== 200 || levelsResult.statusCode !== 200) {
           const failed = groupsResult.statusCode !== 200 ? groupsResult : levelsResult;
+          if (failed.statusCode === 500 || failed.code === "INTERNAL_ERROR") {
+            this.setData({ state: "error", errorMessage: "暂时无法读取排行榜数据，请稍后重试" });
+            return;
+          }
           this.setData({ state: "error", errorMessage: failed.message || "读取用户数据失败" });
           return;
         }
@@ -262,10 +274,21 @@ Page({
     const scope = seasonId !== this.data.currentLevelSeasonId ? "global" : this.data.scope;
     this.setData({
       selectedLevelSeasonId: seasonId,
+      selectedSeasonLabel: formatLevelSeasonLabel(seasonId),
       selectedSeasonIndex: selectedIndex,
       scope,
       groupId: scope === "global" ? null : this.data.groupId,
     }, () => this.loadFirstPage());
+  },
+
+  onViewHistorySeason() {
+    const seasonId = previousAvailableSeason(
+      this.data.availableLevelSeasons,
+      this.data.currentLevelSeasonId,
+    );
+    const index = this.data.availableLevelSeasons.indexOf(seasonId);
+    if (index < 0) return;
+    this.onSeasonChange({ detail: { value: String(index) } });
   },
 
   onScopeSheet() { this.setData({ scopeSheetOpen: true }); },
@@ -319,6 +342,14 @@ Page({
       this.setData({
         state: replace && this.data.items.length === 0 ? "rateLimited" : this.data.state,
         errorMessage: result.message || result.code,
+        loadingMore: false,
+      });
+      return;
+    }
+    if (result.statusCode === 500 || result.code === "INTERNAL_ERROR") {
+      this.setData({
+        state: "error",
+        errorMessage: "暂时无法读取排行榜数据，请稍后重试",
         loadingMore: false,
       });
       return;
@@ -388,8 +419,10 @@ Page({
       this.autoSeasonFallback = true;
       this.setData({
         selectedLevelSeasonId: fallbackSeasonId,
+        selectedSeasonLabel: formatLevelSeasonLabel(fallbackSeasonId),
         selectedSeasonIndex: availableLevelSeasons.indexOf(fallbackSeasonId),
         availableLevelSeasons,
+        seasonOptionLabels: availableLevelSeasons.map((seasonId) => formatLevelSeasonLabel(seasonId)),
         currentLevelSeasonId,
         scope: "global",
         groupId: null,
@@ -423,7 +456,15 @@ Page({
     const standingValue = ownItem ? ownItem.mainValue : "—";
     const standingLabel = this.data.board === "strength" && ranked
       ? rankLabel + " · 共 " + payload.entry_count + " 人" : rankLabel;
-    const standingStatus = ranked ? "你位于" + (this.data.scope === "group" ? "群内" : "全站") + standingLabel + (me.rank != null ? "，排名第 " + me.rank + " 名。" : "。") : me && me.status === "below_threshold" ? "还差 " + me.remaining_valid_predictions + " 场有效预测参与排名。" : me && me.status === "not_eligible" ? "参与满 2 个等级赛季后开放。" : "完成首场有效预测并结算后参与排名。";
+    const standingStatus = view.standingStatus;
+    const seasonOptionLabels = availableLevelSeasons.map((seasonId) => formatLevelSeasonLabel(seasonId));
+    const selectedSeasonLabel = formatLevelSeasonLabel(selectedLevelSeasonId);
+    const historySeasonId = previousAvailableSeason(availableLevelSeasons, currentLevelSeasonId);
+    const showHistorySeasonEntry = this.data.board === "season"
+      && selectedLevelSeasonId === currentLevelSeasonId
+      && (standingValue === "—" || me == null)
+      && !ranked
+      && historySeasonId != null;
     this.setData({
       metricLabel, standingLabel, standingValue, standingStatus,
       state: "list",
@@ -442,9 +483,12 @@ Page({
       selectedWeekIndex,
       selectedPeriodKey: payload.period_key,
       availableLevelSeasons,
+      seasonOptionLabels,
       selectedLevelSeasonId,
+      selectedSeasonLabel,
       currentLevelSeasonId,
       selectedSeasonIndex,
+      showHistorySeasonEntry,
       showGroupScope: this.data.board !== "season" ||
         selectedLevelSeasonId === currentLevelSeasonId,
       hasMore: page.has_more === true,

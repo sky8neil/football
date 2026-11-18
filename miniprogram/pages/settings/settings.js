@@ -2,7 +2,8 @@ const config = require("../../config.js");
 const { getMyProfile, updateMyProfile } = require("../../services/profile.js");
 const { listMatches } = require("../../services/matches.js");
 const { storeNickname } = require("../../utils/nickname.js");
-const { getTeamLogo } = require("../../utils/logo-registry.js");
+const { presentTeam } = require("../../utils/team-presentation.js");
+const { findTeam } = require("../../utils/team-registry.js");
 const { clearAuth } = require("../../services/auth.js");
 
 function isHttpTransport() {
@@ -30,8 +31,8 @@ Page({
   },
   refreshTeamName() {
     const id = this.data.favoriteTeamId;
-    const team = this.data.teams.find(item => item.team_id === id);
-    this.setData({ favoriteTeamName: id ? (team && team.name || wx.getStorageSync("team_name:" + id) || "已选择球队") : "未设置" });
+    const found = findTeam(id);
+    this.setData({ favoriteTeamName: id ? ((found && found.name_zh) || wx.getStorageSync("team_name:" + id) || "已选择球队") : "未设置" });
   },
   async loadTeams() {
     if (this.data.teamsLoading) return;
@@ -44,9 +45,10 @@ Page({
       for (const match of payload.items || []) {
         for (const team of [match.home_team, match.away_team]) {
           if (!team || !team.team_id || teams.some(item => item.team_id === team.team_id)) continue;
-          teams.push({ ...team, logo: getTeamLogo(match.league_id, team) });
+          const presented = presentTeam(team, match.league_id);
+          teams.push({ ...team, logo: presented.logo, nameZh: presented.nameZh });
           wx.setStorageSync("team_name:" + team.team_id, team.name);
-          wx.setStorageSync("team_logo:" + team.team_id, getTeamLogo(match.league_id, team));
+          wx.setStorageSync("team_logo:" + team.team_id, presented.logo);
         }
       }
       this.setData({ teams, nextCursor: (payload.page || {}).next_cursor || null, hasMore: !!(payload.page || {}).next_cursor });
@@ -60,7 +62,13 @@ Page({
   onSearch(event) { this.setData({ search: event.detail.value }); this.filterTeams(); },
   filterTeams() {
     const query = this.data.search.trim().toLowerCase();
-    this.setData({ visibleTeams: this.data.teams.filter(team => team.name.toLowerCase().includes(query)) });
+    this.setData({
+      visibleTeams: this.data.teams.filter((team) => {
+        const name = (team.name || "").toLowerCase();
+        const nameZh = (team.nameZh || "").toLowerCase();
+        return name.includes(query) || nameZh.includes(query);
+      }),
+    });
   },
   onTeamPick(event) {
     if (this.data.saving || this.data.loading) return;

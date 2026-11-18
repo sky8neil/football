@@ -8,13 +8,13 @@
     <view class="match-head">
       <view class="match-meta">
         <text>{{statusText}}</text>
-        <text wx:if="{{match.round_id}}">{{match.round_id}}</text>
+        <text wx:if="{{roundText}}">{{roundText}}</text>
         <text>{{kickoffText}}</text>
       </view>
       <view class="scoreline">
         <view class="team">
           <image src="{{homeLogo}}" mode="aspectFit"></image>
-          <text>{{match.home_team.name}}</text>
+          <text>{{homeNameZh}}</text>
         </view>
         <view class="score">
           <text wx:if="{{match.regular_home_score !== null && match.regular_home_score !== undefined}}">{{match.regular_home_score}} : {{match.regular_away_score}}</text>
@@ -23,7 +23,7 @@
         </view>
         <view class="team away">
           <image src="{{awayLogo}}" mode="aspectFit"></image>
-          <text>{{match.away_team.name}}</text>
+          <text>{{awayNameZh}}</text>
         </view>
       </view>
       <view wx:if="{{match.prediction_deadline_at && canSubmit}}" class="deadline">
@@ -48,7 +48,7 @@
       <view class="section-title">预测比分</view>
       <view class="steppers">
         <view class="stepper-group">
-          <view class="stepper-team"><image src="{{homeLogo}}" mode="aspectFit"></image><text>{{match.home_team.name}}</text></view>
+          <view class="stepper-team"><image src="{{homeLogo}}" mode="aspectFit"></image><text>{{homeNameZh}}</text></view>
           <view class="stepper">
             <button data-side="home" data-delta="-1" bindtap="onScoreStep">−</button>
             <text>{{homeScore}}</text>
@@ -57,7 +57,7 @@
         </view>
         <text class="separator">:</text>
         <view class="stepper-group">
-          <view class="stepper-team"><image src="{{awayLogo}}" mode="aspectFit"></image><text>{{match.away_team.name}}</text></view>
+          <view class="stepper-team"><image src="{{awayLogo}}" mode="aspectFit"></image><text>{{awayNameZh}}</text></view>
           <view class="stepper">
             <button data-side="away" data-delta="-1" bindtap="onScoreStep">−</button>
             <text>{{awayScore}}</text>

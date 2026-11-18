@@ -27,6 +27,9 @@ function createPage({ statuses = [status("chinese_super_league", "completed"), s
   factory(module, module.exports, (id) => {
     if (id === "../../utils/ui-layout.js") return { headerHeight: () => 88 };
     if (id === "../../utils/logo-registry.js") return { getTeamLogo: () => "", getLeagueLogo: () => "" };
+    if (id === "../../utils/team-presentation.js") {
+      return { presentTeam: (team) => ({ teamId: team && team.team_id, nameZh: "球队资料待补全", logo: "", missing: true }) };
+    }
     if (id === "../../utils/nickname.js") return { resolveNickname: () => "", truncateNickname: (value) => value };
     if (id === "../../services/matches.js") return { listMatches: requests.listMatches };
     if (id === "../../services/leagues.js") return { getLeagueStatus: requests.getLeagueStatus };
@@ -37,6 +40,22 @@ function createPage({ statuses = [status("chinese_super_league", "completed"), s
     }
     if (id === "../../services/predictions.js") return { createUuidV4: () => "", submitPrediction: vi.fn(), getMyLeagueSummary: requests.getMyLeagueSummary };
     if (id === "../../utils/crowd-copy.js") return { COPY: { homeLink: "" } };
+    if (id === "../../utils/match-presentation.js") {
+      const util = { exports: {} };
+      runInThisContext(`(function(module, exports) {\n${readFileSync(join(HERE, "../../utils/match-presentation.js"), "utf8")}\n})`)(util, util.exports);
+      return util.exports;
+    }
+    if (id === "../../utils/match-card-state.js") {
+      const util = { exports: {} };
+      runInThisContext(`(function(module, exports) {\n${readFileSync(join(HERE, "../../utils/match-card-state.js"), "utf8")}\n})`)(util, util.exports);
+      return util.exports;
+    }
+    if (id === "../../utils/rankings-view-model.js") return { currentSeasonId: () => "2026_2027" };
+    if (id === "../../utils/level-season.js") {
+      const util = { exports: {} };
+      runInThisContext(`(function(module, exports) {\n${readFileSync(join(HERE, "../../utils/level-season.js"), "utf8")}\n})`)(util, util.exports);
+      return util.exports;
+    }
     throw new Error(`Unexpected require: ${id}`);
   });
   const page = Object.assign({}, definition, { data: structuredClone(definition.data), setData(update) { Object.assign(this.data, update); } });
@@ -73,7 +92,8 @@ describe("league status and personal summary", () => {
     expect(requests.getMyLeagueSummary).toHaveBeenCalledWith({ leagueId: "chinese_super_league" });
     page.onRankingsTap();
     expect(switchTab).toHaveBeenCalledWith({ url: "/pages/rankings/rankings" });
-    expect(template).toContain("查看等级赛季排行榜 →");
+    expect(template).toContain("查看 {{levelSeasonLabel}}榜 →");
+    expect(template).toContain("查看赛季排行榜 →");
   });
 
   it.each([
