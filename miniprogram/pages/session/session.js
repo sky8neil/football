@@ -47,7 +47,9 @@ Page({
 
   onLoad(query) {
     const patch = {
-      returnTo: query && query.return_to === "match-detail" ? "match-detail" : "",
+      returnTo: query && (query.return_to === "match-detail" || query.return_to === "share-card")
+        ? query.return_to
+        : "",
     };
     // 只在缓存里有可用昵称时回填，避免把用户已输入的内容清空。
     const nickname = cachedNickname();
@@ -179,7 +181,7 @@ Page({
           wx.reLaunch({ url: `/pages/groups/join?code=${encodeURIComponent(pendingInviteCode)}` });
           return;
         }
-        if (this.data.returnTo === "match-detail") {
+        if (this.data.returnTo === "match-detail" || this.data.returnTo === "share-card") {
           wx.navigateBack({ delta: 1 });
           return;
         }

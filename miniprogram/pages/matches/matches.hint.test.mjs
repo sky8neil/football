@@ -39,6 +39,7 @@ function loadHintHelpers() {
     }
     if (id === "../../utils/rankings-view-model.js") return { currentSeasonId: () => "2026_2027" };
     if (id === "../../utils/level-season.js") return { formatLevelSeasonLabel: () => "" };
+    if (id === "../../services/auth.js") return { getLoginGeneration: () => 0 };
     throw new Error(`Unexpected require: ${id}`);
   });
 }

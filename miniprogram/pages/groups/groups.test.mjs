@@ -368,3 +368,175 @@ describe("group pages", () => {
     expect(wxStub.navs).toEqual([["navigateBack", 1]]);
   });
 });
+
+describe("join error recovery", () => {
+  function deferred() {
+    let resolve;
+    let reject;
+    const promise = new Promise((done, fail) => {
+      resolve = done;
+      reject = fail;
+    });
+    return { promise, resolve, reject };
+  }
+
+  it("exposes 重新输入 and 重试 on the error panel", () => {
+    const wxml = readFileSync(join(HERE, "join.wxml"), "utf8");
+    const errorBlock = wxml.match(/state === 'error'[\s\S]*?<\/view>\s*<\/view>/)[0];
+    expect(errorBlock).toContain("重新输入");
+    expect(errorBlock).toContain("重试");
+    expect(errorBlock).toContain('bindtap="onReenter"');
+    expect(errorBlock).toContain('bindtap="onRetry"');
+  });
+
+  it("keeps membership refresh failures in error and retries without joining again", async () => {
+    const wxStub = installWx();
+    const listMyGroups = vi.fn()
+      .mockResolvedValueOnce({ statusCode: 500, message: "读取群信息失败" })
+      .mockResolvedValueOnce({ statusCode: 200, data: { items: [{ group_id: "group-1" }] } });
+    const { config, services } = loadPage("join", { listMyGroups });
+    const page = instantiate(config);
+    page.onLoad({ code: "ABCDEFGH" });
+    page.onConfirm();
+    await flush();
+    await flush();
+
+    expect(page.data.state).toBe("error");
+    expect(page.data.errorMessage).toContain("读取群信息失败");
+    expect(services.joinGroup).toHaveBeenCalledTimes(1);
+
+    page.onRetry();
+    await flush();
+
+    expect(services.joinGroup).toHaveBeenCalledTimes(1);
+    expect(listMyGroups).toHaveBeenCalledTimes(2);
+    expect(wxStub.storage.get("pending_ranking_group_id")).toBe("group-1");
+    expect(wxStub.navs).toEqual([["switchTab", "/pages/rankings/rankings"]]);
+  });
+
+  it("returns to the invite form from 重新输入 without joining again", async () => {
+    installWx();
+    const { config, services } = loadPage("join", {
+      listMyGroups: vi.fn(async () => ({ statusCode: 500, message: "读取群信息失败" })),
+    });
+    const page = instantiate(config);
+    page.onLoad({ code: "ABCDEFGH" });
+    page.onConfirm();
+    await flush();
+    await flush();
+    expect(page.data.state).toBe("error");
+
+    page.onReenter();
+
+    expect(page.data.state).toBe("ready");
+    expect(page.data.loading).toBe(false);
+    expect(page.data.errorMessage).toBe("");
+    expect(page.data.inviteCode).toBe("ABCDEFGH");
+    expect(page.data.canConfirm).toBe(true);
+    expect(services.joinGroup).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries GROUP_ALREADY_MEMBER membership lookup without joining again", async () => {
+    const wxStub = installWx();
+    const listMyGroups = vi.fn()
+      .mockResolvedValueOnce({ statusCode: 500, message: "读取群信息失败" })
+      .mockResolvedValueOnce({ statusCode: 200, data: { items: [{ group_id: "group-existing" }] } })
+      .mockResolvedValueOnce({ statusCode: 200, data: { items: [{ group_id: "group-existing" }] } });
+    const { config, services } = loadPage("join", {
+      joinGroup: vi.fn(async () => ({ statusCode: 409, code: "GROUP_ALREADY_MEMBER" })),
+      listMyGroups,
+      getGroup: vi.fn(async () => ({ statusCode: 200, data: { group_id: "group-existing", invite_code: "ABCDEFGH" } })),
+    });
+    const page = instantiate(config);
+    page.onLoad({ code: "ABCDEFGH" });
+    page.onConfirm();
+    await flush();
+    await flush();
+
+    expect(page.data.state).toBe("error");
+    expect(services.joinGroup).toHaveBeenCalledTimes(1);
+
+    page.onRetry();
+    await flush();
+    await flush();
+    await flush();
+
+    expect(services.joinGroup).toHaveBeenCalledTimes(1);
+    expect(services.getGroup).toHaveBeenCalledWith("group-existing");
+    expect(wxStub.navs).toEqual([["switchTab", "/pages/rankings/rankings"]]);
+  });
+
+  it("surfaces membership lookup rejection as error and recovers on retry", async () => {
+    const wxStub = installWx();
+    const listMyGroups = vi.fn()
+      .mockRejectedValueOnce(new Error("network"))
+      .mockResolvedValueOnce({ statusCode: 200, data: { items: [{ group_id: "group-1" }] } });
+    const { config, services } = loadPage("join", { listMyGroups });
+    const page = instantiate(config);
+    page.onLoad({ code: "ABCDEFGH" });
+    page.onConfirm();
+    await flush();
+    await flush();
+
+    expect(page.data.state).toBe("error");
+    expect(page.data.loading).toBe(false);
+    expect(services.joinGroup).toHaveBeenCalledTimes(1);
+
+    page.onRetry();
+    await flush();
+
+    expect(services.joinGroup).toHaveBeenCalledTimes(1);
+    expect(wxStub.navs).toEqual([["switchTab", "/pages/rankings/rankings"]]);
+  });
+
+  it("ignores a stale membership response after 重新输入", async () => {
+    const wxStub = installWx();
+    const firstList = deferred();
+    const listMyGroups = vi.fn(() => firstList.promise);
+    const { config, services } = loadPage("join", { listMyGroups });
+    const page = instantiate(config);
+    page.onLoad({ code: "ABCDEFGH" });
+    page.onConfirm();
+    await flush();
+    expect(page.data.loading).toBe(true);
+
+    firstList.reject({ statusCode: 500, message: "读取群信息失败" });
+    await flush();
+    expect(page.data.state).toBe("error");
+
+    const secondList = deferred();
+    listMyGroups.mockImplementationOnce(() => secondList.promise);
+    page.onRetry();
+    await flush();
+    page.onReenter();
+    secondList.resolve({ statusCode: 200, data: { items: [{ group_id: "group-1" }] } });
+    await flush();
+
+    expect(page.data.state).toBe("ready");
+    expect(wxStub.navs).toEqual([]);
+    expect(wxStub.storage.get("pending_ranking_group_id")).toBeUndefined();
+    expect(services.joinGroup).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not start a second recovery while retry is already loading", async () => {
+    installWx();
+    const pending = deferred();
+    const listMyGroups = vi.fn()
+      .mockResolvedValueOnce({ statusCode: 500, message: "读取群信息失败" })
+      .mockImplementationOnce(() => pending.promise);
+    const { config, services } = loadPage("join", { listMyGroups });
+    const page = instantiate(config);
+    page.onLoad({ code: "ABCDEFGH" });
+    page.onConfirm();
+    await flush();
+    await flush();
+
+    page.onRetry();
+    page.onRetry();
+    pending.resolve({ statusCode: 200, data: { items: [{ group_id: "group-1" }] } });
+    await flush();
+
+    expect(services.joinGroup).toHaveBeenCalledTimes(1);
+    expect(listMyGroups).toHaveBeenCalledTimes(2);
+  });
+});

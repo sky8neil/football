@@ -10,7 +10,7 @@ const now = new Date("2026-08-09T12:00:00Z");
 
 function harness() {
   const repo = new InMemoryRepository();
-  const config: GatewayRuntimeConfig = { environment: "test", mock_trusted_openid: null, match_cursor_secret: "test-secret", public_source: LOCAL_PUBLIC_SOURCE, repository_backend: "memory", cloudbase_repository: null, postgres_repository: null, vps_auth: null, deploy_target: "vps" };
+  const config: GatewayRuntimeConfig = { environment: "test", mock_trusted_openid: null, match_cursor_secret: "test-secret", public_source: LOCAL_PUBLIC_SOURCE, repository_backend: "memory", cloudbase_repository: null, postgres_repository: null, vps_auth: null, deploy_target: "vps", ranking_first_period_key: "2026-W31" };
   const getMyPrediction = vi.fn();
   const services = { session: new SessionService(repo), matches: new MatchQueryService(repo, config.match_cursor_secret), predictions: { submit: vi.fn(), getMyPrediction } };
   const rate_limiter = new InMemoryRateLimiter();

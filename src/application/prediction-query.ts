@@ -7,8 +7,9 @@ import {
 import { UserStatus } from "../domain/enums.js";
 import { conflictError, internalError, notFoundError, validationError } from "../domain/errors.js";
 import { isValidUuid } from "../domain/ids.js";
-import type { Match, Prediction } from "../domain/types.js";
+import type { Match } from "../domain/types.js";
 import type { AppRepository } from "../infrastructure/repositories.js";
+import { assertLeagueSeasonAttached } from "./league-season-validation.js";
 
 export interface PredictionDetailData {
   prediction_id: string;
@@ -146,6 +147,21 @@ export class PredictionHistoryCursorCodec {
   }
 }
 
+async function resolveEffectiveMatch(
+  matches: AppRepository["matches"],
+  matchId: string,
+): Promise<Match | null> {
+  let match = await matches.findById(matchId);
+  const visited = new Set<string>();
+  while (match !== null && match.superseded_by != null && !visited.has(match.match_id)) {
+    visited.add(match.match_id);
+    const next = await matches.findById(match.superseded_by);
+    if (next === null) break;
+    match = next;
+  }
+  return match;
+}
+
 export class PredictionQueryService {
   constructor(
     private readonly repo: Pick<AppRepository, "users" | "predictions" | "matches">,
@@ -172,7 +188,7 @@ export class PredictionQueryService {
       throw notFoundError("PREDICTION");
     }
 
-    const match = await this.repo.matches.findById(prediction.match_id);
+    const match = await resolveEffectiveMatch(this.repo.matches, prediction.match_id);
     if (match === null) {
       throw internalError("prediction 缺少对应 match");
     }
@@ -182,7 +198,7 @@ export class PredictionQueryService {
 
     return {
       prediction_id: prediction.prediction_id,
-      match_id: prediction.match_id,
+      match_id: match.match_id,
       pred_home_score: prediction.pred_home_score,
       pred_away_score: prediction.pred_away_score,
       derived_result: prediction.derived_result,
@@ -198,18 +214,22 @@ export class PredictionQueryService {
   }
 }
 
-function assertPredictionHistoryQuery(
+async function assertPredictionHistoryQuery(
+  repo: Pick<AppRepository, "matches">,
   input: PredictionHistoryQuery,
   cursor: Omit<PredictionHistoryCursorPayload, "version"> | null,
-): void {
+): Promise<void> {
   const leagueId = input.league_id ?? cursor?.league_id ?? null;
   const seasonId = input.season_id ?? cursor?.season_id ?? null;
+  if (seasonId !== null && leagueId === null) {
+    throw validationError("历史预测查询参数无效");
+  }
+  if (seasonId !== null && leagueId !== null) {
+    await assertLeagueSeasonAttached(repo, leagueId, seasonId);
+  } else if (leagueId !== null && !isSupportedLeagueId(leagueId)) {
+    throw validationError("历史预测查询参数无效");
+  }
   if (
-    (leagueId !== null && !isSupportedLeagueId(leagueId)) ||
-    (seasonId !== null && leagueId === null) ||
-    (seasonId !== null &&
-      leagueId !== null &&
-      findSupportedLeagueById(leagueId)?.season_id !== seasonId) ||
     !Number.isSafeInteger(input.limit) ||
     input.limit < 1 ||
     input.limit > FIXED_CONFIG_V1.API_MAX_LIMIT ||
@@ -244,7 +264,7 @@ export class PredictionHistoryQueryService {
       throw validationError("user_id 必须为 UUID v4", { field: "user_id" });
     }
     const cursor = input.cursor === null ? null : this.cursorCodec.decode(input.cursor);
-    assertPredictionHistoryQuery(input, cursor);
+    await assertPredictionHistoryQuery(this.repo, input, cursor);
 
     const user = await this.repo.users.findById(userId);
     if (user === null) {
@@ -265,56 +285,36 @@ export class PredictionHistoryQueryService {
     const resolvedLeagueId = input.league_id ?? cursor?.league_id ?? null;
     const resolvedSeasonId = input.season_id ?? cursor?.season_id ?? null;
 
-    const facts: Array<{ prediction: Prediction; match: Match }> = [];
-    for (const prediction of await this.repo.predictions.findByUser(userId)) {
+    const rows = await this.repo.predictions.findHistoryPage({
+      user_id: userId,
+      league_id: resolvedLeagueId,
+      season_id: resolvedSeasonId,
+      cursor: cursor === null ? null : { submitted_at: new Date(cursor.submitted_at), prediction_id: cursor.prediction_id },
+      limit: input.limit + 1,
+    });
+    const hasMore = rows.length > input.limit;
+    const page = rows.slice(0, input.limit);
+
+    const items: PredictionHistoryItem[] = [];
+    for (const prediction of page) {
       if (prediction.user_id !== userId) {
         throw internalError(`prediction 归属不一致（prediction_id=${prediction.prediction_id}）`);
       }
       assertValidDate(prediction.submitted_at, "submitted_at");
-      const match = await this.repo.matches.findById(prediction.match_id);
+      const match = await resolveEffectiveMatch(this.repo.matches, prediction.match_id);
       if (match === null) {
         throw internalError(`prediction 缺少对应 match（prediction_id=${prediction.prediction_id}）`);
       }
       if (findSupportedLeagueById(match.league_id) === undefined) {
         continue;
       }
-      if (resolvedLeagueId !== null && match.league_id !== resolvedLeagueId) {
-        continue;
-      }
-      if (resolvedSeasonId !== null && match.season_id !== resolvedSeasonId) {
-        continue;
-      }
       assertValidDate(match.kickoff_at, "kickoff_at");
-      facts.push({ prediction, match });
-    }
-
-    facts.sort((a, b) => {
-      const submittedDifference = b.prediction.submitted_at.getTime() - a.prediction.submitted_at.getTime();
-      if (submittedDifference !== 0) {
-        return submittedDifference;
-      }
-      if (a.prediction.prediction_id === b.prediction.prediction_id) {
-        return 0;
-      }
-      return a.prediction.prediction_id < b.prediction.prediction_id ? 1 : -1;
-    });
-
-    const cursorSubmittedAt = cursor === null ? null : Date.parse(cursor.submitted_at);
-    const remaining = cursor === null
-      ? facts
-      : facts.filter(({ prediction }) =>
-        prediction.submitted_at.getTime() < cursorSubmittedAt! ||
-        prediction.submitted_at.getTime() === cursorSubmittedAt! &&
-          prediction.prediction_id < cursor.prediction_id,
-      );
-    const page = remaining.slice(0, input.limit);
-    const items: PredictionHistoryItem[] = page.map(({ prediction, match }) => {
       const hasFormalScore =
         match.regular_home_score !== null && match.regular_away_score !== null;
       const hasSettlement = hasFormalScore && match.match_status !== "cancelled";
-      return {
+      items.push({
         prediction_id: prediction.prediction_id,
-        match_id: prediction.match_id,
+        match_id: match.match_id,
         league_id: match.league_id,
         season_id: match.season_id,
         round_id: match.round_id,
@@ -332,10 +332,9 @@ export class PredictionHistoryQueryService {
         match_score: hasSettlement ? prediction.match_score : null,
         wdl_hit: hasSettlement ? prediction.wdl_hit : null,
         exact_hit: hasSettlement ? prediction.exact_hit : null,
-      };
-    });
+      });
+    }
 
-    const hasMore = remaining.length > input.limit;
     const last = page.at(-1);
     return {
       items,
@@ -344,8 +343,8 @@ export class PredictionHistoryQueryService {
         ? this.cursorCodec.encode({
             league_id: resolvedLeagueId,
             season_id: resolvedSeasonId,
-            submitted_at: last.prediction.submitted_at.toISOString(),
-            prediction_id: last.prediction.prediction_id,
+            submitted_at: last.submitted_at.toISOString(),
+            prediction_id: last.prediction_id,
           })
         : null,
     };

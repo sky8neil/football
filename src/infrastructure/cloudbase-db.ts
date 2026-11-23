@@ -22,12 +22,29 @@ export interface CloudBaseDb {
     options?: CloudBaseQueryOptions,
   ): Promise<CloudBaseDocument[]>;
   count(collection: string, filter?: Record<string, unknown>): Promise<number>;
+  distinctQuery?(
+    collection: string,
+    fields: readonly string[],
+    filter?: Record<string, unknown>,
+  ): Promise<Record<string, string>[]>;
+  findPredictionHistoryPage?(params: {
+    predictions_collection: string;
+    matches_collection: string;
+    user_id: string;
+    league_id: string | null;
+    season_id: string | null;
+    cursor: { submitted_at: Date; prediction_id: string } | null;
+    limit: number;
+  }): Promise<CloudBaseDocument[]>;
   /**
-   * 构造「字段 <= 值」范围条件，返回可直接并入 query filter 的对象。
+   * 构造「字段 < / <= / >= 值」范围条件，返回可直接并入 query/delete filter 的对象。
    * 适配器不支持范围查询时返回 undefined（调用方退化为不带该条件）。
    */
+  ltFilter?(field: string, value: unknown): Record<string, unknown> | undefined;
   lteFilter?(field: string, value: unknown): Record<string, unknown> | undefined;
   gteFilter?(field: string, value: unknown): Record<string, unknown> | undefined;
+  /** 按条件删除文档（只允许用于运行日志/快照/临时数据清理），返回删除条数。 */
+  deleteWhere?(collection: string, filter: Record<string, unknown>): Promise<number>;
   /**
    * 构造「字段 in 数组」等值集合条件，返回可直接并入 query filter 的对象。
    * 适配器不支持时返回 undefined（调用方退化为逐条查询）。
@@ -36,6 +53,12 @@ export interface CloudBaseDb {
   reserveCounter?(collection: string, id: string, field: string, limit: number, initial: CloudBaseDocument): Promise<boolean>;
   adjustCounter?(collection: string, id: string, field: string, delta: number): Promise<void>;
   getCounter?(collection: string, id: string, field: string): Promise<number>;
+  acquireJobLock?(
+    collection: string,
+    lockKey: string,
+    document: CloudBaseDocument,
+    now: Date,
+  ): Promise<boolean>;
   transaction<T>(work: (transactionDb: CloudBaseDb) => Promise<T>): Promise<T>;
 }
 

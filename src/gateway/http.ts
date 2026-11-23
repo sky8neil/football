@@ -101,6 +101,7 @@ export async function startGatewayServer(options: {
     }
     const runtime = createVpsRuntime({
       postgres: config.postgres_repository,
+      env: options.env ?? process.env,
       ...(options.wechat_http !== undefined ? { wechatHttp: options.wechat_http } : {}),
     });
     repo = runtime.repo;

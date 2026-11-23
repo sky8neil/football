@@ -74,6 +74,10 @@ class MemoryCloudBaseDb implements CloudBaseDb {
     return document === undefined ? null : cloneValue(document);
   }
 
+  seed(collection: string, id: string, document: CloudBaseDocument): void {
+    this.documents.set(`${collection}/${id}`, cloneValue({ ...document, _id: id }));
+  }
+
   async add(collection: string, id: string, document: CloudBaseDocument): Promise<void> {
     if (this.documents.has(`${collection}/${id}`)) {
       const def = COLLECTION_DEFINITIONS.find((item) => collection.endsWith(`_${item.collection}`));
@@ -499,6 +503,30 @@ function makeWindowMatch(overrides: Partial<Match> = {}): Match {
   } as Match;
 }
 
+function makeHistoryPrediction(overrides: Partial<Prediction> = {}): Prediction {
+  const matchId = overrides.match_id ?? "m1";
+  return {
+    schema_version: 1,
+    prediction_id: "pred-1",
+    user_id: USER_ID,
+    match_id: matchId,
+    canonical_match_id: overrides.canonical_match_id ?? matchId,
+    idempotency_key: overrides.idempotency_key ?? "key-1",
+    pred_home_score: 1,
+    pred_away_score: 0,
+    derived_result: "HOME",
+    submitted_at: NOW,
+    scoring_rule_version: "scoring_v1",
+    match_score: null,
+    wdl_hit: null,
+    exact_hit: null,
+    applied_result_version: 0,
+    created_at: NOW,
+    updated_at: NOW,
+    ...overrides,
+  };
+}
+
 describe("CloudBase repository configuration", () => {
   it("loads only the repository environment keys and trims values", () => {
     expect(loadCloudBaseRepositoryConfig({
@@ -609,6 +637,144 @@ describe("CloudBaseAppRepository", () => {
 
     await expect(repo.predictions.findByUserAndCanonicalMatch(USER_ID, "old-match"))
       .resolves.toMatchObject({ prediction_id: "old-prediction", canonical_match_id: "old-match" });
+    await expect(repo.predictions.findByCanonicalMatch("old-match"))
+      .resolves.toEqual([
+        expect.objectContaining({ prediction_id: "old-prediction", canonical_match_id: "old-match" }),
+      ]);
+  });
+
+  it("findByUserAndCanonicalMatchIds includes legacy match_id-only rows and matches single-lookup semantics", async () => {
+    const db = new MemoryCloudBaseDb();
+    const repo = createCloudBaseRepository(db);
+    const col = cloudBaseCollectionName(CONFIG.resource_namespace, "predictions");
+    const addRaw = async (prediction: Prediction, omitCanonical = false) => {
+      const doc = omitCanonical
+        ? (({ canonical_match_id: _ignored, ...fields }) => fields)(prediction)
+        : prediction;
+      const payload = { ...doc, _id: prediction.prediction_id };
+      if (omitCanonical) db.seed(col, prediction.prediction_id, payload);
+      else await db.add(col, prediction.prediction_id, payload);
+    };
+    await addRaw(makeHistoryPrediction({
+      prediction_id: "p-legacy", user_id: USER_ID, match_id: "m-legacy", idempotency_key: "k-legacy",
+    }), true);
+    await addRaw(makeHistoryPrediction({
+      prediction_id: "p-new", user_id: USER_ID, match_id: "m-new-row", canonical_match_id: "m-new",
+      idempotency_key: "k-new",
+    }));
+    await addRaw(makeHistoryPrediction({
+      prediction_id: "p-both", user_id: USER_ID, match_id: "m-both", canonical_match_id: "m-both",
+      idempotency_key: "k-both",
+    }));
+    await addRaw(makeHistoryPrediction({
+      prediction_id: "p-other-user", user_id: USER_ID_2, match_id: "m-legacy", idempotency_key: "k-other-user",
+    }), true);
+    await addRaw(makeHistoryPrediction({
+      prediction_id: "p-other-match", user_id: USER_ID, match_id: "m-other", idempotency_key: "k-other-match",
+    }), true);
+    await addRaw(makeHistoryPrediction({
+      prediction_id: "p-wrong-canonical", user_id: USER_ID, match_id: "m-wrong",
+      canonical_match_id: "m-elsewhere", idempotency_key: "k-wrong",
+    }));
+
+    const requested = ["m-legacy", "m-new", "m-both", "m-wrong", "m-missing", "m-legacy"];
+    const query = vi.spyOn(db, "query");
+    const rows = await repo.predictions.findByUserAndCanonicalMatchIds(USER_ID, requested);
+    expect(rows.map((row) => row.prediction_id).sort()).toEqual(["p-both", "p-legacy", "p-new"]);
+    expect(new Set(rows.map((row) => row.prediction_id)).size).toBe(rows.length);
+    expect(query.mock.calls.length).toBeLessThan(new Set(requested).size);
+    query.mockRestore();
+
+    for (const canonicalMatchId of [...new Set(requested)]) {
+      const single = await repo.predictions.findByUserAndCanonicalMatch(USER_ID, canonicalMatchId);
+      const batch = rows.filter((row) => row.canonical_match_id === canonicalMatchId);
+      if (single === null) {
+        expect(batch).toEqual([]);
+      } else {
+        expect(batch.map((row) => row.prediction_id)).toEqual([single.prediction_id]);
+      }
+    }
+  });
+
+  it("findByUserAndCanonicalMatchIds prefers canonical_match_id rows over legacy match_id rows", async () => {
+    const db = new MemoryCloudBaseDb();
+    const repo = createCloudBaseRepository(db);
+    const col = cloudBaseCollectionName(CONFIG.resource_namespace, "predictions");
+    await db.add(col, "p-canonical", {
+      ...makeHistoryPrediction({
+        prediction_id: "p-canonical", user_id: USER_ID, match_id: "m-row", canonical_match_id: "m1",
+        idempotency_key: "k-canonical",
+      }),
+      _id: "p-canonical",
+    });
+    const { canonical_match_id: _ignored, ...legacy } = makeHistoryPrediction({
+      prediction_id: "p-legacy", user_id: USER_ID, match_id: "m1", idempotency_key: "k-legacy",
+    });
+    db.seed(col, "p-legacy", { ...legacy, _id: "p-legacy" });
+
+    const single = await repo.predictions.findByUserAndCanonicalMatch(USER_ID, "m1");
+    const batch = await repo.predictions.findByUserAndCanonicalMatchIds(USER_ID, ["m1"]);
+    expect(single?.prediction_id).toBe("p-canonical");
+    expect(batch.map((row) => row.prediction_id)).toEqual(["p-canonical"]);
+  });
+
+  it("findByUserAndCanonicalMatchIds loads legacy rows across inFilter chunks without N+1", async () => {
+    const db = new MemoryCloudBaseDb();
+    const repo = createCloudBaseRepository(db);
+    const col = cloudBaseCollectionName(CONFIG.resource_namespace, "predictions");
+    const ids = Array.from({ length: 51 }, (_, index) => `legacy-${index}`);
+    for (const id of ids) {
+      const { canonical_match_id: _ignored, ...fields } = makeHistoryPrediction({
+        prediction_id: id, user_id: USER_ID, match_id: id, idempotency_key: id,
+      });
+      db.seed(col, id, { ...fields, _id: id });
+    }
+    const query = vi.spyOn(db, "query");
+    const rows = await repo.predictions.findByUserAndCanonicalMatchIds(USER_ID, [...ids, ids[0]!]);
+    expect(rows.map((row) => row.canonical_match_id).sort()).toEqual([...ids].sort());
+    expect(new Set(rows.map((row) => row.prediction_id)).size).toBe(ids.length);
+    expect(query).toHaveBeenCalledTimes(4);
+    expect(query.mock.calls.every((call) => call[1] && !("prediction_id" in (call[1] as object)))).toBe(true);
+  });
+
+  it("findByCanonicalMatch merges backfilled and legacy predictions and deduplicates by prediction_id", async () => {
+    const db = new MemoryCloudBaseDb();
+    const repo = createCloudBaseRepository(db);
+    const col = cloudBaseCollectionName(CONFIG.resource_namespace, "predictions");
+    // Legacy doc with match_id === canonicalId and no canonical_match_id field
+    await db.add(col, "p-legacy", {
+      _id: "p-legacy",
+      prediction_id: "p-legacy",
+      user_id: USER_ID,
+      match_id: "canon-1",
+    });
+    // Backfilled doc with both match_id === canonicalId and canonical_match_id === canonicalId (would match both queries)
+    await db.add(col, "p-both", {
+      _id: "p-both",
+      prediction_id: "p-both",
+      user_id: "u2",
+      match_id: "canon-1",
+      canonical_match_id: "canon-1",
+    });
+    // Doc submitted on superseded match with canonical_match_id === canonicalId
+    await db.add(col, "p-remapped", {
+      _id: "p-remapped",
+      prediction_id: "p-remapped",
+      user_id: "u3",
+      match_id: "m-new",
+      canonical_match_id: "canon-1",
+    });
+    // Doc whose match_id === canonicalId but canonical_match_id points elsewhere (must be excluded)
+    await db.add(col, "p-other", {
+      _id: "p-other",
+      prediction_id: "p-other",
+      user_id: "u4",
+      match_id: "canon-1",
+      canonical_match_id: "canon-other",
+    });
+
+    const rows = await repo.predictions.findByCanonicalMatch("canon-1");
+    expect(rows.map((p) => p.prediction_id).sort()).toEqual(["p-both", "p-legacy", "p-remapped"]);
   });
 
   it("rejects duplicate predictions by user and canonical match", async () => {
@@ -710,6 +876,96 @@ describe("CloudBaseAppRepository", () => {
       .resolves.toEqual({ HOME: 0, DRAW: 0, AWAY: 0 });
   });
 
+  it("counts grouped crowd results for canonical-only predictions", async () => {
+    const repo = createCloudBaseRepository();
+    await repo.predictions.insert(makeHistoryPrediction({
+      prediction_id: "p-home-1", user_id: "u-home-1", match_id: "match-id",
+      canonical_match_id: "match-id", idempotency_key: "k-home-1", derived_result: "HOME",
+    }));
+    await repo.predictions.insert(makeHistoryPrediction({
+      prediction_id: "p-home-2", user_id: "u-home-2", match_id: "match-id",
+      canonical_match_id: "match-id", idempotency_key: "k-home-2", derived_result: "HOME",
+    }));
+    await repo.predictions.insert(makeHistoryPrediction({
+      prediction_id: "p-draw-1", user_id: "u-draw-1", match_id: "match-id",
+      canonical_match_id: "match-id", idempotency_key: "k-draw-1", derived_result: "DRAW",
+    }));
+    await repo.predictions.insert(makeHistoryPrediction({
+      prediction_id: "p-away-1", user_id: "u-away-1", match_id: "other-match",
+      canonical_match_id: "other-match", idempotency_key: "k-away-1", derived_result: "AWAY",
+    }));
+    await expect(repo.predictions.countByMatchGroupedByResult("match-id"))
+      .resolves.toEqual({ HOME: 2, DRAW: 1, AWAY: 0 });
+  });
+
+  it("counts grouped crowd results for legacy match_id-only predictions", async () => {
+    const db = new MemoryCloudBaseDb();
+    const repo = createCloudBaseRepository(db);
+    const col = cloudBaseCollectionName(CONFIG.resource_namespace, "predictions");
+    const addLegacy = async (prediction: Prediction) => {
+      const { canonical_match_id: _ignored, ...fields } = prediction;
+      await db.add(col, prediction.prediction_id, { ...fields, _id: prediction.prediction_id });
+    };
+    await addLegacy(makeHistoryPrediction({
+      prediction_id: "p-legacy-home", user_id: "u-legacy-home", match_id: "match-id",
+      idempotency_key: "k-legacy-home", derived_result: "HOME",
+    }));
+    await addLegacy(makeHistoryPrediction({
+      prediction_id: "p-legacy-draw", user_id: "u-legacy-draw", match_id: "match-id",
+      idempotency_key: "k-legacy-draw", derived_result: "DRAW",
+    }));
+    await addLegacy(makeHistoryPrediction({
+      prediction_id: "p-legacy-away", user_id: "u-legacy-away", match_id: "match-id",
+      idempotency_key: "k-legacy-away", derived_result: "AWAY",
+    }));
+    await addLegacy(makeHistoryPrediction({
+      prediction_id: "p-legacy-other", user_id: "u-legacy-other", match_id: "other-match",
+      idempotency_key: "k-legacy-other", derived_result: "HOME",
+    }));
+    await expect(repo.predictions.countByMatchGroupedByResult("match-id"))
+      .resolves.toEqual({ HOME: 1, DRAW: 1, AWAY: 1 });
+  });
+
+  it("unions canonical and legacy crowd counts without double-counting", async () => {
+    const db = new MemoryCloudBaseDb();
+    const repo = createCloudBaseRepository(db);
+    const col = cloudBaseCollectionName(CONFIG.resource_namespace, "predictions");
+    await repo.predictions.insert(makeHistoryPrediction({
+      prediction_id: "p-canonical-home", user_id: "u-canonical-home", match_id: "match-id",
+      canonical_match_id: "match-id", idempotency_key: "k-canonical-home", derived_result: "HOME",
+    }));
+    const { canonical_match_id: _ignored, ...legacyDraw } = makeHistoryPrediction({
+      prediction_id: "p-legacy-draw", user_id: "u-legacy-draw", match_id: "match-id",
+      idempotency_key: "k-legacy-draw", derived_result: "DRAW",
+    });
+    await db.add(col, "p-legacy-draw", { ...legacyDraw, _id: "p-legacy-draw" });
+    await expect(repo.predictions.countByMatchGroupedByResult("match-id"))
+      .resolves.toEqual({ HOME: 1, DRAW: 1, AWAY: 0 });
+  });
+
+  it("matches in-memory crowd counts on mixed canonical and legacy predictions", async () => {
+    const memory = new InMemoryRepository();
+    const db = new MemoryCloudBaseDb();
+    const cloudbase = createCloudBaseRepository(db);
+    const col = cloudBaseCollectionName(CONFIG.resource_namespace, "predictions");
+    const canonicalHome = makeHistoryPrediction({
+      prediction_id: "p-canonical-home", user_id: "u-canonical-home", match_id: "match-id",
+      canonical_match_id: "match-id", idempotency_key: "k-canonical-home", derived_result: "HOME",
+    });
+    const { canonical_match_id: _ignored, ...legacyDrawFields } = makeHistoryPrediction({
+      prediction_id: "p-legacy-draw", user_id: "u-legacy-draw", match_id: "match-id",
+      idempotency_key: "k-legacy-draw", derived_result: "DRAW",
+    });
+    const legacyDraw = legacyDrawFields as Prediction;
+    await memory.predictions.insert(canonicalHome);
+    await memory.predictions.insert(legacyDraw);
+    await cloudbase.predictions.insert(canonicalHome);
+    await db.add(col, legacyDraw.prediction_id, { ...legacyDraw, _id: legacyDraw.prediction_id });
+    const expected = { HOME: 1, DRAW: 1, AWAY: 0 };
+    await expect(memory.predictions.countByMatchGroupedByResult("match-id")).resolves.toEqual(expected);
+    await expect(cloudbase.predictions.countByMatchGroupedByResult("match-id")).resolves.toEqual(expected);
+  });
+
   it("retains soft-deleted users so identity resolution sees the tombstone", async () => {
     const memory = new InMemoryRepository();
     const cloudbase = createCloudBaseRepository();
@@ -749,6 +1005,28 @@ describe("CloudBaseAppRepository", () => {
     await expect(repo.boardSnapshots.findLatestBySeason("2026_2027")).resolves.toEqual([regular]);
     await expect(repo.boardSnapshots.findFinalBySeason("2026_2027")).resolves.toEqual([final]);
     await expect(repo.boardSnapshots.listFinalSeasonIds()).resolves.toEqual(["2026_2027"]);
+  });
+
+  it("listFinalSeasonIds pushes distinct season lookup down via db.distinctQuery and ignores head rows", async () => {
+    const db = new MemoryCloudBaseDb();
+    const querySpy = vi.spyOn(db, "query");
+    const distinctQuery = vi.fn<NonNullable<CloudBaseDb["distinctQuery"]>>(async () => [
+      { level_season_id: "2026_2027", snapshot_kind: "" },
+      { level_season_id: "2027_2028", snapshot_kind: "" },
+      { level_season_id: "2027_2028", snapshot_kind: "" },
+      { level_season_id: "2025_2026", snapshot_kind: "head" },
+      { level_season_id: "", snapshot_kind: "" },
+    ]);
+    (db as CloudBaseDb).distinctQuery = distinctQuery;
+    const repo = createCloudBaseRepository(db);
+
+    await expect(repo.boardSnapshots.listFinalSeasonIds()).resolves.toEqual(["2027_2028", "2026_2027"]);
+    expect(distinctQuery).toHaveBeenCalledWith(
+      cloudBaseCollectionName(CONFIG.resource_namespace, "board_snapshots"),
+      ["level_season_id", "snapshot_kind"],
+      { board: "season", is_final: true },
+    );
+    expect(querySpy).not.toHaveBeenCalled();
   });
 
   it("rejects a final snapshot colliding with a regular snapshot at the same unique key", async () => {
@@ -960,6 +1238,278 @@ describe("CloudBaseAppRepository.findActiveWindow", () => {
     expect(and).toHaveBeenCalledTimes(2);
     expect(and).toHaveBeenCalledWith({ __lte: new Date(NOW.getTime() + 2 * hour) });
   });
+
+  it("[Slice 4] board_snapshots 多时间截面下 findLatestByBoard/findLatestBySeason 只查最新非终榜截面", async () => {
+    const db = new MemoryCloudBaseDb();
+    const repo = createCloudBaseRepository(db);
+    const t1 = new Date("2026-08-01T00:00:00.000Z");
+    const t2 = new Date("2026-08-02T00:00:00.000Z");
+    const tFinal = new Date("2026-08-03T00:00:00.000Z");
+    const baseSnap = {
+      schema_version: 1 as const,
+      board: "season" as const,
+      user_id: "u1",
+      level_season_id: "2026_2027",
+      rank: 1,
+      career_points: null,
+      career_exact_hits: null,
+      career_valid_predictions: null,
+      career_last_scoring_match_at: null,
+      window_score_sum: null,
+      window_n: null,
+    };
+    await repo.boardSnapshots.insert({
+      ...baseSnap,
+      snapshot_id: "snap-1",
+      snapshot_at: t1,
+      season_points: 10,
+      season_exact_hits: 0,
+      season_valid_predictions: 1,
+      season_last_scoring_match_at: t1,
+      is_final: false,
+      created_at: t1,
+    });
+    await repo.boardSnapshots.insert({
+      ...baseSnap,
+      snapshot_id: "snap-2",
+      snapshot_at: t2,
+      season_points: 24,
+      season_exact_hits: 2,
+      season_valid_predictions: 2,
+      season_last_scoring_match_at: t2,
+      is_final: false,
+      created_at: t2,
+    });
+    await repo.boardSnapshots.insert({
+      ...baseSnap,
+      snapshot_id: "snap-final",
+      snapshot_at: tFinal,
+      season_points: 99,
+      season_exact_hits: 5,
+      season_valid_predictions: 5,
+      season_last_scoring_match_at: tFinal,
+      is_final: true,
+      created_at: tFinal,
+    });
+
+    const querySpy = vi.spyOn(db, "query");
+    const latestBoard = await repo.boardSnapshots.findLatestByBoard("season");
+    expect(latestBoard).toHaveLength(1);
+    expect(latestBoard[0]?.snapshot_at.toISOString()).toBe(t2.toISOString());
+    expect(querySpy).toHaveBeenCalledWith(
+      expect.any(String),
+      { board: "season" },
+      { order_by: "snapshot_at", direction: "desc", limit: 100, offset: 0 },
+    );
+    expect(querySpy).toHaveBeenCalledWith(
+      expect.any(String),
+      { board: "season", snapshot_at: t2 },
+      undefined,
+    );
+
+    querySpy.mockClear();
+    const latestSeason = await repo.boardSnapshots.findLatestBySeason("2026_2027");
+    expect(latestSeason).toHaveLength(1);
+    expect(latestSeason[0]?.snapshot_at.toISOString()).toBe(t2.toISOString());
+    expect(querySpy).toHaveBeenCalledWith(
+      expect.any(String),
+      { board: "season", level_season_id: "2026_2027" },
+      { order_by: "snapshot_at", direction: "desc", limit: 100, offset: 0 },
+    );
+  });
+
+  it("findLatestByBoard/findLatestBySeason 分页扫过终榜窗口后仍能命中旧的非终榜截面，并按 rank 升序", async () => {
+    const repo = createCloudBaseRepository();
+    const oldAt = new Date("2026-01-01T00:00:00.000Z");
+    const rank2 = makeSeasonSnapshot({
+      snapshot_id: "old-rank-2", snapshot_at: oldAt, user_id: "u-old-2", rank: 2, is_final: false, created_at: oldAt,
+    });
+    const rank1 = makeSeasonSnapshot({
+      snapshot_id: "old-rank-1", snapshot_at: oldAt, user_id: "u-old-1", rank: 1, is_final: false, created_at: oldAt,
+    });
+    await repo.boardSnapshots.insert(rank2);
+    await repo.boardSnapshots.insert(rank1);
+    for (let i = 0; i < 120; i += 1) {
+      const at = new Date(oldAt.getTime() + (i + 1) * 1000);
+      await repo.boardSnapshots.insert(makeSeasonSnapshot({
+        snapshot_id: `final-${i}`, snapshot_at: at, user_id: `u-final-${i}`, is_final: true, created_at: at,
+      }));
+    }
+    const expected = [
+      expect.objectContaining({ user_id: "u-old-1", rank: 1, snapshot_at: oldAt }),
+      expect.objectContaining({ user_id: "u-old-2", rank: 2, snapshot_at: oldAt }),
+    ];
+    await expect(repo.boardSnapshots.findLatestBySeason("2026_2027")).resolves.toEqual(expected);
+    await expect(repo.boardSnapshots.findLatestByBoard("season")).resolves.toEqual(expected);
+  });
+
+  it("is_final 缺失、null、false 都当作非终榜可用，true 被排除", async () => {
+    const db = new MemoryCloudBaseDb();
+    const repo = createCloudBaseRepository(db);
+    const col = cloudBaseCollectionName(CONFIG.resource_namespace, "board_snapshots");
+    const tFinal = new Date("2026-08-04T00:00:00.000Z");
+    const tUsable = new Date("2026-08-03T00:00:00.000Z");
+    const addRaw = async (overrides: Record<string, unknown>) => {
+      const snapshot = makeSeasonSnapshot(overrides as Partial<BoardSnapshot>);
+      const document: CloudBaseDocument = { ...snapshot, _id: snapshot.snapshot_id };
+      if (!("is_final" in overrides)) delete document.is_final;
+      await db.add(col, snapshot.snapshot_id, document);
+    };
+    await addRaw({ snapshot_id: "final-newer", snapshot_at: tFinal, user_id: "u-final", is_final: true, created_at: tFinal });
+    await addRaw({ snapshot_id: "missing", snapshot_at: tUsable, user_id: "u-missing", rank: 3, created_at: tUsable });
+    await addRaw({ snapshot_id: "null-final", snapshot_at: tUsable, user_id: "u-null", rank: 1, is_final: null, created_at: tUsable });
+    await addRaw({ snapshot_id: "false-final", snapshot_at: tUsable, user_id: "u-false", rank: 2, is_final: false, created_at: tUsable });
+    await addRaw({ snapshot_id: "true-same", snapshot_at: tUsable, user_id: "u-true", rank: 4, is_final: true, created_at: tUsable });
+    const latestSeason = await repo.boardSnapshots.findLatestBySeason("2026_2027");
+    const latestBoard = await repo.boardSnapshots.findLatestByBoard("season");
+    const expectedIds = ["null-final", "false-final", "missing"];
+    expect(latestSeason.map((item) => item.snapshot_id)).toEqual(expectedIds);
+    expect(latestBoard.map((item) => item.snapshot_id)).toEqual(expectedIds);
+    expect(latestSeason.map((item) => item.rank)).toEqual([1, 2, 3]);
+  });
+
+  it("没有任何非终榜时返回空数组，且分页扫描有明确终止", async () => {
+    const db = new MemoryCloudBaseDb();
+    const repo = createCloudBaseRepository(db);
+    for (let i = 0; i < 250; i += 1) {
+      const at = new Date(NOW.getTime() + i * 1000);
+      await repo.boardSnapshots.insert(makeSeasonSnapshot({
+        snapshot_id: `only-final-${i}`, snapshot_at: at, user_id: `u-only-final-${i}`, is_final: true, created_at: at,
+      }));
+    }
+    const querySpy = vi.spyOn(db, "query");
+    await expect(repo.boardSnapshots.findLatestBySeason("2026_2027")).resolves.toEqual([]);
+    const seasonCalls = querySpy.mock.calls.length;
+    expect(seasonCalls).toBeGreaterThan(0);
+    expect(seasonCalls).toBeLessThanOrEqual(5);
+    querySpy.mockClear();
+    await expect(repo.boardSnapshots.findLatestByBoard("season")).resolves.toEqual([]);
+    expect(querySpy.mock.calls.length).toBeGreaterThan(0);
+    expect(querySpy.mock.calls.length).toBeLessThanOrEqual(5);
+  });
+
+  it("[Slice 4] findBySeasonInWindow 下推 kickoff_at 范围过滤，findUnfinalizedWeeks 下推未封周榜过滤", async () => {
+    const db = new RangeAwareMemoryCloudBaseDb();
+    const repo = createCloudBaseRepository(db);
+    const from = new Date(NOW.getTime() - 2 * hour);
+    const to = new Date(NOW.getTime() + 2 * hour);
+    await repo.matches.insert(makeWindowMatch({ match_id: "in-window", kickoff_at: NOW }));
+    await repo.matches.insert(makeWindowMatch({ match_id: "too-early", kickoff_at: new Date(NOW.getTime() - 24 * hour) }));
+    await repo.matches.insert(makeWindowMatch({ match_id: "too-late", kickoff_at: new Date(NOW.getTime() + 24 * hour) }));
+
+    const querySpy = vi.spyOn(db, "query");
+    const inWindow = await repo.matches.findBySeasonInWindow!("2026_2027", from, to);
+    expect(inWindow.map((m) => m.match_id)).toEqual(["in-window"]);
+    expect(querySpy).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        season_id: "2026_2027",
+        kickoff_at: { __gte: from, __lte: to },
+      }),
+      undefined,
+    );
+
+    await repo.rankings.insert({
+      schema_version: 1,
+      period_type: "week",
+      period_key: "2026-W31",
+      user_id: USER_ID,
+      period_score: 12,
+      valid_predictions: 1,
+      wdl_hits: 1,
+      exact_hits: 1,
+      last_scoring_match_at: NOW,
+      global_rank: 1,
+      is_final: true,
+      created_at: NOW,
+      updated_at: NOW,
+    });
+    await repo.rankings.insert({
+      schema_version: 1,
+      period_type: "week",
+      period_key: "2026-W32",
+      user_id: USER_ID,
+      period_score: 24,
+      valid_predictions: 2,
+      wdl_hits: 2,
+      exact_hits: 2,
+      last_scoring_match_at: NOW,
+      global_rank: 1,
+      is_final: false,
+      created_at: NOW,
+      updated_at: NOW,
+    });
+    const unfinalized = await repo.rankings.findUnfinalizedWeeks!();
+    expect(unfinalized.map((r) => r.period_key)).toEqual(["2026-W32"]);
+  });
+
+  it("[Slice 4] jobLocks.acquire 在 fallback 并发冲突时捕获唯一冲突并返回 false", async () => {
+    // 事务视图复用同一实例，唯一冲突才真正落在 jobLocks.acquire 的 add 调用上；
+    // MemoryCloudBaseDb.runTransaction 会新建实例，无法观察 add 抛错。
+    const duplicateDb: CloudBaseDb = {
+      get: async () => null,
+      add: async () => {
+        throw new CloudBaseDuplicateKeyError("job_locks", "pk_job_locks", { _id: "lock:race" });
+      },
+      update: async () => undefined,
+      query: async () => [],
+      count: async () => 0,
+      transaction: async (work) => work(duplicateDb),
+    };
+    const repo = new CloudBaseAppRepository(CONFIG, duplicateDb);
+    await expect(repo.jobLocks.acquire("lock:race", "owner-1", new Date(Date.now() + 60_000))).resolves.toBe(false);
+  });
+});
+
+describe("InMemoryRepository.findLeagueSeasonCatalog", () => {
+  async function seedCatalog(repo: InMemoryRepository): Promise<void> {
+    await repo.matches.insert(makeWindowMatch({
+      match_id: "pl-old-03", league_id: "premier_league", season_id: "2025_2026", round_id: "03",
+    }));
+    await repo.matches.insert(makeWindowMatch({
+      match_id: "pl-old-01a", league_id: "premier_league", season_id: "2025_2026", round_id: "01",
+    }));
+    await repo.matches.insert(makeWindowMatch({
+      match_id: "pl-old-01b", league_id: "premier_league", season_id: "2025_2026", round_id: "01",
+    }));
+    await repo.matches.insert(makeWindowMatch({
+      match_id: "pl-new-02", league_id: "premier_league", season_id: "2026_2027", round_id: "02",
+    }));
+    await repo.matches.insert(makeWindowMatch({
+      match_id: "bl-new-01", league_id: "bundesliga", season_id: "2026_2027", round_id: "01",
+    }));
+    await repo.matches.insert(makeWindowMatch({
+      match_id: "bl-old-10", league_id: "bundesliga", season_id: "2024_2025", round_id: "10",
+    }));
+    await repo.matches.insert(makeWindowMatch({
+      match_id: "bl-old-02", league_id: "bundesliga", season_id: "2024_2025", round_id: "02",
+    }));
+  }
+
+  it("aggregates by league/season with league_id asc, season_id desc, unique sorted round_ids", async () => {
+    const repo = new InMemoryRepository();
+    await seedCatalog(repo);
+    await expect(repo.matches.findLeagueSeasonCatalog()).resolves.toEqual([
+      { league_id: "bundesliga", season_id: "2026_2027", round_ids: ["01"] },
+      { league_id: "bundesliga", season_id: "2024_2025", round_ids: ["02", "10"] },
+      { league_id: "premier_league", season_id: "2026_2027", round_ids: ["02"] },
+      { league_id: "premier_league", season_id: "2025_2026", round_ids: ["01", "03"] },
+    ]);
+  });
+
+  it("filters by leagueId", async () => {
+    const repo = new InMemoryRepository();
+    await seedCatalog(repo);
+    await expect(repo.matches.findLeagueSeasonCatalog("premier_league")).resolves.toEqual([
+      { league_id: "premier_league", season_id: "2026_2027", round_ids: ["02"] },
+      { league_id: "premier_league", season_id: "2025_2026", round_ids: ["01", "03"] },
+    ]);
+  });
+
+  it("returns [] when there are no matches", async () => {
+    const repo = new InMemoryRepository();
+    await expect(repo.matches.findLeagueSeasonCatalog()).resolves.toEqual([]);
+  });
 });
 
 describe("CloudBaseUserRepository", () => {
@@ -970,5 +1520,147 @@ describe("CloudBaseUserRepository", () => {
     expect(users.cloudEnvironmentId).toBe("cloud-test");
     await users.insert(makeUser());
     await expect(users.findByOpenid(makeUser().openid)).resolves.toMatchObject({ user_id: USER_ID });
+  });
+});
+
+describe("InMemoryRepository.predictions.findHistoryPage", () => {
+  const T1 = new Date("2026-08-08T05:00:00.000Z");
+  const T2 = new Date("2026-08-08T06:00:00.000Z");
+  const T3 = new Date("2026-08-08T07:00:00.000Z");
+
+  async function insertMatchAndPrediction(
+    repo: InMemoryRepository,
+    matchOverrides: Partial<Match>,
+    predictionOverrides: Partial<Prediction>,
+  ): Promise<Prediction> {
+    const match = makeWindowMatch(matchOverrides);
+    await repo.matches.insert(match);
+    const prediction = makeHistoryPrediction({
+      match_id: match.match_id,
+      canonical_match_id: match.canonical_match_id,
+      ...predictionOverrides,
+    });
+    await repo.predictions.insert(prediction);
+    return prediction;
+  }
+
+  it("不传筛选时按 submitted_at 降序，同时间按 prediction_id 降序", async () => {
+    const repo = new InMemoryRepository();
+    await insertMatchAndPrediction(repo, { match_id: "m-late-a" }, {
+      prediction_id: "pred-a", idempotency_key: "k-a", submitted_at: T2,
+    });
+    await insertMatchAndPrediction(repo, { match_id: "m-late-b" }, {
+      prediction_id: "pred-b", idempotency_key: "k-b", submitted_at: T2,
+    });
+    await insertMatchAndPrediction(repo, { match_id: "m-early" }, {
+      prediction_id: "pred-c", idempotency_key: "k-c", submitted_at: T1,
+    });
+    await insertMatchAndPrediction(repo, { match_id: "m-other-user" }, {
+      prediction_id: "pred-other", user_id: USER_ID_2, idempotency_key: "k-other", submitted_at: T3,
+    });
+    const page = await repo.predictions.findHistoryPage({
+      user_id: USER_ID, league_id: null, season_id: null, cursor: null, limit: 10,
+    });
+    expect(page.map((item) => item.prediction_id)).toEqual(["pred-b", "pred-a", "pred-c"]);
+  });
+
+  it("传 league_id 只返回该联赛", async () => {
+    const repo = new InMemoryRepository();
+    await insertMatchAndPrediction(repo, { match_id: "m-pl", league_id: "premier_league" }, {
+      prediction_id: "pred-pl", idempotency_key: "k-pl",
+    });
+    await insertMatchAndPrediction(repo, { match_id: "m-bl", league_id: "bundesliga" }, {
+      prediction_id: "pred-bl", idempotency_key: "k-bl",
+    });
+    const page = await repo.predictions.findHistoryPage({
+      user_id: USER_ID, league_id: "premier_league", season_id: null, cursor: null, limit: 10,
+    });
+    expect(page.map((item) => item.prediction_id)).toEqual(["pred-pl"]);
+  });
+
+  it("传 season_id 只返回该赛季", async () => {
+    const repo = new InMemoryRepository();
+    await insertMatchAndPrediction(repo, { match_id: "m-new", season_id: "2026_2027" }, {
+      prediction_id: "pred-new", idempotency_key: "k-new",
+    });
+    await insertMatchAndPrediction(repo, { match_id: "m-old", season_id: "2025_2026" }, {
+      prediction_id: "pred-old", idempotency_key: "k-old",
+    });
+    const page = await repo.predictions.findHistoryPage({
+      user_id: USER_ID, league_id: null, season_id: "2026_2027", cursor: null, limit: 10,
+    });
+    expect(page.map((item) => item.prediction_id)).toEqual(["pred-new"]);
+  });
+
+  it("预测挂在已被 superseded_by 取代的旧比赛上时，按有效比赛的联赛/赛季命中且不重复", async () => {
+    const repo = new InMemoryRepository();
+    const current = makeWindowMatch({
+      match_id: "m-current", canonical_match_id: "canonical-1",
+      league_id: "premier_league", season_id: "2026_2027",
+    });
+    const old = makeWindowMatch({
+      match_id: "m-old", canonical_match_id: "canonical-1",
+      league_id: "bundesliga", season_id: "2025_2026",
+    });
+    await repo.matches.insert(current);
+    await repo.matches.insert(old);
+    await repo.matches.update({ ...old, superseded_by: current.match_id });
+    await repo.predictions.insert(makeHistoryPrediction({
+      prediction_id: "pred-on-old",
+      match_id: old.match_id,
+      canonical_match_id: old.canonical_match_id,
+      idempotency_key: "k-on-old",
+    }));
+    const byEffective = await repo.predictions.findHistoryPage({
+      user_id: USER_ID, league_id: "premier_league", season_id: "2026_2027", cursor: null, limit: 10,
+    });
+    expect(byEffective.map((item) => item.prediction_id)).toEqual(["pred-on-old"]);
+    const byOldIdentity = await repo.predictions.findHistoryPage({
+      user_id: USER_ID, league_id: "bundesliga", season_id: "2025_2026", cursor: null, limit: 10,
+    });
+    expect(byOldIdentity).toEqual([]);
+  });
+
+  it("游标翻页：第一页 limit=2，用最后一条做 cursor 取第二页，两页不重不漏", async () => {
+    const repo = new InMemoryRepository();
+    await insertMatchAndPrediction(repo, { match_id: "m-1" }, {
+      prediction_id: "pred-1", idempotency_key: "k-1", submitted_at: T1,
+    });
+    await insertMatchAndPrediction(repo, { match_id: "m-2" }, {
+      prediction_id: "pred-2", idempotency_key: "k-2", submitted_at: T2,
+    });
+    await insertMatchAndPrediction(repo, { match_id: "m-3" }, {
+      prediction_id: "pred-3", idempotency_key: "k-3", submitted_at: T3,
+    });
+    const first = await repo.predictions.findHistoryPage({
+      user_id: USER_ID, league_id: null, season_id: null, cursor: null, limit: 2,
+    });
+    expect(first.map((item) => item.prediction_id)).toEqual(["pred-3", "pred-2"]);
+    const last = first[first.length - 1]!;
+    const second = await repo.predictions.findHistoryPage({
+      user_id: USER_ID, league_id: null, season_id: null,
+      cursor: { submitted_at: last.submitted_at, prediction_id: last.prediction_id },
+      limit: 2,
+    });
+    expect(second.map((item) => item.prediction_id)).toEqual(["pred-1"]);
+    expect([...first, ...second].map((item) => item.prediction_id)).toEqual(["pred-3", "pred-2", "pred-1"]);
+  });
+
+  it("limit 生效：数据 3 条、limit=2 只返回 2 条", async () => {
+    const repo = new InMemoryRepository();
+    await insertMatchAndPrediction(repo, { match_id: "m-1" }, {
+      prediction_id: "pred-1", idempotency_key: "k-1", submitted_at: T1,
+    });
+    await insertMatchAndPrediction(repo, { match_id: "m-2" }, {
+      prediction_id: "pred-2", idempotency_key: "k-2", submitted_at: T2,
+    });
+    await insertMatchAndPrediction(repo, { match_id: "m-3" }, {
+      prediction_id: "pred-3", idempotency_key: "k-3", submitted_at: T3,
+    });
+    const page = await repo.predictions.findHistoryPage({
+      user_id: USER_ID, league_id: null, season_id: null, cursor: null, limit: 2,
+    });
+    expect(page).toHaveLength(2);
+    expect(page.map((item) => item.prediction_id)).toEqual(["pred-3", "pred-2"]);
   });
 });

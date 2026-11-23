@@ -82,3 +82,27 @@
 .join-button[disabled] { opacity: 0.5; }
 .inline-error { margin: var(--space-4) 0; color: var(--text-danger); font-size: var(--font-22); text-align: center; }
 .error-panel { color: var(--text-danger); font-size: var(--font-24); }
+
+.error-actions {
+  display: flex;
+  gap: var(--space-3);
+  margin-top: var(--space-6);
+}
+
+.error-button {
+  width: auto;
+  min-width: 0;
+  min-height: var(--ghost-button-height);
+  flex: 1;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: var(--surface-ghost);
+  color: var(--text-primary);
+  font-size: var(--font-22);
+  line-height: var(--ghost-button-height);
+}
+
+.error-button::after { border: 0; }
+.error-button[disabled] { opacity: 0.5; }

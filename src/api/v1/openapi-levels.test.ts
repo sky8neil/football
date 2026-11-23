@@ -18,7 +18,7 @@ describe("levels OpenAPI contract", () => {
       /    CareerLevelData:[\s\S]*?required: \[level, best_level, is_rated, valid_predictions, remaining_to_rated, last_evaluated_at, next_evaluation_at\][\s\S]*?is_former_top:/,
     );
     expect(specification).toMatch(
-      /    SeasonLevelData:[\s\S]*?required: \[level_season_id, level, best_level, is_rated, valid_predictions, remaining_to_rated, is_frozen\]/,
+      /    SeasonLevelData:[\s\S]*?required: \[level_season_id, level, best_level, is_rated, valid_predictions, remaining_to_rated, is_frozen, season_points, exact_hits\][\s\S]*?season_points:[\s\S]*?type: integer[\s\S]*?exact_hits:[\s\S]*?type: integer/,
     );
     expect(specification).not.toContain("wdl_accuracy_percent");
   });

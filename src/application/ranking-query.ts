@@ -80,7 +80,37 @@ export type RankingListItem = RankingItemBase & (
 );
 
 export type RankingMe =
-  | { status: "ranked"; rank: number | null; top_percent: number | null }
+  | {
+      status: "ranked";
+      rank: number | null;
+      top_percent: number | null;
+      period_score: number;
+      valid_predictions: number;
+      exact_hits: number;
+    }
+  | {
+      status: "ranked";
+      rank: number | null;
+      top_percent: number | null;
+      career_points: number;
+      career_valid_predictions: number;
+      exact_hits: number;
+    }
+  | {
+      status: "ranked";
+      rank: number | null;
+      top_percent: number | null;
+      season_points: number;
+      season_valid_predictions: number;
+      exact_hits: number;
+    }
+  | {
+      status: "ranked";
+      rank: number | null;
+      top_percent: number | null;
+      strength_index: string;
+      window_n: number;
+    }
   | { status: "not_participated" }
   | { status: "below_threshold"; remaining_valid_predictions: number }
   | { status: "not_eligible"; seasons_participated: number };
@@ -89,6 +119,7 @@ export interface RankingQueryResult {
   board: RankingBoardType;
   scope: RankingScopeType;
   period_key: string | null;
+  first_period_key: string;
   updated_at: string | null;
   current_period_key?: string;
   available_boards: RankingBoardType[];
@@ -376,6 +407,53 @@ function compareSources(board: RankingBoardType, a: RankingSource, b: RankingSou
     valid_predictions: b.career_valid_predictions,
     last_scoring_match_at: b.career_last_scoring_match_at, user_id: b.user_id,
   });
+}
+
+function rankedMeMetrics(
+  board: RankingBoardType,
+  source: RankingSource,
+):
+  | { period_score: number; valid_predictions: number; exact_hits: number }
+  | { career_points: number; career_valid_predictions: number; exact_hits: number }
+  | { season_points: number; season_valid_predictions: number; exact_hits: number }
+  | { strength_index: string; window_n: number } {
+  if (board === RankingBoard.Week) {
+    if (!("period_score" in source)) throw internalError("week ranking 类型非法");
+    return {
+      period_score: source.period_score,
+      valid_predictions: source.valid_predictions,
+      exact_hits: source.exact_hits,
+    };
+  }
+  if (board === RankingBoard.Career) {
+    if (!("career_points" in source) || source.career_points === null || source.career_valid_predictions === null ||
+      source.career_exact_hits === null) throw internalError("career snapshot 缺少展示字段");
+    return {
+      career_points: source.career_points,
+      career_valid_predictions: source.career_valid_predictions,
+      exact_hits: source.career_exact_hits,
+    };
+  }
+  if (board === RankingBoard.Season) {
+    if (
+      !("season_points" in source) || source.season_points === null ||
+      source.season_valid_predictions === null || source.season_exact_hits === null
+    ) {
+      throw internalError("season snapshot 缺少展示字段");
+    }
+    return {
+      season_points: source.season_points,
+      season_valid_predictions: source.season_valid_predictions,
+      exact_hits: source.season_exact_hits,
+    };
+  }
+  if (!("window_score_sum" in source) || source.window_score_sum === null || source.window_n === null) {
+    throw internalError("strength snapshot 缺少展示字段");
+  }
+  return {
+    strength_index: formatSDisplay(source.window_score_sum, source.window_n),
+    window_n: source.window_n,
+  };
 }
 
 function makeItem(board: RankingBoardType, rank: number, user: User, source: RankingSource): RankingListItem {
@@ -731,9 +809,14 @@ export class RankingQueryService {
       } else {
         const current = ranked.find((entry) => entry.user.user_id === input.authenticated_user_id);
         if (current !== undefined) {
-          me = current.rank <= FIXED_CONFIG_V1.RANKING_ABSOLUTE_RANK_MAX
-            ? { status: "ranked", rank: current.rank, top_percent: null }
-            : { status: "ranked", rank: null, top_percent: topPercent(current.rank, ranked.length) };
+          const position = current.rank <= FIXED_CONFIG_V1.RANKING_ABSOLUTE_RANK_MAX
+            ? { rank: current.rank, top_percent: null }
+            : { rank: null, top_percent: topPercent(current.rank, ranked.length) };
+          me = {
+            status: "ranked",
+            ...position,
+            ...rankedMeMetrics(input.board, current.source),
+          };
         } else if (input.board === RankingBoard.Strength) {
           const windowN = meUser.career_level_state?.last_eval_n ?? 0;
           if (windowN < FIXED_CONFIG_V1.STRENGTH_BOARD_MIN_WINDOW_N) {
@@ -792,6 +875,7 @@ export class RankingQueryService {
       board: input.board,
       scope: input.scope,
       period_key: periodKey,
+      first_period_key: this.firstPeriodKey,
       updated_at: updatedAt,
       ...(input.board === RankingBoard.Week
         ? { current_period_key: calculatePeriodKey("week", input.server_now) }

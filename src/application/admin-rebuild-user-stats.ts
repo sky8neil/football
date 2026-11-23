@@ -98,8 +98,11 @@ export class AdminRebuildUserStatsService implements AdminRebuildUserStatsComman
   private readonly authorization = new AdminAuthorizationService();
   private readonly rebuildService: RebuildUserStatsService;
 
-  constructor(private readonly repo: AppRepository) {
-    this.rebuildService = new RebuildUserStatsService(repo);
+  constructor(
+    private readonly repo: AppRepository,
+    firstEvalAsOf: Date | null = FIXED_CONFIG_V1.LEVEL_FIRST_EVAL_AS_OF,
+  ) {
+    this.rebuildService = new RebuildUserStatsService(repo, firstEvalAsOf);
   }
 
   authorizeAdmin(trustedOpenid: string): Promise<void> {

@@ -23,7 +23,7 @@ function buildLevelView(input) {
     };
   }
 
-  if (bPoints == null) {
+  if (bPoints == null || nextThreshold == null) {
     return {
       state: "pending",
       title: "等待评估",

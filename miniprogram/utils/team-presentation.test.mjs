@@ -80,4 +80,17 @@ describe("presentTeam", () => {
     expect(getTeamLogo.mock.calls[0][1]).toBe(team);
     expect(team.name).toBe("FC Bayern München");
   });
+
+  it("fills registry source_name when the caller only has team_id", () => {
+    const getTeamLogo = vi.fn(() => "logo.png");
+    const { presentTeam } = loadPresentation(getTeamLogo);
+    const result = presentTeam({ team_id: BAYERN_ID }, "unknown_league");
+    expect(result.nameZh).toBe("拜仁慕尼黑");
+    expect(result.missing).toBe(false);
+    expect(getTeamLogo).toHaveBeenCalledTimes(1);
+    expect(getTeamLogo.mock.calls[0][1]).toMatchObject({
+      team_id: BAYERN_ID,
+      name: "FC Bayern München",
+    });
+  });
 });

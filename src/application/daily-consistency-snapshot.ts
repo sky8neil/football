@@ -1,4 +1,4 @@
-import { activeSeasonIds, FIXED_CONFIG_V1, SUPPORTED_LEAGUES } from "../domain/config.js";
+import { activeSeasonIds, FIXED_CONFIG_V1, seasonBounds, SUPPORTED_LEAGUES } from "../domain/config.js";
 import {
   LevelScope,
   PeriodType,
@@ -15,6 +15,7 @@ import {
   calculatePeriodKey,
   levelProtectionEndAsOf,
   levelSeasonOf,
+  periodEndAt,
 } from "../domain/time.js";
 import type {
   LevelHistoryEntry,
@@ -22,6 +23,7 @@ import type {
   BoardSnapshot,
   Match,
   RankingEntry,
+  SettlementItem,
   User,
   UserSeasonStats,
 } from "../domain/types.js";
@@ -348,6 +350,7 @@ function expectedLevelValues(params: {
   scope: LevelScope;
   levelSeasonId: string | null;
   history: readonly LevelHistoryEntry[];
+  firstEvalAsOf: Date | null;
 }): {
   level: number;
   best_level: number;
@@ -358,7 +361,7 @@ function expectedLevelValues(params: {
   last_eval_b_points: number;
   last_eval_rule_version: string | null;
 } {
-  const firstEvalAsOf = FIXED_CONFIG_V1.LEVEL_FIRST_EVAL_AS_OF as Date | null;
+  const firstEvalAsOf = params.firstEvalAsOf;
   const state = params.state ?? defaultLevelState();
   const replay = replayLevel({
     scope: params.scope,
@@ -401,6 +404,7 @@ function expectedCareerValues(
   existingBestLevel: number,
   existingLevel: number,
   existingState: LevelState | undefined,
+  firstEvalAsOf: Date | null,
 ): CareerCacheValues {
   const rebuilt = rebuildStatsFromLedger(
     facts.map((fact) => fact.item),
@@ -416,6 +420,7 @@ function expectedCareerValues(
     scope: LevelScope.Career,
     levelSeasonId: null,
     history,
+    firstEvalAsOf,
   });
   return {
     career_points: rebuilt.career.career_points,
@@ -441,6 +446,7 @@ function expectedSeasonValues(
   existingBestLevel: number,
   existingLevel: number,
   existingState: LevelState | undefined,
+  firstEvalAsOf: Date | null,
 ): SeasonStatsCacheValues {
   const rebuilt = rebuildStatsFromLedger(
     facts.map((fact) => fact.item),
@@ -464,6 +470,7 @@ function expectedSeasonValues(
     scope: LevelScope.Season,
     levelSeasonId: seasonId,
     history,
+    firstEvalAsOf,
   });
   return {
     points: base.points,
@@ -553,13 +560,14 @@ function buildExpectedRankings(
 
 function activeSettlementScopes(
   matches: readonly Match[],
-  predictions: readonly { user_id: string; match_id: string }[],
+  predictions: readonly { user_id: string; match_id: string; canonical_match_id?: string }[],
 ): DailyConsistencyInput["active_settlements"] {
-  const usersByMatch = new Map<string, Set<string>>();
+  const usersByCanonicalMatch = new Map<string, Set<string>>();
   for (const prediction of predictions) {
-    const users = usersByMatch.get(prediction.match_id) ?? new Set<string>();
+    const canonicalId = prediction.canonical_match_id ?? prediction.match_id;
+    const users = usersByCanonicalMatch.get(canonicalId) ?? new Set<string>();
     users.add(prediction.user_id);
-    usersByMatch.set(prediction.match_id, users);
+    usersByCanonicalMatch.set(canonicalId, users);
   }
 
   return matches
@@ -567,9 +575,10 @@ function activeSettlementScopes(
     .sort((a, b) => a.match_id.localeCompare(b.match_id))
     .map((match) => {
       const anchor = match.period_anchor_at ?? match.kickoff_at;
+      const canonicalId = match.canonical_match_id ?? match.match_id;
       return {
         match_id: match.match_id,
-        user_ids: [...(usersByMatch.get(match.match_id) ?? new Set<string>())].sort(),
+        user_ids: [...(usersByCanonicalMatch.get(canonicalId) ?? new Set<string>())].sort(),
         season_id: levelSeasonOf(anchor),
         periods: [{
           period_type: PeriodType.Week,
@@ -584,31 +593,58 @@ async function loadActiveSettlementScopes(
   matches: readonly Match[],
 ): Promise<DailyConsistencyInput["active_settlements"]> {
   const activeMatches = matches.filter((match) => activeSettlement(match));
-  const predictions: Array<{ user_id: string; match_id: string }> = [];
+  const predictions: Array<{ user_id: string; match_id: string; canonical_match_id?: string }> = [];
   for (const match of activeMatches) {
-    predictions.push(...(await tx.predictions.findByMatch(match.match_id)));
+    const canonicalId = match.canonical_match_id ?? match.match_id;
+    predictions.push(...(await tx.predictions.findByCanonicalMatch(canonicalId)));
   }
   return activeSettlementScopes(activeMatches, predictions);
+}
+
+const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+
+function periodOverlapsActiveWindows(
+  periodKey: string,
+  activeWindows: readonly { start: Date; end: Date }[],
+): boolean {
+  const weekEnd = periodEndAt(PeriodType.Week, periodKey).getTime();
+  const weekStart = weekEnd - WEEK_MS;
+  return activeWindows.some(
+    (bounds) => weekStart < bounds.end.getTime() && weekEnd > bounds.start.getTime(),
+  );
 }
 
 /** 从事实账本与缓存文档加载 daily consistency 的比较输入，不写入任何业务数据。 */
 export async function loadDailyConsistencySnapshot(
   tx: UnitOfWork,
   now?: Date,
+  firstEvalAsOf: Date | null = FIXED_CONFIG_V1.LEVEL_FIRST_EVAL_AS_OF,
 ): Promise<DailyConsistencyInput> {
   requirePorts(tx);
   const users = await tx.users.findAll();
   const matchesById = new Map<string, Match>();
-  const seasonIds = now === undefined
-    ? new Set(SUPPORTED_LEAGUES.map((league) => league.season_id))
-    : new Set(SUPPORTED_LEAGUES.flatMap((league) => activeSeasonIds(league, now)));
+  const effectiveNow = now ?? new Date();
+  const seasonIds = new Set(
+    SUPPORTED_LEAGUES.flatMap((league) => activeSeasonIds(league, effectiveNow)),
+  );
   for (const seasonId of seasonIds) {
     for (const match of await tx.matches.findBySeason(seasonId)) {
       matchesById.set(match.match_id, match);
     }
   }
   const matches = [...matchesById.values()];
-  const appliedItems = await tx.settlementItems.findByStatus(SettlementItemStatus.Applied);
+  const appliedItems: SettlementItem[] = [];
+  for (const match of matches) {
+    const settlements = await tx.settlements.findByMatch(match.match_id);
+    for (const settlement of settlements) {
+      appliedItems.push(
+        ...(await tx.settlementItems.findBySettlementAndStatus(
+          settlement.settlement_id,
+          SettlementItemStatus.Applied,
+        )),
+      );
+    }
+  }
   const facts = await loadAppliedSettlementFacts(tx, appliedItems, {
     skipActiveSettlement: true,
   });
@@ -616,6 +652,20 @@ export async function loadDailyConsistencySnapshot(
   for (const fact of facts) {
     if (!knownUsers.has(fact.item.user_id)) {
       throw invalidLedger(`applied item 缺少 user（user_id=${fact.item.user_id}）`);
+    }
+  }
+
+  const activeWindows = [...seasonIds]
+    .map((id) => seasonBounds(id))
+    .filter((bounds): bounds is { start: Date; end: Date } => bounds !== null);
+  const activeLevelSeasons = new Set<string>([levelSeasonOf(effectiveNow)]);
+  for (const bounds of activeWindows) {
+    activeLevelSeasons.add(levelSeasonOf(bounds.start));
+    activeLevelSeasons.add(levelSeasonOf(new Date(bounds.end.getTime() - 1)));
+  }
+  for (const fact of facts) {
+    if (fact.match.period_anchor_at !== null) {
+      activeLevelSeasons.add(levelSeasonOf(fact.match.period_anchor_at));
     }
   }
 
@@ -632,40 +682,56 @@ export async function loadDailyConsistencySnapshot(
     seasonStatsByUser.set(user.user_id, await tx.userSeasonStats.findByUser(user.user_id));
   }
 
-  const career = users.map((user) => {
-    const history = histories.get(user.user_id) ?? [];
-    return {
-      user_id: user.user_id,
-      actual: careerValues(user),
-      expected: expectedCareerValues(
-        factsByUser.get(user.user_id) ?? [],
-        history,
-        user.career_best_level,
-        user.career_level,
-        user.career_level_state,
-      ),
-    };
-  });
+  const career = users
+    .filter((user) => {
+      const statsRows = seasonStatsByUser.get(user.user_id) ?? [];
+      return !statsRows.some(
+        (stats) => !activeLevelSeasons.has(stats.level_season_id) && stats.valid_predictions > 0,
+      );
+    })
+    .map((user) => {
+      const history = histories.get(user.user_id) ?? [];
+      return {
+        user_id: user.user_id,
+        actual: careerValues(user),
+        expected: expectedCareerValues(
+          factsByUser.get(user.user_id) ?? [],
+          history,
+          user.career_best_level,
+          user.career_level,
+          user.career_level_state,
+          firstEvalAsOf,
+        ),
+      };
+    });
 
   const seasonStats = [] as DailyConsistencyInput["season_stats"];
   for (const user of users) {
     const history = histories.get(user.user_id) ?? [];
     const actualStats = seasonStatsByUser.get(user.user_id) ?? [];
-    const seasonIds = new Set(actualStats.map((stats) => stats.level_season_id));
+    const userLevelSeasonIds = new Set(
+      actualStats
+        .map((stats) => stats.level_season_id)
+        .filter((seasonId) => activeLevelSeasons.has(seasonId)),
+    );
     for (const fact of factsByUser.get(user.user_id) ?? []) {
       if (fact.match.period_anchor_at === null) {
         throw invalidLedger(`applied match 缺少 period_anchor_at（match_id=${fact.match.match_id}）`);
       }
-      seasonIds.add(levelSeasonOf(fact.match.period_anchor_at));
+      userLevelSeasonIds.add(levelSeasonOf(fact.match.period_anchor_at));
     }
     for (const entry of history) {
-      if (entry.scope === LevelScope.Season && entry.level_season_id) {
-        seasonIds.add(entry.level_season_id);
+      if (
+        entry.scope === LevelScope.Season &&
+        entry.level_season_id &&
+        activeLevelSeasons.has(entry.level_season_id)
+      ) {
+        userLevelSeasonIds.add(entry.level_season_id);
       }
     }
     const actualBySeason = new Map(actualStats.map((stats) => [stats.level_season_id, stats]));
     const userFacts = factsByUser.get(user.user_id) ?? [];
-    for (const seasonId of [...seasonIds].sort((a, b) => a.localeCompare(b))) {
+    for (const seasonId of [...userLevelSeasonIds].sort((a, b) => a.localeCompare(b))) {
       seasonStats.push({
         user_id: user.user_id,
         level_season_id: seasonId,
@@ -677,6 +743,7 @@ export async function loadDailyConsistencySnapshot(
           actualBySeason.get(seasonId)?.best_level ?? 1,
           actualBySeason.get(seasonId)?.level ?? 1,
           actualBySeason.get(seasonId)?.level_state,
+          firstEvalAsOf,
         ),
       });
     }
@@ -684,7 +751,11 @@ export async function loadDailyConsistencySnapshot(
 
   const expectedRankings = buildExpectedRankings(facts);
   const actualRankings = (await tx.rankings.findAll()).filter(
-    (entry) => entry.period_type === PeriodType.Week,
+    (entry) =>
+      entry.period_type === PeriodType.Week &&
+      (expectedRankings.has(rankingIdentity(entry.period_type, entry.period_key, entry.user_id)) ||
+        !entry.is_final ||
+        periodOverlapsActiveWindows(entry.period_key, activeWindows)),
   );
   const actualRankingMap = new Map(
     actualRankings.map((entry) => [
@@ -735,9 +806,17 @@ export async function loadDailyConsistencySnapshot(
 
 /** AppRepository 事务内使用的 source；daily consistency 锁由外层 service 持有。 */
 export class RepositoryDailyConsistencySnapshotSource {
-  constructor(private readonly repo: AppRepository) {}
+  constructor(
+    private readonly repo: AppRepository,
+    private readonly firstEvalAsOf?: Date | null,
+  ) {}
 
-  load(serverNow: Date): Promise<DailyConsistencyInput> {
-    return this.repo.withTransaction((tx) => loadDailyConsistencySnapshot(tx, serverNow));
+  load(
+    serverNow: Date,
+    firstEvalAsOf: Date | null = this.firstEvalAsOf !== undefined
+      ? this.firstEvalAsOf
+      : FIXED_CONFIG_V1.LEVEL_FIRST_EVAL_AS_OF,
+  ): Promise<DailyConsistencyInput> {
+    return this.repo.withTransaction((tx) => loadDailyConsistencySnapshot(tx, serverNow, firstEvalAsOf));
   }
 }

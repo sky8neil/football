@@ -1,5 +1,6 @@
 const config = require("../config.js");
 const { classifyCloudClientError } = require("./cloud-diagnostics.js");
+const { isAuthSessionActive, readAuthSession } = require("../utils/auth-storage.js");
 
 const AUTH_LOGIN_PATH = "/v1/auth/wechat";
 const WRITE_METHODS = ["POST", "PATCH", "PUT"];
@@ -121,20 +122,24 @@ function resolveAccessToken() {
   return trimmed || undefined;
 }
 
-function buildHttpHeaders(method, path) {
+function resolveOptionalAccessToken() {
+  const session = readAuthSession();
+  if (!isAuthSessionActive(session, new Date())) return undefined;
+  return session.access_token;
+}
+
+function buildHttpHeaders(method, path, authMode) {
   const header = {};
   if (WRITE_METHODS.includes(method)) {
     header["content-type"] = "application/json";
   }
-  if (!isAuthLoginRequest(path)) {
-    const token = resolveAccessToken();
-    if (token) header.Authorization = "Bearer " + token;
-  }
+  const token = resolveRequestToken(path, authMode);
+  if (token) header.Authorization = "Bearer " + token;
   return header;
 }
 
 function failResult() {
-  return { data: undefined, request_id: undefined, statusCode: 0, code: undefined, message: undefined, details: undefined };
+  return { data: undefined, request_id: undefined, statusCode: 0, code: "NETWORK_ERROR", message: "网络异常", details: undefined };
 }
 
 function fromGatewayResponse(response, cloudTransport) {
@@ -157,7 +162,84 @@ function fromGatewayResponse(response, cloudTransport) {
   };
 }
 
-function dispatchRequest({ method, path, data, query, transport, envVersion }) {
+function resolveRequestToken(path, authMode) {
+  if (isAuthLoginRequest(path)) return undefined;
+  return authMode === "optional" ? resolveOptionalAccessToken() : resolveAccessToken();
+}
+
+function resolveLoginGeneration() {
+  const auth = require("./auth.js");
+  if (typeof auth.getLoginGeneration !== "function") return undefined;
+  const value = auth.getLoginGeneration();
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+let unauthorizedRecovery;
+
+function beginSessionRecovery(sentToken, fallbackResult) {
+  const auth = require("./auth.js");
+  if (typeof auth.recoverSession === "function") {
+    return auth.recoverSession(sentToken);
+  }
+  if (typeof auth.clearAuth === "function") auth.clearAuth();
+  if (typeof auth.ensureAuth !== "function") return fallbackResult;
+  return auth.ensureAuth();
+}
+
+function recoverUnauthorized(result, context) {
+  if (
+    context.transport !== "http"
+    || context.retried
+    || isAuthLoginRequest(context.path)
+    || !context.hadAuthorization
+    || !result
+    || result.statusCode !== 401
+    || result.code !== "UNAUTHORIZED"
+  ) {
+    return Promise.resolve(result);
+  }
+  if (typeof context.loginGeneration === "number") {
+    const currentGeneration = resolveLoginGeneration();
+    if (typeof currentGeneration === "number" && currentGeneration !== context.loginGeneration) {
+      return Promise.resolve(result);
+    }
+  }
+  const currentToken = resolveRequestToken(context.path, context.authMode);
+  if (context.sentToken && currentToken && currentToken !== context.sentToken) {
+    return send(context, true);
+  }
+  const generation = context.loginGeneration;
+  if (!unauthorizedRecovery || unauthorizedRecovery.generation !== generation) {
+    const started = {
+      generation,
+      promise: Promise.resolve(beginSessionRecovery(context.sentToken, result)).finally(() => {
+        if (unauthorizedRecovery === started) unauthorizedRecovery = undefined;
+      }),
+    };
+    unauthorizedRecovery = started;
+  }
+  return unauthorizedRecovery.promise.then((authResult) => {
+    if (typeof context.loginGeneration === "number") {
+      const currentGeneration = resolveLoginGeneration();
+      if (typeof currentGeneration === "number" && currentGeneration !== context.loginGeneration) {
+        return result;
+      }
+    }
+    if (authResult && authResult.statusCode !== 200) return authResult;
+    return send(context, true);
+  });
+}
+
+function send({ method, path, data, query, transport, envVersion, authMode }, retried) {
+  const sentToken = transport === "http" ? resolveRequestToken(path, authMode) : undefined;
+  const hadAuthorization = Boolean(sentToken);
+  const loginGeneration = transport === "http" ? resolveLoginGeneration() : undefined;
+  return dispatchRequest({ method, path, data, query, transport, envVersion, authMode }).then((result) => (
+    recoverUnauthorized(result, { method, path, data, query, transport, envVersion, authMode, retried, hadAuthorization, sentToken, loginGeneration })
+  ));
+}
+
+function dispatchRequest({ method, path, data, query, transport, envVersion, authMode }) {
   return new Promise((resolve) => {
     if (transport === "cloud") {
       wx.cloud.callFunction({
@@ -180,7 +262,7 @@ function dispatchRequest({ method, path, data, query, transport, envVersion }) {
       url: buildUrl(path, query),
       method,
       data: WRITE_METHODS.includes(method) ? data : undefined,
-      header: buildHttpHeaders(method, path),
+      header: buildHttpHeaders(method, path, authMode),
       success(res) {
         const body = res.data && typeof res.data === "object" ? res.data : {};
         resolve({ data: body.data, request_id: body.request_id, statusCode: res.statusCode, code: body.code, message: body.message, details: body.details });
@@ -190,7 +272,8 @@ function dispatchRequest({ method, path, data, query, transport, envVersion }) {
   });
 }
 
-function request({ method, path, data, query }) {
+function request({ method, path, data, query, auth }) {
+  const authMode = auth === "optional" ? "optional" : "required";
   const transport = config.transport || "http";
   const envVersion = accountVersion();
   assertTrialReleaseTransport(envVersion, transport);
@@ -200,13 +283,19 @@ function request({ method, path, data, query }) {
     if (!wx.cloud || typeof wx.cloud.callFunction !== "function") throw new Error("wx.cloud.callFunction is unavailable");
   }
   assertNoClientIdentity({ data, query });
-  const dispatch = () => dispatchRequest({ method, path, data, query, transport, envVersion });
+  const dispatch = (retried) => send({ method, path, data, query, transport, envVersion, authMode }, retried);
   if (transport === "cloud" || isAuthLoginRequest(path) || typeof authPreparer !== "function") {
-    return dispatch();
+    return dispatch(false);
   }
+  // auth "optional": public GETs that the server allows anonymously.
+  // Skip authPreparer so an expired auth_session cannot trigger wx.login and
+  // either block the request (previous bug) or delay the anonymous fallback.
+  // Live sessions still send Bearer from storage in buildHttpHeaders; expired
+  // or missing sessions go out with no Authorization.
+  if (authMode === "optional") return dispatch(false);
   return Promise.resolve(authPreparer()).then((authResult) => {
     if (authResult && authResult.statusCode !== 200) return authResult;
-    return dispatch();
+    return dispatch(false);
   });
 }
 

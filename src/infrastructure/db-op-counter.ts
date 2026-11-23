@@ -105,14 +105,42 @@ export function createCountingDb(db: CloudBaseDb): { db: CloudBaseDb; counter: D
         return inner.reserveCounter!(collection, id, field, limit, initial);
       };
     }
+    if (inner.acquireJobLock) {
+      wrapped.acquireJobLock = async (collection, lockKey, document, now) => {
+        bump("write", collection);
+        return inner.acquireJobLock!(collection, lockKey, document, now);
+      };
+    }
     if (inner.inFilter) {
       wrapped.inFilter = (field, values) => inner.inFilter!(field, values);
+    }
+    if (inner.ltFilter) {
+      wrapped.ltFilter = (field, value) => inner.ltFilter!(field, value);
     }
     if (inner.lteFilter) {
       wrapped.lteFilter = (field, value) => inner.lteFilter!(field, value);
     }
     if (inner.gteFilter) {
       wrapped.gteFilter = (field, value) => inner.gteFilter!(field, value);
+    }
+    if (inner.deleteWhere) {
+      wrapped.deleteWhere = async (collection, filter) => {
+        bump("write", collection);
+        return inner.deleteWhere!(collection, filter);
+      };
+    }
+    if (inner.distinctQuery) {
+      wrapped.distinctQuery = async (collection, fields, filter) => {
+        bump("read", collection);
+        return inner.distinctQuery!(collection, fields, filter);
+      };
+    }
+    if (inner.findPredictionHistoryPage) {
+      wrapped.findPredictionHistoryPage = async (params) => {
+        bump("read", params.predictions_collection);
+        bump("read", params.matches_collection);
+        return inner.findPredictionHistoryPage!(params);
+      };
     }
     return wrapped;
   }

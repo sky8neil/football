@@ -15,7 +15,7 @@ import {
   type PostgresConnectFn,
   type PostgresDocumentDb,
 } from "./postgres-document-db.js";
-import { qualifiedTable, quoteIdent } from "./postgres-schema.js";
+import { JSONB_UTC_TIMESTAMPTZ_FUNCTION, qualifiedTable, quoteIdent } from "./postgres-schema.js";
 import { usageBucketId, type ProviderUsageBucket } from "../provider/budget.js";
 
 const DATABASE_URL = process.env.FOOTBALL_TEST_DATABASE_URL ?? "";
@@ -39,6 +39,14 @@ function usage(): string {
 
 function jobLocks(): string {
   return cloudBaseCollectionName(NAMESPACE, "job_locks");
+}
+
+function matches(): string {
+  return cloudBaseCollectionName(NAMESPACE, "matches");
+}
+
+function predictions(): string {
+  return cloudBaseCollectionName(NAMESPACE, "predictions");
 }
 
 function userDoc(id: string): CloudBaseDocument {
@@ -76,7 +84,7 @@ describe.skipIf(!ENABLED)("PostgresDocumentDb 真实事务与保存点 §6.2", (
       const client = await pool.connect();
       return {
         query: createPostgresQueryFn(client),
-        release: () => client.release(),
+        release: (err?: Error) => client.release(err),
       };
     };
     db = createPostgresDocumentDb(queryFn, CONFIG, { connect });
@@ -142,7 +150,7 @@ describe.skipIf(!ENABLED)("PostgresDocumentDb 额度计数 §6.2", () => {
       const client = await pool.connect();
       return {
         query: createPostgresQueryFn(client),
-        release: () => client.release(),
+        release: (err?: Error) => client.release(err),
       };
     };
     db = createPostgresDocumentDb(queryFn, quotaConfig, { connect });
@@ -220,7 +228,7 @@ describe.skipIf(!ENABLED)("Postgres JobLock 获取/释放 §6.3", () => {
       const client = await pool.connect();
       return {
         query: createPostgresQueryFn(client),
-        release: () => client.release(),
+        release: (err?: Error) => client.release(err),
       };
     };
     db = createPostgresDocumentDb(queryFn, lockConfig, { connect });
@@ -258,5 +266,94 @@ describe.skipIf(!ENABLED)("Postgres JobLock 获取/释放 §6.3", () => {
     await expect(repo.jobLocks.acquire("lock:round_1", "owner_b", future())).resolves.toBe(true);
     await expect(repo.jobLocks.renew("lock:round_1", "owner_b", future())).resolves.toBe(true);
     await expect(repo.jobLocks.renew("lock:round_1", "owner_a", future())).resolves.toBe(false);
+  });
+});
+
+describe.skipIf(!ENABLED)("PostgresDocumentDb 预测历史分页 superseded_by 语义", () => {
+  const HIST_SCHEMA = "football_vps03_pred_hist";
+  const histConfig = { schema: HIST_SCHEMA, namespace: NAMESPACE };
+  let pool!: pg.Pool;
+  let db!: PostgresDocumentDb;
+
+  function matchDoc(id: string, extra: Record<string, unknown> = {}): CloudBaseDocument {
+    return {
+      _id: id,
+      match_id: id,
+      canonical_match_id: id,
+      league_id: "premier_league",
+      season_id: "2026_2027",
+      ...extra,
+    };
+  }
+
+  function predictionDoc(id: string, matchId: string): CloudBaseDocument {
+    return {
+      _id: id,
+      prediction_id: id,
+      user_id: "u-hist",
+      match_id: matchId,
+      canonical_match_id: matchId,
+      submitted_at: NOW,
+    };
+  }
+
+  beforeAll(async () => {
+    pool = new pg.Pool({ connectionString: DATABASE_URL, max: 4 });
+    const queryFn = createPostgresQueryFn(pool);
+    const connect: PostgresConnectFn = async () => {
+      const client = await pool.connect();
+      return {
+        query: createPostgresQueryFn(client),
+        release: (err?: Error) => client.release(err),
+      };
+    };
+    db = createPostgresDocumentDb(queryFn, histConfig, { connect });
+    await pool.query(`CREATE SCHEMA IF NOT EXISTS ${quoteIdent(HIST_SCHEMA)}`);
+    await pool.query(
+      `CREATE OR REPLACE FUNCTION ${qualifiedTable(HIST_SCHEMA, JSONB_UTC_TIMESTAMPTZ_FUNCTION)}(value text) RETURNS timestamptz LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE SET timezone TO 'UTC' AS $jsonb_utc_timestamptz$ SELECT $1::timestamptz $jsonb_utc_timestamptz$`,
+    );
+    await pool.query(
+      `CREATE TABLE IF NOT EXISTS ${qualifiedTable(HIST_SCHEMA, matches())} (_id text PRIMARY KEY, document jsonb NOT NULL)`,
+    );
+    await pool.query(
+      `CREATE TABLE IF NOT EXISTS ${qualifiedTable(HIST_SCHEMA, predictions())} (_id text PRIMARY KEY, document jsonb NOT NULL)`,
+    );
+  });
+
+  afterAll(async () => {
+    if (pool === undefined) return;
+    await pool.query(`DROP SCHEMA IF EXISTS ${quoteIdent(HIST_SCHEMA)} CASCADE`);
+    await pool.end();
+  });
+
+  it("缺少或 JSON null 的 superseded_by 查出预测，字符串 id 排除", async () => {
+    await pool.query(`TRUNCATE ${qualifiedTable(HIST_SCHEMA, matches())}`);
+    await pool.query(`TRUNCATE ${qualifiedTable(HIST_SCHEMA, predictions())}`);
+
+    const missing = matchDoc("m-missing");
+    expect("superseded_by" in missing).toBe(false);
+    await db.add(matches(), "m-missing", missing);
+    await db.add(matches(), "m-null", matchDoc("m-null", { superseded_by: null }));
+    await db.add(matches(), "m-superseded", matchDoc("m-superseded", { superseded_by: "m-other" }));
+    await db.add(predictions(), "p-missing", predictionDoc("p-missing", "m-missing"));
+    await db.add(predictions(), "p-null", predictionDoc("p-null", "m-null"));
+    await db.add(predictions(), "p-superseded", predictionDoc("p-superseded", "m-superseded"));
+
+    const storedMissing = await pool.query(
+      `SELECT document FROM ${qualifiedTable(HIST_SCHEMA, matches())} WHERE _id = $1`,
+      ["m-missing"],
+    );
+    expect(storedMissing.rows[0]?.document).not.toHaveProperty("superseded_by");
+
+    const rows = await db.findPredictionHistoryPage({
+      predictions_collection: predictions(),
+      matches_collection: matches(),
+      user_id: "u-hist",
+      league_id: null,
+      season_id: null,
+      cursor: null,
+      limit: 20,
+    });
+    expect(rows.map((row) => row.prediction_id).sort()).toEqual(["p-missing", "p-null"]);
   });
 });

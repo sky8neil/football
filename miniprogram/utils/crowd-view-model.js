@@ -7,6 +7,7 @@ const RESULT_CODES = { HOME: "home", DRAW: "draw", AWAY: "away" };
 function crowdPlan({ match, identityMissing }) {
   if (!match || TERMINAL_STATUSES.includes(match.match_status)) return "hidden";
   if (identityMissing) return "guest";
+  if (match.is_prediction_closed === true) return "fetch";
   if (
     match.match_status === "scheduled" &&
     (match.can_predict_reason === null || match.can_predict_reason === "ALREADY_SUBMITTED")

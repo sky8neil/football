@@ -31,6 +31,7 @@ const PERIODIC_JOB_STATE_IDS = new Set<string>([
   SyncJobType.BoardSnapshotStrength,
   SyncJobType.BoardSnapshotSeason,
   SyncJobType.BoardSnapshotSeasonFinal,
+  "maintenance_cleanup",
 ]);
 
 export function periodicJobStateId(jobType: string): string {

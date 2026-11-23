@@ -18,5 +18,9 @@
   </view>
   <view wx:if="{{state === 'error'}}" class="error-panel">
     <view>{{errorMessage}}</view>
+    <view class="error-actions">
+      <button class="error-button" bindtap="onReenter" disabled="{{loading}}">重新输入</button>
+      <button class="error-button" bindtap="onRetry" loading="{{loading}}" disabled="{{loading}}">重试</button>
+    </view>
   </view>
 </view>

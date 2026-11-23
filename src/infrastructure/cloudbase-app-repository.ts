@@ -70,6 +70,8 @@ import {
   DocumentNotFoundError,
   StaleResultVersionError,
   UniqueConstraintError,
+  aggregateLeagueSeasonCatalog,
+  selectPredictionHistoryPage,
   type AdminRepository,
   type AdminAuditLogRepository,
   type AdminAnomalyPageQuery,
@@ -383,6 +385,26 @@ export class CloudBaseAppRepository implements AppRepository {
           .map((match) => match.match_id))];
       },
       findBySeason: async (seasonId) => this.where<Match>("matches", { season_id: seasonId }),
+      findBySeasonInWindow: async (seasonId, from, to) => {
+        const filter: Record<string, unknown> = { season_id: seasonId };
+        const lower = this.db.gteFilter?.("kickoff_at", from);
+        const upper = this.db.lteFilter?.("kickoff_at", to);
+        if (lower !== undefined && upper !== undefined) {
+          const existing = (lower as Record<string, unknown>).kickoff_at as
+            | { and?: (other: unknown) => unknown }
+            | undefined;
+          const next = (upper as Record<string, unknown>).kickoff_at;
+          filter.kickoff_at =
+            existing !== undefined && typeof existing.and === "function"
+              ? existing.and(next)
+              : { ...(existing as object | undefined), ...(next as object) };
+        } else if (lower !== undefined) {
+          Object.assign(filter, lower);
+        } else if (upper !== undefined) {
+          Object.assign(filter, upper);
+        }
+        return this.where<Match>("matches", filter);
+      },
       findByLeague: async (leagueId) => this.where<Match>("matches", { league_id: leagueId }),
       findByLeagueSeason: async (leagueId, seasonId) => this.where<Match>("matches", { league_id: leagueId, season_id: seasonId }),
       findFinishedSettledOnDay: async (day) => {
@@ -414,6 +436,22 @@ export class CloudBaseAppRepository implements AppRepository {
         return [...unique.values()];
       },
       findByLeagueSeasonRound: async (leagueId, seasonId, roundId) => this.where<Match>("matches", { league_id: leagueId, season_id: seasonId, round_id: roundId }),
+      findLeagueSeasonCatalog: async (leagueId) => {
+        const filter: Record<string, unknown> = leagueId === undefined ? {} : { league_id: leagueId };
+        const fields = ["league_id", "season_id", "round_id"] as const;
+        if (this.db.distinctQuery !== undefined) {
+          // 微信适配器：投影+分页+应用层 Set 去重；PostgreSQL：SELECT DISTINCT。
+          const rows = await this.db.distinctQuery(this.collection("matches"), fields, filter);
+          return aggregateLeagueSeasonCatalog(rows.map((row) => ({
+            league_id: row.league_id ?? "",
+            season_id: row.season_id ?? "",
+            round_id: row.round_id ?? "",
+          })));
+        }
+        // 退化路径：适配器未实现 distinctQuery 时 query matches 后在应用内去重。
+        const matches = await this.where<Match>("matches", filter);
+        return aggregateLeagueSeasonCatalog(matches);
+      },
       findLive: async () => (await this.where<Match>("matches", { match_status: "live" }))
         .filter((match) => match.superseded_by == null),
       findSettlementTodos: async (query) => this.findSettlementTodos(query),
@@ -478,13 +516,29 @@ export class CloudBaseAppRepository implements AppRepository {
         });
       },
       findByUserAndCanonicalMatchIds: async (userId, canonicalMatchIds) => {
-        const predictions: Prediction[] = [];
-        for (const chunk of chunksOf([...new Set(canonicalMatchIds)], MAPPING_IN_CHUNK)) {
-          const inClause = this.db.inFilter?.("canonical_match_id", chunk);
-          if (inClause === undefined) throw new Error("canonical_match_id inFilter is required");
-          predictions.push(...await this.where<Prediction>("predictions", { user_id: userId, ...inClause }));
+        const ids = uniqueIds(canonicalMatchIds);
+        if (ids.length === 0) return [];
+        const selected = new Map<string, Prediction>();
+        const queryByField = async (field: "canonical_match_id" | "match_id", values: readonly string[]) => {
+          const rows: Prediction[] = [];
+          for (const chunk of chunksOf(values, MAPPING_IN_CHUNK)) {
+            const inClause = this.db.inFilter?.(field, chunk);
+            if (inClause === undefined) throw new Error(`${field} inFilter is required`);
+            rows.push(...await this.where<Prediction>("predictions", { user_id: userId, ...inClause }));
+          }
+          return rows;
+        };
+        for (const prediction of await queryByField("canonical_match_id", ids)) {
+          selected.set(prediction.canonical_match_id, prediction);
         }
-        return predictions;
+        const missing = ids.filter((id) => !selected.has(id));
+        if (missing.length > 0) {
+          for (const prediction of await queryByField("match_id", missing)) {
+            if (prediction.canonical_match_id !== prediction.match_id || selected.has(prediction.canonical_match_id)) continue;
+            selected.set(prediction.canonical_match_id, prediction);
+          }
+        }
+        return [...selected.values()];
       },
       findByUserAndCanonicalMatch: async (userId, canonicalMatchId) => {
         const prediction = await this.one<Prediction>("predictions", { user_id: userId, canonical_match_id: canonicalMatchId });
@@ -494,15 +548,43 @@ export class CloudBaseAppRepository implements AppRepository {
       },
       findByUserAndIdempotencyKey: async (userId, key) => this.one<Prediction>("predictions", { user_id: userId, idempotency_key: key }),
       findByUser: async (userId) => this.where<Prediction>("predictions", { user_id: userId }),
+      findHistoryPage: async (params) => this.findPredictionHistoryPage(params),
       findByMatch: async (matchId) => this.where<Prediction>("predictions", { match_id: matchId }),
+      findByCanonicalMatch: async (canonicalMatchId) => {
+        const [byCanonical, legacyByMatch] = await Promise.all([
+          this.where<Prediction>("predictions", { canonical_match_id: canonicalMatchId }),
+          this.where<Prediction>("predictions", { match_id: canonicalMatchId }),
+        ]);
+        const byId = new Map<string, Prediction>();
+        for (const prediction of byCanonical) {
+          byId.set(prediction.prediction_id, prediction);
+        }
+        for (const prediction of legacyByMatch) {
+          if ((prediction.canonical_match_id ?? prediction.match_id) === canonicalMatchId) {
+            byId.set(prediction.prediction_id, prediction);
+          }
+        }
+        return [...byId.values()];
+      },
       countByMatchGroupedByResult: async (matchId) => {
         const collection = this.collection("predictions");
-        const [HOME, DRAW, AWAY] = await Promise.all([
-          this.db.count(collection, { match_id: matchId, derived_result: "HOME" }),
-          this.db.count(collection, { match_id: matchId, derived_result: "DRAW" }),
-          this.db.count(collection, { match_id: matchId, derived_result: "AWAY" }),
+        const [HOME, DRAW, AWAY, matchIdDocs] = await Promise.all([
+          this.db.count(collection, { canonical_match_id: matchId, derived_result: "HOME" }),
+          this.db.count(collection, { canonical_match_id: matchId, derived_result: "DRAW" }),
+          this.db.count(collection, { canonical_match_id: matchId, derived_result: "AWAY" }),
+          // 已限定 match_id = matchId（单场），不会全表扫描。
+          this.db.query(collection, { match_id: matchId }),
         ]);
-        return { HOME, DRAW, AWAY };
+        const counts = { HOME, DRAW, AWAY };
+        for (const doc of matchIdDocs) {
+          const canonical = doc.canonical_match_id;
+          if (canonical !== undefined && canonical !== null && canonical !== "") continue;
+          const result = doc.derived_result;
+          if (result === "HOME" || result === "DRAW" || result === "AWAY") {
+            counts[result] += 1;
+          }
+        }
+        return counts;
       },
       insert: async (prediction) => {
         assertPredictionInvariants(prediction);
@@ -525,21 +607,39 @@ export class CloudBaseAppRepository implements AppRepository {
       },
     };
     this.jobLocks = {
-      acquire: async (lockKey, ownerId, leaseUntil) => this.db.transaction(async (txDb) => {
-        const repo = new CloudBaseAppRepository(this.config, txDb);
-        const current = await repo.byId<JobLock>("job_locks", lockKey);
-        if (current && current.lease_until.getTime() > Date.now()) return false;
+      acquire: async (lockKey, ownerId, leaseUntil) => {
+        const now = new Date();
         const next: JobLock = {
           schema_version: SCHEMA_VERSION,
           lock_key: lockKey,
           owner_id: ownerId,
           lease_until: leaseUntil,
-          updated_at: new Date(),
+          updated_at: now,
         };
-        if (current) await repo.update("job_locks", lockKey, next);
-        else await repo.add("job_locks", lockKey, next);
-        return true;
-      }),
+        if (this.db.acquireJobLock !== undefined) {
+          return this.db.acquireJobLock(
+            this.collection("job_locks"),
+            lockKey,
+            { ...next, _id: lockKey },
+            now,
+          );
+        }
+        try {
+          return await this.db.transaction(async (txDb) => {
+            const repo = new CloudBaseAppRepository(this.config, txDb);
+            const current = await repo.byId<JobLock>("job_locks", lockKey);
+            if (current && current.lease_until.getTime() > now.getTime()) return false;
+            if (current) await repo.update("job_locks", lockKey, next);
+            else await repo.add("job_locks", lockKey, next);
+            return true;
+          });
+        } catch (error) {
+          if (error instanceof UniqueConstraintError || error instanceof CloudBaseDuplicateKeyError) {
+            return false;
+          }
+          throw error;
+        }
+      },
       isHeld: async (lockKey, asOf) => {
         const lock = await this.byId<JobLock>("job_locks", lockKey);
         return lock !== null && lock.lease_until.getTime() > asOf.getTime();
@@ -622,6 +722,7 @@ export class CloudBaseAppRepository implements AppRepository {
       findByPeriodAndUser: async (periodType, periodKey, userId) => this.one<RankingEntry>("rankings", { period_type: periodType, period_key: periodKey, user_id: userId }),
       findByPeriod: async (periodType, periodKey) => this.where<RankingEntry>("rankings", { period_type: periodType, period_key: periodKey }),
       findAll: async () => this.all<RankingEntry>("rankings"),
+      findUnfinalizedWeeks: async () => this.where<RankingEntry>("rankings", { period_type: "week", is_final: false }),
       insert: async (entry) => { assertRankingInvariants(entry); await this.add("rankings", compositeId(entry.period_type, entry.period_key, entry.user_id), entry); },
       update: async (entry) => { assertRankingInvariants(entry); await this.update("rankings", compositeId(entry.period_type, entry.period_key, entry.user_id), entry); },
     };
@@ -631,17 +732,71 @@ export class CloudBaseAppRepository implements AppRepository {
     };
     this.boardSnapshots = {
       findLatestByBoard: async (board) => {
-        const items = (await this.where<BoardSnapshot>("board_snapshots", { board })).filter((item) => item.is_final !== true);
-        const latest = items.reduce<Date | null>((at, item) => at === null || item.snapshot_at > at ? item.snapshot_at : at, null);
-        return latest === null ? [] : items.filter((item) => item.snapshot_at.getTime() === latest.getTime()).sort((a, b) => a.rank - b.rank);
+        const pageSize = 100;
+        let offset = 0;
+        for (;;) {
+          const page = await this.where<BoardSnapshot>(
+            "board_snapshots",
+            { board },
+            { order_by: "snapshot_at", direction: "desc", limit: pageSize, offset },
+          );
+          const latestRow = page.find((item) => item.is_final !== true);
+          if (latestRow !== undefined) {
+            return (await this.where<BoardSnapshot>("board_snapshots", {
+              board,
+              snapshot_at: latestRow.snapshot_at,
+            }))
+              .filter((item) => item.is_final !== true)
+              .sort((a, b) => a.rank - b.rank);
+          }
+          if (page.length < pageSize) return [];
+          offset += page.length;
+        }
       },
       findLatestBySeason: async (seasonId) => {
-        const items = (await this.where<BoardSnapshot>("board_snapshots", { board: "season", level_season_id: seasonId })).filter((item) => item.is_final !== true);
-        const latest = items.reduce<Date | null>((at, item) => at === null || item.snapshot_at > at ? item.snapshot_at : at, null);
-        return latest === null ? [] : items.filter((item) => item.snapshot_at.getTime() === latest.getTime()).sort((a, b) => a.rank - b.rank);
+        const pageSize = 100;
+        let offset = 0;
+        for (;;) {
+          const page = await this.where<BoardSnapshot>(
+            "board_snapshots",
+            { board: "season", level_season_id: seasonId },
+            { order_by: "snapshot_at", direction: "desc", limit: pageSize, offset },
+          );
+          const latestRow = page.find((item) => item.is_final !== true);
+          if (latestRow !== undefined) {
+            return (await this.where<BoardSnapshot>("board_snapshots", {
+              board: "season",
+              level_season_id: seasonId,
+              snapshot_at: latestRow.snapshot_at,
+            }))
+              .filter((item) => item.is_final !== true)
+              .sort((a, b) => a.rank - b.rank);
+          }
+          if (page.length < pageSize) return [];
+          offset += page.length;
+        }
       },
       findFinalBySeason: async (seasonId) => (await this.where<BoardSnapshot>("board_snapshots", { board: "season", level_season_id: seasonId, is_final: true })).sort((a, b) => a.rank - b.rank),
-      listFinalSeasonIds: async () => [...new Set((await this.where<BoardSnapshot>("board_snapshots", { board: "season", is_final: true })).filter((item) => item.snapshot_kind !== "head" && item.level_season_id !== null).map((item) => item.level_season_id!))].sort((a, b) => b.localeCompare(a)),
+      listFinalSeasonIds: async () => {
+        const filter = { board: "season", is_final: true };
+        if (this.db.distinctQuery !== undefined) {
+          const rows = await this.db.distinctQuery(
+            this.collection("board_snapshots"),
+            ["level_season_id", "snapshot_kind"],
+            filter,
+          );
+          return [...new Set(
+            rows
+              .filter((row) => row.snapshot_kind !== "head" && typeof row.level_season_id === "string" && row.level_season_id.length > 0)
+              .map((row) => row.level_season_id!),
+          )].sort((a, b) => b.localeCompare(a));
+        }
+        return [...new Set(
+          (await this.where<BoardSnapshot>("board_snapshots", filter))
+            .filter((item) => item.snapshot_kind !== "head" && item.level_season_id !== null)
+            .map((item) => item.level_season_id!),
+        )].sort((a, b) => b.localeCompare(a));
+      },
       findByBoardAndSnapshotAt: async (board, snapshotAt) => (await this.where<BoardSnapshot>("board_snapshots", { board, snapshot_at: snapshotAt })).filter((item) => item.is_final !== true),
       insert: async (snapshot) => {
         assertBoardSnapshotInvariants(snapshot);
@@ -674,6 +829,33 @@ export class CloudBaseAppRepository implements AppRepository {
 
   private collection(name: string): string {
     return cloudBaseCollectionName(this.config.resource_namespace, name);
+  }
+
+  private async findPredictionHistoryPage(params: {
+    user_id: string;
+    league_id: string | null;
+    season_id: string | null;
+    cursor: { submitted_at: Date; prediction_id: string } | null;
+    limit: number;
+  }): Promise<Prediction[]> {
+    if (this.db.findPredictionHistoryPage !== undefined) {
+      // 微信适配器：user_id/游标/排序/limit 下推；联赛赛季与 superseded_by 仍按批在应用层过滤。
+      const documents = await this.db.findPredictionHistoryPage({
+        predictions_collection: this.collection("predictions"),
+        matches_collection: this.collection("matches"),
+        user_id: params.user_id,
+        league_id: params.league_id,
+        season_id: params.season_id,
+        cursor: params.cursor,
+        limit: params.limit,
+      });
+      return documents.map((document) => withoutId<Prediction>("predictions", document));
+    }
+    // 退化路径：适配器未实现专用分页时，取该用户预测后在应用内按有效比赛过滤、排序、截断。
+    const predictions = await this.where<Prediction>("predictions", { user_id: params.user_id });
+    const matches = await this.all<Match>("matches");
+    const matchesById = new Map(matches.map((match) => [match.match_id, match]));
+    return selectPredictionHistoryPage(predictions, matchesById, params);
   }
 
   private async byId<T>(name: string, id: string): Promise<T | null> {

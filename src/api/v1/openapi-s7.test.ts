@@ -55,7 +55,7 @@ describe("S7 OpenAPI baseline", () => {
     expect(rankings).toContain("'404':");
     expect(rankings).not.toContain("enum: [week, month]");
     expect(specification).toMatch(
-      /RankingData:[\s\S]*?required: \[board, scope, period_key, updated_at, server_now, available_boards, seasons_participated, entry_count, items, page, me\]/,
+      /RankingData:[\s\S]*?required: \[board, scope, period_key, first_period_key, updated_at, server_now, available_boards, seasons_participated, entry_count, items, page, me\]/,
     );
     expect(specification).toMatch(/        server_now:[\s\S]*?format: date-time/);
     expect(specification).toContain("current_period_key:");

@@ -119,6 +119,16 @@ describe("GET /v1/matches", () => {
     expect(specification).toMatch(/MatchListItem:/);
     expect(specification).toMatch(/can_predict_reason/);
     expect(specification).toMatch(
+      /    MatchListItem:[\s\S]*?required: \[match_id, league_id, season_id, round_id, home_team, away_team, kickoff_at, prediction_deadline_at, prediction_closed_at, match_status, regular_home_score, regular_away_score, can_predict, can_predict_reason, settlement_status, my_prediction, is_prediction_closed\]/,
+    );
+    expect(specification).toMatch(
+      /    MatchListItem:[\s\S]*?settlement_status:[\s\S]*?enum: \[not_ready, waiting, settling, settled, correcting, voided\]/,
+    );
+    expect(specification).toMatch(
+      /    MatchListItem:[\s\S]*?my_prediction:[\s\S]*?\$ref: '#\/components\/schemas\/MyMatchPrediction'/,
+    );
+    expect(specification).toMatch(/    MatchListItem:[\s\S]*?is_prediction_closed:\n          type: boolean/);
+    expect(specification).toMatch(
       /  \/matches:\n    get:[\s\S]*?'429':[\s\S]*?RateLimited/,
     );
   });
@@ -150,6 +160,12 @@ describe("GET /v1/matches", () => {
     const specification = await readFile(new URL("./openapi.yaml", import.meta.url), "utf8");
     expect(specification).toMatch(/\/matches\/\{match_id\}:\s*\n\s+get:/);
     expect(specification).toMatch(/MatchDetailData:/);
+    expect(specification).toMatch(
+      /    MatchDetailData:[\s\S]*?required: \[match_id, league_id, season_id, round_id, home_team, away_team, kickoff_at, prediction_deadline_at, prediction_closed_at, match_status, regular_home_score, regular_away_score, can_predict, can_predict_reason, settlement_status, my_prediction, is_prediction_closed\]/,
+    );
+    expect(specification).toMatch(
+      /    MatchDetailData:[\s\S]*?is_prediction_closed:\n          type: boolean/,
+    );
     expect(specification).toMatch(
       /  \/matches\/\{match_id\}:\n    get:[\s\S]*?'429':[\s\S]*?RateLimited/,
     );

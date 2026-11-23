@@ -163,6 +163,7 @@ describe("CloudBaseSchedulerStateStore", () => {
       "board_snapshot_strength",
       "board_snapshot_season",
       "board_snapshot_season_final",
+      "maintenance_cleanup",
     ]) {
       await store.upsertPeriodicJobCycle({
         job_type: jobType,

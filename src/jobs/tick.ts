@@ -10,9 +10,11 @@ import {
   providerScheduleSummary,
   runScheduledJobs,
   SETTLEMENT_ORCHESTRATION_TASKS,
+  TICK_MODES,
   TIMER_TASK_TYPES,
   UNWIRED_PERIODIC_TASKS,
   WIRED_PERIODIC_TASKS,
+  type TickMode,
 } from "../runtime/scheduled-jobs.js";
 import { createVpsRuntime } from "../runtime/vps-runtime.js";
 import { SyncJobType } from "../domain/enums.js";
@@ -45,6 +47,31 @@ function stdoutLog(entry: Record<string, unknown>): void {
 
 function hasFlag(argv: readonly string[], name: string): boolean {
   return argv.includes(name);
+}
+
+export function parseTickMode(argv: readonly string[]): TickMode {
+  let rawMode: string | undefined;
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg === undefined) continue;
+    if (arg === "--mode") {
+      const next = argv[i + 1];
+      if (next === undefined || next.startsWith("-")) {
+        throw new Error(`Missing value for --mode (expected ${TICK_MODES.join(" | ")})`);
+      }
+      rawMode = next;
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith("--mode=")) {
+      rawMode = arg.slice("--mode=".length);
+    }
+  }
+  if (rawMode === undefined) return "all";
+  if ((TICK_MODES as readonly string[]).includes(rawMode)) {
+    return rawMode as TickMode;
+  }
+  throw new Error(`Invalid --mode value: ${rawMode} (expected ${TICK_MODES.join(" | ")})`);
 }
 
 function settlementFailed(settlements: readonly { match_id: string; outcome: unknown }[]): boolean {
@@ -93,7 +120,7 @@ function createHandle(
     throw new Error("jobs:tick requires FOOTBALL_REPOSITORY_BACKEND=postgres");
   }
   const postgres = config.postgres_repository;
-  const vps = createVpsRuntime({ postgres });
+  const vps = createVpsRuntime({ postgres, env });
   const counted = createCountingDb(vps.db);
   const repo = new CloudBaseAppRepository(
     { resource_namespace: postgres.resource_namespace },
@@ -106,6 +133,7 @@ function createHandle(
       namespace: postgres.resource_namespace,
       repo,
       matchCursorSecret: config.match_cursor_secret,
+      authSessions: vps.sessions,
       log,
     }),
     counter: counted.counter,
@@ -121,18 +149,22 @@ export async function runJobsTick(options: JobsTickOptions = {}): Promise<JobsTi
   const serverNow = (options.now ?? (() => new Date()))();
   let handle: JobsTickHandle | undefined;
   try {
+    const mode = parseTickMode(argv);
     const config = loadGatewayRuntimeConfig(env);
     handle = options.assemble === undefined
       ? createHandle(config, env, log)
       : await options.assemble(config);
     const policy = schedulerPolicy(config, handle.application.providerSources.sync_profile);
-    log(policy);
+    log({ ...policy, mode });
     if (dryRun) {
-      const planned = await planScheduledJobs({ runtime: handle.application, serverNow });
-      const todos = await handle.application.repo.matches.findSettlementTodos({ limit: 100 });
+      const planned = await planScheduledJobs({ runtime: handle.application, serverNow, mode });
+      const todos = mode === "periodic"
+        ? []
+        : await handle.application.repo.matches.findSettlementTodos({ limit: 100 });
       const plan = {
         event: "jobs_tick_plan",
         dry_run: true,
+        mode,
         server_now: serverNow.toISOString(),
         tasks: planned.tasks,
         settlement: planned.settlement,
@@ -148,7 +180,7 @@ export async function runJobsTick(options: JobsTickOptions = {}): Promise<JobsTi
 
     handle.counter.begin();
     const startedAt = Date.now();
-    const scheduled = await runScheduledJobs({ runtime: handle.application, serverNow });
+    const scheduled = await runScheduledJobs({ runtime: handle.application, serverNow, mode });
     const dbOps = handle.counter.end();
     const timerSummary = buildTimerSummary({
       taskTypes: TIMER_TASK_TYPES,
@@ -160,6 +192,7 @@ export async function runJobsTick(options: JobsTickOptions = {}): Promise<JobsTi
     });
     const summary = {
       ...timerSummary,
+      mode,
       wired_periodic_tasks: WIRED_PERIODIC_TASKS,
       unwired_periodic_tasks: UNWIRED_PERIODIC_TASKS,
       settlement_orchestration_tasks: SETTLEMENT_ORCHESTRATION_TASKS,

@@ -20,20 +20,25 @@ function fieldType(collection: string, field: string): FieldType | undefined {
   return COLLECTION_DEFINITIONS.find((item) => item.collection === collection)?.fields[field]?.type;
 }
 
-function jsonText(field: string): string {
-  return `(document ->> ${literal(field)})`;
+function jsonText(field: string, alias = "document"): string {
+  return `(${alias} ->> ${literal(field)})`;
 }
 
 function utcTimestamptzCall(schema: string, text: string): string {
   return `${qualifiedTable(schema, JSONB_UTC_TIMESTAMPTZ_FUNCTION)}(${text})`;
 }
 
-export function postgresDocumentFieldExpr(schema: string, collection: string, field: string): string {
+export function postgresDocumentFieldExpr(
+  schema: string,
+  collection: string,
+  field: string,
+  alias = "document",
+): string {
   if ((collection === "predictions" || collection === "matches") && field === "canonical_match_id") {
-    return `COALESCE(${jsonText(field)}, ${jsonText("match_id")})`;
+    return `COALESCE(${jsonText(field, alias)}, ${jsonText("match_id", alias)})`;
   }
   const type = fieldType(collection, field);
-  const text = jsonText(field);
+  const text = jsonText(field, alias);
   if (type === "date") return utcTimestamptzCall(schema, text);
   if (type === "int") return `(${text})::numeric`;
   if (type === "bool") return `(${text})::boolean`;
@@ -186,6 +191,10 @@ export function postgresSchemaStatements(plan: PostgresSchemaPlan): string[] {
 
 export interface PostgresQueryResult {
   rows: Array<Record<string, unknown>>;
+  /** pg command 标签。自定义适配器可不提供；缺失时无法判定隐式回滚。 */
+  command?: string;
+  /** 受影响行数（如 DELETE / UPDATE）。 */
+  rowCount?: number | null;
 }
 
 export type PostgresQueryFn = (sql: string, params?: unknown[]) => Promise<PostgresQueryResult>;

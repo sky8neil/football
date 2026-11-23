@@ -5,6 +5,7 @@ import { InMemoryRepository } from "../infrastructure/repositories.js";
 import type { AppRepository } from "../infrastructure/repositories.js";
 import { newUuid } from "../domain/ids.js";
 import type { Match, Prediction, User } from "../domain/types.js";
+import { formatSeasonLabel } from "../domain/season-label.js";
 import { ShareCardQueryService } from "./share-card.js";
 import { defaultLevelState } from "../domain/types.js";
 
@@ -108,8 +109,20 @@ describe("ShareCardQueryService", () => {
     });
     const repository = {
       users: { findById: async () => user },
-      predictions: { findByUserAndMatch: async () => invalidPrediction },
-      matches: { findByLeagueSeasonRound: async () => [match] },
+      predictions: {
+        findByUserAndMatch: async () => invalidPrediction,
+        findByUserAndCanonicalMatch: async () => invalidPrediction,
+      },
+      matches: {
+        findByLeagueSeasonRound: async () => [match],
+        findLeagueSeasonCatalog: async () => [
+          {
+            league_id: "premier_league",
+            season_id: MVP_SEASON.season_id,
+            round_ids: ["01"],
+          },
+        ],
+      },
     } as unknown as AppRepository;
 
     await expect(
@@ -203,7 +216,7 @@ describe("ShareCardQueryService", () => {
       league_id: "premier_league",
       season_id: MVP_SEASON.season_id,
       round_id: "01",
-    });
+    }, NOW);
 
     expect(result).toEqual({
       user_id: user.user_id,
@@ -211,12 +224,17 @@ describe("ShareCardQueryService", () => {
       favorite_team_id: user.favorite_team_id,
       season_level: 5,
       league_id: "premier_league",
+      season_id: MVP_SEASON.season_id,
+      season_label: formatSeasonLabel(MVP_SEASON.season_id),
       round_id: "01",
       round_predictions: 2,
       round_wdl_hits: 2,
       round_exact_hits: 1,
       round_score: 15,
       career_points: user.career_points,
+      level_season_id: levelSeasonOf(NOW),
+      generated_at: NOW.toISOString(),
+      pending_predictions: 1,
     });
   });
 
@@ -224,6 +242,7 @@ describe("ShareCardQueryService", () => {
     const repo = new InMemoryRepository();
     const user = makeUser({ status: "deleted", deleted_at: NOW });
     await repo.users.insert(user);
+    await repo.matches.insert(makeMatch());
 
     await expect(
       new ShareCardQueryService(repo).getShareCard(user.user_id, {
@@ -237,6 +256,11 @@ describe("ShareCardQueryService", () => {
   it("按联赛校验 round 上限与登记 season", async () => {
     const repo = new InMemoryRepository();
     const service = new ShareCardQueryService(repo);
+    await repo.matches.insert(makeMatch({
+      league_id: "bundesliga",
+      season_id: "2026_2027",
+      round_id: "01",
+    }));
 
     await expect(
       service.getShareCard(newUuid(), {
@@ -244,13 +268,195 @@ describe("ShareCardQueryService", () => {
         season_id: "2026_2027",
         round_id: "35",
       }),
-    ).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+    ).rejects.toMatchObject({
+      code: "ROUND_NOT_FOUND",
+    });
     await expect(
       service.getShareCard(newUuid(), {
         league_id: "chinese_super_league",
         season_id: "2026_2027",
         round_id: "01",
       }),
-    ).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+    ).rejects.toMatchObject({
+      code: "VALIDATION_ERROR",
+      details: { field: "season_id", reason: "FORMAT" },
+    });
+  });
+
+  it("已接入的历史赛季与该赛季实际存在的轮次可正常返回", async () => {
+    const repo = new InMemoryRepository();
+    const user = makeUser();
+    await repo.users.insert(user);
+    const match = makeMatch({ season_id: "2024_2025", round_id: "08" });
+    await repo.matches.insert(match);
+    await repo.predictions.insert(makePrediction(user.user_id, match.match_id));
+
+    const result = await new ShareCardQueryService(repo).getShareCard(user.user_id, {
+      league_id: "premier_league",
+      season_id: "2024_2025",
+      round_id: "08",
+    }, NOW);
+
+    expect(result).toEqual({
+      user_id: user.user_id,
+      display_name: "Sky",
+      favorite_team_id: user.favorite_team_id,
+      season_level: 1,
+      league_id: "premier_league",
+      season_id: "2024_2025",
+      season_label: "2024/2025",
+      round_id: "08",
+      round_predictions: 1,
+      round_wdl_hits: 1,
+      round_exact_hits: 1,
+      round_score: 12,
+      career_points: user.career_points,
+      level_season_id: levelSeasonOf(NOW),
+      generated_at: NOW.toISOString(),
+      pending_predictions: 0,
+    });
+  });
+
+  it("未接入赛季拒绝为 NOT_ATTACHED", async () => {
+    const repo = new InMemoryRepository();
+    await repo.matches.insert(makeMatch({ season_id: "2024_2025" }));
+
+    await expect(
+      new ShareCardQueryService(repo).getShareCard(newUuid(), {
+        league_id: "premier_league",
+        season_id: "2023_2024",
+        round_id: "01",
+      }),
+    ).rejects.toMatchObject({
+      code: "VALIDATION_ERROR",
+      details: { field: "season_id", reason: "NOT_ATTACHED" },
+    });
+  });
+
+  it("赛季已接入但 round_id 不在目录中拒绝为 NOT_FOUND", async () => {
+    const repo = new InMemoryRepository();
+    await repo.matches.insert(makeMatch({ season_id: "2024_2025", round_id: "01" }));
+
+    await expect(
+      new ShareCardQueryService(repo).getShareCard(newUuid(), {
+        league_id: "premier_league",
+        season_id: "2024_2025",
+        round_id: "02",
+      }),
+    ).rejects.toMatchObject({
+      code: "ROUND_NOT_FOUND",
+    });
+  });
+
+  it("premier_league 拒绝自然年赛季格式", async () => {
+    const repo = new InMemoryRepository();
+
+    await expect(
+      new ShareCardQueryService(repo).getShareCard(newUuid(), {
+        league_id: "premier_league",
+        season_id: "2026",
+        round_id: "01",
+      }),
+    ).rejects.toMatchObject({
+      code: "VALIDATION_ERROR",
+      details: { field: "season_id", reason: "FORMAT" },
+    });
+  });
+
+  it("返回跨年赛季 season_id/season_label 以及当前等级赛季与 generated_at", async () => {
+    const repo = new InMemoryRepository();
+    const user = makeUser();
+    await repo.users.insert(user);
+    const match = makeMatch({ season_id: "2025_2026" });
+    await repo.matches.insert(match);
+    await repo.predictions.insert(makePrediction(user.user_id, match.match_id));
+
+    const result = await new ShareCardQueryService(repo).getShareCard(user.user_id, {
+      league_id: "premier_league",
+      season_id: "2025_2026",
+      round_id: "01",
+    }, NOW);
+
+    expect(result.season_id).toBe("2025_2026");
+    expect(result.season_label).toBe("2025/2026");
+    expect(result.level_season_id).toBe(levelSeasonOf(NOW));
+    expect(result.generated_at).toBe(NOW.toISOString());
+  });
+
+  it("返回自然年赛季 season_id/season_label 以及当前等级赛季与 generated_at", async () => {
+    const repo = new InMemoryRepository();
+    const user = makeUser();
+    await repo.users.insert(user);
+    const match = makeMatch({
+      league_id: "chinese_super_league",
+      season_id: "2026",
+    });
+    await repo.matches.insert(match);
+    await repo.predictions.insert(makePrediction(user.user_id, match.match_id));
+
+    const result = await new ShareCardQueryService(repo).getShareCard(user.user_id, {
+      league_id: "chinese_super_league",
+      season_id: "2026",
+      round_id: "01",
+    }, NOW);
+
+    expect(result.season_id).toBe("2026");
+    expect(result.season_label).toBe("2026");
+    expect(result.level_season_id).toBe(levelSeasonOf(NOW));
+    expect(result.generated_at).toBe(NOW.toISOString());
+  });
+
+  it("1 场已结算 + 1 场未结算时 pending_predictions=1，round_predictions 只统计已结算", async () => {
+    const repo = new InMemoryRepository();
+    const user = makeUser();
+    await repo.users.insert(user);
+    const settled = makeMatch();
+    const unsettled = makeMatch({
+      match_status: "scheduled",
+      settlement_status: "pending",
+      result_version: 0,
+      settled_result_version: 0,
+      regular_home_score: null,
+      regular_away_score: null,
+    });
+    await repo.matches.insert(settled);
+    await repo.matches.insert(unsettled);
+    await repo.predictions.insert(makePrediction(user.user_id, settled.match_id));
+    await repo.predictions.insert(makePrediction(user.user_id, unsettled.match_id, {
+      match_score: null,
+      wdl_hit: null,
+      exact_hit: null,
+      applied_result_version: 0,
+    }));
+
+    const result = await new ShareCardQueryService(repo).getShareCard(user.user_id, {
+      league_id: "premier_league",
+      season_id: MVP_SEASON.season_id,
+      round_id: "01",
+    }, NOW);
+
+    expect(result.round_predictions).toBe(1);
+    expect(result.pending_predictions).toBe(1);
+  });
+
+  it("全部已结算时 pending_predictions=0", async () => {
+    const repo = new InMemoryRepository();
+    const user = makeUser();
+    await repo.users.insert(user);
+    const first = makeMatch();
+    const second = makeMatch();
+    await repo.matches.insert(first);
+    await repo.matches.insert(second);
+    await repo.predictions.insert(makePrediction(user.user_id, first.match_id));
+    await repo.predictions.insert(makePrediction(user.user_id, second.match_id));
+
+    const result = await new ShareCardQueryService(repo).getShareCard(user.user_id, {
+      league_id: "premier_league",
+      season_id: MVP_SEASON.season_id,
+      round_id: "01",
+    }, NOW);
+
+    expect(result.round_predictions).toBe(2);
+    expect(result.pending_predictions).toBe(0);
   });
 });

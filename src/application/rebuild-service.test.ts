@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   LevelScope,
   MatchScoreValue,
@@ -571,6 +571,46 @@ describe("loadAppliedSettlementFacts 回放输入排序", () => {
 
     expect(sequential).toEqual(shuffled);
     expect(sequential).toEqual({ n: 1, S: 3, b_points: 3, valid_total: 1 });
+  });
+
+  it("[Slice 5.2] 同一 settlement/match/result 的多条 item 只查库一次（命中调用级缓存）", async () => {
+    const repo = new InMemoryRepository();
+    const match = makeMatch("cache-match", WEEK_ANCHOR);
+    await repo.matches.insert(match);
+    await repo.matchResults.insert(makeResult(match.match_id, 1));
+    await repo.settlements.insert(makeSettlement("cache-settlement", match.match_id, 1));
+
+    const items: SettlementItem[] = [];
+    for (let i = 1; i <= 5; i += 1) {
+      const userId = `cache-user-${i}`;
+      const predId = `cache-pred-${i}`;
+      await repo.users.insert(makeUser(userId));
+      await repo.predictions.insert(makePrediction(predId, userId, match.match_id));
+      const item = makeItem("cache-settlement", predId, userId, 1);
+      await repo.settlementItems.insert(item);
+      items.push(item);
+    }
+
+    const settlements = repo.settlements;
+    const matches = repo.matches;
+    const matchResults = repo.matchResults;
+    const findSettlementSpy = vi.spyOn(settlements, "findById");
+    const findMatchSpy = vi.spyOn(matches, "findById");
+    const findResultSpy = vi.spyOn(matchResults, "findByMatchAndVersion");
+    const repoProxy = new Proxy(repo, {
+      get(target, prop, receiver) {
+        if (prop === "settlements") return settlements;
+        if (prop === "matches") return matches;
+        if (prop === "matchResults") return matchResults;
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+
+    const facts = await loadAppliedSettlementFacts(repoProxy, items);
+    expect(facts).toHaveLength(5);
+    expect(findSettlementSpy).toHaveBeenCalledTimes(1);
+    expect(findMatchSpy).toHaveBeenCalledTimes(1);
+    expect(findResultSpy).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -1,6 +1,8 @@
 const { listMyPredictions } = require("../../services/predictions.js");
+const { listLeagueSeasons } = require("../../services/league-seasons.js");
 const COPY = require("../../utils/rankings-copy.js");
 const { getLeagueLogo } = require("../../utils/logo-registry.js");
+const { findTeam } = require("../../utils/team-registry.js");
 const { presentTeam } = require("../../utils/team-presentation.js");
 const { groupPredictionsByWeek } = require("../../utils/prediction-history.js");
 const { formatRound, formatKickoff } = require("../../utils/match-presentation.js");
@@ -28,10 +30,15 @@ function formatScore(home, away) {
     : `${home} : ${away}`;
 }
 
+function historyTeam(teamId) {
+  const found = findTeam(teamId);
+  return { team_id: teamId, name: found ? found.source_name : undefined };
+}
+
 function presentItem(item) {
   const leagueId = item.league_id;
-  const homePresented = presentTeam({ team_id: item.home_team_id }, leagueId);
-  const awayPresented = presentTeam({ team_id: item.away_team_id }, leagueId);
+  const homePresented = presentTeam(historyTeam(item.home_team_id), leagueId);
+  const awayPresented = presentTeam(historyTeam(item.away_team_id), leagueId);
   const leagueName = LEAGUE_NAMES[leagueId] || "比赛";
   const roundText = formatRound(item.round_id);
   const points = item.match_score === null ? "待结算" : `+${item.match_score}`;
@@ -71,12 +78,61 @@ Page({
     emptyText: COPY.predictionsEmpty,
     goPredictText: COPY.goPredict,
     endText: COPY.predictionsEnd,
+    leagues: [],
+    seasonsByLeague: {},
+    leagueOptions: ["全部联赛"],
+    seasonOptions: ["全部赛季"],
+    leagueIndex: 0,
+    seasonIndex: 0,
+    selectedLeagueId: null,
+    selectedSeasonId: null,
+    filterReady: false,
+    filterError: "",
   },
 
   requestSerial: 0,
 
   onLoad() {
+    this.loadFilters();
     this.loadFirstPage();
+  },
+
+  loadFilters() {
+    return listLeagueSeasons().then((result) => {
+      if (result.statusCode !== 200) {
+        this.setData({ filterError: "筛选选项加载失败" });
+        return;
+      }
+      const items = result.data && Array.isArray(result.data.items) ? result.data.items : [];
+      const leagues = [];
+      const seasonsByLeague = {};
+      const seen = new Set();
+      for (const item of items) {
+        const leagueId = item.league_id;
+        if (!seen.has(leagueId)) {
+          seen.add(leagueId);
+          leagues.push({
+            id: leagueId,
+            name: LEAGUE_NAMES[leagueId] || leagueId,
+          });
+        }
+        if (!seasonsByLeague[leagueId]) seasonsByLeague[leagueId] = [];
+        seasonsByLeague[leagueId].push({
+          id: item.season_id,
+          label: item.season_label,
+        });
+      }
+      this.setData({
+        leagues,
+        seasonsByLeague,
+        leagueOptions: ["全部联赛", ...leagues.map((league) => league.name)],
+        seasonOptions: ["全部赛季"],
+        filterReady: true,
+        filterError: "",
+      });
+    }).catch(() => {
+      this.setData({ filterError: "筛选选项加载失败" });
+    });
   },
 
   loadFirstPage() {
@@ -90,12 +146,15 @@ Page({
       nextCursor: null,
       loadingMore: false,
     });
-    return listMyPredictions({ limit: 20 }).then((result) =>
-      this.applyListResult(result, true, serial),
-    );
+    return listMyPredictions({
+      leagueId: this.data.selectedLeagueId || undefined,
+      seasonId: this.data.selectedSeasonId || undefined,
+      limit: 20,
+    }).then((result) => this.applyListResult(result, true, serial));
   },
 
   applyListResult(result, replace, serial = this.requestSerial) {
+    if (serial !== this.requestSerial) return Promise.resolve();
     if (result.statusCode === 401 && result.code === "UNAUTHORIZED") {
       this.setData({ state: "unauthorized", errorMessage: "身份缺失", loadingMore: false });
       return Promise.resolve();
@@ -106,6 +165,14 @@ Page({
     }
     if (result.statusCode === 404 && result.code === "USER_NOT_FOUND") {
       this.setData({ state: "userNotFound", errorMessage: result.message || "用户不存在", loadingMore: false });
+      return Promise.resolve();
+    }
+    if (result.statusCode === 0 || result.code === "NETWORK_ERROR") {
+      this.setData({
+        state: "error",
+        errorMessage: "网络异常，请重试",
+        loadingMore: false,
+      });
       return Promise.resolve();
     }
     if (result.statusCode !== 200) {
@@ -119,7 +186,6 @@ Page({
     const payload = result.data || {};
     const rawItems = Array.isArray(payload.items) ? payload.items : [];
     const page = payload.page || {};
-    if (serial !== this.requestSerial) return Promise.resolve();
     const nextItems = rawItems.map((item) => presentItem(item));
     const items = replace ? nextItems : this.data.items.concat(nextItems);
     this.setData({
@@ -130,13 +196,70 @@ Page({
       nextCursor: page.next_cursor === undefined ? null : page.next_cursor,
       errorMessage: "",
       loadingMore: false,
+      emptyText: items.length === 0 && (this.data.selectedLeagueId || this.data.selectedSeasonId)
+        ? "你在这个赛季还没有预测记录"
+        : COPY.predictionsEmpty,
     });
     return Promise.resolve();
+  },
+
+  onLeagueChange(event) {
+    const index = Number(event.detail.value);
+    if (index === 0) {
+      this.setData({
+        leagueIndex: 0,
+        selectedLeagueId: null,
+        seasonIndex: 0,
+        selectedSeasonId: null,
+        seasonOptions: ["全部赛季"],
+      });
+    } else {
+      const league = this.data.leagues[index - 1];
+      const seasons = (league && this.data.seasonsByLeague[league.id]) || [];
+      this.setData({
+        leagueIndex: index,
+        selectedLeagueId: league ? league.id : null,
+        seasonIndex: 0,
+        selectedSeasonId: null,
+        seasonOptions: ["全部赛季", ...seasons.map((season) => season.label)],
+      });
+    }
+    return this.loadFirstPage();
+  },
+
+  onSeasonChange(event) {
+    const index = Number(event.detail.value);
+    if (index === 0) {
+      this.setData({
+        seasonIndex: 0,
+        selectedSeasonId: null,
+      });
+    } else {
+      const seasons = this.data.seasonsByLeague[this.data.selectedLeagueId] || [];
+      const season = seasons[index - 1];
+      this.setData({
+        seasonIndex: index,
+        selectedSeasonId: season ? season.id : null,
+      });
+    }
+    return this.loadFirstPage();
   },
 
   onCardTap(event) {
     const matchId = event.currentTarget.dataset.matchId;
     if (matchId) wx.navigateTo({ url: "/pages/match-detail/match-detail?id=" + matchId });
+  },
+
+  onShareCardTap() {
+    const params = [];
+    if (this.data.selectedLeagueId) {
+      params.push("league_id=" + encodeURIComponent(this.data.selectedLeagueId));
+    }
+    if (this.data.selectedSeasonId) {
+      params.push("season_id=" + encodeURIComponent(this.data.selectedSeasonId));
+    }
+    const query = params.length ? "?" + params.join("&") : "";
+    wx.navigateTo({ url: "/pages/share-card/share-card" + query });
   },
 
   onMore() {
@@ -147,7 +270,11 @@ Page({
     if (this.data.loadingMore || !this.data.hasMore || this.data.nextCursor === null) return;
     const cursor = this.data.nextCursor;
     this.setData({ loadingMore: true, errorMessage: "" });
-    listMyPredictions({ cursor }).then((result) => this.applyListResult(result, false, serial));
+    listMyPredictions({
+      leagueId: this.data.selectedLeagueId || undefined,
+      seasonId: this.data.selectedSeasonId || undefined,
+      cursor,
+    }).then((result) => this.applyListResult(result, false, serial));
   },
 
   onSessionTap() {

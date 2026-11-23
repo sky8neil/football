@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { MatchStatus, UserStatus } from "../domain/enums.js";
 import type { Match, Prediction, User } from "../domain/types.js";
 import { DomainError } from "../domain/errors.js";
@@ -191,7 +191,7 @@ describe("PredictionHistoryQueryService.listMyPredictions", () => {
 
     await expect(service.listMyPredictions(USER_ID, {
       league_id: "premier_league",
-      season_id: "2025_2026",
+      season_id: "2023_2024",
       limit: 20,
       cursor: null,
     })).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
@@ -259,5 +259,86 @@ describe("PredictionHistoryQueryService.listMyPredictions", () => {
       USER_ID,
       { league_id: "premier_league", season_id: "2026_2027", limit: 20, cursor },
     )).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+  });
+
+  it("已接入历史赛季能正常查询", async () => {
+    const repo = await setup();
+    const result = await new PredictionHistoryQueryService(repo, "prediction-list-secret").listMyPredictions(
+      USER_ID,
+      { league_id: "premier_league", season_id: "2025_2026", limit: 20, cursor: null },
+    );
+    expect(result.items.map((item) => item.prediction_id)).toEqual([
+      "00000000-0000-4000-8000-000000000022",
+    ]);
+    expect(result.items[0]).toEqual(expect.objectContaining({
+      season_id: "2025_2026",
+      match_id: "00000000-0000-4000-8000-000000000012",
+    }));
+  });
+
+  it("未接入赛季返回 VALIDATION_ERROR", async () => {
+    const repo = await setup();
+    await expect(new PredictionHistoryQueryService(repo, "prediction-list-secret").listMyPredictions(
+      USER_ID,
+      { league_id: "premier_league", season_id: "2023_2024", limit: 20, cursor: null },
+    )).rejects.toMatchObject({
+      code: "VALIDATION_ERROR",
+      details: { field: "season_id", reason: "NOT_ATTACHED" },
+    });
+  });
+
+  it("分页只取 limit+1 条，不整库读取", async () => {
+    const repo = await setup();
+    const findHistoryPage = vi.fn(repo.predictions.findHistoryPage.bind(repo.predictions));
+    const findByUser = vi.fn(repo.predictions.findByUser.bind(repo.predictions));
+    const service = new PredictionHistoryQueryService(
+      {
+        users: repo.users,
+        matches: repo.matches,
+        predictions: {
+          ...repo.predictions,
+          findHistoryPage,
+          findByUser,
+        },
+      },
+      "prediction-list-secret",
+    );
+
+    await service.listMyPredictions(USER_ID, {
+      league_id: "premier_league",
+      season_id: "2026_2027",
+      limit: 1,
+      cursor: null,
+    });
+
+    expect(findHistoryPage).toHaveBeenCalledTimes(1);
+    expect(findHistoryPage).toHaveBeenCalledWith(expect.objectContaining({
+      user_id: USER_ID,
+      league_id: "premier_league",
+      season_id: "2026_2027",
+      limit: 2,
+    }));
+    expect(findByUser).not.toHaveBeenCalled();
+  });
+
+  it("跨页不重不漏", async () => {
+    const repo = await setup();
+    const service = new PredictionHistoryQueryService(repo, "prediction-list-secret");
+    const query = { league_id: "premier_league" as const, season_id: null, limit: 2 };
+
+    const first = await service.listMyPredictions(USER_ID, { ...query, cursor: null });
+    expect(first.items).toHaveLength(2);
+    expect(first.has_more).toBe(true);
+    expect(first.next_cursor).toEqual(expect.any(String));
+
+    const second = await service.listMyPredictions(USER_ID, {
+      ...query,
+      cursor: first.next_cursor,
+    });
+    const firstIds = first.items.map((item) => item.prediction_id);
+    const secondIds = second.items.map((item) => item.prediction_id);
+    expect(firstIds.some((id) => secondIds.includes(id))).toBe(false);
+    expect(new Set([...firstIds, ...secondIds]).size).toBe(3);
+    expect([...firstIds, ...secondIds]).toHaveLength(3);
   });
 });

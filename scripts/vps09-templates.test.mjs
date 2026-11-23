@@ -13,6 +13,8 @@ describe("VPS09 templates match compiled entries", () => {
   const apiUnit = read("ops/vps/football-api.service");
   const jobsUnit = read("ops/vps/football-jobs.service");
   const jobsTimer = read("ops/vps/football-jobs.timer");
+  const periodicUnit = read("ops/vps/football-periodic.service");
+  const periodicTimer = read("ops/vps/football-periodic.timer");
   const caddy = read("ops/vps/Caddyfile");
   const vpsEnv = read("ops/vps/football.env.example");
   const cloudEnv = read("ops/vps/cloudbase.env.example");
@@ -42,13 +44,20 @@ describe("VPS09 templates match compiled entries", () => {
     expect(pkg.scripts["jobs:tick"]).toBe("npm run build && node dist/jobs/tick.js");
     expect(tickSrc).toContain("if (isDirectRun())");
     expect(tickSrc).toContain("void runJobsTick()");
-    expect(jobsUnit).toContain("ExecStart=/usr/bin/node /home/neilxu/football/current/dist/jobs/tick.js");
+    expect(jobsUnit).toContain("ExecStart=/usr/bin/node /home/neilxu/football/current/dist/jobs/tick.js --mode=realtime");
     expect(jobsUnit).toContain("Type=oneshot");
     expect(jobsUnit).toContain("TimeoutStartSec=1800");
     expect(jobsTimer).toContain("OnCalendar=*-*-* *:00/3:00");
     expect(jobsTimer).toContain("Persistent=true");
     expect(jobsTimer).toContain("Unit=football-jobs.service");
     expect(jobsTimer).toContain("AccuracySec=10s");
+    expect(periodicUnit).toContain("ExecStart=/usr/bin/node /home/neilxu/football/current/dist/jobs/tick.js --mode=periodic");
+    expect(periodicUnit).toContain("Type=oneshot");
+    expect(periodicUnit).toContain("TimeoutStartSec=1800");
+    expect(periodicTimer).toContain("OnCalendar=*-*-* *:00/15:00");
+    expect(periodicTimer).toContain("Persistent=true");
+    expect(periodicTimer).toContain("Unit=football-periodic.service");
+    expect(periodicTimer).toContain("AccuracySec=10s");
   });
 
   it("Caddy fragment proxies the compiled listen address", () => {

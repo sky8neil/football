@@ -61,7 +61,9 @@ export class CrowdQueryService {
       return this.mapResult(input.match_id, initialStatus, null);
     }
 
-    const counts = await this.repo.predictions.countByMatchGroupedByResult(match.match_id);
+    const counts = await this.repo.predictions.countByMatchGroupedByResult(
+      match.canonical_match_id ?? match.match_id,
+    );
     const predictionCount = counts.HOME + counts.DRAW + counts.AWAY;
     const status = crowdStatus({ match, predictionCount, serverNow: input.server_now });
     return this.mapResult(

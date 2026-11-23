@@ -2,6 +2,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import {
   FIXED_CONFIG_V1,
   SUPPORTED_LEAGUES,
+  activeSeasonIds,
   findSupportedLeagueById,
   isSupportedLeagueId,
 } from "../domain/config.js";
@@ -33,6 +34,14 @@ export interface MatchListQuery {
 
 export type CanPredictReason = PredictRejectReason;
 
+export type PublicSettlementStatus =
+  | "not_ready"
+  | "waiting"
+  | "settling"
+  | "settled"
+  | "correcting"
+  | "voided";
+
 export interface MatchListItem {
   match_id: string;
   league_id: string;
@@ -54,6 +63,9 @@ export interface MatchListItem {
   regular_away_score: number | null;
   can_predict: boolean;
   can_predict_reason: CanPredictReason | null;
+  settlement_status: PublicSettlementStatus;
+  my_prediction: MyMatchPrediction | null;
+  is_prediction_closed: boolean;
 }
 
 export interface MatchListResult {
@@ -73,9 +85,7 @@ export interface MyMatchPrediction {
   exact_hit: Prediction["exact_hit"];
 }
 
-export interface MatchDetailResult extends MatchListItem {
-  my_prediction: MyMatchPrediction | null;
-}
+export type MatchDetailResult = MatchListItem;
 
 interface MatchCursorPayload {
   version: 1;
@@ -280,13 +290,26 @@ function mapTeam(team: Team | null, teamId: string): { team_id: string; name: st
   return { team_id: team.team_id, name: team.name };
 }
 
+function toPublicSettlementStatus(status: Match["settlement_status"]): PublicSettlementStatus {
+  if (status === SettlementStatus.Pending || status === SettlementStatus.Failed) {
+    return "not_ready";
+  }
+  return status;
+}
+
+function isPredictionClosed(match: Match, serverNow: Date): boolean {
+  return match.prediction_closed_at !== null ||
+    (match.prediction_deadline_at !== null && serverNow.getTime() >= match.prediction_deadline_at.getTime());
+}
+
 function mapMyPrediction(
   prediction: Prediction,
   userId: string,
-  matchId: string,
   match: Match,
 ): MyMatchPrediction {
-  if (prediction.user_id !== userId || prediction.match_id !== matchId) {
+  const expectedCanonical = match.canonical_match_id ?? match.match_id;
+  const actualCanonical = prediction.canonical_match_id ?? prediction.match_id;
+  if (prediction.user_id !== userId || actualCanonical !== expectedCanonical) {
     throw internalError(`prediction 归属不一致（prediction_id=${prediction.prediction_id}）`);
   }
   const settled = match.settlement_status === SettlementStatus.Settled &&
@@ -308,12 +331,12 @@ function toItem(
   homeTeam: Team | null,
   awayTeam: Team | null,
   user: User | null,
-  existingPrediction: { prediction_id: string } | null,
+  prediction: Prediction | null,
   serverNow: Date,
 ): MatchListItem {
   assertMatch(match);
-  const reason = predictRejectReason({ user, match, existingPrediction, serverNow });
-  const canPredict = user !== null && canSubmitPrediction(user, match, existingPrediction, serverNow);
+  const reason = predictRejectReason({ user, match, existingPrediction: prediction, serverNow });
+  const canPredict = user !== null && canSubmitPrediction(user, match, prediction, serverNow);
   if ((reason === null) !== canPredict) {
     throw internalError(`match 可预测状态不一致（match_id=${match.match_id}）`);
   }
@@ -332,6 +355,9 @@ function toItem(
     regular_away_score: match.regular_away_score,
     can_predict: canPredict,
     can_predict_reason: reason,
+    settlement_status: toPublicSettlementStatus(match.settlement_status),
+    my_prediction: prediction === null || user === null ? null : mapMyPrediction(prediction, user.user_id, match),
+    is_prediction_closed: isPredictionClosed(match, serverNow),
   };
 }
 
@@ -360,15 +386,23 @@ export class MatchQueryService {
       user = await this.repo.users.findById(userId);
     }
 
-    const seasonIds = [...new Set(SUPPORTED_LEAGUES.map((row) => row.season_id))];
+    const seasonIds = [
+      ...new Set(SUPPORTED_LEAGUES.flatMap((row) => activeSeasonIds(row, input.server_now))),
+    ];
+    const matchesRepo = requireMatches(this.repo);
     const loadedMatches: Match[] = [];
     for (const seasonId of seasonIds) {
-      loadedMatches.push(...await requireMatches(this.repo).findBySeason(seasonId));
+      loadedMatches.push(
+        ...(matchesRepo.findBySeasonInWindow !== undefined
+          ? await matchesRepo.findBySeasonInWindow(seasonId, window.from, window.to)
+          : await matchesRepo.findBySeason(seasonId)),
+      );
     }
     for (const match of loadedMatches) {
       assertMatch(match);
     }
     const matches = loadedMatches
+      .filter((match) => match.superseded_by == null)
       .filter((match) => findSupportedLeagueById(match.league_id) !== undefined)
       .filter((match) => window.league_id === null || match.league_id === window.league_id)
       .filter((match) => window.status === null || match.match_status === window.status)
@@ -390,13 +424,24 @@ export class MatchQueryService {
       );
     const page = remaining.slice(0, input.limit);
     const teams = requireTeams(this.repo);
+    const canonicalIds = page.map((match) => match.canonical_match_id ?? match.match_id);
+    const predictionsByCanonical = new Map<string, Prediction>();
+    if (user !== null) {
+      const predictions = await this.repo.predictions.findByUserAndCanonicalMatchIds(
+        user.user_id,
+        canonicalIds,
+      );
+      for (const prediction of predictions) {
+        predictionsByCanonical.set(prediction.canonical_match_id, prediction);
+      }
+    }
     const items: MatchListItem[] = [];
     for (const match of page) {
       const homeTeam = await teams.findById(match.home_team_id);
       const awayTeam = await teams.findById(match.away_team_id);
       const prediction = user === null
         ? null
-        : await this.repo.predictions.findByUserAndMatch(user.user_id, match.match_id);
+        : predictionsByCanonical.get(match.canonical_match_id ?? match.match_id) ?? null;
       items.push(toItem(match, homeTeam, awayTeam, user, prediction, input.server_now));
     }
 
@@ -450,14 +495,11 @@ export class MatchQueryService {
     const prediction =
       user === null
         ? null
-        : await this.repo.predictions.findByUserAndMatch(user.user_id, match.match_id);
+        : await this.repo.predictions.findByUserAndCanonicalMatch(
+            user.user_id,
+            match.canonical_match_id ?? match.match_id,
+          );
 
-    return {
-      ...toItem(match, homeTeam, awayTeam, user, prediction, serverNow),
-      my_prediction:
-        prediction === null || user === null
-          ? null
-          : mapMyPrediction(prediction, user.user_id, match.match_id, match),
-    };
+    return toItem(match, homeTeam, awayTeam, user, prediction, serverNow);
   }
 }

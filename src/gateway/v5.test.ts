@@ -56,9 +56,10 @@ function makeConfig(overrides: Partial<GatewayRuntimeConfig> = {}): GatewayRunti
     repository_backend: "memory",
     cloudbase_repository: null,
     postgres_repository: null,
-    vps_auth: null,
-    deploy_target: "vps",
-    ...overrides,
+      vps_auth: null,
+      deploy_target: "vps",
+      ranking_first_period_key: "2026-W31",
+      ...overrides,
   };
 }
 
@@ -124,6 +125,7 @@ describe("GET /v1/rankings", () => {
         board: "week",
         scope: "global",
         period_key: "2026-W32",
+        first_period_key: "2026-W31",
         updated_at: NOW.toISOString(),
         server_now: NOW.toISOString(),
         current_period_key: "2026-W32",
@@ -199,6 +201,7 @@ describe("GET /v1/rankings", () => {
         board: "week",
         scope: "global",
         period_key: "2026-W31",
+        first_period_key: "2026-W31",
         updated_at: null,
         server_now: NOW.toISOString(),
         current_period_key: "2026-W32",
@@ -228,6 +231,7 @@ describe("GET /v1/rankings", () => {
         board: "week",
         scope: "global",
         period_key: "2026-W32",
+        first_period_key: "2026-W31",
         updated_at: null,
         server_now: NOW.toISOString(),
         current_period_key: "2026-W32",

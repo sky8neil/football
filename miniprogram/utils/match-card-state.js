@@ -22,6 +22,17 @@ function hasCompleteScore(item) {
   return item.regular_home_score != null && item.regular_away_score != null;
 }
 
+function isExplicitlyUnsettled(status) {
+  return status === "pending" || status === "not_ready" || status === "waiting" || status === "settling";
+}
+
+function finishedScoreSub(match, submitted) {
+  if (hasCompleteScore(match)) return "FT";
+  if (submitted != null && submitted.match_score != null) return "";
+  if (submitted != null && isExplicitlyUnsettled(match.settlement_status)) return "待结算";
+  return "";
+}
+
 function buildPredText(submitted, showPredict) {
   if (submitted) {
     const pair = predPair(submitted);
@@ -54,7 +65,7 @@ function buildCardState(item, submitted) {
     cardClass = "is-done";
     stateClass = "done";
     stateText = "已结束";
-    scoreSub = hasCompleteScore(match) && hasSubmitted ? "FT" : "待结算";
+    scoreSub = finishedScoreSub(match, hasSubmitted ? submitted : null);
   } else if (CLOSED_STATUSES[match.match_status]) {
     cardClass = "is-closed";
     stateClass = "closed";

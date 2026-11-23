@@ -92,6 +92,7 @@ export interface MatchLike {
   kickoff_confirmed: boolean;
   prediction_closed_at: Date | null;
   prediction_deadline_at: Date | null;
+  superseded_by?: string | null;
 }
 
 export type ExistingPrediction = Pick<Prediction, "prediction_id"> | null;
@@ -127,7 +128,7 @@ export function predictRejectReason(input: PredictRejectInput): PredictRejectRea
   if (existingPrediction !== null) {
     return "ALREADY_SUBMITTED";
   }
-  if (match.match_status !== "scheduled") {
+  if (match.match_status !== "scheduled" || match.superseded_by != null) {
     return "NOT_SCHEDULED";
   }
   if (!match.kickoff_confirmed || match.prediction_deadline_at === null) {

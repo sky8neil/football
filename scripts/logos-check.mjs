@@ -1,14 +1,33 @@
+import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import Module from "node:module";
 import { dirname, resolve } from "node:path";
-import { runInNewContext } from "node:vm";
 import { fileURLToPath } from "node:url";
 
+const loaded = new Map();
+
+function loadCommonJs(filePath) {
+  const filename = resolve(filePath);
+  const cached = loaded.get(filename);
+  if (cached) return cached.exports;
+
+  const module = new Module(filename);
+  module.filename = filename;
+  module.paths = Module._nodeModulePaths(dirname(filename));
+  loaded.set(filename, module);
+
+  const nodeRequire = Module.createRequire(filename);
+  module.require = (id) => {
+    if (id.startsWith(".")) return loadCommonJs(nodeRequire.resolve(id));
+    return nodeRequire(id);
+  };
+  module._compile(readFileSync(filename, "utf8"), filename);
+  module.loaded = true;
+  return module.exports;
+}
+
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
-const registryPath = resolve(scriptDirectory, "../miniprogram/utils/logo-registry.js");
-const registrySource = await readFile(registryPath, "utf8");
-const registryModule = { exports: {} };
-runInNewContext(registrySource, { module: registryModule, exports: registryModule.exports });
-const { getTeamLogo, PLACEHOLDER } = registryModule.exports;
+const { getTeamLogo, PLACEHOLDER } = loadCommonJs(resolve(scriptDirectory, "../miniprogram/utils/logo-registry.js"));
 const inputArg = process.argv.indexOf("--input");
 
 if (inputArg < 0 || !process.argv[inputArg + 1]) {

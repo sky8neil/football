@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   LevelHistoryReason,
+  LevelScope,
   MatchScoreValue,
   MatchStatus,
   RankingBoard,
@@ -23,7 +24,10 @@ import type {
 } from "../domain/types.js";
 import { defaultLevelState } from "../domain/types.js";
 import { InMemoryRepository } from "../infrastructure/repositories.js";
-import { listDueSeasonFinalIds, WeeklyLevelEvalService } from "./weekly-level-eval.js";
+import { DailyConsistencyService } from "./daily-consistency-service.js";
+import { RepositoryDailyConsistencySnapshotSource } from "./daily-consistency-snapshot.js";
+import { RebuildUserStatsService } from "./stats-rebuild-service.js";
+import { levelScopeLockKey, listDueSeasonFinalIds, WeeklyLevelEvalService } from "./weekly-level-eval.js";
 
 const AS_OF = new Date("2026-08-10T02:00:00.000Z");
 const RUN_AT = new Date("2026-08-10T02:10:00.000Z");
@@ -79,7 +83,7 @@ async function addAppliedPrediction(
   userId: string,
   index: number,
   appliedAt: Date,
-  score = MatchScoreValue.ExactHit,
+  score: MatchScoreValue = MatchScoreValue.ExactHit,
   levelSeasonId = "2026_2027",
 ): Promise<void> {
   const matchId = `m${index}`;
@@ -207,23 +211,28 @@ async function seedUser(
     lateIndex?: number;
     lateAppliedAt?: Date;
     levelSeasonId?: string;
+    indexOffset?: number;
+    score?: MatchScoreValue;
   } = {},
 ): Promise<User> {
+  const score = options.score ?? MatchScoreValue.ExactHit;
+  const hitCount = score === MatchScoreValue.ExactHit ? count : 0;
   const user = options.user ?? makeUser({
-    career_points: count * 12,
+    career_points: count * score,
     career_valid_predictions: count,
-    career_wdl_hits: count,
-    career_exact_hits: count,
+    career_wdl_hits: hitCount,
+    career_exact_hits: hitCount,
   });
   await repo.users.insert(user);
   const lateIndex = options.lateIndex ?? -1;
+  const indexOffset = options.indexOffset ?? 0;
   for (let index = 0; index < count; index += 1) {
     await addAppliedPrediction(
       repo,
       user.user_id,
-      index,
+      indexOffset + index,
       index === lateIndex ? (options.lateAppliedAt ?? AS_OF) : new Date(AS_OF.getTime() - 60_000),
-      MatchScoreValue.ExactHit,
+      score,
       options.levelSeasonId,
     );
   }
@@ -231,12 +240,12 @@ async function seedUser(
     await repo.userSeasonStats.insert(options.seasonStats);
   } else {
     await repo.userSeasonStats.insert(makeSeasonStats(user.user_id, {
-      points: count * 12,
+      points: count * score,
       valid_predictions: count,
-      wdl_hits: count,
-      exact_hits: count,
-      last_scoring_match_at: count > 0
-        ? new Date(Date.UTC(2026, 7, 1, 0, count - 1))
+      wdl_hits: hitCount,
+      exact_hits: hitCount,
+      last_scoring_match_at: hitCount > 0
+        ? new Date(Date.UTC(2026, 7, 1, 0, indexOffset + count - 1))
         : null,
     }));
   }
@@ -446,5 +455,357 @@ describe("WeeklyLevelEvalService §17.6 / §32.9", () => {
         last_scoring_match_at: new Date("2026-06-30T12:00:00.000Z"),
         level_state: { last_eval_as_of: new Date("2026-07-06T02:00:00.000Z") },
       });
+  });
+
+  it("[Slice 1] 注入合法 firstEvalAsOf 时，L=3 未达标用户在保护期内不降级、保护期后累计 below_count，不抛 SPEC_GAP", async () => {
+    const repo = new InMemoryRepository();
+    const firstEval = new Date("2026-08-03T02:00:00.000Z");
+    const user = await seedUser(repo, 20, {
+      score: MatchScoreValue.Miss,
+      user: makeUser({
+        user_id: "u-l3",
+        career_level: 3,
+        career_best_level: 3,
+        career_points: 0,
+        career_valid_predictions: 20,
+        career_wdl_hits: 0,
+        career_exact_hits: 0,
+      }),
+    });
+    const service = new WeeklyLevelEvalService(repo, firstEval);
+
+    // 保护期内（第 2 次周评估：2026-08-10T02:00Z < firstEval + 13 weeks）
+    const protectedOutcome = await service.run(new Date("2026-08-10T02:10:00.000Z"));
+    expect(protectedOutcome.failed_count).toBe(0);
+    expect(protectedOutcome.settlement_skipped_count).toBe(0);
+    expect(await repo.users.findById(user.user_id)).toMatchObject({
+      career_level: 3,
+      career_level_state: {
+        below_count: 0,
+        last_eval_as_of: new Date("2026-08-10T02:00:00.000Z"),
+      },
+    });
+
+    // 保护期后（第 14 次周评估：firstEval + 13 weeks = 2026-11-02T02:00Z）
+    const afterProtectionRun = new Date("2026-11-02T02:10:00.000Z");
+    const afterOutcome = await service.run(afterProtectionRun);
+    expect(afterOutcome.failed_count).toBe(0);
+    expect(afterOutcome.settlement_skipped_count).toBe(0);
+    expect(await repo.users.findById(user.user_id)).toMatchObject({
+      career_level: 3,
+      career_level_state: {
+        below_count: 1,
+        last_eval_as_of: new Date("2026-11-02T02:00:00.000Z"),
+      },
+    });
+  });
+
+  it("[Slice 1] 对 Lv.5 用户执行 stats-rebuild 与 daily-consistency（注入同一 firstEvalAsOf），重建后保持 Lv.5 且对账无差异", async () => {
+    const repo = new InMemoryRepository();
+    const firstEval = new Date("2026-08-03T02:00:00.000Z");
+    // 60 场全中（每场 12 分）足够逐周升至 Lv.5（2026-08-10 -> Lv.2, 08-17 -> Lv.3, 08-24 -> Lv.4, 08-31 -> Lv.5）
+    const user = await seedUser(repo, 60, {
+      user: makeUser({
+        user_id: "u-lv5",
+        career_points: 720,
+        career_valid_predictions: 60,
+        career_wdl_hits: 60,
+        career_exact_hits: 60,
+      }),
+    });
+
+    const weeklyService = new WeeklyLevelEvalService(repo, firstEval);
+    const weekRuns = [
+      new Date("2026-08-10T02:10:00.000Z"),
+      new Date("2026-08-17T02:10:00.000Z"),
+      new Date("2026-08-24T02:10:00.000Z"),
+      new Date("2026-08-31T02:10:00.000Z"),
+    ];
+    for (const runAt of weekRuns) {
+      await weeklyService.run(runAt);
+    }
+
+    const beforeRebuild = await repo.users.findById(user.user_id);
+    expect(beforeRebuild).toMatchObject({
+      career_level: 5,
+      career_best_level: 5,
+      career_level_state: {
+        last_eval_as_of: new Date("2026-08-31T02:00:00.000Z"),
+      },
+    });
+
+    // 使用同一 firstEvalAsOf 执行 RebuildUserStatsService
+    const rebuildAt = new Date("2026-08-31T03:00:00.000Z");
+    const rebuilt = await new RebuildUserStatsService(repo, firstEval).rebuildUserStats(
+      user.user_id,
+      rebuildAt,
+    );
+    expect(rebuilt.user).toMatchObject({
+      career_level: 5,
+      career_best_level: 5,
+      career_level_state: {
+        last_eval_as_of: new Date("2026-08-31T02:00:00.000Z"),
+        last_eval_n: beforeRebuild!.career_level_state!.last_eval_n,
+        last_eval_score_sum: beforeRebuild!.career_level_state!.last_eval_score_sum,
+      },
+    });
+
+    // 使用同一 firstEvalAsOf 执行 DailyConsistencyService，career/season 等级零差异
+    const consistency = await new DailyConsistencyService(
+      repo,
+      new RepositoryDailyConsistencySnapshotSource(repo, firstEval),
+      firstEval,
+    ).run(rebuildAt);
+    expect(consistency.kind).toBe("completed");
+    if (consistency.kind === "completed") {
+      const levelDiffs = consistency.differences.filter(
+        (diff) => diff.scope === "career" || diff.scope === "season_stats",
+      );
+      expect(levelDiffs).toEqual([]);
+    }
+  });
+
+  it("[Slice 1] 第 1 个用户触发 SETTLEMENT_ALREADY_RUNNING 时，第 2 个用户仍能正常完成周评估", async () => {
+    const repo = new InMemoryRepository();
+    const u1 = await seedUser(repo, 20, {
+      indexOffset: 0,
+      user: makeUser({
+        user_id: "u-settling",
+        openid: "openid_u_settling",
+        career_points: 240,
+        career_valid_predictions: 20,
+        career_wdl_hits: 20,
+        career_exact_hits: 20,
+      }),
+    });
+    const u2 = await seedUser(repo, 20, {
+      indexOffset: 100,
+      user: makeUser({
+        user_id: "u-healthy",
+        openid: "openid_u_healthy",
+        career_points: 240,
+        career_valid_predictions: 20,
+        career_wdl_hits: 20,
+        career_exact_hits: 20,
+      }),
+    });
+
+    // 将 u1 的第 1 场比赛置为 correcting，触发 loadAppliedSettlementFacts 抛出 SETTLEMENT_ALREADY_RUNNING
+    const u1Match = await repo.matches.findById("m0");
+    expect(u1Match).not.toBeNull();
+    await repo.matches.update({
+      ...u1Match!,
+      settlement_status: SettlementStatus.Correcting,
+    });
+
+    const log = vi.fn();
+    const service = new WeeklyLevelEvalService(repo, FIRST_EVAL, log);
+    const outcome = await service.run(RUN_AT);
+
+    expect(outcome.kind).toBe("completed");
+    expect(outcome.settlement_skipped_count).toBeGreaterThanOrEqual(1);
+    expect(outcome.failed_count).toBe(0);
+    expect(outcome.evaluated_count).toBeGreaterThanOrEqual(1);
+
+    // u1 被跳过（保持 Lv.1，未写 last_eval_as_of），u2 正常升至 Lv.2
+    expect(await repo.users.findById(u1.user_id)).toMatchObject({
+      career_level: 1,
+      career_level_state: { last_eval_as_of: null },
+    });
+    expect(await repo.users.findById(u2.user_id)).toMatchObject({
+      career_level: 2,
+      career_level_state: { last_eval_as_of: AS_OF },
+    });
+    expect(log).toHaveBeenCalledWith(expect.objectContaining({
+      event: "weekly_level_eval_user_skipped",
+      user_id: u1.user_id,
+      reason: "SETTLEMENT_ALREADY_RUNNING",
+    }));
+
+    // 比赛恢复 settled 后再次重跑：u2 幂等跳过，u1 补齐评估升至 Lv.2
+    await repo.matches.update({
+      ...u1Match!,
+      settlement_status: SettlementStatus.Settled,
+    });
+    const retryOutcome = await service.run(new Date(RUN_AT.getTime() + 5 * 60_000));
+    expect(retryOutcome.settlement_skipped_count).toBe(0);
+    expect(retryOutcome.failed_count).toBe(0);
+    expect(await repo.users.findById(u1.user_id)).toMatchObject({
+      career_level: 2,
+      career_level_state: { last_eval_as_of: AS_OF },
+    });
+    expect(await repo.users.findById(u2.user_id)).toMatchObject({
+      career_level: 2,
+      career_level_state: { last_eval_as_of: AS_OF },
+    });
+  });
+
+  it("用户 career 锁被占用时记为 deferred 而非 skipped，且不写 last_eval_as_of", async () => {
+    const repo = new InMemoryRepository();
+    const u1 = await seedUser(repo, 20, {
+      indexOffset: 0,
+      user: makeUser({
+        user_id: "u-free",
+        openid: "openid_u_free",
+        career_points: 240,
+        career_valid_predictions: 20,
+        career_wdl_hits: 20,
+        career_exact_hits: 20,
+      }),
+    });
+    const u2 = await seedUser(repo, 20, {
+      indexOffset: 100,
+      user: makeUser({
+        user_id: "u-locked",
+        openid: "openid_u_locked",
+        career_points: 240,
+        career_valid_predictions: 20,
+        career_wdl_hits: 20,
+        career_exact_hits: 20,
+      }),
+    });
+    await repo.jobLocks.acquire(
+      levelScopeLockKey(u2.user_id, LevelScope.Career, null),
+      "correction-reeval",
+      new Date(Date.now() + 60 * 60 * 1000),
+    );
+
+    const outcome = await weekly(repo).run(RUN_AT);
+
+    expect(outcome.kind).toBe("completed");
+    expect(outcome.deferred_count).toBe(1);
+    expect(outcome.skipped_count).toBe(0);
+    expect(outcome.settlement_skipped_count).toBe(0);
+    expect(outcome.failed_count).toBe(0);
+    expect(await repo.users.findById(u1.user_id)).toMatchObject({
+      career_level: 2,
+      career_level_state: { last_eval_as_of: AS_OF },
+    });
+    expect(await repo.users.findById(u2.user_id)).toMatchObject({
+      career_level: 1,
+      career_level_state: { last_eval_as_of: null },
+    });
+  });
+
+  it("[Slice 1] 第 1 个用户触发 SPEC_GAP 时隔离错误并继续评估第 2 个用户", async () => {
+    const repo = new InMemoryRepository();
+    const u1 = await seedUser(repo, 20, {
+      indexOffset: 0,
+      score: MatchScoreValue.Miss,
+      user: makeUser({
+        user_id: "u-spec-gap",
+        openid: "openid_u_spec_gap",
+        career_level: 3,
+        career_best_level: 3,
+        career_points: 0,
+        career_valid_predictions: 20,
+        career_wdl_hits: 0,
+        career_exact_hits: 0,
+      }),
+    });
+    const u2 = await seedUser(repo, 20, {
+      indexOffset: 100,
+      user: makeUser({
+        user_id: "u-ok",
+        openid: "openid_u_ok",
+        career_points: 240,
+        career_valid_predictions: 20,
+        career_wdl_hits: 20,
+        career_exact_hits: 20,
+      }),
+    });
+
+    const log = vi.fn();
+    // firstEvalAsOf = null 时，u1 (L=3 未达标) 触发 SPEC_GAP，但不应阻断 u2
+    const service = new WeeklyLevelEvalService(repo, null, log);
+    const outcome = await service.run(RUN_AT);
+
+    expect(outcome.kind).toBe("completed");
+    expect(outcome.failed_count).toBeGreaterThanOrEqual(1);
+    expect(await repo.users.findById(u1.user_id)).toMatchObject({
+      career_level: 3,
+      career_level_state: { last_eval_as_of: null },
+    });
+    expect(await repo.users.findById(u2.user_id)).toMatchObject({
+      career_level: 2,
+      career_level_state: { last_eval_as_of: AS_OF },
+    });
+    expect(log).toHaveBeenCalledWith(expect.objectContaining({
+      event: "weekly_level_eval_user_failed",
+      user_id: u1.user_id,
+      error_code: "SPEC_GAP",
+    }));
+  });
+
+  it("[Slice 4] listDueSeasonFinalIds 不调用 users.findAll()，无 N+1 查询", async () => {
+    const repo = new InMemoryRepository();
+    const user = makeUser({ user_id: "no-n-plus-1-user" });
+    await repo.users.insert(user);
+    await repo.userSeasonStats.insert(makeSeasonStats(user.user_id, {
+      level_season_id: "2025_2026",
+      points: 24,
+      valid_predictions: 2,
+      wdl_hits: 2,
+      exact_hits: 1,
+      last_scoring_match_at: new Date("2026-06-28T12:00:00.000Z"),
+      is_level_frozen: true,
+    }));
+    const findAllUsers = vi.spyOn(repo.users, "findAll");
+    const due = await listDueSeasonFinalIds(repo, AS_OF);
+    expect(due).toEqual(["2025_2026"]);
+    expect(findAllUsers).not.toHaveBeenCalled();
+  });
+
+  it("[Slice 5.2] 每处理 20 名活跃用户自动续租主锁", async () => {
+    const repo = new InMemoryRepository();
+    for (let i = 1; i <= 25; i += 1) {
+      await repo.users.insert(makeUser({
+        user_id: `renew-user-${String(i).padStart(2, "0")}`,
+        openid: `openid_renew_${i}`,
+        career_valid_predictions: 0,
+      }));
+    }
+    const jobLocks = repo.jobLocks;
+    const renewSpy = vi.spyOn(jobLocks, "renew");
+    const repoProxy = new Proxy(repo, {
+      get(target, prop, receiver) {
+        if (prop === "jobLocks") return jobLocks;
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const service = new WeeklyLevelEvalService(repoProxy, FIRST_EVAL);
+    const outcome = await service.run(RUN_AT);
+
+    expect(outcome.kind).toBe("completed");
+    expect(renewSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("[Slice 5.2] 锁续租失败时立即安全中止本轮且不生成榜单快照", async () => {
+    const repo = new InMemoryRepository();
+    for (let i = 1; i <= 22; i += 1) {
+      await repo.users.insert(makeUser({
+        user_id: `abort-user-${String(i).padStart(2, "0")}`,
+        openid: `openid_abort_${i}`,
+        career_valid_predictions: 0,
+      }));
+    }
+    const jobLocks = repo.jobLocks;
+    vi.spyOn(jobLocks, "renew").mockResolvedValueOnce(false);
+    const repoProxy = new Proxy(repo, {
+      get(target, prop, receiver) {
+        if (prop === "jobLocks") return jobLocks;
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const log = vi.fn();
+    const service = new WeeklyLevelEvalService(repoProxy, FIRST_EVAL, log);
+    const outcome = await service.run(RUN_AT);
+
+    expect(outcome.kind).toBe("skipped");
+    expect(log).toHaveBeenCalledWith(expect.objectContaining({
+      event: "weekly_level_eval_lock_lost",
+      processed_users: 20,
+    }));
+    expect(await repo.boardSnapshots.findLatestByBoard(RankingBoard.Strength)).toEqual([]);
   });
 });

@@ -1,0 +1,88 @@
+<view class="page">
+  <image class="stadium-background" src="/assets/images/home-pitch-bg.webp" mode="aspectFill" />
+  <view class="stadium-overlay"></view>
+  <view class="secondary-content">
+    <view class="page-title">预测成绩单</view>
+    <view class="page-subtitle">分享你某一轮的预测战绩</view>
+
+    <view wx:if="{{catalogError}}" class="filter-error">
+      <text>{{catalogError}}</text>
+      <button class="ghost-button" bindtap="onCatalogRetry">重试</button>
+    </view>
+
+    <view wx:if="{{catalogReady && leagues.length > 0}}" class="filter-row">
+      <picker range="{{leagueOptions}}" value="{{leagueIndex}}" bindchange="onLeagueChange">
+        <view class="filter-chip">{{leagueOptions[leagueIndex]}}</view>
+      </picker>
+      <picker range="{{seasonOptions}}" value="{{seasonIndex}}" bindchange="onSeasonChange" disabled="{{leagueIndex === 0}}">
+        <view class="filter-chip {{leagueIndex === 0 ? 'disabled' : ''}}">{{seasonOptions[seasonIndex]}}</view>
+      </picker>
+      <picker range="{{roundOptions}}" value="{{roundIndex}}" bindchange="onRoundChange" disabled="{{seasonIndex === 0}}">
+        <view class="filter-chip {{seasonIndex === 0 ? 'disabled' : ''}}">{{roundOptions[roundIndex]}}</view>
+      </picker>
+    </view>
+
+    <view wx:if="{{state === 'picker'}}" class="state-panel picker-panel">
+      <text>请选择联赛、赛季和轮次</text>
+    </view>
+
+    <view wx:elif="{{state === 'loading'}}" class="loading"></view>
+
+    <view wx:elif="{{state === 'error'}}" class="state-panel">
+      <text>{{errorMessage}}</text>
+      <button wx:if="{{errorKind === 'network' || errorKind === 'failed'}}" bindtap="onRetry">重试</button>
+      <button wx:if="{{errorKind === 'unauthorized'}}" bindtap="onLoginTap">去登录</button>
+      <button wx:if="{{errorKind === 'userUnavailable' || errorKind === 'roundNotFound'}}" bindtap="onBackToPredictions">返回我的预测</button>
+      <button wx:if="{{errorKind === 'userUnavailable' || errorKind === 'roundNotFound' || errorKind === 'badParams'}}" bindtap="onReselect">重新选择</button>
+    </view>
+
+    <view wx:elif="{{state === 'card' && card}}" class="share-card glass-card">
+      <view class="identity-row">
+        <text class="display-name">{{card.displayName}}</text>
+        <text class="now-tag">当前</text>
+      </view>
+      <view class="card-meta">{{card.leagueName}} · {{card.seasonLabel}} · {{card.roundText}}</view>
+
+      <view class="score-block">
+        <text class="round-score">{{card.roundScore}}</text>
+        <text class="score-label">本轮积分</text>
+      </view>
+
+      <view class="stats-row">
+        <view class="stat">
+          <text class="stat-value">{{card.settledCount}}</text>
+          <text class="stat-label">已结算</text>
+        </view>
+        <view class="stat">
+          <text class="stat-value">{{card.wdlHits}}</text>
+          <text class="stat-label">赛果命中</text>
+        </view>
+        <view class="stat">
+          <text class="stat-value">{{card.exactHits}}</text>
+          <text class="stat-label">精确命中</text>
+        </view>
+      </view>
+
+      <view class="current-row">
+        <view class="current-item">
+          <text>等级 Lv.{{card.seasonLevel}}</text>
+          <text class="now-tag">当前</text>
+        </view>
+        <view class="current-item">
+          <text>生涯积分 {{card.careerPoints}}</text>
+          <text class="now-tag">当前</text>
+        </view>
+      </view>
+      <view class="level-season">等级赛季 {{card.levelSeasonText}}</view>
+
+      <view wx:if="{{card.pendingCount > 0}}" class="pending-note">
+        还有 {{card.pendingCount}} 场没有结算，本次只统计已结算的 {{card.settledCount}} 场
+      </view>
+      <view class="generated">数据读取于 {{card.generatedAtText}}</view>
+
+      <button class="share-button" open-type="share">分享成绩单</button>
+    </view>
+
+    <button class="back-button" bindtap="onBackToPredictions">返回我的预测</button>
+  </view>
+</view>

@@ -9,6 +9,7 @@ const PAGE_RESULT: RankingQueryResult = {
   board: "week" as const,
   scope: "global" as const,
   period_key: "2026-W32",
+  first_period_key: "2026-W31",
   updated_at: NOW.toISOString(),
   current_period_key: "2026-W32",
   available_boards: ["week"],
@@ -17,7 +18,14 @@ const PAGE_RESULT: RankingQueryResult = {
   items: [{ rank: 1, user_id: "u1", display_name: "Sky", favorite_team_id: null, career_level: 1, period_score: 20, valid_predictions: 5, exact_hits: 1, last_scoring_match_at: NOW.toISOString() }],
   has_more: false,
   next_cursor: null,
-  me: { status: "ranked" as const, rank: 1, top_percent: null },
+  me: {
+    status: "ranked" as const,
+    rank: 1,
+    top_percent: null,
+    period_score: 20,
+    valid_predictions: 5,
+    exact_hits: 1,
+  },
 };
 
 describe("GET /v1/rankings v2", () => {
@@ -55,7 +63,8 @@ describe("GET /v1/rankings v2", () => {
       server_now: SERVER_NOW, request_id: "request-1", rate_limiter: limiter,
     });
     expect(response).toEqual({ status: 200, body: { data: {
-      board: "week", scope: "global", period_key: "2026-W32", updated_at: NOW.toISOString(),
+      board: "week", scope: "global", period_key: "2026-W32", first_period_key: "2026-W31",
+      updated_at: NOW.toISOString(),
       server_now: SERVER_NOW.toISOString(),
       current_period_key: "2026-W32",
       available_boards: ["week"], seasons_participated: 0, entry_count: 1,

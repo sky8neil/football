@@ -10,7 +10,8 @@
     "pages/rankings/rankings",
     "pages/groups/groups",
     "pages/groups/join",
-    "pages/groups/detail"
+    "pages/groups/detail",
+    "pages/share-card/share-card"
   ],
   "window": {
     "navigationBarTitleText": "",

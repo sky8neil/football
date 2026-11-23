@@ -11,6 +11,7 @@ const { formatRound } = require("../../utils/match-presentation.js");
 const { buildCardState } = require("../../utils/match-card-state.js");
 const { currentSeasonId } = require("../../utils/rankings-view-model.js");
 const { formatLevelSeasonLabel } = require("../../utils/level-season.js");
+const { getLoginGeneration } = require("../../services/auth.js");
 
 const LEAGUES = [
   { id: "premier_league", name: "英超" },
@@ -23,17 +24,24 @@ const LEAGUES = [
 const WEEKDAYS = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
 const scope = (league, date, matchId) => `${league}:${date}:${matchId}`;
 const pad = (n) => (n < 10 ? `0${n}` : String(n));
-const WEEKDAY_INDEX = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+function currentLoginGeneration() {
+  if (typeof getLoginGeneration !== "function") return 0;
+  const value = getLoginGeneration();
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
 
 function beijingParts(iso) {
   const date = iso ? new Date(iso) : new Date();
   if (Number.isNaN(date.getTime())) return null;
-  const text = date.toLocaleString("sv-SE", { timeZone: "Asia/Shanghai" });
-  const [ymd, hms] = text.split(" ");
-  const [year, month, day] = ymd.split("-").map(Number);
-  const [hour, minute] = hms.split(":").map(Number);
-  return { year, month, day, hour, minute, key: ymd };
+  const shifted = new Date(date.getTime() + 8 * 60 * 60 * 1000);
+  const year = shifted.getUTCFullYear();
+  const month = shifted.getUTCMonth() + 1;
+  const day = shifted.getUTCDate();
+  const hour = shifted.getUTCHours();
+  const minute = shifted.getUTCMinutes();
+  return { year, month, day, hour, minute, key: `${year}-${pad(month)}-${pad(day)}` };
 }
 
 // 日期条开放范围：今天起共 11 个日期（今天 … 今天+10）。
@@ -48,9 +56,9 @@ function buildDates(anchor) {
   const start = Date.UTC(parts.year, parts.month - 1, parts.day, 4, 0, 0);
   for (let i = 0; i < DATE_SPAN_DAYS; i += 1) {
     const date = new Date(start + i * 24 * 60 * 60 * 1000);
-    const key = date.toLocaleString("sv-SE", { timeZone: "Asia/Shanghai" }).split(" ")[0];
-    const weekday = date.toLocaleDateString("en-US", { timeZone: "Asia/Shanghai", weekday: "short" });
-    dates.push({ key, label: i === 0 ? "今天" : i === 1 ? "明天" : WEEKDAYS[WEEKDAY_INDEX[weekday]], day: key.slice(-2) });
+    const shifted = new Date(date.getTime() + 8 * 60 * 60 * 1000);
+    const key = `${shifted.getUTCFullYear()}-${pad(shifted.getUTCMonth() + 1)}-${pad(shifted.getUTCDate())}`;
+    dates.push({ key, label: i === 0 ? "今天" : i === 1 ? "明天" : WEEKDAYS[shifted.getUTCDay()], day: key.slice(-2) });
   }
   return dates;
 }
@@ -83,15 +91,34 @@ function daysBetweenBeijingDates(from, to) {
   return Math.max(0, Math.round((endDay - startDay) / DAY_MS));
 }
 
+function hasUsablePrediction(prediction) {
+  if (prediction == null || typeof prediction !== "object") return false;
+  const home = prediction.pred_home_score !== undefined ? prediction.pred_home_score : prediction.home;
+  const away = prediction.pred_away_score !== undefined ? prediction.pred_away_score : prediction.away;
+  return home != null && away != null;
+}
+
+function resolveSubmitted(item, localSubmitted, loginGeneration) {
+  if (hasUsablePrediction(item && item.my_prediction)) return item.my_prediction;
+  if (item && item.can_predict_reason === "AUTH_REQUIRED") return null;
+  if (!hasUsablePrediction(localSubmitted)) return null;
+  if (typeof localSubmitted.generation === "number" && localSubmitted.generation !== loginGeneration) return null;
+  return localSubmitted;
+}
+
+function listCounts(items) {
+  return {
+    openCount: items.filter((entry) => entry.showPredict).length,
+    doneCount: items.filter((entry) => entry.uiState === "submitted_locked" || entry.can_predict_reason === "ALREADY_SUBMITTED").length,
+  };
+}
+
 function upcomingMatchInfo(item, now, dates) {
   if (!item || !item.kickoff_at) return null;
   const parts = beijingParts(item.kickoff_at);
   if (!parts) return null;
-  const weekdayShort = new Date(item.kickoff_at).toLocaleDateString("en-US", {
-    timeZone: "Asia/Shanghai",
-    weekday: "short",
-  });
-  const label = `${parts.month}月${parts.day}日（${WEEKDAYS[WEEKDAY_INDEX[weekdayShort]]}）`;
+  const weekday = new Date(Date.UTC(parts.year, parts.month - 1, parts.day)).getUTCDay();
+  const label = `${parts.month}月${parts.day}日（${WEEKDAYS[weekday]}）`;
   const daysUntil = daysBetweenBeijingDates(now, item.kickoff_at);
   const inDateStrip = Array.isArray(dates) && dates.some((date) => date.key === parts.key);
   return {
@@ -113,7 +140,7 @@ Page({
     leagues: [], activeLeagueIds: [], leagueStatusById: {}, selectedLeague: "premier_league", dates: [], selectedDate: "", nextMatch: null, offseasonInfo: null, emptyIsBreak: false, summaryState: "loading", summarySeasonId: null, summaryReason: null, leagueSummary: null, openCount: 0, doneCount: 0, hintText: "", recentScore: null, levelSeasonLabel: "",
     scrollIntoView: "", resultsTransition: "results-enter",
   },
-  drafts: {}, uiStates: {}, submittedMap: {}, idempotencyKeys: {}, lastPayloads: {}, requestSerial: 0, statusSerial: 0, summarySerial: 0,
+  drafts: {}, uiStates: {}, submittedMap: {}, idempotencyKeys: {}, lastPayloads: {}, requestSerial: 0, statusSerial: 0, summarySerial: 0, loginGeneration: undefined,
 
   onLoad() {
     const dates = buildDates(new Date());
@@ -123,6 +150,35 @@ Page({
     this.hasShown = false;
     this.needsDefaultLeague = true;
     this.loadFirstPage(true);
+  },
+
+  rememberLoginGeneration() {
+    const generation = currentLoginGeneration();
+    if (this.loginGeneration === generation) return generation;
+    if (this.loginGeneration !== undefined) {
+      this.submittedMap = {};
+      this.uiStates = {};
+      this.drafts = {};
+      this.idempotencyKeys = {};
+      this.lastPayloads = {};
+      this.setData({
+        items: [],
+        leagueSummary: null,
+        summarySeasonId: null,
+        summaryReason: null,
+        loadingMore: false,
+        hasMore: false,
+        nextCursor: null,
+      });
+    }
+    this.loginGeneration = generation;
+    return generation;
+  },
+
+  handleStaleLoginGeneration(loginGeneration) {
+    if (loginGeneration === currentLoginGeneration()) return null;
+    if (this.loginGeneration !== currentLoginGeneration()) return this.loadFirstPage();
+    return Promise.resolve();
   },
 
   onShow() {
@@ -185,6 +241,7 @@ Page({
   async loadFirstPage(chooseDefault = false) {
     const serial = ++this.requestSerial;
     const statusSerial = ++this.statusSerial;
+    const loginGeneration = this.rememberLoginGeneration();
     const leagueId = this.data.selectedLeague;
     this.summarySerial += 1;
     this.setData({ state: "loading", items: [], nextMatch: null, offseasonInfo: null, leagueSummary: null, summarySeasonId: null, summaryReason: null, summaryState: "loading", hasMore: false, nextCursor: null, errorMessage: "", loadingMore: false, resultsTransition: "results-enter" });
@@ -195,6 +252,8 @@ Page({
       statusResult = null;
     }
     if (serial !== this.requestSerial || statusSerial !== this.statusSerial || leagueId !== this.data.selectedLeague) return;
+    const staleAfterStatus = this.handleStaleLoginGeneration(loginGeneration);
+    if (staleAfterStatus) return staleAfterStatus;
     const statuses = statusResult && statusResult.statusCode === 200 ? statusResult.data.items : [];
     const leagueStatusById = {};
     statuses.forEach((item) => { leagueStatusById[item.league_id] = item; });
@@ -203,16 +262,24 @@ Page({
     if ((chooseDefault || this.needsDefaultLeague) && !this.userChangedLeague) {
       const selection = resolveDefaultLeagueFromStatus(statuses);
       if (serial !== this.requestSerial || statusSerial !== this.statusSerial || leagueId !== this.data.selectedLeague) return;
+      const staleAfterSelect = this.handleStaleLoginGeneration(loginGeneration);
+      if (staleAfterSelect) return staleAfterSelect;
       this.setData({ selectedLeague: selection.leagueId });
       this.needsDefaultLeague = false;
     }
     const selectedLeague = this.data.selectedLeague;
     const result = await listMatches({ ...dayBounds(this.data.selectedDate), league_id: selectedLeague, limit: 100 });
     if (serial !== this.requestSerial || selectedLeague !== this.data.selectedLeague) return;
-    return this.applyListResult(result, true);
+    const staleAfterList = this.handleStaleLoginGeneration(loginGeneration);
+    if (staleAfterList) return staleAfterList;
+    return this.applyListResult(result, true, loginGeneration);
   },
 
-  loadEmptyStateFollowup(serial) {
+  loadEmptyStateFollowup(serial, loginGeneration) {
+    if (loginGeneration !== undefined) {
+      const stale = this.handleStaleLoginGeneration(loginGeneration);
+      if (stale) return stale;
+    }
     const leagueId = this.data.selectedLeague;
     const now = new Date();
     const status = this.data.leagueStatusById[leagueId];
@@ -225,34 +292,43 @@ Page({
     const activeLeagueName = (LEAGUES.find((league) => league.id === activeLeagueId) || {}).name || "";
     const leagueName = (LEAGUES.find((league) => league.id === leagueId) || {}).name || "本联赛";
     this.setData({ state: "offseason", nextMatch: null, offseasonInfo: { leagueName, nextSeasonDate, countdownDays: nextSeasonDate ? daysBetweenBeijingDates(now, nextSeasonDate) : null, activeLeagueId, activeLeagueName } });
-    return this.loadLeagueSummary(serial, leagueId);
+    return this.loadLeagueSummary(serial, leagueId, loginGeneration);
   },
 
-  async loadLeagueSummary(serial, leagueId) {
+  async loadLeagueSummary(serial, leagueId, loginGeneration) {
     const summarySerial = ++this.summarySerial;
+    const generation = loginGeneration === undefined ? currentLoginGeneration() : loginGeneration;
     this.setData({ summaryState: "loading", leagueSummary: null, summarySeasonId: null, summaryReason: null });
     try {
       const result = await getMyLeagueSummary({ leagueId });
       if (serial !== this.requestSerial || summarySerial !== this.summarySerial || leagueId !== this.data.selectedLeague) return;
+      const stale = this.handleStaleLoginGeneration(generation);
+      if (stale) return stale;
       if (result.statusCode !== 200) { this.setData({ summaryState: "error" }); return; }
       const data = result.data;
       this.setData({ summaryState: "ready", summarySeasonId: data.season_id, leagueSummary: data.availability === "available" ? data.summary : null, summaryReason: data.availability === "available" ? null : data.reason });
     } catch (error) {
-      if (serial === this.requestSerial && summarySerial === this.summarySerial && leagueId === this.data.selectedLeague) this.setData({ summaryState: "error" });
+      if (serial !== this.requestSerial || summarySerial !== this.summarySerial || leagueId !== this.data.selectedLeague) return;
+      const stale = this.handleStaleLoginGeneration(generation);
+      if (stale) return stale;
+      this.setData({ summaryState: "error" });
     }
   },
 
-  onSummaryRetry() { return this.loadLeagueSummary(this.requestSerial, this.data.selectedLeague); },
+  onSummaryRetry() { return this.loadLeagueSummary(this.requestSerial, this.data.selectedLeague, currentLoginGeneration()); },
 
-  applyListResult(result, replace) {
+  applyListResult(result, replace, loginGeneration) {
+    if (loginGeneration !== undefined) {
+      const stale = this.handleStaleLoginGeneration(loginGeneration);
+      if (stale) return stale;
+    }
     if (result.statusCode !== 200) { this.setData({ state: "error", errorMessage: result.message || String(result.code || result.statusCode), loadingMore: false, nextMatch: null, offseasonInfo: null }); return; }
     const payload = result.data || {};
     const rawItems = Array.isArray(payload.items) ? payload.items : [];
     const items = (replace ? rawItems : this.data.items.concat(rawItems)).map((item) => this.decorateItem(item));
     const page = payload.page || {};
     const hasMore = page.has_more === true;
-    const openCount = items.filter((item) => item.showPredict).length;
-    const doneCount = items.filter((item) => item.can_predict_reason === "ALREADY_SUBMITTED").length;
+    const { openCount, doneCount } = listCounts(items);
     const today = beijingParts();
     this.setData({
       state: items.length ? "list" : "empty",
@@ -273,17 +349,19 @@ Page({
         hasMore,
       }),
     });
-    if (replace && items.length === 0) return this.loadEmptyStateFollowup(this.requestSerial);
+    if (replace && items.length === 0) return this.loadEmptyStateFollowup(this.requestSerial, loginGeneration);
   },
 
   decorateItem(item) {
+    const loginGeneration = this.rememberLoginGeneration();
     const kick = beijingParts(item.kickoff_at);
     const key = scope(this.data.selectedLeague, this.data.selectedDate, item.match_id);
     const draft = this.drafts[key] || { home: 0, away: 0 };
-    const submitted = this.submittedMap[key];
+    const submitted = resolveSubmitted(item, this.submittedMap[key], loginGeneration);
     const cardState = buildCardState(item, submitted);
     const hasScore = item.regular_home_score !== null && item.regular_home_score !== undefined && item.regular_away_score !== null && item.regular_away_score !== undefined;
-    const uiState = submitted ? "submitted_locked" : (this.uiStates[key] || "collapsed");
+    const storedUi = this.uiStates[key];
+    const uiState = submitted ? "submitted_locked" : (storedUi && storedUi !== "submitted_locked" ? storedUi : "collapsed");
     const leagueName = (LEAGUES.find((league) => league.id === item.league_id) || {}).name || "比赛";
     const roundText = formatRound(item.round_id);
     const leagueId = item.league_id || this.data.selectedLeague;
@@ -307,7 +385,24 @@ Page({
     });
   },
 
-  refreshItems() { this.setData({ items: this.data.items.map((item) => this.decorateItem(item)) }); },
+  refreshItems() {
+    this.rememberLoginGeneration();
+    const items = this.data.items.map((item) => this.decorateItem(item));
+    const { openCount, doneCount } = listCounts(items);
+    const today = beijingParts();
+    this.setData({
+      items,
+      openCount,
+      doneCount,
+      hintText: buildHintText({
+        selectedDate: this.data.selectedDate,
+        todayKey: today ? today.key : "",
+        openCount,
+        doneCount,
+        hasMore: this.data.hasMore,
+      }),
+    });
+  },
   closeEditors() { Object.keys(this.uiStates).forEach((key) => { if (this.uiStates[key] !== "collapsed") { this.uiStates[key] = "collapsed"; delete this.drafts[key]; } }); this.refreshItems(); },
 
   onCardTap(event) { const id = event.currentTarget.dataset.matchId; if (id) wx.navigateTo({ url: `/pages/match-detail/match-detail?id=${id}` }); },
@@ -339,6 +434,7 @@ Page({
     const key = scope(this.data.selectedLeague, this.data.selectedDate, matchId);
     const item = this.data.items.find((entry) => entry.match_id === matchId);
     if (!item || this.uiStates[key] === "submitting") return;
+    const previousGeneration = this.loginGeneration;
     const draft = this.drafts[key] || { home: 0, away: 0 };
     const previousPayload = this.lastPayloads[key];
     if (!previousPayload || previousPayload.home !== draft.home || previousPayload.away !== draft.away) {
@@ -347,14 +443,20 @@ Page({
     }
     this.uiStates[key] = "submitting";
     this.refreshItems();
+    const loginGeneration = currentLoginGeneration();
+    if (previousGeneration !== undefined && previousGeneration !== this.loginGeneration) {
+      return this.loadFirstPage();
+    }
     submitPrediction({
       idempotencyKey: this.idempotencyKeys[key],
       matchId,
       homeScore: draft.home,
       awayScore: draft.away,
     }).then((result) => {
+      const stale = this.handleStaleLoginGeneration(loginGeneration);
+      if (stale) return stale;
       if (result.statusCode === 200 || result.statusCode === 201) {
-        this.submittedMap[key] = { ...draft };
+        this.submittedMap[key] = { ...draft, generation: loginGeneration };
         this.uiStates[key] = "submitted_locked";
         delete this.drafts[key];
         delete this.idempotencyKeys[key];
@@ -384,7 +486,12 @@ Page({
 
   onMore() {
     if (this.data.loadingMore || !this.data.hasMore || !this.data.nextCursor) return;
+    const previousGeneration = this.loginGeneration;
     const serial = this.requestSerial;
+    const loginGeneration = this.rememberLoginGeneration();
+    if (previousGeneration !== undefined && previousGeneration !== loginGeneration) {
+      return this.loadFirstPage();
+    }
     this.setData({ loadingMore: true });
     listMatches({
       ...dayBounds(this.data.selectedDate),
@@ -392,9 +499,10 @@ Page({
       limit: 100,
       cursor: this.data.nextCursor,
     }).then((result) => {
-      if (serial === this.requestSerial) this.applyListResult(result, false);
+      if (serial !== this.requestSerial) return;
+      return this.applyListResult(result, false, loginGeneration);
     });
   },
 });
 
-if (typeof module !== "undefined") module.exports = { buildDates, beijingParts, buildHintText };
+if (typeof module !== "undefined") module.exports = { buildDates, beijingParts, buildHintText, upcomingMatchInfo };

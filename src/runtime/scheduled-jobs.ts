@@ -261,7 +261,10 @@ const SNAPSHOT_JOB_BOARDS = {
 
 async function listDuePeriodKeys(repo: AppRepository, serverNow: Date): Promise<string[]> {
   if (repo.rankings === undefined) return [];
-  return listDueWeekPeriodKeys(await repo.rankings.findAll(), serverNow);
+  const entries = repo.rankings.findUnfinalizedWeeks !== undefined
+    ? await repo.rankings.findUnfinalizedWeeks()
+    : await repo.rankings.findAll();
+  return listDueWeekPeriodKeys(entries, serverNow);
 }
 
 async function listDueSeasonFinals(repo: AppRepository, asOf: Date): Promise<string[]> {
@@ -357,10 +360,15 @@ export async function planDuePeriodicJobs(input: {
   return decisions;
 }
 
+export const TICK_MODES = ["all", "realtime", "periodic"] as const;
+export type TickMode = (typeof TICK_MODES)[number];
+
 export async function planScheduledJobs(input: {
   runtime: ApplicationRuntime;
   serverNow: Date;
+  mode?: TickMode;
 }): Promise<{
+  mode: TickMode;
   tasks: DueJobDecision[];
   settlement: DueJobDecision;
   wired_periodic_tasks: typeof WIRED_PERIODIC_TASKS;
@@ -368,21 +376,29 @@ export async function planScheduledJobs(input: {
   settlement_orchestration_tasks: typeof SETTLEMENT_ORCHESTRATION_TASKS;
   fifteen_items_complete: true;
 }> {
-  const tasks = [
-    ...await planDueProviderJobs({
-      cloudDb: input.runtime.db,
-      namespace: input.runtime.namespace,
-      providerRegistry: input.runtime.providerRegistry,
-      syncLeagueIds: [...input.runtime.providerSources.sync_leagues],
-      sourceIds: input.runtime.providerSources.sources.map((source) => source.source_id),
-      profile: input.runtime.providerSources.sync_profile,
-      serverNow: input.serverNow,
-    }),
-    ...await planDuePeriodicJobs(input),
+  const mode: TickMode = input.mode ?? "all";
+  const runRealtime = mode === "all" || mode === "realtime";
+  const runPeriodic = mode === "all" || mode === "periodic";
+  const tasks: DueJobDecision[] = [
+    ...(runRealtime
+      ? await planDueProviderJobs({
+          cloudDb: input.runtime.db,
+          namespace: input.runtime.namespace,
+          providerRegistry: input.runtime.providerRegistry,
+          syncLeagueIds: [...input.runtime.providerSources.sync_leagues],
+          sourceIds: input.runtime.providerSources.sources.map((source) => source.source_id),
+          profile: input.runtime.providerSources.sync_profile,
+          serverNow: input.serverNow,
+        })
+      : []),
+    ...(runPeriodic ? await planDuePeriodicJobs(input) : []),
   ];
   return {
+    mode,
     tasks,
-    settlement: { task: "settlement", action: "run", reason: "due" },
+    settlement: runRealtime
+      ? { task: "settlement", action: "run", reason: "due" }
+      : { task: "settlement", action: "skip", reason: "mode_periodic" },
     wired_periodic_tasks: WIRED_PERIODIC_TASKS,
     unwired_periodic_tasks: UNWIRED_PERIODIC_TASKS,
     settlement_orchestration_tasks: SETTLEMENT_ORCHESTRATION_TASKS,
@@ -644,6 +660,19 @@ async function runWeeklyLevelEvalJob(
   if (outcome.kind === "skipped") {
     return { bucket: "skipped", reason: "lock_held", as_of: outcome.as_of };
   }
+  const settlementSkipped = outcome.settlement_skipped_count ?? 0;
+  const failedCount = outcome.failed_count ?? 0;
+  if (settlementSkipped > 0 || failedCount > 0) {
+    return {
+      bucket: "skipped",
+      reason: failedCount > 0 ? "user_eval_failed" : "settlement_already_running",
+      as_of: outcome.as_of,
+    };
+  }
+  const deferredCount = outcome.deferred_count ?? 0;
+  if (deferredCount > 0) {
+    return { bucket: "skipped", reason: "user_lock_held", as_of: outcome.as_of };
+  }
   await markPeriodicCycle(runtime, SyncJobType.WeeklyLevelEval, outcome.as_of, serverNow);
   await markPeriodicCycle(runtime, SyncJobType.BoardSnapshotStrength, serverNow);
   await markPeriodicCycle(runtime, SyncJobType.BoardSnapshotSeasonFinal, serverNow);
@@ -725,6 +754,9 @@ async function runDailyConsistencyJob(
   return { bucket: "ran" };
 }
 
+export const MAINTENANCE_CLEANUP_CYCLE_KEY = "maintenance_cleanup";
+const MAINTENANCE_CLEANUP_INTERVAL_MS = 24 * 60 * 60_000;
+
 export async function runDuePeriodicJobs(input: {
   runtime: ApplicationRuntime;
   serverNow: Date;
@@ -782,6 +814,28 @@ export async function runDuePeriodicJobs(input: {
       failed.push({ task: decision.task, reason: "exception" });
     }
   }
+  if (input.runtime.maintenanceCleanup !== undefined) {
+    try {
+      const cleanupCycle = await input.runtime.schedulerState.getPeriodicJobCycle(
+        MAINTENANCE_CLEANUP_CYCLE_KEY,
+      );
+      const cleanupSkip = cycleSkip(
+        cleanupCycle?.completed_cycle_at,
+        input.serverNow,
+        MAINTENANCE_CLEANUP_INTERVAL_MS,
+      );
+      if (cleanupSkip !== undefined) {
+        skipped.push({ task: MAINTENANCE_CLEANUP_CYCLE_KEY, reason: cleanupSkip });
+      } else {
+        await input.runtime.maintenanceCleanup.run(input.serverNow);
+        await markPeriodicCycle(input.runtime, MAINTENANCE_CLEANUP_CYCLE_KEY, input.serverNow);
+        ran.push(MAINTENANCE_CLEANUP_CYCLE_KEY);
+      }
+    } catch (error) {
+      errors.push(error);
+      failed.push({ task: MAINTENANCE_CLEANUP_CYCLE_KEY, reason: "exception" });
+    }
+  }
   return {
     outcome: errors.length > 0 || failed.length > 0 ? "failed" : "completed",
     jobs_run: ran,
@@ -794,71 +848,81 @@ export async function runDuePeriodicJobs(input: {
 export async function runScheduledJobs(input: {
   runtime: ApplicationRuntime;
   serverNow: Date;
+  mode?: TickMode;
 }): Promise<{ providerData: Record<string, unknown>; settlements: SettlementTimerOutcome[]; leagueSeasons: LeagueSeasonMaintenanceResult | null; errors: unknown[] }> {
   const { runtime, serverNow } = input;
+  const mode: TickMode = input.mode ?? "all";
+  const runRealtime = mode === "all" || mode === "realtime";
+  const runPeriodic = mode === "all" || mode === "periodic";
   runtime.providerRegistry.beginTickCache();
   const errors: unknown[] = [];
-  let providerData: Record<string, unknown> = { outcome: "failed" };
+  let providerData: Record<string, unknown> = runRealtime
+    ? { outcome: "failed" }
+    : { outcome: "skipped", jobs_run: [], skipped: [], failed: [], errors: [] };
   let settlements: SettlementTimerOutcome[] = [];
   let leagueSeasons: LeagueSeasonMaintenanceResult | null = null;
   try {
-    try {
-      providerData = await runDueProviderJobs({
-        cloudDb: runtime.db,
-        namespace: runtime.namespace,
-        dispatcher: runtime.providerDispatcher,
-        providerRegistry: runtime.providerRegistry,
-        syncLeagueIds: [...runtime.providerSources.sync_leagues],
-        sourceIds: runtime.providerSources.sources.map((source) => source.source_id),
-        profile: runtime.providerSources.sync_profile,
-        reconcile: runtime.providerReconcile,
-        staleRecovery: runtime.providerStaleRecovery,
-        serverNow,
-        log: runtime.log,
-      });
-      const nested = providerData.errors;
-      if (Array.isArray(nested)) errors.push(...nested);
-    } catch (error) {
-      errors.push(error);
-      providerData = { outcome: "failed", jobs_run: [], skipped: [], errors };
+    if (runRealtime) {
+      try {
+        providerData = await runDueProviderJobs({
+          cloudDb: runtime.db,
+          namespace: runtime.namespace,
+          dispatcher: runtime.providerDispatcher,
+          providerRegistry: runtime.providerRegistry,
+          syncLeagueIds: [...runtime.providerSources.sync_leagues],
+          sourceIds: runtime.providerSources.sources.map((source) => source.source_id),
+          profile: runtime.providerSources.sync_profile,
+          reconcile: runtime.providerReconcile,
+          staleRecovery: runtime.providerStaleRecovery,
+          serverNow,
+          log: runtime.log,
+        });
+        const nested = providerData.errors;
+        if (Array.isArray(nested)) errors.push(...nested);
+      } catch (error) {
+        errors.push(error);
+        providerData = { outcome: "failed", jobs_run: [], skipped: [], errors };
+      }
+      try {
+        settlements = await runSettlementTimer(runtime.repo, serverNow, runtime.settlementTimerOptions);
+      } catch (error) {
+        errors.push(error);
+      }
     }
-    try {
-      settlements = await runSettlementTimer(runtime.repo, serverNow, runtime.settlementTimerOptions);
-    } catch (error) {
-      errors.push(error);
-    }
-    try {
-      leagueSeasons = await runtime.leagueSeasons.run(serverNow);
-    } catch (error) {
-      errors.push(error);
-    }
-    try {
-      const periodic = await runDuePeriodicJobs({ runtime, serverNow });
-      const nested = periodic.errors;
-      if (Array.isArray(nested)) errors.push(...nested);
-      const periodicRan = Array.isArray(periodic.jobs_run)
-        ? periodic.jobs_run.filter((value): value is string => typeof value === "string")
-        : [];
-      const existingRan = Array.isArray(providerData.jobs_run)
-        ? providerData.jobs_run.filter((value): value is string => typeof value === "string")
-        : [];
-      const existingSkipped = Array.isArray(providerData.skipped) ? providerData.skipped : [];
-      const existingFailed = Array.isArray(providerData.failed) ? providerData.failed : [];
-      const periodicFailed = Array.isArray(periodic.failed) ? periodic.failed : [];
-      const periodicSkipped = Array.isArray(periodic.skipped) ? periodic.skipped : [];
-      providerData = {
-        ...providerData,
-        jobs_run: [...existingRan, ...periodicRan],
-        skipped: [...existingSkipped, ...periodicSkipped],
-        failed: [...existingFailed, ...periodicFailed],
-        outcome: errors.length > 0 || existingFailed.length > 0 || periodicFailed.length > 0
-          ? "failed"
-          : providerData.outcome === "skipped" && periodicRan.length === 0
-            ? providerData.outcome
-            : "completed",
-      };
-    } catch (error) {
-      errors.push(error);
+    if (runPeriodic) {
+      try {
+        leagueSeasons = await runtime.leagueSeasons.run(serverNow);
+      } catch (error) {
+        errors.push(error);
+      }
+      try {
+        const periodic = await runDuePeriodicJobs({ runtime, serverNow });
+        const nested = periodic.errors;
+        if (Array.isArray(nested)) errors.push(...nested);
+        const periodicRan = Array.isArray(periodic.jobs_run)
+          ? periodic.jobs_run.filter((value): value is string => typeof value === "string")
+          : [];
+        const existingRan = Array.isArray(providerData.jobs_run)
+          ? providerData.jobs_run.filter((value): value is string => typeof value === "string")
+          : [];
+        const existingSkipped = Array.isArray(providerData.skipped) ? providerData.skipped : [];
+        const existingFailed = Array.isArray(providerData.failed) ? providerData.failed : [];
+        const periodicFailed = Array.isArray(periodic.failed) ? periodic.failed : [];
+        const periodicSkipped = Array.isArray(periodic.skipped) ? periodic.skipped : [];
+        providerData = {
+          ...providerData,
+          jobs_run: [...existingRan, ...periodicRan],
+          skipped: [...existingSkipped, ...periodicSkipped],
+          failed: [...existingFailed, ...periodicFailed],
+          outcome: errors.length > 0 || existingFailed.length > 0 || periodicFailed.length > 0
+            ? "failed"
+            : providerData.outcome === "skipped" && periodicRan.length === 0
+              ? providerData.outcome
+              : "completed",
+        };
+      } catch (error) {
+        errors.push(error);
+      }
     }
     return { providerData, settlements, leagueSeasons, errors };
   } finally {

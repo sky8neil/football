@@ -167,3 +167,39 @@
 .result { font-size: var(--font-20); flex: none; padding: var(--space-1) var(--space-2); border-radius: var(--radius-xs); background: var(--color-brand-soft); }
 .result.exact { color: var(--color-state-locked); background: var(--color-state-hit-soft); }
 .result.pending, .result.miss { color: var(--text-muted); background: var(--color-state-done-soft); }
+
+.filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin-bottom: var(--space-6);
+}
+
+.filter-chip {
+  padding: var(--space-2) var(--space-4);
+  border: var(--border-hairline) solid var(--border-glass-strong);
+  border-radius: var(--radius-card);
+  background: var(--secondary-glass);
+  color: var(--text-primary);
+  font-size: var(--font-22);
+}
+
+.filter-chip.disabled {
+  color: var(--text-muted);
+}
+
+.filter-error {
+  margin-bottom: var(--space-4);
+  color: var(--text-danger);
+  font-size: var(--font-22);
+}
+
+.share-entry {
+  margin: 0 0 var(--space-6);
+  padding: var(--space-3) var(--space-4);
+  color: var(--text-primary);
+  background: var(--surface-ghost);
+  border-radius: var(--radius-card);
+  font-size: var(--font-22);
+  line-height: 1.6;
+}

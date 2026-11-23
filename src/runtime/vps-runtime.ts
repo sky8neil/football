@@ -1,4 +1,3 @@
-import pg from "pg";
 import {
   createPostgresAuthSessionStore,
   type AuthSessionStore,
@@ -10,6 +9,7 @@ import type { PostgresRepositoryConfig } from "../gateway/config.js";
 import {
   createPostgresAppRepository,
   createPostgresDocumentDbFromPool,
+  createPostgresPool,
 } from "../gateway/repository-factory.js";
 import { createWechatCode2SessionHttp } from "../gateway/wechat-http.js";
 import type { WechatCode2SessionHttp } from "../gateway/wechat-login.js";
@@ -26,10 +26,11 @@ export interface VpsRuntime {
 export interface CreateVpsRuntimeInput {
   postgres: PostgresRepositoryConfig;
   wechatHttp?: WechatCode2SessionHttp;
+  env?: Record<string, string | undefined>;
 }
 
 export function createVpsRuntime(input: CreateVpsRuntimeInput): VpsRuntime {
-  const pool = new pg.Pool({ connectionString: input.postgres.database_url });
+  const pool = createPostgresPool(input.postgres.database_url, input.env);
   const query = createPostgresQueryFn(pool);
   const db = createPostgresDocumentDbFromPool(pool, input.postgres);
   const repo = createPostgresAppRepository(pool, input.postgres, db);

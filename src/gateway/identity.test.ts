@@ -28,6 +28,7 @@ function makeConfig(overrides: Partial<GatewayRuntimeConfig> = {}): GatewayRunti
       postgres_repository: null,
       vps_auth: null,
       deploy_target: "vps",
+      ranking_first_period_key: "2026-W31",
       ...overrides,
   };
 }
@@ -150,6 +151,8 @@ describe("resolveTrustedOpenid", () => {
         FOOTBALL_ENVIRONMENT: "prod",
         FOOTBALL_MATCH_CURSOR_SECRET: TEST_CURSOR_SECRET,
         FOOTBALL_REPOSITORY_BACKEND: "memory",
+        FOOTBALL_LEVEL_FIRST_EVAL_AS_OF: "2026-08-03T02:00:00.000Z",
+        FOOTBALL_RANKING_FIRST_PERIOD_KEY: "2026-W31",
         FOOTBALL_MOCK_TRUSTED_OPENID: MOCK_OPENID,
       }).mock_trusted_openid,
     ).toBeNull();

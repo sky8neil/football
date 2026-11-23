@@ -101,4 +101,24 @@ describe("createPostgresAuthSessionStore", () => {
     await expect(store.findActiveByToken({ token: "   ", now: NOW })).resolves.toBeNull();
     expect(query).toHaveBeenCalledTimes(3);
   });
+
+  it("deletes expired sessions before cutoff and returns rowCount [Slice 5.4]", async () => {
+    const cutoff = new Date(NOW.getTime() - 7 * 24 * 60 * 60 * 1000);
+    const calls: { sql: string; params: unknown[] }[] = [];
+    const query: PostgresQueryFn = vi.fn(async (sql, params = []) => {
+      calls.push({ sql, params });
+      return { rows: [], rowCount: 12 };
+    });
+    const store = createPostgresAuthSessionStore(query, SCHEMA);
+
+    const deleted = await store.deleteExpiredBefore!(cutoff);
+    expect(deleted).toBe(12);
+    expect(calls).toEqual([
+      {
+        sql: `DELETE FROM ${qualifiedTable(SCHEMA, AUTH_SESSIONS_TABLE)} WHERE expires_at < $1`,
+        params: [cutoff],
+      },
+    ]);
+    await expect(store.deleteExpiredBefore!(new Date("invalid"))).rejects.toThrow(/valid Date/);
+  });
 });

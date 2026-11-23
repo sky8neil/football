@@ -28,6 +28,8 @@ describe("GET /v1/levels/me", () => {
         valid_predictions: 20,
         remaining_to_rated: 0,
         is_frozen: false,
+        season_points: 120,
+        exact_hits: 3,
       },
       career: {
         level: 6,
@@ -70,6 +72,8 @@ describe("GET /v1/levels/me", () => {
         valid_predictions: 0,
         remaining_to_rated: 20,
         is_frozen: false,
+        season_points: 0,
+        exact_hits: 0,
       },
       career: {
         level: 1,

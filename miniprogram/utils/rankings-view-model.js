@@ -31,9 +31,9 @@ function formatWeekRange(mondayMs) {
   return `${start.getUTCMonth() + 1}.${start.getUTCDate()}-${end.getUTCMonth() + 1}.${end.getUTCDate()}`;
 }
 
-function buildWeekOptions(currentPeriodKey, firstPeriodKey = rankingFirstPeriodKey) {
+function buildWeekOptions(currentPeriodKey, firstPeriodKey) {
   const monday = mondayOfIsoWeek(currentPeriodKey);
-  const firstMonday = mondayOfIsoWeek(firstPeriodKey);
+  const firstMonday = mondayOfIsoWeek(firstPeriodKey || rankingFirstPeriodKey);
   if (monday === null || firstMonday === null) return [];
   const options = [];
   for (let offset = 0; offset < rankingWeekWindow; offset += 1) {
@@ -162,7 +162,10 @@ function buildRankingViewModel(input = {}) {
   return {
     currentLevelSeasonId: currentSeasonId(input.serverNow),
     tabs: availableBoards,
-    weekOptions: buildWeekOptions(payload.current_period_key),
+    weekOptions: buildWeekOptions(
+      payload.current_period_key,
+      input.firstPeriodKey || payload.first_period_key || rankingFirstPeriodKey,
+    ),
     showPodium: count >= 3,
     listTitleKind: titleKind,
     listTitle: titleKind === "top20"

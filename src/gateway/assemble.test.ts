@@ -3,7 +3,11 @@ import { InMemoryRateLimiter } from "../api/v1/rate-limit.js";
 import type { RateLimiter } from "../api/v1/rate-limit.js";
 import { SessionService } from "../application/session.js";
 import { MatchQueryService } from "../application/match-query.js";
+import { MVP_SEASON } from "../domain/config.js";
+import { SCHEMA_VERSION, UserStatus } from "../domain/enums.js";
 import { DomainError } from "../domain/errors.js";
+import { newUuid } from "../domain/ids.js";
+import { defaultLevelState } from "../domain/types.js";
 import type { AuthSessionRecord, AuthSessionStore } from "../infrastructure/postgres-auth-sessions.js";
 import { InMemoryRepository } from "../infrastructure/repositories.js";
 import { handleGatewayRequest, type GatewayRequestInput } from "./assemble.js";
@@ -24,9 +28,10 @@ function makeConfig(overrides: Partial<GatewayRuntimeConfig> = {}): GatewayRunti
     repository_backend: "memory",
     cloudbase_repository: null,
     postgres_repository: null,
-    vps_auth: null,
-    deploy_target: "vps",
-    ...overrides,
+      vps_auth: null,
+      deploy_target: "vps",
+      ranking_first_period_key: "2026-W31",
+      ...overrides,
   };
 }
 
@@ -506,6 +511,39 @@ describe("handleGatewayRequest GET /v1/unlocks/me", () => {
   });
 });
 
+describe("handleGatewayRequest GET /v1/league-seasons", () => {
+  it("allows anonymous access and returns 200 with items", async () => {
+    const harness = makeHarness();
+    const response = await request(harness, {
+      method: "GET",
+      path: "/v1/league-seasons",
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      data: { items: [] },
+      request_id: expect.any(String),
+    });
+  });
+
+  it.each(["POST", "PUT", "PATCH", "DELETE"] as const)(
+    "returns 405 for %s",
+    async (method) => {
+      const harness = makeHarness();
+      const response = await request(harness, {
+        method,
+        path: "/v1/league-seasons",
+      });
+
+      expect(response.status).toBe(405);
+      expect(response.body).toEqual(expect.objectContaining({
+        code: "METHOD_NOT_ALLOWED",
+        request_id: expect.any(String),
+      }));
+    },
+  );
+});
+
 describe("handleGatewayRequest GET /v1/rankings", () => {
   it("requires identity at the existing rankings handler", async () => {
     const harness = makeHarness();
@@ -530,6 +568,87 @@ describe("handleGatewayRequest GET /v1/rankings", () => {
     expect(response.status).toBe(422);
     expect(response.body).toEqual(expect.objectContaining({
       code: "VALIDATION_ERROR",
+      request_id: expect.any(String),
+    }));
+  });
+});
+
+describe("handleGatewayRequest GET /v1/share-card", () => {
+  it("allows anonymous GET /v1/share-card/<uuid> and returns 200", async () => {
+    const harness = makeHarness();
+    await seedGatewayRepository(harness.repo, NOW);
+    const userId = newUuid();
+    await harness.repo.users.insert({
+      schema_version: SCHEMA_VERSION,
+      user_id: userId,
+      openid: `openid_${userId}`,
+      unionid: null,
+      nickname: "Sharer",
+      favorite_team_id: null,
+      status: UserStatus.Active,
+      career_points: 0,
+      career_valid_predictions: 0,
+      career_wdl_hits: 0,
+      career_exact_hits: 0,
+      career_level: 1,
+      career_best_level: 1,
+      career_last_scoring_match_at: null,
+      career_level_state: defaultLevelState(),
+      deleted_at: null,
+      created_at: NOW,
+      updated_at: NOW,
+    });
+
+    const response = await request(harness, {
+      method: "GET",
+      path: `/v1/share-card/${userId}`,
+      query: {
+        league_id: MVP_SEASON.league_id,
+        season_id: MVP_SEASON.season_id,
+        round_id: "01",
+      },
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      data: expect.objectContaining({
+        user_id: userId,
+        display_name: "Sharer",
+        round_id: "01",
+      }),
+      request_id: expect.any(String),
+    });
+  });
+
+  it("keeps GET /v1/share-card/me unauthenticated as 401", async () => {
+    const harness = makeHarness();
+    const response = await request(harness, {
+      method: "GET",
+      path: "/v1/share-card/me",
+      query: {
+        league_id: MVP_SEASON.league_id,
+        season_id: MVP_SEASON.season_id,
+        round_id: "01",
+      },
+    });
+
+    expect(response.status).toBe(401);
+    expect(response.body).toEqual(expect.objectContaining({
+      code: "UNAUTHORIZED",
+      request_id: expect.any(String),
+    }));
+  });
+
+  it("returns 405 for POST /v1/share-card/<uuid>", async () => {
+    const harness = makeHarness();
+    const response = await request(harness, {
+      method: "POST",
+      path: `/v1/share-card/${newUuid()}`,
+    });
+
+    expect(response.status).toBe(405);
+    expect(response.body).toEqual(expect.objectContaining({
+      code: "METHOD_NOT_ALLOWED",
       request_id: expect.any(String),
     }));
   });

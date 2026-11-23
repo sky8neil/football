@@ -46,6 +46,7 @@ export function assertUnknownFields(
 
 const STATUS_BY_CODE: Readonly<Record<string, number>> = {
   VALIDATION_ERROR: 422,
+  METHOD_NOT_ALLOWED: 405,
   AUTH_REQUIRED: 401,
   UNAUTHORIZED: 401,
   FORBIDDEN: 403,

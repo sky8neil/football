@@ -1,8 +1,13 @@
-import { describe, expect, it } from "vitest";
+import pg from "pg";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { CloudBaseAppRepository } from "../infrastructure/cloudbase-app-repository.js";
 import type { CloudBaseDb } from "../infrastructure/cloudbase-db.js";
 import { InMemoryRepository } from "../infrastructure/repositories.js";
-import { createGatewayRepository, createGatewayRepositoryHandle } from "./repository-factory.js";
+import {
+  createGatewayRepository,
+  createGatewayRepositoryHandle,
+  createPostgresDocumentDbFromPool,
+} from "./repository-factory.js";
 import { LOCAL_PUBLIC_SOURCE, type GatewayRuntimeConfig } from "./config.js";
 
 const TEST_DATABASE_URL = process.env.FOOTBALL_TEST_DATABASE_URL ?? "";
@@ -17,7 +22,14 @@ const base: GatewayRuntimeConfig = {
   postgres_repository: null,
   vps_auth: null,
   deploy_target: "vps",
+  ranking_first_period_key: "2026-W31",
 };
+
+const OriginalPool = pg.Pool;
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe("createGatewayRepository", () => {
   it("uses the configured in-memory backend", () => {
@@ -68,6 +80,116 @@ describe("createGatewayRepository", () => {
     expect(handle.repo).toBeInstanceOf(CloudBaseAppRepository);
     await handle.close();
     await handle.close();
+  });
+
+  it("configures the postgres handle pool with the same default timeouts as VPS runtime", async () => {
+    const options: unknown[] = [];
+    vi.spyOn(pg, "Pool").mockImplementation(function mockPool(this: pg.Pool, config?: pg.PoolConfig) {
+      options.push(config);
+      return new OriginalPool(config);
+    });
+    const handle = createGatewayRepositoryHandle({
+      ...base,
+      repository_backend: "postgres",
+      postgres_repository: {
+        database_url: "postgres://football:secret@127.0.0.1:1/football",
+        database_schema: "football_test",
+        resource_namespace: "ft",
+      },
+    }, undefined, {});
+    expect(options).toEqual([{
+      connectionString: "postgres://football:secret@127.0.0.1:1/football",
+      max: 20,
+      idleTimeoutMillis: 30_000,
+      connectionTimeoutMillis: 5_000,
+      statement_timeout: 30_000,
+    }]);
+    await handle.close();
+  });
+
+  it("passes ROLLBACK errors to pool client.release so the client is discarded", async () => {
+    const released: Array<Error | undefined> = [];
+    const rollbackError = new Error("rollback failed");
+    const fakeClient = {
+      query: async (sql: string) => {
+        if (sql === "ROLLBACK") throw rollbackError;
+        return { rows: [] };
+      },
+      release: (err?: Error) => {
+        released.push(err);
+      },
+    };
+    const fakePool = { connect: async () => fakeClient } as unknown as pg.Pool;
+    const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const db = createPostgresDocumentDbFromPool(fakePool, {
+      database_url: "postgres://football:secret@127.0.0.1:1/football",
+      database_schema: "football_test",
+      resource_namespace: "ft",
+    });
+    await expect(db.transaction(async () => {
+      throw new Error("abort");
+    })).rejects.toThrow("abort");
+    expect(released).toEqual([rollbackError]);
+    expect(JSON.parse(String(spy.mock.calls[0]?.[0]))).toEqual({
+      event: "pg_rollback_failed",
+      message: "rollback failed",
+    });
+  });
+
+  it("passes BEGIN errors to pool client.release and preserves the original exception", async () => {
+    const released: Array<Error | undefined> = [];
+    const beginError = new Error("begin failed");
+    const fakeClient = {
+      query: async (sql: string) => {
+        if (sql === "BEGIN") throw beginError;
+        return { rows: [] };
+      },
+      release: (err?: Error) => {
+        released.push(err);
+      },
+    };
+    const fakePool = { connect: async () => fakeClient } as unknown as pg.Pool;
+    const db = createPostgresDocumentDbFromPool(fakePool, {
+      database_url: "postgres://football:secret@127.0.0.1:1/football",
+      database_schema: "football_test",
+      resource_namespace: "ft",
+    });
+    await expect(db.transaction(async () => "ok")).rejects.toBe(beginError);
+    expect(released).toEqual([beginError]);
+  });
+
+  it("factory path rejects COMMIT command ROLLBACK after a swallowed SQL error", async () => {
+    const released: Array<Error | undefined> = [];
+    const statements: string[] = [];
+    const fakeClient = {
+      query: async (sql: string) => {
+        statements.push(sql);
+        if (sql === "BEGIN") return { rows: [], command: "BEGIN" };
+        if (sql === "COMMIT") return { rows: [], command: "ROLLBACK" };
+        if (sql === "ROLLBACK") return { rows: [], command: "ROLLBACK" };
+        throw Object.assign(new Error("current transaction is aborted"), { code: "25P02" });
+      },
+      release: (err?: Error) => {
+        released.push(err);
+      },
+    };
+    const fakePool = { connect: async () => fakeClient } as unknown as pg.Pool;
+    const db = createPostgresDocumentDbFromPool(fakePool, {
+      database_url: "postgres://football:secret@127.0.0.1:1/football",
+      database_schema: "football_test",
+      resource_namespace: "ft",
+    });
+    await expect(db.transaction(async (tx) => {
+      try {
+        await tx.add("ft_users", "a", { _id: "a" });
+      } catch {
+        return "swallowed";
+      }
+      return "ok";
+    })).rejects.toThrow(/COMMIT.*ROLLBACK/);
+    expect(statements).toContain("COMMIT");
+    expect(statements).toContain("ROLLBACK");
+    expect(released).toHaveLength(1);
   });
 
   it.skipIf(TEST_DATABASE_URL.length === 0)(

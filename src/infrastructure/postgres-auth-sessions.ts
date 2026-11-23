@@ -28,6 +28,7 @@ export interface FindAuthSessionInput {
 export interface AuthSessionStore {
   create(input: CreateAuthSessionInput): Promise<AuthSessionRecord>;
   findActiveByToken(input: FindAuthSessionInput): Promise<AuthSessionRecord | null>;
+  deleteExpiredBefore?(cutoff: Date): Promise<number>;
 }
 
 export interface PostgresAuthSessionStoreOptions {
@@ -66,6 +67,7 @@ export function createPostgresAuthSessionStore(
   const insertSql = `INSERT INTO ${table} (token, openid, expires_at) VALUES ($1, $2, $3)`;
   const selectSql =
     `SELECT token, openid, expires_at FROM ${table} WHERE token = $1 AND expires_at > $2`;
+  const deleteExpiredSql = `DELETE FROM ${table} WHERE expires_at < $1`;
 
   return {
     async create(input) {
@@ -103,6 +105,14 @@ export function createPostgresAuthSessionStore(
         return null;
       }
       return { token, openid, expires_at: expiresAt };
+    },
+
+    async deleteExpiredBefore(cutoff) {
+      if (!(cutoff instanceof Date) || Number.isNaN(cutoff.getTime())) {
+        throw new Error("cutoff must be a valid Date");
+      }
+      const result = await query(deleteExpiredSql, [cutoff]);
+      return typeof result.rowCount === "number" ? result.rowCount : result.rows.length;
     },
   };
 }

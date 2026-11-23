@@ -1,10 +1,15 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
-import type {
-  PredictionHistoryItem,
-  PredictionHistoryQuery,
-  PredictionHistoryResult,
+import {
+  PredictionHistoryQueryService,
+  type PredictionHistoryItem,
+  type PredictionHistoryQuery,
+  type PredictionHistoryResult,
 } from "../../application/prediction-query.js";
+import { MatchStatus, UserStatus } from "../../domain/enums.js";
+import { newUuid } from "../../domain/ids.js";
+import { defaultLevelState, type Match, type Prediction, type User } from "../../domain/types.js";
+import { InMemoryRepository } from "../../infrastructure/repositories.js";
 import { getMyPredictions, validateMyPredictionsQuery } from "./predictions.js";
 import { InMemoryRateLimiter } from "./rate-limit.js";
 
@@ -37,6 +42,109 @@ const RESULT: PredictionHistoryResult = {
 };
 
 const NOW = new Date("2026-08-11T00:00:00.000Z");
+const USER_ID = "00000000-0000-4000-8000-000000000001";
+
+function makeUser(userId = USER_ID): User {
+  return {
+    schema_version: 1,
+    user_id: userId,
+    openid: `prediction-list-user-${userId}`,
+    unionid: null,
+    nickname: "Sky",
+    favorite_team_id: null,
+    status: UserStatus.Active,
+    career_points: 0,
+    career_valid_predictions: 0,
+    career_wdl_hits: 0,
+    career_exact_hits: 0,
+    career_level: 1,
+    career_best_level: 1,
+    career_last_scoring_match_at: null,
+    career_level_state: defaultLevelState(),
+    deleted_at: null,
+    created_at: NOW,
+    updated_at: NOW,
+  };
+}
+
+function makeMatch(matchId: string, overrides: Partial<Match> = {}): Match {
+  const canonicalMatchIdentity = overrides.match_id ?? matchId;
+  return {
+    schema_version: 1,
+    match_id: canonicalMatchIdentity,
+    canonical_match_id: overrides.canonical_match_id ?? canonicalMatchIdentity,
+    superseded_by: overrides.superseded_by ?? null,
+    league_id: "premier_league",
+    season_id: "2026_2027",
+    round_id: "01",
+    home_team_id: newUuid(),
+    away_team_id: newUuid(),
+    kickoff_at: new Date("2026-08-08T14:00:00.000Z"),
+    kickoff_confirmed: true,
+    prediction_deadline_at: new Date("2026-08-08T13:50:00.000Z"),
+    prediction_closed_at: new Date("2026-08-08T13:50:00.000Z"),
+    period_anchor_at: new Date("2026-08-08T14:00:00.000Z"),
+    match_status: MatchStatus.Finished,
+    settlement_status: "settled",
+    regular_home_score: 2,
+    regular_away_score: 1,
+    extra_home_score: null,
+    extra_away_score: null,
+    penalty_home_score: null,
+    penalty_away_score: null,
+    result_version: 1,
+    settled_result_version: 1,
+    result_source: "provider",
+    scoring_rule_version: "scoring_v1",
+    finish_detected_at: new Date("2026-08-08T16:00:00.000Z"),
+    settled_at: new Date("2026-08-08T16:20:00.000Z"),
+    created_at: NOW,
+    updated_at: NOW,
+    ...overrides,
+  };
+}
+
+function makePrediction(predictionId: string, matchId: string, submittedAt: string): Prediction {
+  return {
+    schema_version: 1,
+    prediction_id: predictionId,
+    user_id: USER_ID,
+    match_id: matchId,
+    canonical_match_id: matchId,
+    idempotency_key: newUuid(),
+    pred_home_score: 2,
+    pred_away_score: 1,
+    derived_result: "HOME",
+    submitted_at: new Date(submittedAt),
+    scoring_rule_version: "scoring_v1",
+    match_score: 12,
+    wdl_hit: true,
+    exact_hit: true,
+    applied_result_version: 1,
+    created_at: NOW,
+    updated_at: NOW,
+  };
+}
+
+async function setupHistoryRepo(): Promise<InMemoryRepository> {
+  const repo = new InMemoryRepository();
+  await repo.users.insert(makeUser());
+  await repo.matches.insert(makeMatch("00000000-0000-4000-8000-000000000010"));
+  await repo.matches.insert(makeMatch("00000000-0000-4000-8000-000000000012", {
+    season_id: "2025_2026",
+  }));
+  await repo.predictions.insert(makePrediction(
+    "00000000-0000-4000-8000-000000000020",
+    "00000000-0000-4000-8000-000000000010",
+    "2026-08-08T13:00:00.000Z",
+  ));
+  await repo.predictions.insert(makePrediction(
+    "00000000-0000-4000-8000-000000000022",
+    "00000000-0000-4000-8000-000000000012",
+    "2026-08-08T14:00:00.000Z",
+  ));
+  return repo;
+}
 
 describe("GET /v1/predictions/me", () => {
   it("校验 league_id/season_id、limit、cursor；缺省全部联赛", () => {
@@ -59,7 +167,6 @@ describe("GET /v1/predictions/me", () => {
     });
     for (const query of [
       { season_id: "2026_2027" },
-      { league_id: "chinese_super_league", season_id: "2026_2027" },
       { league_id: "eredivisie" },
       { season_id: null },
       { limit: "0" },
@@ -74,7 +181,7 @@ describe("GET /v1/predictions/me", () => {
     }
   });
 
-  it("传入当前时间时允许当前及上一赛季，拒绝更早赛季", () => {
+  it("API 层只校验参数形态，不按赛季白名单拦截", () => {
     expect(validateMyPredictionsQuery({
       league_id: "premier_league",
       season_id: "2026_2027",
@@ -83,34 +190,61 @@ describe("GET /v1/predictions/me", () => {
       league_id: "premier_league",
       season_id: "2025_2026",
     }, NOW).season_id).toBe("2025_2026");
-    expect(() => validateMyPredictionsQuery({
+    expect(validateMyPredictionsQuery({
       league_id: "premier_league",
       season_id: "2024_2025",
-    }, NOW)).toThrowError(expect.objectContaining({
+    }, NOW).season_id).toBe("2024_2025");
+    expect(validateMyPredictionsQuery({
+      league_id: "premier_league",
+      season_id: "2025_2026",
+    }).season_id).toBe("2025_2026");
+    expect(() => validateMyPredictionsQuery({
+      season_id: "2026_2027",
+    })).toThrowError(expect.objectContaining({
       code: "VALIDATION_ERROR",
       details: { field: "season_id" },
     }));
     expect(() => validateMyPredictionsQuery({
-      league_id: "premier_league",
-      season_id: "2025_2026",
-    })).toThrowError(expect.objectContaining({ code: "VALIDATION_ERROR" }));
+      league_id: "eredivisie",
+      season_id: "2026_2027",
+    })).toThrowError(expect.objectContaining({
+      code: "VALIDATION_ERROR",
+      details: { field: "league_id" },
+    }));
   });
 
-  it("history handler 用 server_now 校验上一赛季请求", async () => {
-    await expect(getMyPredictions({
-      listMyPredictions: async (_userId, query) => {
-        expect(query).toMatchObject({
-          league_id: "premier_league",
-          season_id: "2025_2026",
-        });
-        return RESULT;
-      },
-    }, {
-      authenticated_user_id: "00000000-0000-4000-8000-000000000001",
+  it("已接入的历史赛季能正常返回", async () => {
+    const service = new PredictionHistoryQueryService(await setupHistoryRepo(), "prediction-list-secret");
+    await expect(getMyPredictions(service, {
+      authenticated_user_id: USER_ID,
       query: { league_id: "premier_league", season_id: "2025_2026" },
       server_now: NOW,
-      request_id: "request-predictions-previous-season",
-    })).resolves.toMatchObject({ status: 200 });
+      request_id: "request-predictions-attached-season",
+    })).resolves.toMatchObject({
+      status: 200,
+      body: {
+        data: {
+          items: [expect.objectContaining({
+            prediction_id: "00000000-0000-4000-8000-000000000022",
+            season_id: "2025_2026",
+            match_id: "00000000-0000-4000-8000-000000000012",
+          })],
+        },
+      },
+    });
+  });
+
+  it("未接入赛季由 service 层拒绝，details 为 NOT_ATTACHED", async () => {
+    const service = new PredictionHistoryQueryService(await setupHistoryRepo(), "prediction-list-secret");
+    await expect(getMyPredictions(service, {
+      authenticated_user_id: USER_ID,
+      query: { league_id: "premier_league", season_id: "2023_2024" },
+      server_now: NOW,
+      request_id: "request-predictions-unattached-season",
+    })).rejects.toMatchObject({
+      code: "VALIDATION_ERROR",
+      details: { field: "season_id", reason: "NOT_ATTACHED" },
+    });
   });
 
   it("要求登录并返回分页成功 envelope", async () => {
@@ -204,7 +338,10 @@ describe("GET /v1/predictions/me", () => {
       /  \/predictions\/me:\n    get:[\s\S]*?submitted_at DESC、prediction_id DESC[\s\S]*?base64url \+ HMAC opaque[\s\S]*?正式比分缺失时，[\s\S]*?均为 null/,
     );
     expect(specification).toMatch(
-      /        - name: season_id[\s\S]*?enum: \[2026_2027, '2026'\][\s\S]*?仅可与 league_id 同时提供/,
+      /        - name: season_id\n          in: query\n          required: false\n          schema:\n            type: string\n          description: 仅可与 league_id 同时提供；须为该联赛已接入的赛季（见 GET \/v1\/league-seasons），历史赛季同样可查/,
+    );
+    expect(specification).not.toMatch(
+      /  \/predictions\/me:\n    get:[\s\S]*?        - name: season_id\n          in: query\n          required: false\n          schema:\n            type: string\n            enum: \[2026_2027, '2026'\]/,
     );
     expect(specification).toMatch(
       /  \/predictions\/me:\n    get:[\s\S]*?'429':[\s\S]*?RateLimited/,

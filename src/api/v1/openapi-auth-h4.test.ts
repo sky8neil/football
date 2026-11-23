@@ -32,8 +32,14 @@ describe("H4 dual-deploy identity OpenAPI contract", () => {
     expect(specification).not.toMatch(/BearerAuth/);
     expect(specification).not.toMatch(/bearerFormat:\s*JWT/);
     expect(securitySchemes).not.toMatch(/type:\s*(?:apiKey|oauth2|openIdConnect)/i);
+    // 公开资源标识（如 /share-card/{user_id} 的 path 参数）不算客户端自带身份：
+    // 该守卫只针对 header/query/cookie 里出现的身份字段，因此匹配不得跨到下一个参数块。
     expect(specification).not.toMatch(
-      /(?:name:\s*(?:x[-_])?(?:openid|user_id|jwt|token|authorization)\b[\s\S]{0,300}?in:\s*(?:header|query|cookie)\b|in:\s*(?:header|query|cookie)\b[\s\S]{0,300}?name:\s*(?:x[-_])?(?:openid|user_id|jwt|token|authorization)\b)/i,
+      /(?:name:\s*(?:x[-_])?(?:openid|user_id|jwt|token|authorization)\b(?:(?!- name:)[\s\S]){0,300}?in:\s*(?:header|query|cookie)\b|in:\s*(?:header|query|cookie)\b[\s\S]{0,300}?name:\s*(?:x[-_])?(?:openid|user_id|jwt|token|authorization)\b)/i,
+    );
+    // 反向守卫：header/query/cookie 参数里不得再出现身份字段名
+    expect(specification).not.toMatch(
+      /- name:\s*(?:x[-_])?(?:openid|user_id|jwt|token|authorization)\s*\n\s*in:\s*(?:header|query|cookie)\b/i,
     );
   });
 
@@ -100,6 +106,7 @@ describe("H4 dual-deploy identity OpenAPI contract", () => {
       ["/matches", "get"],
       ["/matches/{match_id}", "get"],
       ["/profiles/{user_id}", "get"],
+      ["/league-seasons", "get"],
     ] as const;
 
     for (const [path, method] of publicReads) {

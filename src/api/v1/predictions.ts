@@ -9,9 +9,7 @@ import type {
   PredictionHistoryResult,
 } from "../../application/prediction-query.js";
 import {
-  activeSeasonIds,
   FIXED_CONFIG_V1,
-  findSupportedLeagueById,
   isSupportedLeagueId,
 } from "../../domain/config.js";
 import type { PredictionService, SubmitPredictionResult } from "../../application/predictions.js";
@@ -198,6 +196,8 @@ export function validateMyPredictionsQuery(
   query: Record<string, unknown>,
   now?: Date,
 ): PredictionHistoryQuery {
+  // 赛季语义（格式 → 目录接入）已下沉到 service 层 assertLeagueSeasonAttached；now 仅保留调用方签名。
+  void now;
   assertUnknownFields(query, PREDICTION_HISTORY_QUERY_FIELDS);
   const leagueId = query.league_id === undefined ? null : query.league_id;
   if (leagueId !== null && (typeof leagueId !== "string" || !isSupportedLeagueId(leagueId))) {
@@ -209,16 +209,6 @@ export function validateMyPredictionsQuery(
   const seasonId = query.season_id === undefined ? null : query.season_id;
   if (seasonId !== null && leagueId === null) {
     throw validationError("season_id 仅能与 league_id 同时提供", { field: "season_id" });
-  }
-  const league = leagueId === null ? undefined : findSupportedLeagueById(leagueId);
-  if (
-    seasonId !== null &&
-    league !== undefined &&
-    (now === undefined
-      ? league.season_id !== seasonId
-      : !activeSeasonIds(league, now).includes(seasonId))
-  ) {
-    throw validationError("season_id 必须等于该联赛当前登记值", { field: "season_id" });
   }
   const cursor = query.cursor;
   if (cursor !== undefined && typeof cursor !== "string") {

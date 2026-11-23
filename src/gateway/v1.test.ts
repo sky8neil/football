@@ -22,9 +22,10 @@ function makeConfig(overrides: Partial<GatewayRuntimeConfig> = {}): GatewayRunti
     repository_backend: "memory",
     cloudbase_repository: null,
     postgres_repository: null,
-    vps_auth: null,
-    deploy_target: "vps",
-    ...overrides,
+      vps_auth: null,
+      deploy_target: "vps",
+      ranking_first_period_key: "2026-W31",
+      ...overrides,
   };
 }
 

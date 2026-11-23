@@ -757,6 +757,170 @@ describe("wired weekly_level_eval and inline strength snapshot", () => {
       expect.objectContaining({ completed_cycle_at: WEEKLY_DELAYED, updated_at: WEEKLY_DELAYED }),
     );
   });
+
+  it("does not mark WeeklyLevelEval cycle completed when users are skipped due to SETTLEMENT_ALREADY_RUNNING or failed, and retries on next tick", async () => {
+    const repo = new InMemoryRepository();
+    const schedulerState = new InMemorySchedulerStateStore();
+    const partialRun = vi
+      .fn()
+      .mockResolvedValueOnce({
+        kind: "completed" as const,
+        as_of: WEEKLY_AS_OF,
+        evaluated_count: 1,
+        changed_count: 1,
+        skipped_count: 1,
+        settlement_skipped_count: 1,
+        failed_count: 0,
+      })
+      .mockResolvedValueOnce({
+        kind: "completed" as const,
+        as_of: WEEKLY_AS_OF,
+        evaluated_count: 1,
+        changed_count: 0,
+        skipped_count: 1,
+        settlement_skipped_count: 0,
+        failed_count: 0,
+      });
+    const runtime = runtimeStub({
+      repo,
+      schedulerState,
+      weeklyLevelEval: { run: partialRun },
+      boardSnapshot: new BoardSnapshotService(repo),
+    });
+
+    const firstTick = await runScheduledJobs({ runtime, serverNow: WEEKLY_START });
+    expect(partialRun).toHaveBeenCalledTimes(1);
+    expect(firstTick.providerData.skipped).toEqual(expect.arrayContaining([
+      { task: SyncJobType.WeeklyLevelEval, reason: "settlement_already_running" },
+    ]));
+    expect(await schedulerState.getPeriodicJobCycle(SyncJobType.WeeklyLevelEval)).toBeNull();
+
+    // Next tick retries and completes the cycle once settlement_skipped_count === 0 && failed_count === 0
+    const secondTick = await runScheduledJobs({ runtime, serverNow: WEEKLY_REPEAT });
+    expect(partialRun).toHaveBeenCalledTimes(2);
+    expect(secondTick.providerData.jobs_run).toEqual(expect.arrayContaining([SyncJobType.WeeklyLevelEval]));
+    expect(await schedulerState.getPeriodicJobCycle(SyncJobType.WeeklyLevelEval)).toEqual(
+      expect.objectContaining({ completed_cycle_at: WEEKLY_AS_OF, updated_at: WEEKLY_REPEAT }),
+    );
+  });
+
+  it("does not mark WeeklyLevelEval cycle completed when a user lock is held (deferred), and retries after the lock is released", async () => {
+    const repo = new InMemoryRepository();
+    const schedulerState = new InMemorySchedulerStateStore();
+    const deferredRun = vi
+      .fn()
+      .mockResolvedValueOnce({
+        kind: "completed" as const,
+        as_of: WEEKLY_AS_OF,
+        evaluated_count: 0,
+        changed_count: 0,
+        skipped_count: 0,
+        settlement_skipped_count: 0,
+        failed_count: 0,
+        deferred_count: 1,
+      })
+      .mockResolvedValueOnce({
+        kind: "completed" as const,
+        as_of: WEEKLY_AS_OF,
+        evaluated_count: 1,
+        changed_count: 1,
+        skipped_count: 0,
+        settlement_skipped_count: 0,
+        failed_count: 0,
+        deferred_count: 0,
+      });
+    const runtime = runtimeStub({
+      repo,
+      schedulerState,
+      weeklyLevelEval: { run: deferredRun },
+      boardSnapshot: new BoardSnapshotService(repo),
+    });
+
+    const firstTick = await runScheduledJobs({ runtime, serverNow: WEEKLY_START });
+    expect(deferredRun).toHaveBeenCalledTimes(1);
+    expect(firstTick.providerData.skipped).toEqual(expect.arrayContaining([
+      { task: SyncJobType.WeeklyLevelEval, reason: "user_lock_held" },
+    ]));
+    expect(await schedulerState.getPeriodicJobCycle(SyncJobType.WeeklyLevelEval)).toBeNull();
+
+    const secondTick = await runScheduledJobs({ runtime, serverNow: WEEKLY_REPEAT });
+    expect(deferredRun).toHaveBeenCalledTimes(2);
+    expect(secondTick.providerData.jobs_run).toEqual(expect.arrayContaining([SyncJobType.WeeklyLevelEval]));
+    expect(await schedulerState.getPeriodicJobCycle(SyncJobType.WeeklyLevelEval)).toEqual(
+      expect.objectContaining({ completed_cycle_at: WEEKLY_AS_OF, updated_at: WEEKLY_REPEAT }),
+    );
+  });
+
+  it("marks WeeklyLevelEval cycle completed when users are only skipped because they were already evaluated", async () => {
+    const repo = new InMemoryRepository();
+    const schedulerState = new InMemorySchedulerStateStore();
+    const idempotentRun = vi.fn().mockResolvedValue({
+      kind: "completed" as const,
+      as_of: WEEKLY_AS_OF,
+      evaluated_count: 0,
+      changed_count: 0,
+      skipped_count: 2,
+      settlement_skipped_count: 0,
+      failed_count: 0,
+      deferred_count: 0,
+    });
+    const runtime = runtimeStub({
+      repo,
+      schedulerState,
+      weeklyLevelEval: { run: idempotentRun },
+      boardSnapshot: new BoardSnapshotService(repo),
+    });
+
+    const firstTick = await runScheduledJobs({ runtime, serverNow: WEEKLY_START });
+    expect(idempotentRun).toHaveBeenCalledTimes(1);
+    expect(firstTick.providerData.jobs_run).toEqual(expect.arrayContaining([SyncJobType.WeeklyLevelEval]));
+    expect(await schedulerState.getPeriodicJobCycle(SyncJobType.WeeklyLevelEval)).toEqual(
+      expect.objectContaining({ completed_cycle_at: WEEKLY_AS_OF, updated_at: WEEKLY_START }),
+    );
+  });
+
+  it("[Slice 4] listDuePeriodKeys 优先调用 rankings.findUnfinalizedWeeks 而非全表 findAll", async () => {
+    const repo = new InMemoryRepository();
+    const schedulerState = new InMemorySchedulerStateStore();
+    await repo.rankings.insert({
+      schema_version: 1,
+      period_type: PeriodType.Week,
+      period_key: "2026-W31",
+      user_id: "u1",
+      period_score: 12,
+      valid_predictions: 1,
+      wdl_hits: 1,
+      exact_hits: 1,
+      last_scoring_match_at: new Date("2026-08-01T12:00:00.000Z"),
+      global_rank: 1,
+      is_final: false,
+      created_at: new Date("2026-08-01T12:00:00.000Z"),
+      updated_at: new Date("2026-08-01T12:00:00.000Z"),
+    });
+    const baseRankings = repo.rankings;
+    const findAllSpy = vi.fn(() => baseRankings.findAll());
+    const findUnfinalizedSpy = vi.fn(() => baseRankings.findUnfinalizedWeeks!());
+    const trackedRepo = Object.create(repo, {
+      rankings: {
+        value: {
+          ...baseRankings,
+          findAll: findAllSpy,
+          findUnfinalizedWeeks: findUnfinalizedSpy,
+        },
+      },
+    });
+    const runtime = runtimeStub({ repo: trackedRepo, schedulerState });
+    const plan = await planScheduledJobs({ runtime, serverNow: WEEKLY_START });
+    expect(plan.tasks).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        task: SyncJobType.PeriodFinalize,
+        action: "run",
+        due_period_keys: ["2026-W31"],
+      }),
+    ]));
+    expect(findUnfinalizedSpy).toHaveBeenCalledTimes(1);
+    expect(findAllSpy).not.toHaveBeenCalled();
+  });
 });
 
 const SNAPSHOT_T0 = new Date("2026-08-11T12:00:00.000Z");
@@ -1135,5 +1299,58 @@ describe("wired board_snapshot_season_final event", () => {
     expect(await schedulerState.getPeriodicJobCycle(SyncJobType.WeeklyLevelEval)).toBeNull();
     expect(await schedulerState.getPeriodicJobCycle(SyncJobType.BoardSnapshotSeasonFinal)).toBeNull();
     expect(await repo.boardSnapshots.findFinalBySeason("2025_2026")).toEqual([]);
+  });
+
+  it("[Slice 5.4] runs maintenanceCleanup once per 24h in periodic jobs and skips within 24h", async () => {
+    const repo = new InMemoryRepository();
+    const schedulerState = new InMemorySchedulerStateStore();
+    const cleanupRun = vi.fn(async (now: Date) => ({
+      ran_at: now.toISOString(),
+      deleted: {
+        auth_sessions: 2,
+        provider_usage: 5,
+        sync_logs: 3,
+        provider_snapshots: 1,
+        board_snapshots: 0,
+      },
+    }));
+    const runtime = runtimeStub({
+      repo,
+      schedulerState,
+      periodFinalize: new PeriodFinalizeService(repo),
+      boardSnapshot: { generate: vi.fn(async () => []), generateSeasonFinal: vi.fn(async () => []) },
+      weeklyLevelEval: {
+        run: vi.fn(async (now: Date) => ({
+          kind: "completed" as const,
+          as_of: weeklyEvalAsOf(now),
+          evaluated_count: 0,
+          changed_count: 0,
+          skipped_count: 0,
+        })),
+      },
+      dailyConsistency: {
+        run: vi.fn(async (now: Date) => ({
+          kind: "completed" as const,
+          checked_at: now,
+          differences: [],
+          skipped_active_settlement: [],
+        })),
+      },
+      maintenanceCleanup: { run: cleanupRun },
+    });
+
+    const first = await runScheduledJobs({ runtime, serverNow: NOW });
+    expect(cleanupRun).toHaveBeenCalledTimes(1);
+    expect(first.providerData.jobs_run).toContain("maintenance_cleanup");
+    expect((await schedulerState.getPeriodicJobCycle("maintenance_cleanup"))?.completed_cycle_at).toEqual(NOW);
+
+    const second = await runScheduledJobs({
+      runtime,
+      serverNow: new Date(NOW.getTime() + 60 * 60_000),
+    });
+    expect(cleanupRun).toHaveBeenCalledTimes(1);
+    expect(second.providerData.skipped).toEqual(expect.arrayContaining([
+      { task: "maintenance_cleanup", reason: "interval_not_due" },
+    ]));
   });
 });

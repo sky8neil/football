@@ -11,6 +11,7 @@ const AUTH_LOGIN_PATH = "/v1/auth/wechat";
 
 let accessToken;
 let inflight;
+let loginGeneration = 0;
 
 setAccessTokenProvider(() => accessToken);
 setAuthPreparer(() => restoreAuth());
@@ -39,7 +40,42 @@ function applySession(session, now) {
 function clearAuth() {
   accessToken = undefined;
   inflight = undefined;
+  loginGeneration += 1;
   clearAuthSession();
+}
+
+function getLoginGeneration() {
+  return loginGeneration;
+}
+
+function recoverSession(staleToken) {
+  if (!isHttpTransport()) return Promise.resolve(skippedResult());
+  const rejected = typeof staleToken === "string" ? staleToken.trim() : "";
+  const now = new Date();
+  const cached = readAuthSession();
+  if (rejected && cached && cached.access_token !== rejected && applySession(cached, now)) {
+    return Promise.resolve(cachedAuthResult(cached));
+  }
+  if (rejected && accessToken && accessToken !== rejected) {
+    return Promise.resolve({
+      data: { access_token: accessToken },
+      request_id: undefined,
+      statusCode: 200,
+      code: undefined,
+      message: undefined,
+      details: undefined,
+    });
+  }
+  if (inflight) return inflight;
+  if (!cached) {
+    accessToken = undefined;
+    return Promise.resolve(unauthorizedResult());
+  }
+  accessToken = undefined;
+  if (!rejected || cached.access_token === rejected) {
+    clearAuthSession();
+  }
+  return startLogin();
 }
 
 function wxLoginCode() {
@@ -60,7 +96,8 @@ function wxLoginCode() {
   });
 }
 
-function persistLoginResult(result) {
+function persistLoginResult(result, generation) {
+  if (generation !== loginGeneration) return unauthorizedResult();
   const payload = result && result.data && typeof result.data === "object" ? result.data : {};
   const session = {
     access_token: payload.access_token,
@@ -78,29 +115,32 @@ function persistLoginResult(result) {
 }
 
 function login() {
+  const generation = loginGeneration;
   return wxLoginCode().then((code) => {
+    if (generation !== loginGeneration) return unauthorizedResult();
     if (!code) return unauthorizedResult();
     return request({
       method: "POST",
       path: AUTH_LOGIN_PATH,
       data: { code },
-    }).then(persistLoginResult);
+    }).then((result) => persistLoginResult(result, generation));
   });
 }
 
 function startLogin() {
   if (inflight) return inflight;
-  inflight = login().then(
+  const current = login().then(
     (result) => {
-      inflight = undefined;
+      if (inflight === current) inflight = undefined;
       return result;
     },
     (error) => {
-      inflight = undefined;
+      if (inflight === current) inflight = undefined;
       throw error;
     },
   );
-  return inflight;
+  inflight = current;
+  return current;
 }
 
 function cachedAuthResult(cached) {
@@ -141,4 +181,6 @@ module.exports = {
   ensureAuth,
   restoreAuth,
   clearAuth,
+  recoverSession,
+  getLoginGeneration,
 };

@@ -95,26 +95,22 @@ describe("buildCardState", () => {
     assertNoDuplication(state);
   });
 
-  it("maps finished complete scores without a prediction to 待结算", () => {
+  it("maps finished complete scores without a prediction to FT, not 待结算", () => {
     const state = buildCardState(
-      item({ match_status: "finished", regular_home_score: 1, regular_away_score: 0, can_predict_reason: "CLOSED" }),
+      item({
+        match_status: "finished",
+        regular_home_score: 1,
+        regular_away_score: 0,
+        can_predict_reason: "CLOSED",
+        settlement_status: "waiting",
+      }),
       null,
     );
     expect(state.stateText).toBe("已结束");
-    expect(state.scoreSub).toBe("待结算");
+    expect(state.scoreSub).toBe("FT");
+    expect(state.scoreSub).not.toBe("待结算");
     expect(state.predText).toBe("未预测");
     expect(state.chipText).toBe("");
-    assertNoDuplication(state);
-  });
-
-  it("maps finished incomplete scores to 待结算", () => {
-    const state = buildCardState(
-      item({ match_status: "finished", regular_home_score: null, regular_away_score: null }),
-      submitted(),
-    );
-    expect(state.stateText).toBe("已结束");
-    expect(state.scoreSub).toBe("待结算");
-    expect(state.predText).toBe("已提交 2 : 1 · 不可修改");
     assertNoDuplication(state);
   });
 
@@ -125,6 +121,169 @@ describe("buildCardState", () => {
     );
     expect(state.scoreSub).toBe("FT");
     expect(state.predText).toBe("我的预测 2 : 1 · 得分 +0");
+  });
+
+  describe("finished copy matrix", () => {
+    const noScore = {
+      match_status: "finished",
+      regular_home_score: null,
+      regular_away_score: null,
+      can_predict_reason: "CLOSED",
+    };
+    const complete = {
+      match_status: "finished",
+      regular_home_score: 2,
+      regular_away_score: 1,
+      can_predict_reason: "CLOSED",
+    };
+    const zeroZero = {
+      match_status: "finished",
+      regular_home_score: 0,
+      regular_away_score: 0,
+      can_predict_reason: "CLOSED",
+    };
+    const allowedScoreSub = new Set(["FT", "待结算", "", "已结束"]);
+
+    it.each([
+      ["pending"],
+      ["not_ready"],
+      ["waiting"],
+      ["settling"],
+      ["settled"],
+      ["correcting"],
+      ["voided"],
+      [undefined],
+      [null],
+      ["unknown"],
+    ])("non-participant missing score with settlement_status %j does not show 待结算", (settlement_status) => {
+      const state = buildCardState(item({ ...noScore, settlement_status }), null);
+      expect(state.stateText).toBe("已结束");
+      expect(state.scoreSub).toBe("");
+      expect(state.scoreSub).not.toBe("待结算");
+      expect(state.predText).toBe("未预测");
+      expect(state.chipText).toBe("");
+      assertNoDuplication(state);
+    });
+
+    it.each([
+      ["pending"],
+      ["not_ready"],
+      ["waiting"],
+      ["settling"],
+    ])("participant missing score with %s and no match_score shows 待结算", (settlement_status) => {
+      const state = buildCardState(item({ ...noScore, settlement_status }), submitted({ match_score: null }));
+      expect(state.stateText).toBe("已结束");
+      expect(state.scoreSub).toBe("待结算");
+      expect(state.predText).toBe("已提交 2 : 1 · 不可修改");
+      expect(state.predText).not.toContain("得分");
+      expect(state.chipText).toBe("");
+      assertNoDuplication(state);
+    });
+
+    it.each([
+      [0],
+      [12],
+    ])("participant settled missing score with match_score %s matches settlement facts", (match_score) => {
+      const state = buildCardState(
+        item({ ...noScore, settlement_status: "settled" }),
+        submitted({ match_score }),
+      );
+      expect(state.stateText).toBe("已结束");
+      expect(state.scoreSub).toBe("");
+      expect(state.scoreSub).not.toBe("待结算");
+      expect(state.predText).toBe(`我的预测 2 : 1 · 得分 +${match_score}`);
+      expect(state.chipText).toBe("");
+      assertNoDuplication(state);
+    });
+
+    it.each([
+      ["pending"],
+      ["not_ready"],
+      ["waiting"],
+    ])("participant %s missing score with match_score 0 follows personal score, not 待结算", (settlement_status) => {
+      const state = buildCardState(
+        item({ ...noScore, settlement_status }),
+        submitted({ match_score: 0 }),
+      );
+      expect(state.stateText).toBe("已结束");
+      expect(state.scoreSub).toBe("");
+      expect(state.scoreSub).not.toBe("待结算");
+      expect(state.predText).toBe("我的预测 2 : 1 · 得分 +0");
+      assertNoDuplication(state);
+    });
+
+    it("does not treat null or unknown settlement_status as settled", () => {
+      const unknownStatuses = [undefined, null, "unknown"];
+      for (const settlement_status of unknownStatuses) {
+        const withPred = buildCardState(
+          item({ ...noScore, settlement_status }),
+          submitted({ match_score: null }),
+        );
+        expect(withPred.stateText).toBe("已结束");
+        expect(withPred.scoreSub).toBe("");
+        expect(withPred.scoreSub).not.toBe("待结算");
+        expect(withPred.predText).toBe("已提交 2 : 1 · 不可修改");
+        expect(withPred.predText).not.toContain("得分");
+
+        const settledOnlyByGuess = buildCardState(
+          item({ ...complete, settlement_status }),
+          submitted({ match_score: null }),
+        );
+        expect(settledOnlyByGuess.scoreSub).toBe("FT");
+        expect(settledOnlyByGuess.predText).toBe("已提交 2 : 1 · 不可修改");
+      }
+    });
+
+    it("keeps complete scores including 0-0 as FT regardless of settlement_status", () => {
+      expect(buildCardState(item({ ...complete, settlement_status: "waiting" }), null).scoreSub).toBe("FT");
+      expect(buildCardState(item({ ...complete, settlement_status: "settled" }), null).scoreSub).toBe("FT");
+      expect(buildCardState(item({ ...complete, settlement_status: "correcting" }), submitted({ match_score: 12 })).scoreSub).toBe("FT");
+      expect(buildCardState(item({ ...complete, settlement_status: "not_ready" }), submitted()).scoreSub).toBe("FT");
+      expect(buildCardState(item({ ...complete, settlement_status: "pending" }), null).scoreSub).toBe("FT");
+      expect(buildCardState(item(zeroZero), null).scoreSub).toBe("FT");
+      expect(buildCardState(item({ ...zeroZero, settlement_status: "settled" }), submitted({ match_score: 0 })).scoreSub).toBe("FT");
+      expect(buildCardState(item(complete), null).predText).toBe("未预测");
+      expect(buildCardState(item({ ...complete, settlement_status: "waiting" }), submitted({ match_score: null })).predText).toBe("已提交 2 : 1 · 不可修改");
+      expect(buildCardState(item({ ...complete, settlement_status: "settled" }), submitted({ match_score: 0 })).predText).toBe("我的预测 2 : 1 · 得分 +0");
+      expect(buildCardState(item({ ...complete, settlement_status: "correcting" }), submitted({ match_score: 12 })).predText).toBe("我的预测 2 : 1 · 得分 +12");
+      expect(buildCardState(item(complete), null).scoreSub).not.toBe("待结算");
+    });
+
+    it("does not invent copy for correcting, voided, or failed when score is missing", () => {
+      for (const settlement_status of ["correcting", "voided", "failed"]) {
+        const nonParticipant = buildCardState(item({ ...noScore, settlement_status }), null);
+        expect(nonParticipant.stateText).toBe("已结束");
+        expect(nonParticipant.predText).toBe("未预测");
+        expect(nonParticipant.scoreSub).not.toBe("待结算");
+        expect(allowedScoreSub.has(nonParticipant.scoreSub)).toBe(true);
+
+        const pendingPersonal = buildCardState(
+          item({ ...noScore, settlement_status }),
+          submitted({ match_score: null }),
+        );
+        expect(pendingPersonal.stateText).toBe("已结束");
+        expect(pendingPersonal.predText).toBe("已提交 2 : 1 · 不可修改");
+        expect(allowedScoreSub.has(pendingPersonal.scoreSub)).toBe(true);
+
+        const scored = buildCardState(
+          item({ ...noScore, settlement_status }),
+          submitted({ match_score: 0 }),
+        );
+        expect(scored.predText).toBe("我的预测 2 : 1 · 得分 +0");
+        expect(scored.scoreSub).not.toBe("待结算");
+        expect(allowedScoreSub.has(scored.scoreSub)).toBe(true);
+      }
+    });
+  });
+
+  it("keeps finished complete scores as FT when settlement_status is absent", () => {
+    const state = buildCardState(
+      item({ match_status: "finished", regular_home_score: 3, regular_away_score: 0, can_predict_reason: "CLOSED" }),
+      null,
+    );
+    expect(state.scoreSub).toBe("FT");
+    expect(state.predText).toBe("未预测");
+    expect(state.scoreSub).not.toBe("待结算");
   });
 
   it.each([

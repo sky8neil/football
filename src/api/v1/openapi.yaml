@@ -106,6 +106,26 @@ paths:
           $ref: '#/components/responses/ValidationError'
         '429':
           $ref: '#/components/responses/RateLimited'
+  /league-seasons:
+    get:
+      tags: [matches]
+      summary: 获取已接入联赛赛季目录
+      description: 可选按 league_id 过滤。游客可访问，不依赖用户预测记录。
+      parameters:
+        - name: league_id
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/LeagueId'
+      responses:
+        '200':
+          description: 联赛赛季目录
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LeagueSeasonsEnvelope'
+        '422':
+          $ref: '#/components/responses/ValidationError'
   /predictions/summary:
     get:
       tags: [predictions]
@@ -294,8 +314,7 @@ paths:
           required: false
           schema:
             type: string
-            enum: [2026_2027, '2026']
-          description: 仅可与 league_id 同时提供，且必须匹配该联赛登记赛季
+          description: 仅可与 league_id 同时提供；须为该联赛已接入的赛季（见 GET /v1/league-seasons），历史赛季同样可查
         - name: limit
           in: query
           required: false
@@ -537,15 +556,14 @@ paths:
           required: true
           schema:
             type: string
-            enum: [2026_2027, '2026']
-          description: 必须匹配 league_id 对应的当前登记赛季
+          description: 须为该联赛已接入的赛季（见 GET /v1/league-seasons），可为历史赛季
         - name: round_id
           in: query
           required: true
           schema:
             type: string
             pattern: '^[0-9]{2}$'
-          description: 01 到对应 league_id 的轮次上限
+          description: 须属于所选赛季实际存在的轮次（两位数字串）；不属于该赛季时返回 404
       responses:
         '200':
           description: 分享卡数据
@@ -561,6 +579,49 @@ paths:
           $ref: '#/components/responses/Conflict'
         '429':
           $ref: '#/components/responses/RateLimited'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+  /share-card/{user_id}:
+    get:
+      tags: [share-card]
+      summary: 获取指定用户的公开分享卡数据
+      description: 游客可访问，不需要登录。按路径指定分享者，返回其公开成绩摘要。
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: league_id
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/LeagueId'
+        - name: season_id
+          in: query
+          required: true
+          schema:
+            type: string
+          description: 须为该联赛已接入的赛季（见 GET /v1/league-seasons），可为历史赛季
+        - name: round_id
+          in: query
+          required: true
+          schema:
+            type: string
+            pattern: '^[0-9]{2}$'
+          description: 须属于所选赛季实际存在的轮次（两位数字串）；不属于该赛季时返回 404
+      responses:
+        '200':
+          description: 分享卡数据
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ShareCardEnvelope'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
         '422':
           $ref: '#/components/responses/ValidationError'
   /rankings:
@@ -1008,6 +1069,34 @@ paths:
           $ref: '#/components/responses/InternalError'
 components:
   schemas:
+    LeagueSeasonsEnvelope:
+      type: object
+      required: [data, request_id]
+      properties:
+        request_id: { type: string }
+        data:
+          type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/LeagueSeasonCatalogItem'
+    LeagueSeasonCatalogItem:
+      type: object
+      additionalProperties: false
+      required: [league_id, season_id, season_label, round_ids]
+      properties:
+        league_id:
+          $ref: '#/components/schemas/LeagueId'
+        season_id:
+          type: string
+        season_label:
+          type: string
+        round_ids:
+          type: array
+          items:
+            type: string
     LeagueStatusEnvelope:
       type: object
       required: [data, request_id]
@@ -1111,7 +1200,7 @@ components:
     MatchListItem:
       type: object
       additionalProperties: false
-      required: [match_id, league_id, season_id, round_id, home_team, away_team, kickoff_at, prediction_deadline_at, prediction_closed_at, match_status, regular_home_score, regular_away_score, can_predict, can_predict_reason]
+      required: [match_id, league_id, season_id, round_id, home_team, away_team, kickoff_at, prediction_deadline_at, prediction_closed_at, match_status, regular_home_score, regular_away_score, can_predict, can_predict_reason, settlement_status, my_prediction, is_prediction_closed]
       properties:
         match_id:
           type: string
@@ -1156,6 +1245,15 @@ components:
           type: string
           enum: [AUTH_REQUIRED, USER_DELETED, ALREADY_SUBMITTED, KICKOFF_UNCONFIRMED, NOT_SCHEDULED, CLOSED]
           nullable: true
+        settlement_status:
+          type: string
+          enum: [not_ready, waiting, settling, settled, correcting, voided]
+        my_prediction:
+          anyOf:
+            - $ref: '#/components/schemas/MyMatchPrediction'
+            - type: 'null'
+        is_prediction_closed:
+          type: boolean
     MatchesData:
       type: object
       additionalProperties: false
@@ -1209,7 +1307,7 @@ components:
     MatchDetailData:
       type: object
       additionalProperties: false
-      required: [match_id, league_id, season_id, round_id, home_team, away_team, kickoff_at, prediction_deadline_at, prediction_closed_at, match_status, regular_home_score, regular_away_score, can_predict, can_predict_reason, my_prediction]
+      required: [match_id, league_id, season_id, round_id, home_team, away_team, kickoff_at, prediction_deadline_at, prediction_closed_at, match_status, regular_home_score, regular_away_score, can_predict, can_predict_reason, settlement_status, my_prediction, is_prediction_closed]
       properties:
         match_id:
           type: string
@@ -1254,10 +1352,15 @@ components:
           type: string
           enum: [AUTH_REQUIRED, USER_DELETED, ALREADY_SUBMITTED, KICKOFF_UNCONFIRMED, NOT_SCHEDULED, CLOSED]
           nullable: true
+        settlement_status:
+          type: string
+          enum: [not_ready, waiting, settling, settled, correcting, voided]
         my_prediction:
           allOf:
             - $ref: '#/components/schemas/MyMatchPrediction'
           nullable: true
+        is_prediction_closed:
+          type: boolean
     MatchDetailEnvelope:
       type: object
       required: [data, request_id]
@@ -1327,7 +1430,7 @@ components:
     ShareCardData:
       type: object
       additionalProperties: false
-      required: [user_id, display_name, favorite_team_id, season_level, league_id, round_id, round_predictions, round_wdl_hits, round_exact_hits, round_score, career_points]
+      required: [user_id, display_name, favorite_team_id, season_level, league_id, season_id, season_label, round_id, round_predictions, round_wdl_hits, round_exact_hits, round_score, career_points, level_season_id, generated_at, pending_predictions]
       properties:
         user_id:
           type: string
@@ -1342,8 +1445,15 @@ components:
           type: integer
           minimum: 1
           maximum: 6
+          description: 当前等级赛季的等级，不是该历史轮次发生时的等级
         league_id:
           $ref: '#/components/schemas/LeagueId'
+        season_id:
+          type: string
+          description: 本次查询的比赛赛季，可为历史赛季
+        season_label:
+          type: string
+          description: 比赛赛季的展示文案，如 2026/2027
         round_id:
           type: string
           pattern: '^[0-9]{2}$'
@@ -1362,6 +1472,17 @@ components:
         career_points:
           type: integer
           minimum: 0
+        level_season_id:
+          type: string
+          description: 当前等级赛季，与比赛赛季分开
+        generated_at:
+          type: string
+          format: date-time
+          description: 本次读取时间；结算更正后重新打开会返回新数据
+        pending_predictions:
+          type: integer
+          minimum: 0
+          description: 该轮次内已提交但尚未形成有效结算的场次，取消/作废不计分项排除
     ShareCardEnvelope:
       type: object
       required: [data, request_id]
@@ -1508,7 +1629,7 @@ components:
     RankingData:
       type: object
       additionalProperties: false
-      required: [board, scope, period_key, updated_at, server_now, available_boards, seasons_participated, entry_count, items, page, me]
+      required: [board, scope, period_key, first_period_key, updated_at, server_now, available_boards, seasons_participated, entry_count, items, page, me]
       oneOf:
         - required: [current_period_key]
           properties:
@@ -1570,6 +1691,10 @@ components:
         current_period_key:
           type: string
           description: board=week 时的北京时间当前 ISO 周 key
+        first_period_key:
+          type: string
+          pattern: '^[0-9]{4}-W[0-9]{2}$'
+          description: 周榜可选周的最早一周（ISO 周编号）；供客户端动态构建周下拉
         available_boards:
           type: array
           items:
@@ -1604,17 +1729,81 @@ components:
       oneOf:
         - type: object
           additionalProperties: false
-          required: [status, rank, top_percent]
+          required: [status, rank, top_percent, period_score, valid_predictions, exact_hits]
           properties:
             status:
               type: string
               const: ranked
             rank:
-              type: integer
-              nullable: true
+              type: [integer, 'null']
             top_percent:
+              type: [integer, 'null']
+            period_score:
               type: integer
-              nullable: true
+              minimum: 0
+            valid_predictions:
+              type: integer
+              minimum: 1
+            exact_hits:
+              type: integer
+              minimum: 0
+        - type: object
+          additionalProperties: false
+          required: [status, rank, top_percent, career_points, career_valid_predictions, exact_hits]
+          properties:
+            status:
+              type: string
+              const: ranked
+            rank:
+              type: [integer, 'null']
+            top_percent:
+              type: [integer, 'null']
+            career_points:
+              type: integer
+              minimum: 0
+            career_valid_predictions:
+              type: integer
+              minimum: 1
+            exact_hits:
+              type: integer
+              minimum: 0
+        - type: object
+          additionalProperties: false
+          required: [status, rank, top_percent, season_points, season_valid_predictions, exact_hits]
+          properties:
+            status:
+              type: string
+              const: ranked
+            rank:
+              type: [integer, 'null']
+            top_percent:
+              type: [integer, 'null']
+            season_points:
+              type: integer
+              minimum: 0
+            season_valid_predictions:
+              type: integer
+              minimum: 1
+            exact_hits:
+              type: integer
+              minimum: 0
+        - type: object
+          additionalProperties: false
+          required: [status, rank, top_percent, strength_index, window_n]
+          properties:
+            status:
+              type: string
+              const: ranked
+            rank:
+              type: [integer, 'null']
+            top_percent:
+              type: [integer, 'null']
+            strength_index:
+              type: string
+              pattern: '^[0-9]+\.[0-9]{2}$'
+            window_n:
+              type: integer
+              minimum: 50
         - type: object
           additionalProperties: false
           required: [status]
@@ -2225,7 +2414,7 @@ components:
     SeasonLevelData:
       type: object
       additionalProperties: false
-      required: [level_season_id, level, best_level, is_rated, valid_predictions, remaining_to_rated, is_frozen]
+      required: [level_season_id, level, best_level, is_rated, valid_predictions, remaining_to_rated, is_frozen, season_points, exact_hits]
       properties:
         level_season_id:
           type: string
@@ -2247,6 +2436,10 @@ components:
           minimum: 0
         is_frozen:
           type: boolean
+        season_points:
+          type: integer
+        exact_hits:
+          type: integer
     LevelsData:
       type: object
       additionalProperties: false

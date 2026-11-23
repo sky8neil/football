@@ -1,15 +1,130 @@
 import { describe, expect, it } from "vitest";
 import { MVP_SEASON, SUPPORTED_LEAGUES } from "../../domain/config.js";
+import { MatchStatus, SettlementStatus } from "../../domain/enums.js";
 import { newUuid } from "../../domain/ids.js";
+import { formatSeasonLabel } from "../../domain/season-label.js";
+import { levelSeasonOf } from "../../domain/time.js";
 import { InMemoryRepository } from "../../infrastructure/repositories.js";
 import { ShareCardQueryService } from "../../application/share-card.js";
 import { DomainError } from "../../domain/errors.js";
-import { defaultLevelState } from "../../domain/types.js";
+import { defaultLevelState, type Match, type Prediction, type User } from "../../domain/types.js";
 import {
+  getShareCardForUser,
   getShareCardMe,
   validateShareCardQuery,
 } from "./share-card.js";
 import { InMemoryRateLimiter } from "./rate-limit.js";
+
+const NOW = new Date("2026-08-11T00:00:00.000Z");
+
+function makeUser(userId: string, overrides: Partial<User> = {}): User {
+  return {
+    schema_version: 1,
+    user_id: userId,
+    openid: `openid_${userId}`,
+    unionid: null,
+    nickname: "Sky",
+    favorite_team_id: null,
+    status: "active",
+    career_points: 0,
+    career_valid_predictions: 0,
+    career_wdl_hits: 0,
+    career_exact_hits: 0,
+    career_last_scoring_match_at: null,
+    career_level: 1,
+    career_best_level: 1,
+    career_level_state: defaultLevelState(),
+    deleted_at: null,
+    created_at: NOW,
+    updated_at: NOW,
+    ...overrides,
+  };
+}
+
+function makeMatch(overrides: Partial<Match> = {}): Match {
+  const matchId = overrides.match_id ?? newUuid();
+  return {
+    schema_version: 1,
+    match_id: matchId,
+    canonical_match_id: matchId,
+    superseded_by: null,
+    league_id: MVP_SEASON.league_id,
+    season_id: MVP_SEASON.season_id,
+    round_id: "01",
+    home_team_id: newUuid(),
+    away_team_id: newUuid(),
+    kickoff_at: NOW,
+    kickoff_confirmed: true,
+    prediction_deadline_at: NOW,
+    prediction_closed_at: null,
+    period_anchor_at: null,
+    match_status: MatchStatus.Scheduled,
+    settlement_status: SettlementStatus.Pending,
+    regular_home_score: null,
+    regular_away_score: null,
+    extra_home_score: null,
+    extra_away_score: null,
+    penalty_home_score: null,
+    penalty_away_score: null,
+    result_version: 0,
+    settled_result_version: 0,
+    result_source: null,
+    scoring_rule_version: "scoring_v1",
+    finish_detected_at: null,
+    settled_at: null,
+    created_at: NOW,
+    updated_at: NOW,
+    ...overrides,
+  };
+}
+
+function makeSettledMatch(overrides: Partial<Match> = {}): Match {
+  const matchId = overrides.match_id ?? newUuid();
+  return makeMatch({
+    match_id: matchId,
+    canonical_match_id: matchId,
+    match_status: MatchStatus.Finished,
+    settlement_status: SettlementStatus.Settled,
+    regular_home_score: 2,
+    regular_away_score: 1,
+    result_version: 1,
+    settled_result_version: 1,
+    result_source: "provider",
+    prediction_closed_at: NOW,
+    period_anchor_at: NOW,
+    finish_detected_at: NOW,
+    settled_at: NOW,
+    ...overrides,
+  });
+}
+
+function makePrediction(
+  userId: string,
+  matchId: string,
+  overrides: Partial<Prediction> = {},
+): Prediction {
+  const canonicalMatchIdentity = overrides.match_id ?? matchId;
+  return {
+    schema_version: 1,
+    prediction_id: newUuid(),
+    user_id: userId,
+    match_id: canonicalMatchIdentity,
+    canonical_match_id: overrides.canonical_match_id ?? canonicalMatchIdentity,
+    idempotency_key: newUuid(),
+    pred_home_score: 2,
+    pred_away_score: 1,
+    derived_result: "HOME",
+    submitted_at: NOW,
+    scoring_rule_version: "scoring_v1",
+    match_score: 12,
+    wdl_hit: true,
+    exact_hit: true,
+    applied_result_version: 1,
+    created_at: NOW,
+    updated_at: NOW,
+    ...overrides,
+  };
+}
 
 describe("share-card API query", () => {
   it("要求显式 league_id/season_id/round_id，并拒绝未知值与未知参数", () => {
@@ -25,14 +140,50 @@ describe("share-card API query", () => {
       });
     }
 
+    expect(validateShareCardQuery({
+      league_id: MVP_SEASON.league_id,
+      season_id: "2027_2028",
+      round_id: "01",
+    })).toEqual({
+      league_id: MVP_SEASON.league_id,
+      season_id: "2027_2028",
+      round_id: "01",
+    });
+    expect(validateShareCardQuery({
+      league_id: MVP_SEASON.league_id,
+      season_id: MVP_SEASON.season_id,
+      round_id: "00",
+    })).toEqual({
+      league_id: MVP_SEASON.league_id,
+      season_id: MVP_SEASON.season_id,
+      round_id: "00",
+    });
+    expect(validateShareCardQuery({
+      league_id: MVP_SEASON.league_id,
+      season_id: MVP_SEASON.season_id,
+      round_id: "39",
+    })).toEqual({
+      league_id: MVP_SEASON.league_id,
+      season_id: MVP_SEASON.season_id,
+      round_id: "39",
+    });
+    expect(validateShareCardQuery({
+      league_id: MVP_SEASON.league_id,
+      season_id: "2026",
+      round_id: "01",
+    })).toEqual({
+      league_id: MVP_SEASON.league_id,
+      season_id: "2026",
+      round_id: "01",
+    });
+
     for (const query of [
       { season_id: MVP_SEASON.season_id, round_id: "01" },
-      { round_id: "01" },
+      { league_id: MVP_SEASON.league_id, round_id: "01" },
       { league_id: MVP_SEASON.league_id, season_id: MVP_SEASON.season_id },
       { league_id: "eredivisie", season_id: MVP_SEASON.season_id, round_id: "01" },
-      { league_id: MVP_SEASON.league_id, season_id: "2027_2028", round_id: "01" },
-      { league_id: MVP_SEASON.league_id, season_id: MVP_SEASON.season_id, round_id: "00" },
-      { league_id: MVP_SEASON.league_id, season_id: MVP_SEASON.season_id, round_id: "39" },
+      { league_id: MVP_SEASON.league_id, season_id: MVP_SEASON.season_id, round_id: "1" },
+      { league_id: MVP_SEASON.league_id, season_id: MVP_SEASON.season_id, round_id: "abc" },
       { league_id: MVP_SEASON.league_id, season_id: MVP_SEASON.season_id, round_id: "01", cursor: "x" },
     ]) {
       expect(() => validateShareCardQuery(query)).toThrow(DomainError);
@@ -45,31 +196,17 @@ describe("share-card API query", () => {
   it("认证用户返回规范 snake_case 成功 envelope", async () => {
     const repo = new InMemoryRepository();
     const userId = newUuid();
-    await repo.users.insert({
-      schema_version: 1,
-      user_id: userId,
+    await repo.users.insert(makeUser(userId, {
       openid: "openid_share_card_api",
-      unionid: null,
-      nickname: "Sky",
-      favorite_team_id: null,
-      status: "active",
-      career_points: 0,
-      career_valid_predictions: 0,
-      career_wdl_hits: 0,
-      career_exact_hits: 0,
-      career_last_scoring_match_at: null,
-      career_level: 1,
-      career_best_level: 1,
-      career_level_state: defaultLevelState(),
-      deleted_at: null,
       created_at: new Date("2026-08-01T00:00:00Z"),
       updated_at: new Date("2026-08-01T00:00:00Z"),
-    });
+    }));
+    await repo.matches.insert(makeMatch());
 
     const response = await getShareCardMe(new ShareCardQueryService(repo), {
       authenticated_user_id: userId,
       query: { league_id: MVP_SEASON.league_id, season_id: MVP_SEASON.season_id, round_id: "01" },
-      server_now: new Date("2026-08-11T00:00:00.000Z"),
+      server_now: NOW,
       request_id: "request-share-card-1",
     });
 
@@ -81,12 +218,17 @@ describe("share-card API query", () => {
       favorite_team_id: null,
       season_level: 1,
       league_id: MVP_SEASON.league_id,
+      season_id: MVP_SEASON.season_id,
+      season_label: formatSeasonLabel(MVP_SEASON.season_id),
       round_id: "01",
       round_predictions: 0,
       round_wdl_hits: 0,
       round_exact_hits: 0,
       round_score: 0,
       career_points: 0,
+      level_season_id: levelSeasonOf(NOW),
+      generated_at: NOW.toISOString(),
+      pending_predictions: 0,
     });
   });
 
@@ -104,33 +246,14 @@ describe("share-card API query", () => {
   it("按 authenticated user 每分钟限制 120 次分享卡读取", async () => {
     const repo = new InMemoryRepository();
     const userId = newUuid();
-    const serverNow = new Date("2026-08-11T00:00:00.000Z");
-    await repo.users.insert({
-      schema_version: 1,
-      user_id: userId,
-      openid: "openid_share_card_rate_limit",
-      unionid: null,
-      nickname: "Sky",
-      favorite_team_id: null,
-      status: "active",
-      career_points: 0,
-      career_valid_predictions: 0,
-      career_wdl_hits: 0,
-      career_exact_hits: 0,
-      career_last_scoring_match_at: null,
-      career_level: 1,
-      career_best_level: 1,
-      career_level_state: defaultLevelState(),
-      deleted_at: null,
-      created_at: serverNow,
-      updated_at: serverNow,
-    });
+    await repo.users.insert(makeUser(userId, { openid: "openid_share_card_rate_limit" }));
+    await repo.matches.insert(makeMatch());
     const rateLimiter = new InMemoryRateLimiter();
     const input = {
       authenticated_user_id: userId,
       query: { league_id: MVP_SEASON.league_id, season_id: MVP_SEASON.season_id, round_id: "01" },
       request_id: "request-share-card-rate-limit",
-      server_now: serverNow,
+      server_now: NOW,
       rate_limiter: rateLimiter,
     };
     const service = new ShareCardQueryService(repo);
@@ -141,6 +264,206 @@ describe("share-card API query", () => {
 
     await expect(getShareCardMe(service, input)).rejects.toMatchObject({
       code: "RATE_LIMITED",
+    });
+  });
+
+  it("未接入赛季由 service 层拒绝，details 为 NOT_ATTACHED", async () => {
+    const repo = new InMemoryRepository();
+    const userId = newUuid();
+    await repo.users.insert(makeUser(userId));
+    await repo.matches.insert(makeMatch());
+
+    await expect(getShareCardMe(new ShareCardQueryService(repo), {
+      authenticated_user_id: userId,
+      query: { league_id: MVP_SEASON.league_id, season_id: "2027_2028", round_id: "01" },
+      server_now: NOW,
+      request_id: "request-share-card-unattached-season",
+    })).rejects.toMatchObject({
+      code: "VALIDATION_ERROR",
+      details: { field: "season_id", reason: "NOT_ATTACHED" },
+    });
+  });
+
+  it("赛季已接入但 round_id 不在目录中拒绝为 NOT_FOUND", async () => {
+    const repo = new InMemoryRepository();
+    const userId = newUuid();
+    await repo.users.insert(makeUser(userId));
+    await repo.matches.insert(makeMatch({ round_id: "01" }));
+    const service = new ShareCardQueryService(repo);
+
+    await expect(getShareCardMe(service, {
+      authenticated_user_id: userId,
+      query: { league_id: MVP_SEASON.league_id, season_id: MVP_SEASON.season_id, round_id: "00" },
+      server_now: NOW,
+      request_id: "request-share-card-round-00",
+    })).rejects.toMatchObject({
+      code: "ROUND_NOT_FOUND",
+    });
+    await expect(getShareCardMe(service, {
+      authenticated_user_id: userId,
+      query: { league_id: MVP_SEASON.league_id, season_id: MVP_SEASON.season_id, round_id: "39" },
+      server_now: NOW,
+      request_id: "request-share-card-round-39",
+    })).rejects.toMatchObject({
+      code: "ROUND_NOT_FOUND",
+    });
+  });
+
+  it("premier_league 拒绝自然年赛季格式", async () => {
+    const repo = new InMemoryRepository();
+    const userId = newUuid();
+    await repo.users.insert(makeUser(userId));
+
+    await expect(getShareCardMe(new ShareCardQueryService(repo), {
+      authenticated_user_id: userId,
+      query: { league_id: "premier_league", season_id: "2026", round_id: "01" },
+      server_now: NOW,
+      request_id: "request-share-card-season-format",
+    })).rejects.toMatchObject({
+      code: "VALIDATION_ERROR",
+      details: { field: "season_id", reason: "FORMAT" },
+    });
+  });
+
+  it("已接入的历史赛季与该赛季实际存在的轮次可正常返回", async () => {
+    const repo = new InMemoryRepository();
+    const userId = newUuid();
+    await repo.users.insert(makeUser(userId));
+    await repo.matches.insert(makeMatch({ season_id: "2024_2025", round_id: "08" }));
+
+    const response = await getShareCardMe(new ShareCardQueryService(repo), {
+      authenticated_user_id: userId,
+      query: { league_id: "premier_league", season_id: "2024_2025", round_id: "08" },
+      server_now: NOW,
+      request_id: "request-share-card-historical-season",
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.body.data).toEqual({
+      user_id: userId,
+      display_name: "Sky",
+      favorite_team_id: null,
+      season_level: 1,
+      league_id: "premier_league",
+      season_id: "2024_2025",
+      season_label: "2024/2025",
+      round_id: "08",
+      round_predictions: 0,
+      round_wdl_hits: 0,
+      round_exact_hits: 0,
+      round_score: 0,
+      career_points: 0,
+      level_season_id: levelSeasonOf(NOW),
+      generated_at: NOW.toISOString(),
+      pending_predictions: 0,
+    });
+  });
+});
+
+describe("getShareCardForUser", () => {
+  it("游客不传登录身份也能返回 200，且 user_id 等于路径里的分享者", async () => {
+    const repo = new InMemoryRepository();
+    const sharerId = newUuid();
+    await repo.users.insert(makeUser(sharerId, { nickname: "Sharer" }));
+    await repo.matches.insert(makeMatch());
+
+    const response = await getShareCardForUser(new ShareCardQueryService(repo), {
+      user_id: sharerId,
+      query: { league_id: MVP_SEASON.league_id, season_id: MVP_SEASON.season_id, round_id: "01" },
+      server_now: NOW,
+      request_id: "request-share-card-for-user-guest",
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.user_id).toBe(sharerId);
+    expect(response.body.request_id).toBe("request-share-card-for-user-guest");
+  });
+
+  it("分享者和另一个用户成绩不同时，返回的是分享者的成绩", async () => {
+    const repo = new InMemoryRepository();
+    const sharerId = newUuid();
+    const viewerId = newUuid();
+    await repo.users.insert(makeUser(sharerId, {
+      nickname: "Sharer",
+      career_points: 40,
+    }));
+    await repo.users.insert(makeUser(viewerId, {
+      nickname: "Viewer",
+      career_points: 7,
+    }));
+    const match = makeSettledMatch();
+    await repo.matches.insert(match);
+    await repo.predictions.insert(makePrediction(sharerId, match.match_id, {
+      match_score: 12,
+      wdl_hit: true,
+      exact_hit: true,
+    }));
+    await repo.predictions.insert(makePrediction(viewerId, match.match_id, {
+      match_score: 3,
+      wdl_hit: true,
+      exact_hit: false,
+      pred_home_score: 1,
+      pred_away_score: 0,
+    }));
+
+    const response = await getShareCardForUser(new ShareCardQueryService(repo), {
+      user_id: sharerId,
+      query: { league_id: MVP_SEASON.league_id, season_id: MVP_SEASON.season_id, round_id: "01" },
+      server_now: NOW,
+      request_id: "request-share-card-for-user-sharer",
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.user_id).toBe(sharerId);
+    expect(response.body.data.display_name).toBe("Sharer");
+    expect(response.body.data.round_score).toBe(12);
+    expect(response.body.data.round_exact_hits).toBe(1);
+    expect(response.body.data.career_points).toBe(40);
+  });
+
+  it("用户不存在时抛 USER_NOT_FOUND", async () => {
+    const repo = new InMemoryRepository();
+    await repo.matches.insert(makeMatch());
+
+    await expect(getShareCardForUser(new ShareCardQueryService(repo), {
+      user_id: newUuid(),
+      query: { league_id: MVP_SEASON.league_id, season_id: MVP_SEASON.season_id, round_id: "01" },
+      server_now: NOW,
+      request_id: "request-share-card-for-user-missing",
+    })).rejects.toMatchObject({
+      code: "USER_NOT_FOUND",
+    });
+  });
+
+  it("用户已注销时抛 USER_DELETED", async () => {
+    const repo = new InMemoryRepository();
+    const userId = newUuid();
+    await repo.users.insert(makeUser(userId, { status: "deleted", deleted_at: NOW }));
+    await repo.matches.insert(makeMatch());
+
+    await expect(getShareCardForUser(new ShareCardQueryService(repo), {
+      user_id: userId,
+      query: { league_id: MVP_SEASON.league_id, season_id: MVP_SEASON.season_id, round_id: "01" },
+      server_now: NOW,
+      request_id: "request-share-card-for-user-deleted",
+    })).rejects.toMatchObject({
+      code: "USER_DELETED",
+    });
+  });
+
+  it("未接入轮次时抛 ROUND_NOT_FOUND", async () => {
+    const repo = new InMemoryRepository();
+    const userId = newUuid();
+    await repo.users.insert(makeUser(userId));
+    await repo.matches.insert(makeMatch({ round_id: "01" }));
+
+    await expect(getShareCardForUser(new ShareCardQueryService(repo), {
+      user_id: userId,
+      query: { league_id: MVP_SEASON.league_id, season_id: MVP_SEASON.season_id, round_id: "00" },
+      server_now: NOW,
+      request_id: "request-share-card-for-user-round",
+    })).rejects.toMatchObject({
+      code: "ROUND_NOT_FOUND",
     });
   });
 });

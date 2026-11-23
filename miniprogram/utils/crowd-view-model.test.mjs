@@ -39,6 +39,49 @@ describe("crowd view model", () => {
     expect(vm.crowdPlan({ match: match({ match_status: "finished" }), identityMissing: false })).toBe("fetch");
   });
 
+  it("fetches crowd after close even when a submitted scheduled match is still ALREADY_SUBMITTED", () => {
+    expect(vm.crowdPlan({
+      match: match({
+        match_status: "scheduled",
+        can_predict_reason: "ALREADY_SUBMITTED",
+        is_prediction_closed: true,
+      }),
+      identityMissing: false,
+    })).toBe("fetch");
+    expect(vm.crowdPlan({
+      match: match({
+        match_status: "scheduled",
+        can_predict_reason: null,
+        is_prediction_closed: true,
+      }),
+      identityMissing: false,
+    })).toBe("fetch");
+    expect(vm.crowdPlan({
+      match: match({
+        match_status: "scheduled",
+        can_predict_reason: "ALREADY_SUBMITTED",
+        is_prediction_closed: false,
+      }),
+      identityMissing: false,
+    })).toBe("locked");
+    expect(vm.crowdPlan({
+      match: match({
+        match_status: "postponed",
+        can_predict_reason: "ALREADY_SUBMITTED",
+        is_prediction_closed: true,
+      }),
+      identityMissing: false,
+    })).toBe("hidden");
+    expect(vm.crowdPlan({
+      match: match({
+        match_status: "scheduled",
+        can_predict_reason: "ALREADY_SUBMITTED",
+        is_prediction_closed: true,
+      }),
+      identityMissing: true,
+    })).toBe("guest");
+  });
+
   it("maps each API status and builds proportional visible segments", () => {
     expect(vm.crowdCard({ response: { status: "not_closed", min_predictions: 20 } })).toMatchObject({ kind: "locked", message: "比赛截止后可看，达到最低参与人数后显示" });
     expect(vm.crowdCard({ response: { status: "insufficient", min_predictions: 24 } })).toMatchObject({ kind: "insufficient", message: expect.stringContaining("24") });

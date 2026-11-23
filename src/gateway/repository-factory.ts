@@ -9,6 +9,11 @@ import {
 } from "../infrastructure/postgres-document-db.js";
 import type { GatewayRuntimeConfig, PostgresRepositoryConfig } from "./config.js";
 
+export const DEFAULT_PG_POOL_MAX = 20;
+export const DEFAULT_PG_IDLE_TIMEOUT_MILLIS = 30_000;
+export const DEFAULT_PG_CONNECTION_TIMEOUT_MILLIS = 5_000;
+export const DEFAULT_PG_STATEMENT_TIMEOUT = 30_000;
+
 export interface GatewayRepositoryHandle {
   repo: AppRepository;
   close(): Promise<void>;
@@ -16,12 +21,55 @@ export interface GatewayRepositoryHandle {
 
 async function noopClose(): Promise<void> {}
 
+function parsePositiveIntegerEnv(
+  env: Record<string, string | undefined>,
+  key: string,
+  fallback: number,
+): number {
+  const raw = env[key];
+  if (typeof raw !== "string" || raw.trim().length === 0) return fallback;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`${key} must be a positive integer`);
+  }
+  return parsed;
+}
+
+export function createPostgresPool(
+  connectionString: string,
+  env: Record<string, string | undefined> = process.env,
+): pg.Pool {
+  const pool = new pg.Pool({
+    connectionString,
+    max: parsePositiveIntegerEnv(env, "FOOTBALL_PG_POOL_MAX", DEFAULT_PG_POOL_MAX),
+    idleTimeoutMillis: parsePositiveIntegerEnv(
+      env,
+      "FOOTBALL_PG_IDLE_TIMEOUT_MILLIS",
+      DEFAULT_PG_IDLE_TIMEOUT_MILLIS,
+    ),
+    connectionTimeoutMillis: parsePositiveIntegerEnv(
+      env,
+      "FOOTBALL_PG_CONNECTION_TIMEOUT_MILLIS",
+      DEFAULT_PG_CONNECTION_TIMEOUT_MILLIS,
+    ),
+    statement_timeout: parsePositiveIntegerEnv(
+      env,
+      "FOOTBALL_PG_STATEMENT_TIMEOUT",
+      DEFAULT_PG_STATEMENT_TIMEOUT,
+    ),
+  });
+  pool.on("error", (err) => {
+    console.error(JSON.stringify({ event: "pg_pool_error", message: err.message }));
+  });
+  return pool;
+}
+
 function createPostgresConnect(pool: pg.Pool): PostgresConnectFn {
   return async () => {
     const client = await pool.connect();
     return {
       query: createPostgresQueryFn(client),
-      release: () => client.release(),
+      release: (err?: Error) => client.release(err),
     };
   };
 }
@@ -53,8 +101,9 @@ export function createPostgresAppRepository(
 
 function createPostgresRepositoryHandle(
   postgres: PostgresRepositoryConfig,
+  env: Record<string, string | undefined> = process.env,
 ): GatewayRepositoryHandle {
-  const pool = new pg.Pool({ connectionString: postgres.database_url });
+  const pool = createPostgresPool(postgres.database_url, env);
   let closed = false;
   return {
     repo: createPostgresAppRepository(pool, postgres),
@@ -69,6 +118,7 @@ function createPostgresRepositoryHandle(
 export function createGatewayRepositoryHandle(
   config: GatewayRuntimeConfig,
   cloudbaseDb?: CloudBaseDb,
+  env: Record<string, string | undefined> = process.env,
 ): GatewayRepositoryHandle {
   if (config.repository_backend === "memory") {
     return { repo: new InMemoryRepository(), close: noopClose };
@@ -77,7 +127,7 @@ export function createGatewayRepositoryHandle(
     if (config.postgres_repository === null) {
       throw new Error("PostgreSQL repository configuration is required");
     }
-    return createPostgresRepositoryHandle(config.postgres_repository);
+    return createPostgresRepositoryHandle(config.postgres_repository, env);
   }
   if (config.cloudbase_repository === null) {
     throw new Error("CloudBase repository configuration is required");

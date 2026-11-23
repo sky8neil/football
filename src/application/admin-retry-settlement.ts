@@ -1,3 +1,4 @@
+import { FIXED_CONFIG_V1 } from "../domain/config.js";
 import {
   AdminAuditAction,
   ADMIN_AUDIT_ENTITY_TYPE_BY_ACTION,
@@ -30,6 +31,7 @@ import {
   SettlementItemApplicationService,
 } from "./settlement-item-application-service.js";
 import { continuePendingCorrections } from "./settlement-orchestration-service.js";
+import { LevelCorrectionReevalService } from "./level-correction-reeval.js";
 import { selectFailedSettlementTarget } from "./retry-settlement-target.js";
 import { assertValidServerNow } from "./period-finalize.js";
 
@@ -90,16 +92,19 @@ export class AdminRetrySettlementService implements RetrySettlementCommand {
   private readonly authorization = new AdminAuthorizationService();
   private readonly retryService: RetrySettlementService;
   private readonly correctionService: CorrectionSettlementService;
+  private readonly levelCorrectionReeval: LevelCorrectionReevalService;
 
   constructor(
     private readonly repo: AppRepository,
     itemWorker?: RetrySettlementItemWorker,
+    firstEvalAsOf: Date | null = FIXED_CONFIG_V1.LEVEL_FIRST_EVAL_AS_OF,
   ) {
     const worker =
       itemWorker ??
       createAtomicSettlementItemWorker(new SettlementItemApplicationService(repo));
     this.retryService = new RetrySettlementService(repo, worker);
     this.correctionService = new CorrectionSettlementService(repo, worker);
+    this.levelCorrectionReeval = new LevelCorrectionReevalService(repo, firstEvalAsOf);
   }
 
   authorizeAdmin(trustedOpenid: string): Promise<void> {
@@ -192,6 +197,7 @@ export class AdminRetrySettlementService implements RetrySettlementCommand {
         this.correctionService,
         matchId,
         serverNow,
+        this.levelCorrectionReeval,
       );
     }
 

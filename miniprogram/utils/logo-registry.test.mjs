@@ -2,17 +2,40 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { runInNewContext } from "node:vm";
+import { runInThisContext } from "node:vm";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, "..");
 const LEAGUE_IDS = ["bundesliga", "serie_a"];
+const ALAVES_ID = "00235af4-869b-4953-a3b7-afc3f8024d81";
+const REAL_MADRID_ID = "393c67e2-45f7-48a2-b3cd-9684901614ef";
+const DEPORTIVO_ID = "8fe05bcc-784f-4435-ab49-b7bf039575c8";
+const LIAONING_ID = "4d9ba1a3-a44a-4c32-a641-f9b1f7500d91";
+const INTER_ID = "8ded21ad-f15a-482e-a4d4-113ce7481e65";
+const BAYER_ID = "bec2ad65-57d9-4954-805b-6411664c9ea2";
+const UNKNOWN_ID = "00000000-0000-4000-8000-000000000000";
+
+function loadCommonJs(file, requireShim) {
+  const module = { exports: {} };
+  const factory = runInThisContext(`(function(module, exports, require) {\n${readFileSync(file, "utf8")}\n})`, {
+    filename: file,
+  });
+  factory(module, module.exports, requireShim);
+  return module.exports;
+}
+
+function loadTeamRegistry() {
+  return loadCommonJs(join(HERE, "team-registry.js"), () => {
+    throw new Error("team-registry has no dependencies");
+  });
+}
 
 function loadLogoRegistry() {
-  const moduleShim = { exports: {} };
-  const source = readFileSync(join(HERE, "logo-registry.js"), "utf8");
-  runInNewContext(source, { module: moduleShim, exports: moduleShim.exports });
-  return moduleShim.exports;
+  const teamRegistry = loadTeamRegistry();
+  return loadCommonJs(join(HERE, "logo-registry.js"), (id) => {
+    if (id === "./team-registry.js") return teamRegistry;
+    throw new Error(`Unexpected logo-registry require: ${id}`);
+  });
 }
 
 describe("mini program league logos", () => {
@@ -107,5 +130,64 @@ describe("new Bundesliga and Serie A team assets", () => {
   ])("matches %s API name %s", (league, name, slug) => {
     const r = loadLogoRegistry();
     expect(r.getTeamLogo(league, { team_id: "uuid", name })).toBe(r.MANIFEST[league].teams[slug]);
+  });
+});
+
+describe("team_id-first logo resolution", () => {
+  it("resolves packaged crests from team_id even without a display name", () => {
+    const r = loadLogoRegistry();
+    expect(r.getTeamLogo("la_liga", { team_id: REAL_MADRID_ID })).toBe(r.MANIFEST.la_liga.teams["real-madrid"]);
+    expect(r.getTeamLogo("serie_a", { team_id: INTER_ID })).toBe(r.MANIFEST.serie_a.teams.inter);
+    expect(r.getTeamLogo("bundesliga", { team_id: BAYER_ID })).toBe(r.MANIFEST.bundesliga.teams["bayer-leverkusen"]);
+    expect(r.getTeamLogo("chinese_super_league", { team_id: LIAONING_ID })).toBe(
+      r.MANIFEST.chinese_super_league.teams["liaoning-tiening"],
+    );
+  });
+
+  it("prefers team_id over a conflicting name and the caller's league id", () => {
+    const r = loadLogoRegistry();
+    expect(r.getTeamLogo("premier_league", { team_id: REAL_MADRID_ID, name: "Arsenal FC" })).toBe(
+      r.MANIFEST.la_liga.teams["real-madrid"],
+    );
+    expect(r.getTeamLogo("unknown_league", { team_id: DEPORTIVO_ID, name: "Deportivo Alavés" })).toBe(
+      r.MANIFEST.la_liga.teams["deportivo-la-coruna"],
+    );
+  });
+
+  it("does not reuse another club's crest for Alavés or unknown identities", () => {
+    const r = loadLogoRegistry();
+    expect(r.getTeamLogo("la_liga", { team_id: ALAVES_ID, name: "Deportivo Alavés" })).toBe(r.PLACEHOLDER);
+    expect(r.getTeamLogo("la_liga", { team_id: ALAVES_ID, name: "Deportivo" })).toBe(r.PLACEHOLDER);
+    expect(r.getTeamLogo("la_liga", "Deportivo Alavés")).toBe(r.PLACEHOLDER);
+    expect(r.getTeamLogo("la_liga", { team_id: UNKNOWN_ID, name: "Deportivo Alavés" })).toBe(r.PLACEHOLDER);
+    expect(r.getTeamLogo("unknown_league", { team_id: UNKNOWN_ID, name: "Real Madrid CF" })).toBe(r.PLACEHOLDER);
+    expect(r.getTeamLogo("la_liga", { team_id: UNKNOWN_ID })).toBe(r.PLACEHOLDER);
+    expect(r.getTeamLogo("premier_league", "Wolverhampton Wanderers")).toBe(r.PLACEHOLDER);
+  });
+
+  it("falls back to source_name aliases for registered clubs that the old suffix strip missed", () => {
+    const r = loadLogoRegistry();
+    const teamRegistry = loadTeamRegistry();
+    expect(r.getTeamLogo("la_liga", "Real Madrid CF")).toBe(r.MANIFEST.la_liga.teams["real-madrid"]);
+    expect(r.getTeamLogo("la_liga", "Club Atlético de Madrid")).toBe(r.MANIFEST.la_liga.teams["atletico-madrid"]);
+    expect(r.getTeamLogo("la_liga", "Real Racing Club de Santander")).toBe(r.MANIFEST.la_liga.teams.racing);
+    expect(r.getTeamLogo("serie_a", "FC Internazionale Milano")).toBe(r.MANIFEST.serie_a.teams.inter);
+    expect(r.getTeamLogo("bundesliga", "Bayer 04 Leverkusen")).toBe(r.MANIFEST.bundesliga.teams["bayer-leverkusen"]);
+    expect(r.getTeamLogo("ligue_1", "Racing Club de Lens")).toBe(r.MANIFEST.ligue_1.teams["rc-lens"]);
+    expect(r.getTeamLogo("chinese_super_league", "Shenzhen Peng City")).toBe(
+      r.MANIFEST.chinese_super_league.teams["shenzhen-xinpengcheng"],
+    );
+    let missingAsset = 0;
+    for (const [teamId, team] of Object.entries(teamRegistry.TEAM_REGISTRY)) {
+      const logo = r.getTeamLogo(team.league_id, { team_id: teamId });
+      if (teamId === ALAVES_ID) {
+        expect(logo).toBe(r.PLACEHOLDER);
+        missingAsset += 1;
+        continue;
+      }
+      expect(logo).not.toBe(r.PLACEHOLDER);
+      expect(existsSync(join(ROOT, "pages", "matches", logo))).toBe(true);
+    }
+    expect(missingAsset).toBe(1);
   });
 });

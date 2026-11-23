@@ -83,6 +83,25 @@ describe("buildLevelView", () => {
     });
   });
 
+  it("maps pending when nextThreshold is null instead of treating null as 0", () => {
+    const view = buildLevelView({
+      level: 1,
+      bPoints: 80,
+      isRated: true,
+      remainingToRated: 0,
+      nextThreshold: null,
+    });
+    expect(view).toEqual({
+      state: "pending",
+      title: "等待评估",
+      detail: "暂无可用的评估积分，每周一 10:00 评估后更新",
+      progressPercent: 0,
+      showProgress: false,
+    });
+    expect(view.progressPercent).not.toBe(100);
+    expect(view.state).not.toBe("reached");
+  });
+
   it("maps below when evaluation points are under the next threshold", () => {
     expect(buildLevelView({
       level: 5,

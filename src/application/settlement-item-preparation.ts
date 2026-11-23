@@ -32,7 +32,9 @@ export async function prepareSettlementItems(
     invalidLedger("settlement 与 match_result 版本或比赛不一致");
   }
 
-  const predictions = await tx.predictions.findByMatch(settlement.match_id);
+  const match = await tx.matches.findById(settlement.match_id);
+  const canonicalId = match?.canonical_match_id ?? settlement.match_id;
+  const predictions = await tx.predictions.findByCanonicalMatch(canonicalId);
   for (const prediction of predictions) {
     const existing = await tx.settlementItems.findBySettlementAndPrediction(
       settlement.settlement_id,

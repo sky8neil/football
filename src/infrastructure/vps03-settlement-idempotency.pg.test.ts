@@ -365,7 +365,7 @@ describe.skipIf(!ENABLED)("VPS03 I60 重复结算：PostgreSQL 与 CloudBase fix
       const client = await pool.connect();
       return {
         query: createPostgresQueryFn(client),
-        release: () => client.release(),
+        release: (err?: Error) => client.release(err),
       };
     };
     const pgDb = createPostgresDocumentDb(queryFn, { schema: SCHEMA, namespace: NAMESPACE }, { connect });

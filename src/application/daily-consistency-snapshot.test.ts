@@ -1,5 +1,5 @@
 import { FIXED_CONFIG_V1 } from "../domain/config.js";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   MatchStatus,
   PeriodType,
@@ -232,7 +232,7 @@ async function setup(matchOverrides: Partial<Match> = {}) {
 }
 
 describe("RepositoryDailyConsistencySnapshotSource", () => {
-  it("按传入时间读取上一赛季补赛；省略时间时保留静态赛季集合", async () => {
+  it("按传入时间动态读取活跃赛季（当前与上一赛季）；省略时间时也按当前时间动态解析", async () => {
     const repo = new InMemoryRepository();
     await repo.users.insert(makeUser());
     await repo.matches.insert(makeMatch({
@@ -241,8 +241,13 @@ describe("RepositoryDailyConsistencySnapshotSource", () => {
     }));
     await repo.predictions.insert(makePrediction());
 
-    const staticSnapshot = await repo.withTransaction((tx) => loadDailyConsistencySnapshot(tx));
-    expect(staticSnapshot.active_settlements).toEqual([]);
+    // 省略时间时也使用 activeSeasonIds(league, new Date()) 而非静态 league.season_id
+    const defaultNowSnapshot = await repo.withTransaction((tx) => loadDailyConsistencySnapshot(tx));
+    expect(defaultNowSnapshot.active_settlements).toContainEqual(expect.objectContaining({
+      match_id: MATCH_ID,
+      season_id: "2026_2027",
+      periods: [{ period_type: PeriodType.Week, period_key: "2026-W32" }],
+    }));
 
     const dynamicSnapshot = await new RepositoryDailyConsistencySnapshotSource(repo).load(NOW);
     expect(dynamicSnapshot.active_settlements).toContainEqual(expect.objectContaining({
@@ -250,6 +255,21 @@ describe("RepositoryDailyConsistencySnapshotSource", () => {
       season_id: "2026_2027",
       periods: [{ period_type: PeriodType.Week, period_key: "2026-W32" }],
     }));
+
+    // 跨入 2027_2028 后，2025_2026 不再属于活跃赛季窗口，而 2027_2028 比赛可被读取
+    const nextSeasonMatchId = "22222222-2222-4222-8222-222222222222";
+    await repo.matches.insert(makeMatch({
+      match_id: nextSeasonMatchId,
+      canonical_match_id: nextSeasonMatchId,
+      season_id: "2027_2028",
+      kickoff_at: new Date("2027-08-16T14:00:00.000Z"),
+      period_anchor_at: new Date("2027-08-16T14:00:00.000Z"),
+      settlement_status: SettlementStatus.Settling,
+    }));
+    const futureSnapshot = await new RepositoryDailyConsistencySnapshotSource(repo).load(
+      new Date("2027-08-15T12:00:00.000Z"),
+    );
+    expect(futureSnapshot.active_settlements.map((s) => s.match_id)).toEqual([nextSeasonMatchId]);
   });
 
   it("从 applied ledger 重建 career、season 与 week ranking 的 expected 快照", async () => {
@@ -766,5 +786,109 @@ describe("RepositoryDailyConsistencySnapshotSource", () => {
     expect(checkDailyConsistency(snapshot).differences.filter(
       (difference) => difference.scope === "board_snapshot",
     )).toEqual([]);
+  });
+
+  it("[Slice 5.2] 不再全量调用 settlementItems.findByStatus，且非活跃旧赛季历史不误报差异", async () => {
+    const repo = await setup();
+    const user = await repo.users.findById(USER_ID);
+    await repo.users.update({
+      ...user!,
+      career_points: 15,
+      career_valid_predictions: 2,
+      career_wdl_hits: 2,
+      career_exact_hits: 1,
+      career_last_scoring_match_at: new Date("2026-08-08T06:00:00.000Z"),
+    });
+    await repo.userSeasonStats.update(makeSeasonStats({
+      points: 12,
+      valid_predictions: 1,
+      wdl_hits: 1,
+      exact_hits: 1,
+    }));
+    await repo.rankings.update({
+      ...makeRanking(),
+      period_score: 12,
+      exact_hits: 1,
+      last_scoring_match_at: new Date("2026-08-08T06:00:00.000Z"),
+      global_rank: 1,
+    });
+
+    const oldAnchor = new Date("2023-08-12T12:00:00.000Z");
+    const oldMatchId = "old-match-2023";
+    const oldPredictionId = "old-prediction-2023";
+    const oldSettlementId = "old-settlement-2023";
+    await repo.matches.insert(makeMatch({
+      match_id: oldMatchId,
+      canonical_match_id: oldMatchId,
+      season_id: "2023_2024",
+      kickoff_at: oldAnchor,
+      period_anchor_at: oldAnchor,
+      prediction_deadline_at: new Date(oldAnchor.getTime() - 600_000),
+      prediction_closed_at: new Date(oldAnchor.getTime() - 600_000),
+    }));
+    await repo.predictions.insert({
+      ...makePrediction(),
+      prediction_id: oldPredictionId,
+      match_id: oldMatchId,
+      canonical_match_id: oldMatchId,
+      idempotency_key: "idempotency-old-2023",
+      match_score: 3,
+      exact_hit: false,
+      submitted_at: new Date(oldAnchor.getTime() - 3600_000),
+    });
+    await repo.matchResults.insert({
+      ...makeResult(),
+      match_id: oldMatchId,
+    });
+    await repo.settlements.insert(makeSettlement({
+      settlement_id: oldSettlementId,
+      match_id: oldMatchId,
+    }));
+    await repo.settlementItems.insert(makeItem({
+      settlement_id: oldSettlementId,
+      prediction_id: oldPredictionId,
+      new_score: 3,
+      score_delta: 3,
+      new_exact_hit: false,
+      applied_at: oldAnchor,
+    }));
+    await repo.userSeasonStats.insert(makeSeasonStats({
+      level_season_id: "2023_2024",
+      points: 3,
+      valid_predictions: 1,
+      wdl_hits: 1,
+      exact_hits: 0,
+      last_scoring_match_at: oldAnchor,
+      is_level_frozen: true,
+    }));
+    await repo.rankings.insert({
+      schema_version: 1,
+      period_type: PeriodType.Week,
+      period_key: "2023-W32",
+      user_id: USER_ID,
+      period_score: 3,
+      valid_predictions: 1,
+      wdl_hits: 1,
+      exact_hits: 0,
+      last_scoring_match_at: oldAnchor,
+      global_rank: 1,
+      is_final: true,
+      created_at: oldAnchor,
+      updated_at: oldAnchor,
+    });
+
+    const settlementItems = repo.settlementItems;
+    const findByStatusSpy = vi.spyOn(settlementItems, "findByStatus");
+    const repoProxy = new Proxy(repo, {
+      get(target, prop, receiver) {
+        if (prop === "settlementItems") return settlementItems;
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const snapshot = await loadDailyConsistencySnapshot(repoProxy, NOW, null);
+    const result = checkDailyConsistency(snapshot);
+
+    expect(findByStatusSpy).not.toHaveBeenCalled();
+    expect(result.differences).toEqual([]);
   });
 });

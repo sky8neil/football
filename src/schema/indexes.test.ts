@@ -150,8 +150,20 @@ describe("第 22 节数据库索引定义", () => {
       },
       {
         collection: "predictions",
+        name: "ix_predictions_user_submitted_id",
+        fields: ["user_id", "submitted_at:desc", "prediction_id:desc"],
+        unique: false,
+      },
+      {
+        collection: "predictions",
         name: "ix_predictions_match",
         fields: ["match_id"],
+        unique: false,
+      },
+      {
+        collection: "predictions",
+        name: "ix_predictions_canonical_match",
+        fields: ["canonical_match_id"],
         unique: false,
       },
       {
@@ -164,6 +176,12 @@ describe("第 22 节数据库索引定义", () => {
         collection: "rankings",
         name: "ix_rankings_period_score",
         fields: ["period_type", "period_key", "period_score:desc"],
+        unique: false,
+      },
+      {
+        collection: "rankings",
+        name: "ix_rankings_period_final",
+        fields: ["period_type", "is_final", "period_key"],
         unique: false,
       },
       {
@@ -218,6 +236,12 @@ describe("第 22 节数据库索引定义", () => {
         collection: "board_snapshots",
         name: "ix_board_snapshots_user",
         fields: ["board", "user_id", "snapshot_at:desc"],
+        unique: false,
+      },
+      {
+        collection: "board_snapshots",
+        name: "ix_board_snapshots_season_final",
+        fields: ["board", "is_final", "level_season_id", "snapshot_at:desc"],
         unique: false,
       },
       {

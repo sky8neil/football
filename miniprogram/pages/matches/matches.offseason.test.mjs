@@ -56,6 +56,7 @@ function createPage({ statuses = [status("chinese_super_league", "completed"), s
       runInThisContext(`(function(module, exports) {\n${readFileSync(join(HERE, "../../utils/level-season.js"), "utf8")}\n})`)(util, util.exports);
       return util.exports;
     }
+    if (id === "../../services/auth.js") return { getLoginGeneration: () => 0 };
     throw new Error(`Unexpected require: ${id}`);
   });
   const page = Object.assign({}, definition, { data: structuredClone(definition.data), setData(update) { Object.assign(this.data, update); } });
@@ -189,6 +190,36 @@ describe("league status and personal summary", () => {
     expect(page.data.state).toBe("no-match");
     expect(page.data.leagueSummary).toBeNull();
     expect(page.data.leagueStatusById.la_liga.phase).toBe("in_season");
+  });
+
+  it("builds the empty-schedule next matchday without locale timezone APIs", async () => {
+    const toLocaleString = Date.prototype.toLocaleString;
+    const toLocaleDateString = Date.prototype.toLocaleDateString;
+    Date.prototype.toLocaleString = function toLocaleStringMock() {
+      throw new Error("toLocaleString should not be used");
+    };
+    Date.prototype.toLocaleDateString = function toLocaleDateStringMock() {
+      throw new Error("toLocaleDateString should not be used");
+    };
+    try {
+      const { page } = createPage({
+        statuses: [status("chinese_super_league", "in_season", {
+          next_matchday: { date: "2026-11-20", kickoff_at: "2026-11-20T12:00:00+08:00" },
+        })],
+      });
+      await page.loadFirstPage();
+      expect(page.data.state).toBe("no-match");
+      expect(page.data.nextMatch).toEqual({
+        date: "2026-11-20",
+        label: "11月20日（周五）",
+        daysUntil: 4,
+        inDateStrip: true,
+        displayText: "跳到下一轮比赛日：11月20日（周五）→",
+      });
+    } finally {
+      Date.prototype.toLocaleString = toLocaleString;
+      Date.prototype.toLocaleDateString = toLocaleDateString;
+    }
   });
 
   it("uses the current in-season status after the next season starts", async () => {

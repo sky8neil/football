@@ -1,6 +1,7 @@
 import { postSessionInit } from "../api/v1/session.js";
 import { getMatch, getMatches } from "../api/v1/matches.js";
 import { getLeagueStatus } from "../api/v1/league-status.js";
+import { getLeagueSeasons } from "../api/v1/league-seasons.js";
 import { getPersonalLeagueSummary } from "../api/v1/personal-league-summary.js";
 import { getMatchCrowd } from "../api/v1/crowd.js";
 import { getMyPrediction, getMyPredictions, postPrediction } from "../api/v1/predictions.js";
@@ -28,7 +29,7 @@ import {
   joinGroup,
   leaveGroup,
 } from "../api/v1/groups.js";
-import { getShareCardMe } from "../api/v1/share-card.js";
+import { getShareCardForUser, getShareCardMe } from "../api/v1/share-card.js";
 import { assertUnknownFields, makeRequestId, mapErrorToHttp } from "../api/v1/validation.js";
 import type { RateLimiter } from "../api/v1/rate-limit.js";
 import type { SessionService } from "../application/session.js";
@@ -324,6 +325,18 @@ export async function handleGatewayRequest(
       return result;
     }
 
+    if (path === "/v1/league-seasons") {
+      if (method !== "GET") {
+        throw conflictError("METHOD_NOT_ALLOWED", "方法不允许");
+      }
+      const result = await getLeagueSeasons(input.repo, {
+        query: input.query,
+        request_id: requestId,
+      });
+      logGateway(requestId, path, result.status, undefined);
+      return result;
+    }
+
     const crowdMatchId = matchCrowdIdFromPath(path);
     if (method === "GET" && crowdMatchId !== null) {
       const identity = await resolveIdentity(trustedOpenid, input.repo);
@@ -518,7 +531,9 @@ export async function handleGatewayRequest(
       const identity = await resolveIdentity(trustedOpenid, input.repo);
       const rankings =
         input.services.rankings ??
-        new RankingQueryService(input.repo, input.config.match_cursor_secret);
+        new RankingQueryService(input.repo, input.config.match_cursor_secret, {
+          firstPeriodKey: input.config.ranking_first_period_key,
+        });
       const result = await getRankings(rankings, {
         authenticated_user_id: authenticatedReadUserId(identity),
         query: input.query,
@@ -539,6 +554,21 @@ export async function handleGatewayRequest(
         server_now: input.server_now,
         request_id: requestId,
         rate_limiter: input.rate_limiter,
+      });
+      logGateway(requestId, path, result.status, undefined);
+      return result;
+    }
+
+    const shareCardUserId = singlePathParameter(path, "/v1/share-card/");
+    if (shareCardUserId !== null) {
+      if (method !== "GET") {
+        throw conflictError("METHOD_NOT_ALLOWED", "方法不允许");
+      }
+      const result = await getShareCardForUser(new ShareCardQueryService(input.repo), {
+        user_id: shareCardUserId,
+        query: input.query,
+        server_now: input.server_now,
+        request_id: requestId,
       });
       logGateway(requestId, path, result.status, undefined);
       return result;
@@ -579,28 +609,34 @@ export async function handleGatewayRequest(
       /^\/v1\/admin\/matches\/([^/]+)\/retry-settlement$/,
     )?.[1];
     if (method === "POST" && retrySettlementMatchId !== undefined) {
-      const result = await postAdminRetrySettlement(new AdminRetrySettlementService(input.repo), {
-        trusted_openid: trustedOpenid,
-        match_id: retrySettlementMatchId,
-        body: input.body,
-        server_now: input.server_now,
-        request_id: requestId,
-        rate_limiter: input.rate_limiter,
-      });
+      const result = await postAdminRetrySettlement(
+        new AdminRetrySettlementService(input.repo, undefined, input.config.level_first_eval_as_of ?? null),
+        {
+          trusted_openid: trustedOpenid,
+          match_id: retrySettlementMatchId,
+          body: input.body,
+          server_now: input.server_now,
+          request_id: requestId,
+          rate_limiter: input.rate_limiter,
+        },
+      );
       logGateway(requestId, path, result.status, undefined);
       return result;
     }
 
     const rebuildUserId = singlePathParameter(path, "/v1/admin/rebuild/users/");
     if (method === "POST" && rebuildUserId !== null) {
-      const result = await postAdminRebuildUserStats(new AdminRebuildUserStatsService(input.repo), {
-        trusted_openid: trustedOpenid,
-        user_id: rebuildUserId,
-        body: input.body,
-        server_now: input.server_now,
-        request_id: requestId,
-        rate_limiter: input.rate_limiter,
-      });
+      const result = await postAdminRebuildUserStats(
+        new AdminRebuildUserStatsService(input.repo, input.config.level_first_eval_as_of ?? null),
+        {
+          trusted_openid: trustedOpenid,
+          user_id: rebuildUserId,
+          body: input.body,
+          server_now: input.server_now,
+          request_id: requestId,
+          rate_limiter: input.rate_limiter,
+        },
+      );
       logGateway(requestId, path, result.status, undefined);
       return result;
     }

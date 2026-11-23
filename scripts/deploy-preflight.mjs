@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
 
 const DIST_DEPLOY_TARGET = new URL("../dist/sync/deploy-target.js", import.meta.url);
 const DIST_SYNC_CONFIG = new URL("../dist/sync/config.js", import.meta.url);
+const DIST_GATEWAY_CONFIG = new URL("../dist/gateway/config.js", import.meta.url);
 
 /** 检查顺序固定，方便人读也方便测试。 */
 const JOBS = [
@@ -97,6 +98,17 @@ export async function main(args = process.argv.slice(2), env = process.env, writ
   }
   const deployTarget = await import(DIST_DEPLOY_TARGET.href);
   const syncConfig = await import(DIST_SYNC_CONFIG.href);
+  if (
+    env.FOOTBALL_ENVIRONMENT === "prod" ||
+    (typeof env.FOOTBALL_LEVEL_FIRST_EVAL_AS_OF === "string" &&
+      env.FOOTBALL_LEVEL_FIRST_EVAL_AS_OF.trim().length > 0)
+  ) {
+    if (!existsSync(fileURLToPath(DIST_GATEWAY_CONFIG))) {
+      throw new Error("dist/ 尚未构建，请先 npm run build（或用 npm run deploy:preflight）");
+    }
+    const gatewayConfig = await import(DIST_GATEWAY_CONFIG.href);
+    gatewayConfig.parseLevelFirstEvalAsOf(env, env.FOOTBALL_ENVIRONMENT);
+  }
 
   const target = explicitTarget === undefined
     ? deployTarget.resolveDeployTarget(env)

@@ -445,7 +445,8 @@ export class ProviderStatusSyncService {
         };
       }
 
-      const hasPrediction = (await tx.predictions.findByMatch(match.match_id)).length > 0;
+      const hasPrediction =
+        (await tx.predictions.findByCanonicalMatch(match.canonical_match_id ?? match.match_id)).length > 0;
       const providerHasStarted = fixture.status.kind !== MatchStatus.Scheduled;
       if (hasPrediction || match.match_status !== MatchStatus.Scheduled || providerHasStarted) {
         await saveSnapshot(

@@ -58,6 +58,22 @@ function applyErrorState(page, result) {
   return false;
 }
 
+function myGroupsItems(result) {
+  return result.data && Array.isArray(result.data.items) ? result.data.items : [];
+}
+
+function myGroupsNextCursor(result) {
+  const page = (result.data && result.data.page) || {};
+  if (page.has_more !== true) {
+    return { complete: true, cursor: null };
+  }
+  const cursor = page.next_cursor;
+  if (typeof cursor !== "string" || cursor.length === 0) {
+    return { complete: false, cursor: null };
+  }
+  return { complete: false, cursor };
+}
+
 Page({
   data: {
     state: "loading",
@@ -77,9 +93,12 @@ Page({
     careerLevel: "",
     careerBestLevel: "",
     seasonId: "",
+    seasonPoints: "",
     seasonValidPredictions: "",
+    seasonExactHits: "",
     seasonLevel: "",
     seasonBestLevel: "",
+    ownedCount: 0,
     levelsCareerValidPredictions: "",
     levelsCareerLevel: "",
     levelsCareerBestLevel: "",
@@ -104,7 +123,7 @@ Page({
       state: "loading",
       errorMessage: "",
     });
-    Promise.all([getMyProfile(), getMyLevels(), listMyGroups({ limit: 20 })]).then((results) => {
+    Promise.all([getMyProfile(), getMyLevels(), listMyGroups({ limit: 20 })]).then(async (results) => {
       const profileResult = results[0];
       const levelsResult = results[1];
       const groupsResult = results[2];
@@ -121,9 +140,26 @@ Page({
       const levels = levelsResult.data || {};
       const season = levels.season || {};
       const career = levels.career || {};
-      const groups = groupsResult.data && Array.isArray(groupsResult.data.items)
-        ? groupsResult.data.items
-        : [];
+      const groups = myGroupsItems(groupsResult).slice();
+      const seenCursors = new Set();
+      let nextPage = myGroupsNextCursor(groupsResult);
+      while (!nextPage.complete) {
+        if (nextPage.cursor === null || seenCursors.has(nextPage.cursor) || seenCursors.size >= 100) {
+          this.setData({
+            state: "error",
+            errorMessage: "暂时无法读取你的等级数据，请稍后重试",
+          });
+          return;
+        }
+        seenCursors.add(nextPage.cursor);
+        const pageResult = await listMyGroups({ limit: 20, cursor: nextPage.cursor });
+        if (applyErrorState(this, pageResult)) {
+          return;
+        }
+        groups.push(...myGroupsItems(pageResult));
+        nextPage = myGroupsNextCursor(pageResult);
+      }
+      const ownedCount = groups.filter((group) => group.role === "owner").length;
       const level = Number(profile.career_level) || 1;
       const nextThreshold = ({2: 80, 3: 170, 4: 380, 5: 630})[level] ?? null;
       const points = career.b_points == null ? null : Number(career.b_points);
@@ -163,7 +199,9 @@ Page({
         careerLevel: String(profile.career_level),
         careerBestLevel: String(profile.career_best_level),
         seasonId: season.level_season_id,
+        seasonPoints: season.season_points == null ? "—" : String(season.season_points),
         seasonValidPredictions: String(season.valid_predictions),
+        seasonExactHits: season.exact_hits == null ? "—" : String(season.exact_hits),
         seasonLevel: String(profile.season_level),
         seasonBestLevel: String(season.best_level),
         levelsCareerValidPredictions: String(career.valid_predictions),
@@ -178,6 +216,7 @@ Page({
           memberCountText: COPY.groupMemberCount(group.member_count),
         })),
         hasGroups: groups.length > 0,
+        ownedCount,
       });
       this.loadFavoriteTeam(profile.favorite_team_id || null);
     });
@@ -189,6 +228,22 @@ Page({
     if (!teamId) { this.setData({ favoriteTeamLogo: PLACEHOLDER, favoriteTeamText: "未设置" }); return; }
     const logo = wx.getStorageSync("team_logo:" + teamId);
     if (logo && logo !== PLACEHOLDER) { this.setData({ favoriteTeamLogo: logo }); return; }
+    const registered = findTeam(teamId);
+    if (registered) {
+      const teamLogo = getTeamLogo(registered.league_id, {
+        team_id: teamId,
+        name: registered.source_name,
+      });
+      if (teamLogo && teamLogo !== PLACEHOLDER) {
+        wx.setStorageSync("team_name:" + teamId, registered.source_name);
+        wx.setStorageSync("team_logo:" + teamId, teamLogo);
+        this.setData({
+          favoriteTeamText: registered.name_zh || registered.source_name,
+          favoriteTeamLogo: teamLogo,
+        });
+        return;
+      }
+    }
     // Resolve the server's team ID after a fresh login or cleared cache.
     let cursor = null;
     const seen = new Set();
@@ -269,6 +324,9 @@ Page({
   },
 
   onCreateGroupTap() {
+    if (this.data.state !== "ready") {
+      return;
+    }
     this.setData({ groupCreating: true, errorMessage: "" });
     return createGroup().then((result) => {
       this.setData({ groupCreating: false });
@@ -276,13 +334,17 @@ Page({
         this.setData({ errorMessage: result.message || COPY.groupActionFailed });
         return;
       }
-      wx.navigateTo({ url: `/pages/groups/detail?group_id=${result.data.group_id}&created=1&owned_count=1` });
+      wx.navigateTo({ url: `/pages/groups/detail?group_id=${result.data.group_id}&created=1&owned_count=${this.data.ownedCount + 1}` });
     });
   },
 
   onGroupTap(event) {
     const groupId = event.currentTarget.dataset.groupId;
     if (groupId) wx.navigateTo({ url: `/pages/groups/detail?group_id=${groupId}` });
+  },
+
+  onLoginTap() {
+    wx.navigateTo({ url: "/pages/session/session" });
   },
 
   onSessionTap() {

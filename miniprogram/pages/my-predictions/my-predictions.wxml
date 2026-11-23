@@ -4,6 +4,16 @@
   <view class="secondary-content">
   <view class="page-title">我的预测记录</view>
   <view class="page-subtitle">按比赛周分组，最新的排在前</view>
+  <view wx:if="{{filterReady && leagues.length > 0}}" class="filter-row">
+    <picker range="{{leagueOptions}}" value="{{leagueIndex}}" bindchange="onLeagueChange">
+      <view class="filter-chip">{{leagueOptions[leagueIndex]}}</view>
+    </picker>
+    <picker range="{{seasonOptions}}" value="{{seasonIndex}}" bindchange="onSeasonChange" disabled="{{leagueIndex === 0}}">
+      <view class="filter-chip {{leagueIndex === 0 ? 'disabled' : ''}}">{{seasonOptions[seasonIndex]}}</view>
+    </picker>
+  </view>
+  <view wx:if="{{filterError}}" class="filter-error">{{filterError}}</view>
+  <button wx:if="{{state === 'list' || state === 'empty'}}" class="share-entry" bindtap="onShareCardTap">分享轮次成绩</button>
   <view wx:if="{{state === 'loading'}}" class="loading"></view>
   <view wx:elif="{{state === 'unauthorized'}}" class="state-panel">
     <text>登录后查看你的预测</text>

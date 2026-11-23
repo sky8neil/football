@@ -1,11 +1,14 @@
+import { FIXED_CONFIG_V1 } from "../domain/config.js";
 import {
   MatchStatus,
   SettlementDocStatus,
   SettlementStatus,
 } from "../domain/enums.js";
 import type { Match } from "../domain/types.js";
+import { parseLevelFirstEvalAsOf } from "../gateway/config.js";
 import type { AppRepository } from "../infrastructure/repositories.js";
 import type { SchedulerStateStore } from "../infrastructure/cloudbase-scheduler-state.js";
+import { LevelCorrectionReevalService } from "./level-correction-reeval.js";
 import { SettlementOrchestrationService } from "./settlement-orchestration-service.js";
 import {
   DEFAULT_SETTLEMENT_TODO_BATCH,
@@ -29,6 +32,7 @@ export interface SettlementTimerOutcome {
 export interface SettlementTimerOptions {
   env?: Record<string, string | undefined>;
   schedulerState?: SchedulerStateStore;
+  levelFirstEvalAsOf?: Date | null;
 }
 
 /** 每次定时触发都推进结算，独立于 Provider 是否有同步配额。 */
@@ -37,7 +41,15 @@ export async function runSettlementTimer(
   now: Date,
   options: SettlementTimerOptions = {},
 ): Promise<SettlementTimerOutcome[]> {
-  const service = new SettlementOrchestrationService(repo);
+  const firstEvalAsOf = options.levelFirstEvalAsOf !== undefined
+    ? options.levelFirstEvalAsOf
+    : (options.env !== undefined
+      ? parseLevelFirstEvalAsOf(options.env, options.env.FOOTBALL_ENVIRONMENT)
+      : FIXED_CONFIG_V1.LEVEL_FIRST_EVAL_AS_OF);
+  const service = new SettlementOrchestrationService(
+    repo,
+    new LevelCorrectionReevalService(repo, firstEvalAsOf),
+  );
   const limit = settlementTodoBatch(options.env ?? {});
   const ids = new Set<string>();
   for (const match of await repo.matches.findSettlementTodos({ limit })) {

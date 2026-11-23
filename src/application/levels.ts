@@ -35,6 +35,8 @@ export interface SeasonLevelData {
   valid_predictions: number;
   remaining_to_rated: number;
   is_frozen: boolean;
+  season_points: number;
+  exact_hits: number;
 }
 
 export interface LevelsData {
@@ -60,6 +62,8 @@ function emptySeasonStats(levelSeasonId: string): SeasonLevelData {
     valid_predictions: 0,
     remaining_to_rated: FIXED_CONFIG_V1.LEVEL_RATED_MIN_VALID,
     is_frozen: false,
+    season_points: 0,
+    exact_hits: 0,
   };
 }
 
@@ -76,6 +80,8 @@ function seasonLevelStats(stats: UserSeasonStats | null, levelSeasonId: string):
     valid_predictions: stats.valid_predictions,
     remaining_to_rated: remainingToRated(stats.valid_predictions),
     is_frozen: stats.is_level_frozen ?? false,
+    season_points: stats.points,
+    exact_hits: stats.exact_hits,
   };
 }
 

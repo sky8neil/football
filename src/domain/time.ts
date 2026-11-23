@@ -211,6 +211,26 @@ function shanghaiWallToUtc(
   );
 }
 
+/**
+ * 校验 ISO 时间戳前缀中的年月日是否为真实存在的 UTC 日历日期。
+ * 只看日历，不解释时区或时刻（避免 new Date 把 2 月 30 日之类静默滚到另一天）。
+ */
+export function isExistingUtcCalendarDate(isoTimestamp: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(isoTimestamp);
+  if (match === null) {
+    return false;
+  }
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const utc = new Date(Date.UTC(year, month - 1, day));
+  return (
+    utc.getUTCFullYear() === year &&
+    utc.getUTCMonth() === month - 1 &&
+    utc.getUTCDate() === day
+  );
+}
+
 /** 是否恰好为周一 10:00:00.000 Asia/Shanghai（§17.6.2 评估时刻）。 */
 export function isMondayLevelEvalAt(date: Date): boolean {
   const p = toShanghaiParts(date);

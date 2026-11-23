@@ -29,6 +29,13 @@ export interface GetShareCardMeInput {
   rate_limiter?: RateLimiter;
 }
 
+export interface GetShareCardForUserInput {
+  user_id: string;
+  query: Record<string, unknown>;
+  server_now: Date;
+  request_id: string;
+}
+
 export function validateShareCardQuery(query: Record<string, unknown>): ShareCardQuery {
   assertUnknownFields(query, SHARE_CARD_QUERY_FIELDS);
   return validateShareCardQueryValues(query);
@@ -49,6 +56,21 @@ export async function getShareCardMe(
   );
   const query = validateShareCardQuery(input.query);
   const data = await service.getShareCard(input.authenticated_user_id, query, input.server_now);
+  return {
+    status: 200,
+    body: {
+      data,
+      request_id: input.request_id,
+    },
+  };
+}
+
+export async function getShareCardForUser(
+  service: ShareCardQueryService,
+  input: GetShareCardForUserInput,
+): Promise<ShareCardSuccessResponse> {
+  const query = validateShareCardQuery(input.query);
+  const data = await service.getShareCard(input.user_id, query, input.server_now);
   return {
     status: 200,
     body: {

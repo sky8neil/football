@@ -1,10 +1,13 @@
 import { MatchQueryService } from "../application/match-query.js";
 import { LeagueSeasonMaintenanceService } from "../application/league-season-maintenance.js";
+import { MaintenanceCleanupService } from "../application/maintenance-cleanup.js";
 import { SessionService } from "../application/session.js";
 import { BoardSnapshotService } from "../application/board-snapshot.js";
 import { DailyConsistencyService } from "../application/daily-consistency-service.js";
 import { RepositoryDailyConsistencySnapshotSource } from "../application/daily-consistency-snapshot.js";
+import { LevelCorrectionReevalService } from "../application/level-correction-reeval.js";
 import { PeriodFinalizeService } from "../application/period-finalize-service.js";
+import { RebuildUserStatsService } from "../application/stats-rebuild-service.js";
 import { WeeklyLevelEvalService } from "../application/weekly-level-eval.js";
 import { ProviderFutureScheduleService } from "../application/provider-sync-service.js";
 import { ProviderFullScheduleVerifyService } from "../application/provider-full-schedule.js";
@@ -17,7 +20,9 @@ import { ProviderSyncDispatcher } from "../application/provider-sync-dispatcher.
 import type { SettlementTimerOptions } from "../application/settlement-timer.js";
 import { SUPPORTED_LEAGUES } from "../domain/config.js";
 import { SyncJobType } from "../domain/enums.js";
+import { parseLevelFirstEvalAsOf } from "../gateway/config.js";
 import type { CloudBaseDb } from "../infrastructure/cloudbase-db.js";
+import type { AuthSessionStore } from "../infrastructure/postgres-auth-sessions.js";
 import { CloudBaseProviderUsageStore } from "../infrastructure/cloudbase-provider-usage.js";
 import { CloudBaseProviderKeyStateStore } from "../infrastructure/cloudbase-provider-key-state.js";
 import { CloudBaseProviderLeagueStateStore } from "../infrastructure/cloudbase-provider-league-state.js";
@@ -34,6 +39,7 @@ export interface ApplicationRuntimeInput {
   namespace: string;
   repo: AppRepository;
   matchCursorSecret: string;
+  authSessions?: AuthSessionStore;
   log?: (entry: Record<string, unknown>) => void;
 }
 
@@ -50,10 +56,14 @@ export interface ApplicationRuntime {
   leagueSeasons: LeagueSeasonMaintenanceService;
   providerStaleRecovery: ProviderStaleRecoveryService;
   schedulerState: SchedulerStateStore;
+  levelFirstEvalAsOf: Date | null;
   periodFinalize: PeriodFinalizeService;
   dailyConsistency: DailyConsistencyService;
   weeklyLevelEval: WeeklyLevelEvalService;
+  levelCorrectionReeval: LevelCorrectionReevalService;
+  statsRebuild: RebuildUserStatsService;
   boardSnapshot: BoardSnapshotService;
+  maintenanceCleanup?: MaintenanceCleanupService;
   settlementTimerOptions: SettlementTimerOptions;
   services: {
     session: SessionService;
@@ -113,13 +123,23 @@ export function createApplicationRuntime(input: ApplicationRuntimeInput): Applic
     dueIntervalMs: providerJobIntervalMs(SyncJobType.StaleRecovery, profile),
   }, providerLeagueRefs, logger);
   const schedulerState = new CloudBaseSchedulerStateStore(input.db, input.namespace);
+  const levelFirstEvalAsOf = parseLevelFirstEvalAsOf(input.env, input.env.FOOTBALL_ENVIRONMENT);
   const periodFinalize = new PeriodFinalizeService(input.repo);
   const dailyConsistency = new DailyConsistencyService(
     input.repo,
-    new RepositoryDailyConsistencySnapshotSource(input.repo),
+    new RepositoryDailyConsistencySnapshotSource(input.repo, levelFirstEvalAsOf),
+    levelFirstEvalAsOf,
   );
-  const weeklyLevelEval = new WeeklyLevelEvalService(input.repo);
+  const weeklyLevelEval = new WeeklyLevelEvalService(input.repo, levelFirstEvalAsOf, logger);
+  const levelCorrectionReeval = new LevelCorrectionReevalService(input.repo, levelFirstEvalAsOf);
+  const statsRebuild = new RebuildUserStatsService(input.repo, levelFirstEvalAsOf);
   const boardSnapshot = new BoardSnapshotService(input.repo);
+  const maintenanceCleanup = new MaintenanceCleanupService({
+    db: input.db,
+    namespace: input.namespace,
+    ...(input.authSessions === undefined ? {} : { authSessions: input.authSessions }),
+    log: logger,
+  });
   return {
     db: input.db,
     namespace: input.namespace,
@@ -133,11 +153,15 @@ export function createApplicationRuntime(input: ApplicationRuntimeInput): Applic
     leagueSeasons: new LeagueSeasonMaintenanceService(input.repo, logger),
     providerStaleRecovery,
     schedulerState,
+    levelFirstEvalAsOf,
     periodFinalize,
     dailyConsistency,
     weeklyLevelEval,
+    levelCorrectionReeval,
+    statsRebuild,
     boardSnapshot,
-    settlementTimerOptions: { env: input.env, schedulerState },
+    maintenanceCleanup,
+    settlementTimerOptions: { env: input.env, schedulerState, levelFirstEvalAsOf },
     services: {
       session: new SessionService(input.repo),
       matches: new MatchQueryService(input.repo, input.matchCursorSecret),

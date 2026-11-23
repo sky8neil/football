@@ -1,17 +1,51 @@
 const config = require("../../config.js");
 const { getMyProfile, updateMyProfile } = require("../../services/profile.js");
-const { listMatches } = require("../../services/matches.js");
 const { storeNickname } = require("../../utils/nickname.js");
 const { presentTeam } = require("../../utils/team-presentation.js");
-const { findTeam } = require("../../utils/team-registry.js");
+const { findTeam, TEAM_REGISTRY } = require("../../utils/team-registry.js");
 const { clearAuth } = require("../../services/auth.js");
+
+const LEAGUE_ORDER = ["premier_league", "la_liga", "serie_a", "bundesliga", "ligue_1", "chinese_super_league"];
+const LEAGUE_NAMES = {
+  premier_league: "英超",
+  la_liga: "西甲",
+  serie_a: "意甲",
+  bundesliga: "德甲",
+  ligue_1: "法甲",
+  chinese_super_league: "中超",
+};
 
 function isHttpTransport() {
   return (config.transport || "http") === "http";
 }
 
+function buildRegistryTeams() {
+  return Object.keys(TEAM_REGISTRY).map((teamId) => {
+    const found = TEAM_REGISTRY[teamId];
+    const team = { team_id: teamId, name: found.source_name, league_id: found.league_id };
+    const presented = presentTeam(team, found.league_id);
+    return { ...team, logo: presented.logo, nameZh: presented.nameZh };
+  });
+}
+
+function groupTeams(teams) {
+  const byLeague = new Map();
+  for (const team of teams) {
+    const list = byLeague.get(team.league_id) || [];
+    list.push(team);
+    byLeague.set(team.league_id, list);
+  }
+  const known = LEAGUE_ORDER.filter((id) => byLeague.has(id));
+  const extra = [...byLeague.keys()].filter((id) => !LEAGUE_ORDER.includes(id));
+  return known.concat(extra).map((league_id) => ({
+    league_id,
+    leagueName: LEAGUE_NAMES[league_id] || league_id,
+    teams: byLeague.get(league_id),
+  }));
+}
+
 Page({
-  data: { loading: true, saving: false, saveErrorMessage: "", errorMessage: "", nickname: "", originalNickname: "", favoriteTeamId: null, originalTeamId: null, favoriteTeamName: "未设置", showTeams: false, teams: [], visibleTeams: [], search: "", teamsLoading: false, teamsError: "", nextCursor: null, hasMore: false, showLogout: isHttpTransport() },
+  data: { loading: true, saving: false, saveErrorMessage: "", errorMessage: "", nickname: "", originalNickname: "", favoriteTeamId: null, originalTeamId: null, favoriteTeamName: "未设置", showTeams: false, teams: [], visibleGroups: [], search: "", teamsLoading: false, teamsError: "", showLogout: isHttpTransport() },
   onLoad(query) {
     this.setData({ showTeams: !!(query && query.section === "team") });
     this.loadProfile();
@@ -34,24 +68,12 @@ Page({
     const found = findTeam(id);
     this.setData({ favoriteTeamName: id ? ((found && found.name_zh) || wx.getStorageSync("team_name:" + id) || "已选择球队") : "未设置" });
   },
-  async loadTeams() {
+  loadTeams() {
     if (this.data.teamsLoading) return;
     this.setData({ teamsLoading: true, teamsError: "" });
     try {
-      const result = await listMatches({ limit: 100, cursor: this.data.nextCursor });
-      if (result.statusCode !== 200) { this.setData({ teamsError: result.message || "球队加载失败，请重试" }); return; }
-      const payload = result.data || {};
-      const teams = this.data.teams.slice();
-      for (const match of payload.items || []) {
-        for (const team of [match.home_team, match.away_team]) {
-          if (!team || !team.team_id || teams.some(item => item.team_id === team.team_id)) continue;
-          const presented = presentTeam(team, match.league_id);
-          teams.push({ ...team, logo: presented.logo, nameZh: presented.nameZh });
-          wx.setStorageSync("team_name:" + team.team_id, team.name);
-          wx.setStorageSync("team_logo:" + team.team_id, presented.logo);
-        }
-      }
-      this.setData({ teams, nextCursor: (payload.page || {}).next_cursor || null, hasMore: !!(payload.page || {}).next_cursor });
+      const teams = buildRegistryTeams();
+      this.setData({ teams });
       this.filterTeams();
       this.refreshTeamName();
     } catch (_) { this.setData({ teamsError: "球队加载失败，请重试" }); }
@@ -62,13 +84,12 @@ Page({
   onSearch(event) { this.setData({ search: event.detail.value }); this.filterTeams(); },
   filterTeams() {
     const query = this.data.search.trim().toLowerCase();
-    this.setData({
-      visibleTeams: this.data.teams.filter((team) => {
-        const name = (team.name || "").toLowerCase();
-        const nameZh = (team.nameZh || "").toLowerCase();
-        return name.includes(query) || nameZh.includes(query);
-      }),
+    const teams = this.data.teams.filter((team) => {
+      const name = (team.name || "").toLowerCase();
+      const nameZh = (team.nameZh || "").toLowerCase();
+      return name.includes(query) || nameZh.includes(query);
     });
+    this.setData({ visibleGroups: groupTeams(teams) });
   },
   onTeamPick(event) {
     if (this.data.saving || this.data.loading) return;

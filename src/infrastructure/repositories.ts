@@ -265,10 +265,89 @@ export interface SyncLogRepository {
   ): Promise<SyncLog | null>;
 }
 
+export interface LeagueSeasonCatalogEntry {
+  league_id: string;
+  season_id: string;
+  round_ids: string[];
+}
+
+export function aggregateLeagueSeasonCatalog(
+  rows: Iterable<{ league_id: string; season_id: string; round_id: string }>,
+): LeagueSeasonCatalogEntry[] {
+  const grouped = new Map<string, { league_id: string; season_id: string; rounds: Set<string> }>();
+  for (const row of rows) {
+    const key = `${row.league_id}\u0000${row.season_id}`;
+    const current = grouped.get(key);
+    if (current === undefined) {
+      grouped.set(key, { league_id: row.league_id, season_id: row.season_id, rounds: new Set([row.round_id]) });
+    } else {
+      current.rounds.add(row.round_id);
+    }
+  }
+  return [...grouped.values()]
+    .map((item) => ({
+      league_id: item.league_id,
+      season_id: item.season_id,
+      round_ids: [...item.rounds].sort((left, right) => left.localeCompare(right)),
+    }))
+      .sort((left, right) => left.league_id.localeCompare(right.league_id) || right.season_id.localeCompare(left.season_id));
+}
+
+export function selectPredictionHistoryPage(
+  predictions: readonly Prediction[],
+  matchesById: ReadonlyMap<string, Match>,
+  params: {
+    league_id: string | null;
+    season_id: string | null;
+    cursor: { submitted_at: Date; prediction_id: string } | null;
+    limit: number;
+  },
+): Prediction[] {
+  const selected: Prediction[] = [];
+  for (const prediction of predictions) {
+    const effective = resolveEffectiveMatchForHistory(prediction.match_id, matchesById);
+    if (effective === null) continue;
+    if (params.league_id !== null && effective.league_id !== params.league_id) continue;
+    if (params.season_id !== null && effective.season_id !== params.season_id) continue;
+    if (params.cursor !== null) {
+      const submittedAt = prediction.submitted_at.getTime();
+      const cursorAt = params.cursor.submitted_at.getTime();
+      if (submittedAt > cursorAt) continue;
+      if (submittedAt === cursorAt && prediction.prediction_id >= params.cursor.prediction_id) continue;
+    }
+    selected.push(prediction);
+  }
+  selected.sort((left, right) => {
+    const byTime = right.submitted_at.getTime() - left.submitted_at.getTime();
+    if (byTime !== 0) return byTime;
+    if (left.prediction_id === right.prediction_id) return 0;
+    return left.prediction_id < right.prediction_id ? 1 : -1;
+  });
+  return selected.slice(0, params.limit);
+}
+
+function resolveEffectiveMatchForHistory(
+  matchId: string,
+  matchesById: ReadonlyMap<string, Match>,
+): Match | null {
+  let match = matchesById.get(matchId);
+  if (match === undefined) return null;
+  const visited = new Set<string>();
+  while (match.superseded_by != null) {
+    if (visited.has(match.match_id)) return null;
+    visited.add(match.match_id);
+    const next = matchesById.get(match.superseded_by);
+    if (next === undefined) return null;
+    match = next;
+  }
+  return match;
+}
+
 export interface MatchRepository {
   findById(matchId: string): Promise<Match | null>;
   findIdsByCanonicalMatchId(canonicalMatchId: string): Promise<string[]>;
   findBySeason(seasonId: string): Promise<Match[]>;
+  findBySeasonInWindow?(seasonId: string, from: Date, to: Date): Promise<Match[]>;
   findByLeague(leagueId: string): Promise<Match[]>;
   findByLeagueSeason(leagueId: string, seasonId: string): Promise<Match[]>;
   findFinishedSettledOnDay(day: string): Promise<Match[]>;
@@ -277,6 +356,7 @@ export interface MatchRepository {
     seasonId: string,
     roundId: string,
   ): Promise<Match[]>;
+  findLeagueSeasonCatalog(leagueId?: string): Promise<LeagueSeasonCatalogEntry[]>;
   /** 当前 match_status = live 的比赛（33.1 job 级 live 巡检用）。 */
   findLive(): Promise<Match[]>;
   /** RP05：按数据库条件取「待结算/待更正/待恢复」比赛，不再全量遍历赛季。 */
@@ -307,7 +387,20 @@ export interface PredictionRepository {
     idempotencyKey: string,
   ): Promise<Prediction | null>;
   findByUser(userId: string): Promise<Prediction[]>;
+  /**
+   * 按用户、可选联赛/赛季过滤历史预测。联赛/赛季取该预测对应「有效比赛」的值：
+   * 沿 superseded_by 链追到最新一场，或按 canonical 身份匹配未作废比赛。
+   * 排序：submitted_at DESC, prediction_id DESC（稳定）。只返回 limit 条，不再额外全量读取。
+   */
+  findHistoryPage(params: {
+    user_id: string;
+    league_id: string | null;
+    season_id: string | null;
+    cursor: { submitted_at: Date; prediction_id: string } | null;
+    limit: number;
+  }): Promise<Prediction[]>;
   findByMatch(matchId: string): Promise<Prediction[]>;
+  findByCanonicalMatch(canonicalMatchId: string): Promise<Prediction[]>;
   countByMatchGroupedByResult(matchId: string): Promise<{
     HOME: number;
     DRAW: number;
@@ -435,6 +528,7 @@ export interface RankingRepository {
     periodKey: string,
   ): Promise<RankingEntry[]>;
   findAll(): Promise<RankingEntry[]>;
+  findUnfinalizedWeeks?(): Promise<RankingEntry[]>;
   insert(entry: RankingEntry): Promise<void>;
   update(entry: RankingEntry): Promise<void>;
 }
@@ -837,6 +931,12 @@ export class InMemoryRepository implements AppRepository {
           .filter((match) => (match.canonical_match_id ?? match.match_id) === canonicalMatchId)
           .map((match) => match.match_id),
       findBySeason: (seasonId) => self.findMatchesBySeason(seasonId),
+      findBySeasonInWindow: async (seasonId, from, to) =>
+        (await self.findMatchesBySeason(seasonId)).filter(
+          (match) =>
+            match.kickoff_at.getTime() >= from.getTime() &&
+            match.kickoff_at.getTime() <= to.getTime(),
+        ),
       findByLeague: async (leagueId) => [...self.store.matchesById.values()].filter((match) => match.league_id === leagueId),
       findByLeagueSeason: async (leagueId, seasonId) => [...self.store.matchesById.values()].filter(
         (match) => match.league_id === leagueId && match.season_id === seasonId,
@@ -848,6 +948,7 @@ export class InMemoryRepository implements AppRepository {
         (match.finish_detected_at ?? match.kickoff_at).toISOString().slice(0, 10) === day),
       findByLeagueSeasonRound: (leagueId, seasonId, roundId) =>
         self.findMatchesByLeagueSeasonRound(leagueId, seasonId, roundId),
+      findLeagueSeasonCatalog: (leagueId) => self.findLeagueSeasonCatalog(leagueId),
       findLive: () => self.findLiveMatches(),
       findSettlementTodos: (query) => self.findSettlementTodos(query),
       findSettlementFallbackPage: (query) => self.findSettlementFallbackPage(query),
@@ -885,7 +986,9 @@ export class InMemoryRepository implements AppRepository {
       findByUserAndIdempotencyKey: (userId, key) =>
         self.findPredictionByUserAndIdempotencyKey(userId, key),
       findByUser: (userId) => self.findPredictionsByUser(userId),
+      findHistoryPage: (params) => self.findPredictionHistoryPage(params),
       findByMatch: (matchId) => self.findPredictionsByMatch(matchId),
+      findByCanonicalMatch: (canonicalMatchId) => self.findPredictionsByCanonicalMatch(canonicalMatchId),
       countByMatchGroupedByResult: (matchId) =>
         self.countPredictionsByMatchGroupedByResult(matchId),
       insert: (prediction) => self.insertPrediction(prediction),
@@ -962,6 +1065,10 @@ export class InMemoryRepository implements AppRepository {
       findByPeriod: (periodType, periodKey) =>
         self.findRankingsByPeriod(periodType, periodKey),
       findAll: () => self.findAllRankings(),
+      findUnfinalizedWeeks: async () =>
+        (await self.findAllRankings()).filter(
+          (entry) => entry.period_type === "week" && entry.is_final === false,
+        ),
       insert: (entry) => self.insertRanking(entry),
       update: (entry) => self.updateRanking(entry),
     };
@@ -1375,6 +1482,13 @@ export class InMemoryRepository implements AppRepository {
     );
   }
 
+  private async findLeagueSeasonCatalog(leagueId?: string): Promise<LeagueSeasonCatalogEntry[]> {
+    const matches = [...this.store.matchesById.values()].filter(
+      (match) => leagueId === undefined || match.league_id === leagueId,
+    );
+    return aggregateLeagueSeasonCatalog(matches);
+  }
+
   private async findLiveMatches(): Promise<Match[]> {
     return [...this.store.matchesById.values()].filter(
       (match) => match.match_status === MatchStatus.Live && match.superseded_by == null,
@@ -1525,6 +1639,17 @@ export class InMemoryRepository implements AppRepository {
     return result;
   }
 
+  private async findPredictionHistoryPage(params: {
+    user_id: string;
+    league_id: string | null;
+    season_id: string | null;
+    cursor: { submitted_at: Date; prediction_id: string } | null;
+    limit: number;
+  }): Promise<Prediction[]> {
+    const predictions = await this.findPredictionsByUser(params.user_id);
+    return selectPredictionHistoryPage(predictions, this.store.matchesById, params);
+  }
+
   private async findPredictionsByMatch(matchId: string): Promise<Prediction[]> {
     const result: Prediction[] = [];
     for (const prediction of this.store.predictionsByUserMatch.values()) {
@@ -1535,12 +1660,23 @@ export class InMemoryRepository implements AppRepository {
     return result;
   }
 
+  private async findPredictionsByCanonicalMatch(canonicalMatchId: string): Promise<Prediction[]> {
+    const byId = new Map<string, Prediction>();
+    for (const prediction of this.store.predictionsByUserMatch.values()) {
+      const effectiveCanonical = prediction.canonical_match_id ?? prediction.match_id;
+      if (effectiveCanonical === canonicalMatchId) {
+        byId.set(prediction.prediction_id, prediction);
+      }
+    }
+    return [...byId.values()];
+  }
+
   private async countPredictionsByMatchGroupedByResult(
     matchId: string,
   ): Promise<{ HOME: number; DRAW: number; AWAY: number }> {
     const counts = { HOME: 0, DRAW: 0, AWAY: 0 };
     for (const prediction of this.store.predictionsByUserMatch.values()) {
-      if (prediction.match_id === matchId) {
+      if ((prediction.canonical_match_id ?? prediction.match_id) === matchId) {
         counts[prediction.derived_result] += 1;
       }
     }

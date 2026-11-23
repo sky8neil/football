@@ -31,7 +31,28 @@ Page({
 
   onLoad(options) {
     const inviteCode = options && typeof options.code === "string" ? options.code : "";
+    this.requestId = 0;
+    this.pendingRecovery = null;
     this.setInviteCode(inviteCode, inviteCode && !isValidInviteCode(inviteCode) ? COPY.groupInvalidInvite : "");
+  },
+
+  nextRequestId() {
+    this.requestId = (this.requestId || 0) + 1;
+    return this.requestId;
+  },
+
+  isCurrent(requestId) {
+    return requestId === this.requestId;
+  },
+
+  failRecovery(requestId, errorMessage) {
+    if (!this.isCurrent(requestId)) return;
+    this.setData({
+      state: "error",
+      loading: false,
+      canConfirm: true,
+      errorMessage: errorMessage || COPY.groupLoadFailed,
+    });
   },
 
   onInviteInput(event) {
@@ -59,9 +80,13 @@ Page({
     if (this.data.loading) {
       return;
     }
+    const requestId = this.nextRequestId();
+    this.pendingRecovery = null;
     this.setData({ loading: true, canConfirm: false, errorMessage: "" });
     joinGroup(inviteCode).then((result) => {
+      if (!this.isCurrent(requestId)) return;
       if (result.statusCode === 200 && result.data && result.data.group_id) {
+        this.pendingRecovery = { type: "openGroup", groupId: result.data.group_id };
         this.openGroup(result.data.group_id);
         return;
       }
@@ -73,9 +98,11 @@ Page({
       if (result.code === "GROUP_ALREADY_MEMBER") {
         const groupId = result.details && result.details.group_id;
         if (groupId) {
+          this.pendingRecovery = { type: "openGroup", groupId };
           this.openGroup(groupId);
           return;
         }
+        this.pendingRecovery = { type: "openExisting", inviteCode };
         this.openExistingGroup(inviteCode);
         return;
       }
@@ -85,35 +112,45 @@ Page({
         canConfirm: true,
         errorMessage: groupJoinError(result.code, result.message),
       });
+    }).catch(() => {
+      if (!this.isCurrent(requestId)) return;
+      this.setData({
+        state: "ready",
+        loading: false,
+        canConfirm: true,
+        errorMessage: COPY.groupActionFailed,
+      });
     });
   },
 
   openGroup(groupId) {
+    const requestId = this.nextRequestId();
     listMyGroups({ limit: 20 }).then((result) => {
+      if (!this.isCurrent(requestId)) return;
       const groups = result.data && Array.isArray(result.data.items) ? result.data.items : [];
       const activeMember = result.statusCode === 200 && groups.some((group) => group.group_id === groupId);
       if (!activeMember) {
-        this.setData({
-          state: "error",
-          loading: false,
-          canConfirm: true,
-          errorMessage: result.message || COPY.groupLoadFailed,
-        });
+        this.failRecovery(requestId, result.message || COPY.groupLoadFailed);
         return;
       }
       wx.setStorageSync("pending_ranking_group_id", groupId);
       wx.switchTab({ url: "/pages/rankings/rankings" });
+    }).catch((error) => {
+      this.failRecovery(requestId, (error && error.message) || COPY.groupLoadFailed);
     });
   },
 
   openExistingGroup(inviteCode) {
+    const requestId = this.nextRequestId();
     listMyGroups({ limit: 20 }).then((result) => {
+      if (!this.isCurrent(requestId)) return;
       const groups = result.data && Array.isArray(result.data.items) ? result.data.items : [];
       if (result.statusCode !== 200) {
-        this.setData({ state: "ready", loading: false, canConfirm: true, errorMessage: result.message || COPY.groupLoadFailed });
+        this.failRecovery(requestId, result.message || COPY.groupLoadFailed);
         return;
       }
       Promise.all(groups.map((group) => getGroup(group.group_id))).then((details) => {
+        if (!this.isCurrent(requestId)) return;
         const match = details.find((detail) =>
           detail.statusCode === 200 && detail.data && detail.data.invite_code === inviteCode
         );
@@ -121,8 +158,30 @@ Page({
           this.setData({ state: "ready", loading: false, canConfirm: true, errorMessage: groupJoinError("GROUP_ALREADY_MEMBER") });
           return;
         }
+        this.pendingRecovery = { type: "openGroup", groupId: match.data.group_id };
         this.openGroup(match.data.group_id);
+      }).catch((error) => {
+        this.failRecovery(requestId, (error && error.message) || COPY.groupLoadFailed);
       });
+    }).catch((error) => {
+      this.failRecovery(requestId, (error && error.message) || COPY.groupLoadFailed);
     });
+  },
+
+  onRetry() {
+    if (this.data.loading || !this.pendingRecovery) return;
+    this.setData({ loading: true, canConfirm: false, errorMessage: "" });
+    if (this.pendingRecovery.type === "openGroup") {
+      this.openGroup(this.pendingRecovery.groupId);
+      return;
+    }
+    this.openExistingGroup(this.pendingRecovery.inviteCode);
+  },
+
+  onReenter() {
+    this.nextRequestId();
+    this.pendingRecovery = null;
+    this.setData({ loading: false });
+    this.setInviteCode(this.data.inviteCode, "");
   },
 });

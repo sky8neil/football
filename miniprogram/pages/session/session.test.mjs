@@ -223,6 +223,26 @@ describe("会话页：缓存回填", () => {
     page.onLoad({ return_to: "other" });
     expect(page.data.returnTo).toBe("");
   });
+
+  it("带 return_to=share-card 时记录返回目标", () => {
+    const { page } = loadSessionPage({ result: undefined });
+    page.onLoad({ return_to: "share-card" });
+    expect(page.data.returnTo).toBe("share-card");
+  });
+});
+
+describe("会话页：登录成功后的返回", () => {
+  it("return_to=share-card 登录成功后 navigateBack，不 switchTab 回首页", async () => {
+    const { page, navs } = loadSessionPage({
+      result: { statusCode: 201, data: { nickname: "Sky" } },
+      nickname: "Sky",
+    });
+    page.onLoad({ return_to: "share-card" });
+    page.onSubmit();
+    await Promise.resolve();
+    expect(navs).toContainEqual(["navigateBack", 1]);
+    expect(navs.some(([kind]) => kind === "switchTab")).toBe(false);
+  });
 });
 
 describe("会话页：隐私授权", () => {

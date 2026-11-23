@@ -164,6 +164,21 @@ function emptyRanking(
   };
 }
 
+async function resolveEffectiveMatch(
+  tx: UnitOfWork,
+  matchId: string,
+): Promise<Match | null> {
+  let match = await tx.matches.findById(matchId);
+  const visited = new Set<string>();
+  while (match !== null && match.superseded_by != null && !visited.has(match.match_id)) {
+    visited.add(match.match_id);
+    const next = await tx.matches.findById(match.superseded_by);
+    if (next === null) break;
+    match = next;
+  }
+  return match;
+}
+
 async function lastScoringAt(
   tx: UnitOfWork,
   predictions: Prediction[],
@@ -179,7 +194,7 @@ async function lastScoringAt(
     if (scoreOf(prediction) <= MatchScoreValue.Miss || prediction.applied_result_version < 1) {
       continue;
     }
-    const match = await tx.matches.findById(prediction.match_id);
+    const match = await resolveEffectiveMatch(tx, prediction.match_id);
     if (match === null || match.period_anchor_at === null) {
       throw invalidLedger(`计分 prediction 缺少 match 或 period_anchor_at（prediction_id=${prediction.prediction_id}）`);
     }
@@ -206,7 +221,7 @@ async function careerLastScoringAt(
     if (scoreOf(prediction) <= MatchScoreValue.Miss || prediction.applied_result_version < 1) {
       continue;
     }
-    const match = await tx.matches.findById(prediction.match_id);
+    const match = await resolveEffectiveMatch(tx, prediction.match_id);
     if (match === null || match.period_anchor_at === null) {
       throw invalidLedger(`计分 prediction 缺少 match 或 period_anchor_at（prediction_id=${prediction.prediction_id}）`);
     }
@@ -231,7 +246,7 @@ async function seasonLastScoringAt(
     if (scoreOf(prediction) <= MatchScoreValue.Miss || prediction.applied_result_version < 1) {
       continue;
     }
-    const match = await tx.matches.findById(prediction.match_id);
+    const match = await resolveEffectiveMatch(tx, prediction.match_id);
     if (match === null || match.period_anchor_at === null) {
       throw invalidLedger(`计分 prediction 缺少 match 或 period_anchor_at（prediction_id=${prediction.prediction_id}）`);
     }

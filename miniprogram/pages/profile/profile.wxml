@@ -4,7 +4,7 @@
   <view class="secondary-content">
     <view class="welcome"><view class="avatar welcome-fallback">{{avatarText}}</view><view class="welcome-copy"><text class="html-b">{{nickname || '你好'}}，今天看哪场？</text><text class="html-small">每一次预测，都是对足球的理解</text></view><view wx:if="{{userId}}" class="welcome-id num" aria-label="用户 ID {{userId}}">ID {{userId}}</view></view>
     <view wx:if="{{state === 'loading'}}" class="loading">加载中</view>
-    <view wx:elif="{{state !== 'ready'}}" class="state-panel"><text>{{state === 'unauthorized' ? '登录后查看个人资料' : errorMessage}}</text><button wx:if="{{state === 'unauthorized'}}" bindtap="onSessionTap">登录</button><button wx:elif="{{state === 'error'}}" bindtap="onRetry">重试</button></view>
+    <view wx:elif="{{state !== 'ready'}}" class="state-panel"><text>{{state === 'unauthorized' ? '登录后查看个人资料' : errorMessage}}</text><button wx:if="{{state === 'unauthorized'}}" bindtap="onLoginTap">登录</button><button wx:elif="{{state === 'error'}}" bindtap="onRetry">重试</button></view>
     <view wx:else class="content">
       <view class="card strong emblem-head">
         <view class="hero-top"><text class="eyebrow">个人成长档案</text><button class="edit" bindtap="onSessionTap" aria-label="编辑个人资料"><image class="icon" src="/assets/icons/ui-settings.png" /></button></view>
@@ -23,7 +23,7 @@
       </view>
       <view wx:if="{{previousSeasonRecap}}" class="card recap">{{previousSeasonRecap}}</view>
       <view class="card stats-card"><view class="card-heading"><view class="html-h2">我的成绩单</view><view class="segmented"><button class="{{statScope === 'career' ? 'selected' : ''}}" aria-selected="{{statScope === 'career'}}" data-scope="career" bindtap="onStatScope">生涯</button><button class="{{statScope === 'season' ? 'selected' : ''}}" aria-selected="{{statScope === 'season'}}" data-scope="season" bindtap="onStatScope">本赛季</button></view></view>
-        <view class="metrics"><view><text class="html-b num">{{statScope === 'career' ? careerPoints : '—'}}</text><text class="html-span">累计积分</text></view><view><text class="html-b num">{{statScope === 'career' ? careerValidPredictions : seasonValidPredictions}}</text><text class="html-span">有效预测场次</text></view><view><text class="html-b num">{{statScope === 'career' ? careerExactHits : '—'}}</text><text class="html-span">精确命中</text></view></view>
+        <view class="metrics"><view><text class="html-b num">{{statScope === 'career' ? careerPoints : seasonPoints}}</text><text class="html-span">累计积分</text></view><view><text class="html-b num">{{statScope === 'career' ? careerValidPredictions : seasonValidPredictions}}</text><text class="html-span">有效预测场次</text></view><view><text class="html-b num">{{statScope === 'career' ? careerExactHits : seasonExactHits}}</text><text class="html-span">精确命中</text></view></view>
         <view class="stats-footer"><text>{{statScope === 'career' ? '永久累计 · 不随赛季清零' : seasonId}}</text><text class="pill">Lv.{{statScope === 'career' ? careerLevel : seasonLevel}} {{statScope === 'career' ? levelName : seasonLevelName}}</text></view>
       </view>
       <view class="section-title"><view><view class="html-h2">我的预言群</view><view class="html-p">和熟悉的人，一起看球</view></view><button class="text-button" bindtap="onGroupsTap">管理 ›</button></view>

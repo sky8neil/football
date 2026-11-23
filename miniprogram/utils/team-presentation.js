@@ -8,7 +8,11 @@ function presentTeam(team, leagueId) {
   const found = findTeam(teamId);
   const nameZh = found && found.name_zh ? found.name_zh : MISSING_NAME;
   const missing = !found || !found.name_zh;
-  const logo = getTeamLogo(leagueId, team);
+  const hasName = Boolean(team && team.name);
+  const logoTeam = hasName || !found
+    ? team
+    : Object.assign({}, team, { name: found.source_name });
+  const logo = getTeamLogo(leagueId, logoTeam);
   return { teamId, nameZh, logo, missing };
 }
 

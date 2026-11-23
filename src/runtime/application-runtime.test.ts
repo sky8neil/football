@@ -62,4 +62,38 @@ describe("createApplicationRuntime", () => {
       diag_code: "DIAG_PROVIDER_LEAGUE_UNCONFIGURED",
     }));
   });
+
+  it("injects parsed FOOTBALL_LEVEL_FIRST_EVAL_AS_OF into all 4 level services and rejects missing/invalid in prod", () => {
+    const repo = new InMemoryRepository();
+    const runtime = createApplicationRuntime({
+      env: {
+        FOOTBALL_ENVIRONMENT: "prod",
+        FOOTBALL_MATCH_CURSOR_SECRET: "cursor-secret",
+        FOOTBALL_LEVEL_FIRST_EVAL_AS_OF: "2026-08-03T02:00:00.000Z",
+      },
+      db: fakeDb(),
+      namespace: "football_prod",
+      repo,
+      matchCursorSecret: "cursor-secret",
+      log: vi.fn(),
+    });
+    expect(runtime.levelFirstEvalAsOf).toEqual(new Date("2026-08-03T02:00:00.000Z"));
+    expect(runtime.levelCorrectionReeval).toEqual(expect.objectContaining({ runForSettlement: expect.any(Function) }));
+    expect(runtime.statsRebuild).toEqual(expect.objectContaining({ rebuildUserStats: expect.any(Function) }));
+    expect(runtime.settlementTimerOptions.levelFirstEvalAsOf).toEqual(new Date("2026-08-03T02:00:00.000Z"));
+
+    expect(() =>
+      createApplicationRuntime({
+        env: {
+          FOOTBALL_ENVIRONMENT: "prod",
+          FOOTBALL_MATCH_CURSOR_SECRET: "cursor-secret",
+        },
+        db: fakeDb(),
+        namespace: "football_prod",
+        repo,
+        matchCursorSecret: "cursor-secret",
+        log: vi.fn(),
+      }),
+    ).toThrow(/FOOTBALL_LEVEL_FIRST_EVAL_AS_OF is required when FOOTBALL_ENVIRONMENT=prod/);
+  });
 });

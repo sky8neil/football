@@ -83,4 +83,32 @@ describe("deploy-preflight main（需要 dist）", () => {
   it("未知目标直接报错", async () => {
     await expect(main(["--target=aliyun"], {}, () => {})).rejects.toThrow(/未知部署目标/);
   });
+
+  it.skipIf(!DIST_READY)("FOOTBALL_ENVIRONMENT=prod 缺少或非法 FOOTBALL_LEVEL_FIRST_EVAL_AS_OF 时阻断 preflight", async () => {
+    await expect(
+      main(["--target=vps", "--json"], { FOOTBALL_ENVIRONMENT: "prod", FOOTBALL_SYNC_PROFILE: "prod" }, () => {}),
+    ).rejects.toThrow(/FOOTBALL_LEVEL_FIRST_EVAL_AS_OF/);
+    await expect(
+      main(
+        ["--target=vps", "--json"],
+        {
+          FOOTBALL_ENVIRONMENT: "prod",
+          FOOTBALL_SYNC_PROFILE: "prod",
+          FOOTBALL_LEVEL_FIRST_EVAL_AS_OF: "2026-08-04T02:00:00.000Z",
+        },
+        () => {},
+      ),
+    ).rejects.toThrow(/FOOTBALL_LEVEL_FIRST_EVAL_AS_OF/);
+    const chunks = [];
+    const code = await main(
+      ["--target=vps", "--json"],
+      {
+        FOOTBALL_ENVIRONMENT: "prod",
+        FOOTBALL_SYNC_PROFILE: "prod",
+        FOOTBALL_LEVEL_FIRST_EVAL_AS_OF: "2026-08-03T02:00:00.000Z",
+      },
+      (line) => chunks.push(line),
+    );
+    expect(code).toBe(0);
+  });
 });

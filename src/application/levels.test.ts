@@ -70,6 +70,8 @@ describe("LevelsQueryService", () => {
         valid_predictions: 20,
         remaining_to_rated: 0,
         is_frozen: false,
+        season_points: 120,
+        exact_hits: 3,
       },
       career: {
         level: 6,
@@ -107,6 +109,8 @@ describe("LevelsQueryService", () => {
         valid_predictions: 0,
         remaining_to_rated: FIXED_CONFIG_V1.LEVEL_RATED_MIN_VALID,
         is_frozen: false,
+        season_points: 0,
+        exact_hits: 0,
       },
       rule_version: FIXED_CONFIG_V1.LEVEL_RULE_VERSION,
     });

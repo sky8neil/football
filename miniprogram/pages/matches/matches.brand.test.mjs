@@ -178,6 +178,7 @@ function loadHomePage({ stored } = {}) {
         throw new Error("level-season has no dependencies");
       });
     }
+    if (id === "../../services/auth.js") return { getLoginGeneration: () => 0 };
     throw new Error(`Unexpected require: ${id}`);
   });
   const page = instantiate(config, { loadFirstPage() { return Promise.resolve(); } });

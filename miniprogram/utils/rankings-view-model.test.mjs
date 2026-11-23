@@ -126,6 +126,62 @@ describe("rankings view model", () => {
       .toEqual(["2026-W02", "2026-W01", "2025-W52"]);
   });
 
+  it("prefers payload.first_period_key over the local rankingFirstPeriodKey fallback", () => {
+    const result = model.buildRankingViewModel({
+      board: "week",
+      payload: {
+        current_period_key: "2026-W47",
+        first_period_key: "2026-W45",
+        entry_count: 1,
+        available_boards: ["week"],
+      },
+    });
+    expect(result.weekOptions.map((item) => item.key)).toEqual([
+      "2026-W47",
+      "2026-W46",
+      "2026-W45",
+    ]);
+  });
+
+  it("falls back to rankingFirstPeriodKey when first_period_key is missing", () => {
+    const missing = model.buildRankingViewModel({
+      board: "week",
+      payload: {
+        current_period_key: "2026-W32",
+        entry_count: 1,
+        available_boards: ["week"],
+      },
+    });
+    const empty = model.buildRankingViewModel({
+      board: "week",
+      payload: {
+        current_period_key: "2026-W32",
+        first_period_key: "",
+        entry_count: 1,
+        available_boards: ["week"],
+      },
+    });
+    expect(missing.weekOptions.map((item) => item.key)).toEqual(["2026-W32", "2026-W31"]);
+    expect(empty.weekOptions.map((item) => item.key)).toEqual(["2026-W32", "2026-W31"]);
+  });
+
+  it("builds week options across a year boundary from payload.first_period_key", () => {
+    const result = model.buildRankingViewModel({
+      board: "week",
+      payload: {
+        current_period_key: "2027-W02",
+        first_period_key: "2026-W53",
+        entry_count: 1,
+        available_boards: ["week"],
+      },
+    });
+    expect(result.weekOptions.map((item) => item.key)).toEqual([
+      "2027-W02",
+      "2027-W01",
+      "2026-W53",
+    ]);
+  });
+
   it("keeps empty copy board-specific and never promises first place", () => {
     const emptyPayload = { entry_count: 0, available_boards: ["week", "career", "strength", "season"] };
     const week = model.buildRankingViewModel({ board: "week", scope: "global", payload: emptyPayload });

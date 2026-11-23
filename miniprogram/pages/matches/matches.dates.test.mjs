@@ -39,11 +39,12 @@ function loadDateHelpers() {
     }
     if (id === "../../utils/rankings-view-model.js") return { currentSeasonId: () => "2026_2027" };
     if (id === "../../utils/level-season.js") return { formatLevelSeasonLabel: () => "" };
+    if (id === "../../services/auth.js") return { getLoginGeneration: () => 0 };
     throw new Error(`Unexpected require: ${id}`);
   });
 }
 
-const { buildDates, beijingParts } = loadDateHelpers();
+const { buildDates, beijingParts, upcomingMatchInfo } = loadDateHelpers();
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -90,5 +91,147 @@ describe("matches date strip", () => {
         expect(date.key).toBe(previous.toISOString().slice(0, 10));
       }
     });
+  });
+});
+
+describe("beijingParts arithmetic", () => {
+  it("returns independent Beijing parts across day, month, year, leap, and 00:00 boundaries", () => {
+    expect(beijingParts("2026-11-15T15:59:59.000Z")).toEqual({
+      year: 2026, month: 11, day: 15, hour: 23, minute: 59, key: "2026-11-15",
+    });
+    expect(beijingParts("2026-11-15T16:00:00.000Z")).toEqual({
+      year: 2026, month: 11, day: 16, hour: 0, minute: 0, key: "2026-11-16",
+    });
+    expect(beijingParts("2026-11-15T16:30:00.000Z")).toEqual({
+      year: 2026, month: 11, day: 16, hour: 0, minute: 30, key: "2026-11-16",
+    });
+    expect(beijingParts("2026-01-31T16:00:00.000Z")).toEqual({
+      year: 2026, month: 2, day: 1, hour: 0, minute: 0, key: "2026-02-01",
+    });
+    expect(beijingParts("2026-12-31T16:00:00.000Z")).toEqual({
+      year: 2027, month: 1, day: 1, hour: 0, minute: 0, key: "2027-01-01",
+    });
+    expect(beijingParts("2024-02-28T16:00:00.000Z")).toEqual({
+      year: 2024, month: 2, day: 29, hour: 0, minute: 0, key: "2024-02-29",
+    });
+    expect(beijingParts("2024-02-29T16:00:00.000Z")).toEqual({
+      year: 2024, month: 3, day: 1, hour: 0, minute: 0, key: "2024-03-01",
+    });
+    expect(beijingParts("2025-02-28T16:00:00.000Z")).toEqual({
+      year: 2025, month: 3, day: 1, hour: 0, minute: 0, key: "2025-03-01",
+    });
+  });
+
+  it("keeps existing invalid-input semantics", () => {
+    expect(beijingParts("not-a-date")).toBeNull();
+    expect(beijingParts("2026-13-40")).toBeNull();
+    expect(buildDates("not-a-date")).toEqual([]);
+    expect(buildDates("2026-13-40")).toEqual([]);
+  });
+
+  it("matches independent Beijing keys in UTC, UTC-8, and UTC+13", () => {
+    const cases = [
+      { iso: "2026-11-15T15:59:59.000Z", key: "2026-11-15" },
+      { iso: "2026-11-15T16:00:00.000Z", key: "2026-11-16" },
+    ];
+    for (const timezone of ["UTC", "Etc/GMT+8", "Etc/GMT-13"]) {
+      vi.stubEnv("TZ", timezone);
+      for (const { iso, key } of cases) {
+        expect(beijingParts(iso).key).toBe(key);
+        expect(buildDates(iso)[0].key).toBe(key);
+      }
+    }
+  });
+});
+
+describe("buildDates arithmetic", () => {
+  it("returns eleven consecutive Beijing dates with today, tomorrow, and weekday labels", () => {
+    expect(buildDates("2026-11-15T16:30:00.000Z")).toEqual([
+      { key: "2026-11-16", label: "今天", day: "16" },
+      { key: "2026-11-17", label: "明天", day: "17" },
+      { key: "2026-11-18", label: "周三", day: "18" },
+      { key: "2026-11-19", label: "周四", day: "19" },
+      { key: "2026-11-20", label: "周五", day: "20" },
+      { key: "2026-11-21", label: "周六", day: "21" },
+      { key: "2026-11-22", label: "周日", day: "22" },
+      { key: "2026-11-23", label: "周一", day: "23" },
+      { key: "2026-11-24", label: "周二", day: "24" },
+      { key: "2026-11-25", label: "周三", day: "25" },
+      { key: "2026-11-26", label: "周四", day: "26" },
+    ]);
+  });
+
+  it("crosses leap day, month, and year with independent keys", () => {
+    expect(buildDates("2024-02-28T20:00:00.000Z").map(({ key, label, day }) => ({ key, label, day }))).toEqual([
+      { key: "2024-02-29", label: "今天", day: "29" },
+      { key: "2024-03-01", label: "明天", day: "01" },
+      { key: "2024-03-02", label: "周六", day: "02" },
+      { key: "2024-03-03", label: "周日", day: "03" },
+      { key: "2024-03-04", label: "周一", day: "04" },
+      { key: "2024-03-05", label: "周二", day: "05" },
+      { key: "2024-03-06", label: "周三", day: "06" },
+      { key: "2024-03-07", label: "周四", day: "07" },
+      { key: "2024-03-08", label: "周五", day: "08" },
+      { key: "2024-03-09", label: "周六", day: "09" },
+      { key: "2024-03-10", label: "周日", day: "10" },
+    ]);
+    expect(buildDates("2026-12-31T16:00:00.000Z").map(({ key, label, day }) => ({ key, label, day }))).toEqual([
+      { key: "2027-01-01", label: "今天", day: "01" },
+      { key: "2027-01-02", label: "明天", day: "02" },
+      { key: "2027-01-03", label: "周日", day: "03" },
+      { key: "2027-01-04", label: "周一", day: "04" },
+      { key: "2027-01-05", label: "周二", day: "05" },
+      { key: "2027-01-06", label: "周三", day: "06" },
+      { key: "2027-01-07", label: "周四", day: "07" },
+      { key: "2027-01-08", label: "周五", day: "08" },
+      { key: "2027-01-09", label: "周六", day: "09" },
+      { key: "2027-01-10", label: "周日", day: "10" },
+      { key: "2027-01-11", label: "周一", day: "11" },
+    ]);
+  });
+});
+
+describe("locale independence", () => {
+  it("beijingParts and buildDates do not use toLocaleString or toLocaleDateString", () => {
+    const toLocaleString = Date.prototype.toLocaleString;
+    const toLocaleDateString = Date.prototype.toLocaleDateString;
+    Date.prototype.toLocaleString = function toLocaleStringMock() {
+      throw new Error("toLocaleString should not be used");
+    };
+    Date.prototype.toLocaleDateString = function toLocaleDateStringMock() {
+      throw new Error("toLocaleDateString should not be used");
+    };
+    try {
+      expect(beijingParts("2026-11-15T16:00:00.000Z")).toEqual({
+        year: 2026, month: 11, day: 16, hour: 0, minute: 0, key: "2026-11-16",
+      });
+      expect(buildDates("2026-11-15T16:00:00.000Z")).toEqual([
+        { key: "2026-11-16", label: "今天", day: "16" },
+        { key: "2026-11-17", label: "明天", day: "17" },
+        { key: "2026-11-18", label: "周三", day: "18" },
+        { key: "2026-11-19", label: "周四", day: "19" },
+        { key: "2026-11-20", label: "周五", day: "20" },
+        { key: "2026-11-21", label: "周六", day: "21" },
+        { key: "2026-11-22", label: "周日", day: "22" },
+        { key: "2026-11-23", label: "周一", day: "23" },
+        { key: "2026-11-24", label: "周二", day: "24" },
+        { key: "2026-11-25", label: "周三", day: "25" },
+        { key: "2026-11-26", label: "周四", day: "26" },
+      ]);
+      expect(upcomingMatchInfo(
+        { kickoff_at: "2026-11-20T12:00:00+08:00" },
+        "2026-11-16T00:00:00+08:00",
+        buildDates("2026-11-15T16:00:00.000Z"),
+      )).toEqual({
+        date: "2026-11-20",
+        label: "11月20日（周五）",
+        daysUntil: 4,
+        inDateStrip: true,
+        displayText: "跳到下一轮比赛日：11月20日（周五）→",
+      });
+    } finally {
+      Date.prototype.toLocaleString = toLocaleString;
+      Date.prototype.toLocaleDateString = toLocaleDateString;
+    }
   });
 });

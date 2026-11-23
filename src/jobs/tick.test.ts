@@ -3,7 +3,7 @@ import { SyncJobType } from "../domain/enums.js";
 import type { ApplicationRuntime } from "../runtime/application-runtime.js";
 import { weeklyEvalAsOf } from "../application/weekly-level-eval.js";
 import { UNWIRED_PERIODIC_TASKS, WIRED_PERIODIC_TASKS } from "../runtime/scheduled-jobs.js";
-import { runJobsTick, type JobsTickHandle } from "./tick.js";
+import { parseTickMode, runJobsTick, type JobsTickHandle } from "./tick.js";
 
 const ENV = {
   FOOTBALL_ENVIRONMENT: "test",
@@ -323,5 +323,120 @@ describe("runJobsTick", () => {
       { task: SyncJobType.NearMatch, reason: "lock_held" },
     ]));
     expect(summary?.failed).toEqual([]);
+  });
+
+  it("[Slice 5.3] --mode=realtime 只执行实时同步与结算，跳过周期任务", async () => {
+    const findSettlementTodos = vi.fn(async () => []);
+    const leagueSeasonsRun = vi.fn(async () => ({ seasons_checked: 0, completed: 0, reopened: 0 }));
+    const periodFinalize = vi.fn(async () => ({ skipped: false, finalized_count: 0 }));
+    const dailyConsistency = vi.fn(async () => ({
+      kind: "completed",
+      checked_at: new Date("2026-08-09T00:00:00.000Z"),
+      differences: [],
+      skipped_active_settlement: [],
+    }));
+    const weeklyLevelEval = vi.fn();
+    const boardSnapshotGenerate = vi.fn(async () => []);
+    const handle = handleStub({
+      repo: {
+        matches: { findSettlementTodos, findById: vi.fn() },
+        settlements: { findByStatus: vi.fn(async () => []), findByMatch: vi.fn(async () => []) },
+        rankings: { findAll: vi.fn(async () => []) },
+      },
+      leagueSeasons: { run: leagueSeasonsRun },
+      periodFinalize: { finalize: periodFinalize },
+      dailyConsistency: { run: dailyConsistency },
+      weeklyLevelEval: { run: weeklyLevelEval },
+      boardSnapshot: { generate: boardSnapshotGenerate, generateSeasonFinal: vi.fn(async () => []) },
+    });
+    const log = vi.fn();
+    const result = await runJobsTick({
+      env: ENV,
+      argv: ["--mode=realtime"],
+      now: () => new Date("2026-08-09T00:00:00.000Z"),
+      log,
+      assemble: async () => handle,
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(findSettlementTodos).toHaveBeenCalledTimes(1);
+    expect(leagueSeasonsRun).not.toHaveBeenCalled();
+    expect(periodFinalize).not.toHaveBeenCalled();
+    expect(dailyConsistency).not.toHaveBeenCalled();
+    expect(weeklyLevelEval).not.toHaveBeenCalled();
+    expect(boardSnapshotGenerate).not.toHaveBeenCalled();
+    const summary = log.mock.calls.map(([entry]) => entry as Record<string, unknown>)
+      .find((entry) => entry.event === "timer_summary");
+    expect(summary).toEqual(expect.objectContaining({ outcome: "ok", mode: "realtime", ran: [] }));
+  });
+
+  it("[Slice 5.3] --mode=periodic 只执行赛季维护与周期任务，跳过实时同步与结算", async () => {
+    const findSettlementTodos = vi.fn(async () => []);
+    const dispatcherRun = vi.fn();
+    const reconcileRun = vi.fn();
+    const leagueSeasonsRun = vi.fn(async () => ({ seasons_checked: 6, completed: 0, reopened: 0 }));
+    const handle = handleStub({
+      providerSources: { sources: [{ source_id: "fd" }], sync_leagues: new Set(["premier_league"]), sync_profile: "test" },
+      providerDispatcher: { run: dispatcherRun },
+      providerReconcile: { run: reconcileRun },
+      leagueSeasons: { run: leagueSeasonsRun },
+      repo: {
+        matches: { findSettlementTodos, findById: vi.fn() },
+        settlements: { findByStatus: vi.fn(async () => []), findByMatch: vi.fn(async () => []) },
+        rankings: { findAll: vi.fn(async () => []) },
+      },
+    });
+    const log = vi.fn();
+    const result = await runJobsTick({
+      env: ENV,
+      argv: ["--mode", "periodic"],
+      now: () => new Date("2026-08-09T00:00:00.000Z"),
+      log,
+      assemble: async () => handle,
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(dispatcherRun).not.toHaveBeenCalled();
+    expect(reconcileRun).not.toHaveBeenCalled();
+    expect(findSettlementTodos).not.toHaveBeenCalled();
+    expect(leagueSeasonsRun).toHaveBeenCalledTimes(1);
+    const summary = log.mock.calls.map(([entry]) => entry as Record<string, unknown>)
+      .find((entry) => entry.event === "timer_summary");
+    expect(summary?.mode).toBe("periodic");
+    expect(summary?.ran).toEqual(expect.arrayContaining([
+      SyncJobType.PeriodFinalize,
+      SyncJobType.DailyConsistency,
+      SyncJobType.WeeklyLevelEval,
+      SyncJobType.BoardSnapshotCareer,
+      SyncJobType.BoardSnapshotSeason,
+    ]));
+  });
+
+  it("[Slice 5.3] --dry-run 支持 --mode=realtime / --mode=periodic，非法 mode 退出非零", async () => {
+    const handle = handleStub();
+    const dryPeriodic = await runJobsTick({
+      env: ENV,
+      argv: ["--dry-run", "--mode=periodic"],
+      now: () => new Date("2026-08-09T00:00:00.000Z"),
+      log: vi.fn(),
+      assemble: async () => handle,
+    });
+    expect(dryPeriodic.exitCode).toBe(0);
+    expect(dryPeriodic.plan?.mode).toBe("periodic");
+    expect(dryPeriodic.plan?.settlement).toEqual({ task: "settlement", action: "skip", reason: "mode_periodic" });
+    expect((dryPeriodic.plan?.tasks as Array<{ task: string }>).some((t) => t.task === SyncJobType.LiveMatch)).toBe(false);
+
+    expect(parseTickMode([])).toBe("all");
+    expect(parseTickMode(["--mode=realtime"])).toBe("realtime");
+    expect(() => parseTickMode(["--mode=unknown"])).toThrow(/Invalid --mode/);
+
+    const bad = await runJobsTick({
+      env: ENV,
+      argv: ["--mode=unknown"],
+      now: () => new Date("2026-08-09T00:00:00.000Z"),
+      log: vi.fn(),
+      assemble: async () => handle,
+    });
+    expect(bad.exitCode).toBe(1);
   });
 });

@@ -645,7 +645,13 @@ describe("Cloud Function diagnostic action", () => {
   it("returns a non-informative 404 for the diagnostic action in prod", async () => {
     const fake = fakeDatabase();
     const runtime = createCloudFunctionRuntime({
-      env: { ...ENV, FOOTBALL_ENVIRONMENT: "prod", FOOTBALL_RESOURCE_NAMESPACE: "football_prod" },
+      env: {
+        ...ENV,
+        FOOTBALL_ENVIRONMENT: "prod",
+        FOOTBALL_RESOURCE_NAMESPACE: "football_prod",
+        FOOTBALL_LEVEL_FIRST_EVAL_AS_OF: "2026-08-03T02:00:00.000Z",
+        FOOTBALL_RANKING_FIRST_PERIOD_KEY: "2026-W31",
+      },
       db: fake.db,
       sdkVersion: "4.0.2",
       nodeVersion: "v24.21.0",

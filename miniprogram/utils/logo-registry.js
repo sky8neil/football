@@ -146,6 +146,8 @@ const MANIFEST = {
   },
 };
 
+const { findTeam } = require("./team-registry.js");
+
 const PLACEHOLDER = "../../assets/logos/placeholders/team-placeholder.png";
 
 // API display names differ from the packaged asset slugs. Keep those naming
@@ -160,29 +162,55 @@ const TEAM_ALIASES = {
   },
   la_liga: {
     "athletic-bilbao": "athletic-club", "atletico-de-madrid": "atletico-madrid",
+    "club-atletico-de-madrid": "atletico-madrid",
     "celta-vigo": "celta", "rc-celta-de-vigo": "celta", "fc-barcelona": "barcelona",
+    "ca-osasuna": "osasuna", "elche-cf": "elche", "getafe-cf": "getafe",
+    "levante-ud": "levante", "malaga-cf": "malaga",
+    "rc-deportivo-la-coruna": "deportivo-la-coruna",
+    "rcd-espanyol-de-barcelona": "espanyol",
+    "rayo-vallecano-de-madrid": "rayo-vallecano",
+    "real-betis-balompie": "real-betis", "real-madrid-cf": "real-madrid",
+    "real-racing-club-de-santander": "racing",
+    "real-sociedad-de-futbol": "real-sociedad",
+    "valencia-cf": "valencia", "villarreal-cf": "villarreal",
   },
   bundesliga: {
     "fc-bayern-munchen": "bayern-munchen", "fc-bayern-munich": "bayern-munchen",
     "bayern-munich": "bayern-munchen", "bayern": "bayern-munchen", "munich": "bayern-munchen",
     "dortmund": "borussia-dortmund", "monchengladbach": "borussia-monchengladbach", "gladbach": "borussia-monchengladbach",
-    "leverkusen": "bayer-leverkusen", "leipzig": "rb-leipzig", "frankfurt": "eintracht-frankfurt",
+    "leverkusen": "bayer-leverkusen", "bayer-04-leverkusen": "bayer-leverkusen",
+    "leipzig": "rb-leipzig", "frankfurt": "eintracht-frankfurt",
     "stuttgart": "vfb-stuttgart", "bremen": "werder-bremen", "schalke": "schalke-04",
+    "1-fc-koln": "koln", "1-fc-union-berlin": "union-berlin", "1-fsv-mainz-05": "mainz-05",
+    "sc-freiburg": "freiburg", "sc-paderborn-07": "paderborn",
+    "sv-07-elversberg": "sv-elversberg", "sv-werder-bremen": "werder-bremen",
+    "tsg-1899-hoffenheim": "hoffenheim",
   },
   serie_a: {
     "ac-milan": "milan", "inter-milan": "inter", "internazionale": "inter",
-    "fc-internazionale": "inter", "juve": "juventus", "as-roma": "roma",
+    "fc-internazionale": "inter", "fc-internazionale-milano": "inter",
+    "juve": "juventus", "as-roma": "roma",
     "ssc-napoli": "napoli", "acf-fiorentina": "fiorentina", "ss-lazio": "lazio",
-    "atalanta-bc": "atalanta", "como": "como-1907",
+    "atalanta-bc": "atalanta", "como": "como-1907", "ac-monza": "monza",
+    "bologna-fc-1909": "bologna", "cagliari-calcio": "cagliari",
+    "frosinone-calcio": "frosinone", "genoa-cfc": "genoa",
+    "parma-calcio-1913": "parma", "us-lecce": "lecce",
+    "us-sassuolo-calcio": "sassuolo", "udinese-calcio": "udinese",
   },
   ligue_1: {
     "psg": "paris-saint-germain", "olympique-lyonnais": "lyon",
     "olympique-de-marseille": "marseille", "monaco": "as-monaco",
-    "lens": "rc-lens", "strasbourg": "rc-strasbourg-alsace", "le-havre": "le-havre-ac",
+    "lens": "rc-lens", "racing-club-de-lens": "rc-lens",
+    "strasbourg": "rc-strasbourg-alsace", "le-havre": "le-havre-ac",
+    "aj-auxerre": "auxerre", "angers-sco": "angers", "es-troyes-ac": "troyes",
+    "lille-osc": "lille", "ogc-nice": "nice",
+    "stade-brestois-29": "brest", "stade-rennais-fc-1901": "rennes",
   },
   chinese_super_league: {
     "shanghai-sipg": "shanghai-port", "zhejiang": "zhejiang-professional",
     "henan": "henan-songshan-longmen", "tianjin-jinmen-hu": "tianjin-jinmen-tiger",
+    "liaoning-tieren-fc": "liaoning-tiening", "liaoning-tieren": "liaoning-tiening",
+    "shenzhen-peng-city": "shenzhen-xinpengcheng",
   },
 };
 
@@ -191,18 +219,28 @@ function normalizeTeamName(name) {
     .toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
 }
 
-function getTeamLogo(leagueId, team) {
+function lookupLeagueLogo(leagueId, name) {
   const league = MANIFEST[leagueId];
-  const key = normalizeTeamName(team && typeof team === "object" ? team.name : team);
-  if (!league) return PLACEHOLDER;
+  if (!league) return null;
+  const key = normalizeTeamName(name);
+  if (!key) return null;
   const aliases = TEAM_ALIASES[leagueId] || {};
   const directSlug = aliases[key] || key;
   if (league.teams[directSlug]) return league.teams[directSlug];
   const normalizedKey = key
     .replace(/^(?:fc|afc|football-club)-/, "")
     .replace(/-(?:fc|afc|football-club)$/, "");
+  if (normalizedKey === key) return null;
   const normalizedSlug = aliases[normalizedKey] || normalizedKey;
-  return league.teams[normalizedSlug] || PLACEHOLDER;
+  return league.teams[normalizedSlug] || null;
+}
+
+function getTeamLogo(leagueId, team) {
+  const teamId = team && typeof team === "object" ? team.team_id : undefined;
+  const found = findTeam(teamId);
+  if (found) return lookupLeagueLogo(found.league_id, found.source_name) || PLACEHOLDER;
+  const name = team && typeof team === "object" ? team.name : team;
+  return lookupLeagueLogo(leagueId, name) || PLACEHOLDER;
 }
 
 function getLeagueLogo(leagueId) {

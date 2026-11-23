@@ -76,8 +76,10 @@ function submitPrediction({ idempotencyKey, matchId, homeScore, awayScore }) {
   });
 }
 
-function listMyPredictions({ limit, cursor } = {}) {
+function listMyPredictions({ leagueId, seasonId, limit, cursor } = {}) {
   const query = {};
+  if (leagueId) query.league_id = leagueId;
+  if (seasonId) query.season_id = seasonId;
   if (limit !== undefined && limit !== null) {
     query.limit = limit;
   }

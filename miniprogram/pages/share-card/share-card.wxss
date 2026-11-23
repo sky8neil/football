@@ -1,0 +1,166 @@
+@import "../../styles/secondary-pages.wxss";
+
+.filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin-bottom: var(--space-6);
+}
+
+.filter-chip {
+  padding: var(--space-2) var(--space-4);
+  border: var(--border-hairline) solid var(--border-glass-strong);
+  border-radius: var(--radius-card);
+  background: var(--secondary-glass);
+  color: var(--text-primary);
+  font-size: var(--font-22);
+}
+
+.filter-chip.disabled {
+  color: var(--text-muted);
+}
+
+.filter-error {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+  color: var(--text-danger);
+  font-size: var(--font-22);
+}
+
+.picker-panel {
+  min-height: var(--secondary-empty-height);
+}
+
+.share-card {
+  padding: var(--space-8) var(--space-6);
+}
+
+.identity-row,
+.current-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.display-name {
+  font-size: var(--font-36);
+  font-weight: var(--weight-bold);
+}
+
+.now-tag {
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-xs);
+  background: var(--color-brand-soft);
+  color: var(--text-positive);
+  font-size: var(--font-18);
+  font-weight: var(--weight-semibold);
+}
+
+.card-meta,
+.level-season,
+.generated,
+.pending-note {
+  color: var(--text-secondary);
+  font-size: var(--font-22);
+}
+
+.card-meta {
+  margin-top: var(--space-2);
+}
+
+.score-block {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin: var(--space-6) 0;
+}
+
+.round-score {
+  color: var(--text-positive);
+  font-family: var(--font-family-number);
+  font-size: var(--font-56);
+  font-weight: var(--weight-bold);
+}
+
+.score-label {
+  color: var(--text-muted);
+  font-size: var(--font-22);
+}
+
+.stats-row,
+.current-row {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.stat {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.stat-value {
+  font-family: var(--font-family-number);
+  font-size: var(--font-36);
+  font-weight: var(--weight-bold);
+}
+
+.stat-label {
+  color: var(--text-muted);
+  font-size: var(--font-20);
+}
+
+.current-row {
+  margin-top: var(--space-6);
+  padding-top: var(--space-4);
+  border-top: var(--border-hairline) solid var(--border-subtle);
+  font-size: var(--font-22);
+}
+
+.level-season {
+  margin-top: var(--space-3);
+}
+
+.pending-note {
+  margin-top: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-sm);
+  background: var(--color-state-done-soft);
+}
+
+.generated {
+  margin-top: var(--space-4);
+}
+
+.share-button,
+.back-button,
+.state-panel button,
+.filter-error button,
+.ghost-button {
+  margin-top: var(--space-5);
+  color: var(--text-primary);
+  background: var(--surface-ghost);
+}
+
+.share-button {
+  background: var(--cta-background);
+  color: var(--text-on-brand);
+  font-weight: var(--weight-semibold);
+}
+
+.share-button::after,
+.back-button::after,
+.state-panel button::after,
+.filter-error button::after,
+.ghost-button::after {
+  border: 0;
+}
+
+.back-button {
+  width: 100%;
+}

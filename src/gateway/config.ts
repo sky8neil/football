@@ -1,3 +1,6 @@
+import { RANKING_FIRST_PERIOD_KEY } from "../domain/config.js";
+import { PeriodType } from "../domain/enums.js";
+import { isExistingUtcCalendarDate, isMondayLevelEvalAt, isValidPeriodKey } from "../domain/time.js";
 import {
   ENVIRONMENT_NAMES,
   type EnvironmentName,
@@ -33,6 +36,68 @@ export interface GatewayRuntimeConfig {
   vps_auth: VpsAuthConfig | null;
   /** 部署目标：决定调度器 tick 粒度（vps 3 分钟 / cloudbase 15 分钟）。 */
   deploy_target: DeployTarget;
+  /** 等级首评时间轴（周一 10:00 Asia/Shanghai / 02:00:00.000Z）；prod 必填，非 prod 可为空。 */
+  level_first_eval_as_of?: Date | null;
+  /** 周榜可选周的最早一周（ISO 周编号）；prod 必填，非 prod 可回落 RANKING_FIRST_PERIOD_KEY。 */
+  ranking_first_period_key: string;
+}
+
+const ISO_TIMESTAMP_WITH_TZ_PATTERN =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/;
+
+export function parseLevelFirstEvalAsOf(
+  env: Record<string, string | undefined>,
+  environment: EnvironmentName | string | undefined = env.FOOTBALL_ENVIRONMENT,
+): Date | null {
+  const raw = env.FOOTBALL_LEVEL_FIRST_EVAL_AS_OF;
+  const trimmed = typeof raw === "string" ? raw.trim() : "";
+  if (trimmed.length === 0) {
+    if (environment === "prod") {
+      throw new Error(
+        "FOOTBALL_LEVEL_FIRST_EVAL_AS_OF is required when FOOTBALL_ENVIRONMENT=prod (must be Monday 10:00:00.000 Asia/Shanghai, e.g. 2026-08-03T02:00:00.000Z)",
+      );
+    }
+    return null;
+  }
+  if (!ISO_TIMESTAMP_WITH_TZ_PATTERN.test(trimmed)) {
+    throw new Error(
+      "FOOTBALL_LEVEL_FIRST_EVAL_AS_OF must be a valid ISO 8601 timestamp at Monday 10:00:00.000 Asia/Shanghai (02:00:00.000Z)",
+    );
+  }
+  if (!isExistingUtcCalendarDate(trimmed)) {
+    throw new Error(
+      "FOOTBALL_LEVEL_FIRST_EVAL_AS_OF must be a valid calendar date at Monday 10:00:00.000 Asia/Shanghai (02:00:00.000Z)",
+    );
+  }
+  const parsed = new Date(trimmed);
+  if (Number.isNaN(parsed.getTime()) || !isMondayLevelEvalAt(parsed)) {
+    throw new Error(
+      "FOOTBALL_LEVEL_FIRST_EVAL_AS_OF must be Monday 10:00:00.000 Asia/Shanghai (02:00:00.000Z)",
+    );
+  }
+  return parsed;
+}
+
+export function parseRankingFirstPeriodKey(
+  env: Record<string, string | undefined>,
+  environment: EnvironmentName | string | undefined = env.FOOTBALL_ENVIRONMENT,
+): string {
+  const raw = env.FOOTBALL_RANKING_FIRST_PERIOD_KEY;
+  const trimmed = typeof raw === "string" ? raw.trim() : "";
+  if (trimmed.length === 0) {
+    if (environment === "prod") {
+      throw new Error(
+        "FOOTBALL_RANKING_FIRST_PERIOD_KEY is required when FOOTBALL_ENVIRONMENT=prod (必须是 ISO 周编号，如 2026-W47)",
+      );
+    }
+    return RANKING_FIRST_PERIOD_KEY;
+  }
+  if (!isValidPeriodKey(PeriodType.Week, trimmed)) {
+    throw new Error(
+      "FOOTBALL_RANKING_FIRST_PERIOD_KEY must be a valid ISO week number (必须是 ISO 周编号，如 2026-W47)",
+    );
+  }
+  return trimmed;
 }
 
 function isEnvironmentName(value: unknown): value is EnvironmentName {
@@ -130,6 +195,9 @@ export function loadGatewayRuntimeConfig(
     }
   }
 
+  const levelFirstEvalAsOf = parseLevelFirstEvalAsOf(env, rawEnvironment);
+  const rankingFirstPeriodKey = parseRankingFirstPeriodKey(env, rawEnvironment);
+
   return {
     environment: rawEnvironment,
     mock_trusted_openid: mockTrustedOpenid,
@@ -140,5 +208,7 @@ export function loadGatewayRuntimeConfig(
     postgres_repository: postgresRepository,
     vps_auth: vpsAuth,
     deploy_target: resolveDeployTarget(env),
+    level_first_eval_as_of: levelFirstEvalAsOf,
+    ranking_first_period_key: rankingFirstPeriodKey,
   };
 }

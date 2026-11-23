@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { LOCAL_PUBLIC_SOURCE, loadGatewayRuntimeConfig } from "./config.js";
+import { LOCAL_PUBLIC_SOURCE, loadGatewayRuntimeConfig, parseLevelFirstEvalAsOf } from "./config.js";
 
 describe("loadGatewayRuntimeConfig", () => {
   it("rejects a missing FOOTBALL_ENVIRONMENT and does not return a listen-ready config", () => {
@@ -62,6 +62,8 @@ describe("loadGatewayRuntimeConfig", () => {
       postgres_repository: null,
       vps_auth: null,
       deploy_target: "vps",
+      level_first_eval_as_of: null,
+      ranking_first_period_key: "2026-W31",
     });
     expect(config.public_source).toBe("local_v0");
   });
@@ -78,6 +80,8 @@ describe("loadGatewayRuntimeConfig", () => {
       FOOTBALL_REPOSITORY_BACKEND: "cloudbase",
       FOOTBALL_CLOUD_ENVIRONMENT_ID: "env",
       FOOTBALL_RESOURCE_NAMESPACE: "football",
+      FOOTBALL_LEVEL_FIRST_EVAL_AS_OF: "2026-08-03T02:00:00.000Z",
+      FOOTBALL_RANKING_FIRST_PERIOD_KEY: "2026-W31",
       FOOTBALL_DATABASE_URL: "postgres://ignored",
       FOOTBALL_WECHAT_APP_SECRET: "ignored-secret",
     });
@@ -100,6 +104,8 @@ describe("loadGatewayRuntimeConfig", () => {
       FOOTBALL_WECHAT_APP_ID: "wx-test-appid",
       FOOTBALL_WECHAT_APP_SECRET: "wx-test-secret",
       FOOTBALL_SESSION_TTL_SECONDS: "604800",
+      FOOTBALL_LEVEL_FIRST_EVAL_AS_OF: "2026-08-03T02:00:00.000Z",
+      FOOTBALL_RANKING_FIRST_PERIOD_KEY: "2026-W31",
       FOOTBALL_CLOUD_ENVIRONMENT_ID: "must-not-be-required",
     });
     expect(config.repository_backend).toBe("postgres");
@@ -150,5 +156,201 @@ describe("loadGatewayRuntimeConfig", () => {
       expect(message).toBe("FOOTBALL_SESSION_TTL_SECONDS must be a positive integer");
       expect(message).not.toContain(distinctive);
     }
+  });
+
+  it("rejects missing, blank, or non-Monday-10:00-Shanghai FOOTBALL_LEVEL_FIRST_EVAL_AS_OF in prod", () => {
+    const baseProdEnv = {
+      FOOTBALL_ENVIRONMENT: "prod",
+      FOOTBALL_MATCH_CURSOR_SECRET: "test-match-cursor-secret",
+      FOOTBALL_REPOSITORY_BACKEND: "memory",
+    };
+
+    expect(() => loadGatewayRuntimeConfig(baseProdEnv)).toThrow(
+      /FOOTBALL_LEVEL_FIRST_EVAL_AS_OF is required when FOOTBALL_ENVIRONMENT=prod/,
+    );
+    expect(() =>
+      loadGatewayRuntimeConfig({
+        ...baseProdEnv,
+        FOOTBALL_LEVEL_FIRST_EVAL_AS_OF: "   ",
+      }),
+    ).toThrow(/FOOTBALL_LEVEL_FIRST_EVAL_AS_OF is required when FOOTBALL_ENVIRONMENT=prod/);
+    // Tuesday 10:00 Asia/Shanghai (not Monday)
+    expect(() =>
+      loadGatewayRuntimeConfig({
+        ...baseProdEnv,
+        FOOTBALL_LEVEL_FIRST_EVAL_AS_OF: "2026-08-04T02:00:00.000Z",
+      }),
+    ).toThrow(/FOOTBALL_LEVEL_FIRST_EVAL_AS_OF must be Monday 10:00:00\.000 Asia\/Shanghai/);
+    // Monday 11:00 Asia/Shanghai (wrong hour)
+    expect(() =>
+      loadGatewayRuntimeConfig({
+        ...baseProdEnv,
+        FOOTBALL_LEVEL_FIRST_EVAL_AS_OF: "2026-08-03T03:00:00.000Z",
+      }),
+    ).toThrow(/FOOTBALL_LEVEL_FIRST_EVAL_AS_OF must be Monday 10:00:00\.000 Asia\/Shanghai/);
+    // Invalid string
+    expect(() =>
+      loadGatewayRuntimeConfig({
+        ...baseProdEnv,
+        FOOTBALL_LEVEL_FIRST_EVAL_AS_OF: "not-a-timestamp",
+      }),
+    ).toThrow(/FOOTBALL_LEVEL_FIRST_EVAL_AS_OF must be a valid ISO 8601 timestamp/);
+  });
+
+  it("parses valid FOOTBALL_LEVEL_FIRST_EVAL_AS_OF and still validates format in non-prod", () => {
+    const prodConfig = loadGatewayRuntimeConfig({
+      FOOTBALL_ENVIRONMENT: "prod",
+      FOOTBALL_MATCH_CURSOR_SECRET: "test-match-cursor-secret",
+      FOOTBALL_REPOSITORY_BACKEND: "memory",
+      FOOTBALL_LEVEL_FIRST_EVAL_AS_OF: "2026-08-03T02:00:00.000Z",
+      FOOTBALL_RANKING_FIRST_PERIOD_KEY: "2026-W31",
+    });
+    expect(prodConfig.level_first_eval_as_of).toEqual(new Date("2026-08-03T02:00:00.000Z"));
+
+    const devUnset = loadGatewayRuntimeConfig({
+      FOOTBALL_ENVIRONMENT: "dev",
+      FOOTBALL_MATCH_CURSOR_SECRET: "test-match-cursor-secret",
+      FOOTBALL_REPOSITORY_BACKEND: "memory",
+    });
+    expect(devUnset.level_first_eval_as_of).toBeNull();
+
+    expect(() =>
+      loadGatewayRuntimeConfig({
+        FOOTBALL_ENVIRONMENT: "test",
+        FOOTBALL_MATCH_CURSOR_SECRET: "test-match-cursor-secret",
+        FOOTBALL_REPOSITORY_BACKEND: "memory",
+        FOOTBALL_LEVEL_FIRST_EVAL_AS_OF: "2026-08-04T02:00:00.000Z",
+      }),
+    ).toThrow(/FOOTBALL_LEVEL_FIRST_EVAL_AS_OF must be Monday 10:00:00\.000 Asia\/Shanghai/);
+  });
+
+  it("requires FOOTBALL_RANKING_FIRST_PERIOD_KEY in prod and falls back in non-prod", () => {
+    const baseProdEnv = {
+      FOOTBALL_ENVIRONMENT: "prod",
+      FOOTBALL_MATCH_CURSOR_SECRET: "test-match-cursor-secret",
+      FOOTBALL_REPOSITORY_BACKEND: "memory",
+      FOOTBALL_LEVEL_FIRST_EVAL_AS_OF: "2026-08-03T02:00:00.000Z",
+    };
+
+    expect(() => loadGatewayRuntimeConfig(baseProdEnv)).toThrow(
+      /FOOTBALL_RANKING_FIRST_PERIOD_KEY is required when FOOTBALL_ENVIRONMENT=prod.*ISO 周编号.*2026-W47/,
+    );
+    expect(() =>
+      loadGatewayRuntimeConfig({
+        ...baseProdEnv,
+        FOOTBALL_RANKING_FIRST_PERIOD_KEY: "   ",
+      }),
+    ).toThrow(/FOOTBALL_RANKING_FIRST_PERIOD_KEY is required when FOOTBALL_ENVIRONMENT=prod/);
+    expect(() =>
+      loadGatewayRuntimeConfig({
+        ...baseProdEnv,
+        FOOTBALL_RANKING_FIRST_PERIOD_KEY: "2026-W99",
+      }),
+    ).toThrow(/FOOTBALL_RANKING_FIRST_PERIOD_KEY must be a valid ISO week number.*2026-W47/);
+    expect(() =>
+      loadGatewayRuntimeConfig({
+        ...baseProdEnv,
+        FOOTBALL_RANKING_FIRST_PERIOD_KEY: "abc",
+      }),
+    ).toThrow(/FOOTBALL_RANKING_FIRST_PERIOD_KEY must be a valid ISO week number/);
+
+    const prodConfig = loadGatewayRuntimeConfig({
+      ...baseProdEnv,
+      FOOTBALL_RANKING_FIRST_PERIOD_KEY: "2026-W47",
+    });
+    expect(prodConfig.ranking_first_period_key).toBe("2026-W47");
+
+    const devUnset = loadGatewayRuntimeConfig({
+      FOOTBALL_ENVIRONMENT: "dev",
+      FOOTBALL_MATCH_CURSOR_SECRET: "test-match-cursor-secret",
+      FOOTBALL_REPOSITORY_BACKEND: "memory",
+    });
+    expect(devUnset.ranking_first_period_key).toBe("2026-W31");
+
+    expect(() =>
+      loadGatewayRuntimeConfig({
+        FOOTBALL_ENVIRONMENT: "dev",
+        FOOTBALL_MATCH_CURSOR_SECRET: "test-match-cursor-secret",
+        FOOTBALL_REPOSITORY_BACKEND: "memory",
+        FOOTBALL_RANKING_FIRST_PERIOD_KEY: "2026-W99",
+      }),
+    ).toThrow(/FOOTBALL_RANKING_FIRST_PERIOD_KEY must be a valid ISO week number/);
+
+    const explicitDev = loadGatewayRuntimeConfig({
+      FOOTBALL_ENVIRONMENT: "dev",
+      FOOTBALL_MATCH_CURSOR_SECRET: "test-match-cursor-secret",
+      FOOTBALL_REPOSITORY_BACKEND: "memory",
+      FOOTBALL_RANKING_FIRST_PERIOD_KEY: "2026-W40",
+    });
+    expect(explicitDev.ranking_first_period_key).toBe("2026-W40");
+  });
+});
+
+describe("parseLevelFirstEvalAsOf calendar date", () => {
+  it("rejects non-existent dates in prod instead of rolling them into another day", () => {
+    expect(() =>
+      parseLevelFirstEvalAsOf(
+        { FOOTBALL_LEVEL_FIRST_EVAL_AS_OF: "2026-02-30T02:00:00Z" },
+        "prod",
+      ),
+    ).toThrow(/FOOTBALL_LEVEL_FIRST_EVAL_AS_OF must be a valid calendar date/);
+    expect(() =>
+      parseLevelFirstEvalAsOf(
+        { FOOTBALL_LEVEL_FIRST_EVAL_AS_OF: "2026-02-29T02:00:00Z" },
+        "prod",
+      ),
+    ).toThrow(/FOOTBALL_LEVEL_FIRST_EVAL_AS_OF must be a valid calendar date/);
+  });
+
+  it("treats a real leap-day as a calendar date and only rejects it when it is not Monday 02:00Z", () => {
+    expect(() =>
+      parseLevelFirstEvalAsOf(
+        { FOOTBALL_LEVEL_FIRST_EVAL_AS_OF: "2028-02-29T02:00:00Z" },
+        "prod",
+      ),
+    ).toThrow(/FOOTBALL_LEVEL_FIRST_EVAL_AS_OF must be Monday 10:00:00\.000 Asia\/Shanghai/);
+    expect(() =>
+      parseLevelFirstEvalAsOf(
+        { FOOTBALL_LEVEL_FIRST_EVAL_AS_OF: "2028-02-29T02:00:00Z" },
+        "prod",
+      ),
+    ).not.toThrow(/valid calendar date/);
+
+    expect(
+      parseLevelFirstEvalAsOf(
+        { FOOTBALL_LEVEL_FIRST_EVAL_AS_OF: "2016-02-29T02:00:00Z" },
+        "prod",
+      ),
+    ).toEqual(new Date("2016-02-29T02:00:00.000Z"));
+  });
+
+  it("still returns the exact instant for a valid Monday 02:00Z value", () => {
+    expect(
+      parseLevelFirstEvalAsOf(
+        { FOOTBALL_LEVEL_FIRST_EVAL_AS_OF: "2026-08-03T02:00:00.000Z" },
+        "prod",
+      ),
+    ).toEqual(new Date("2026-08-03T02:00:00.000Z"));
+  });
+
+  it("accepts the equivalent +08:00 writing and still rejects a +08:00 value that is not Monday 10:00 Shanghai", () => {
+    expect(
+      parseLevelFirstEvalAsOf(
+        { FOOTBALL_LEVEL_FIRST_EVAL_AS_OF: "2026-08-03T10:00:00+08:00" },
+        "prod",
+      ),
+    ).toEqual(new Date("2026-08-03T02:00:00.000Z"));
+    expect(() =>
+      parseLevelFirstEvalAsOf(
+        { FOOTBALL_LEVEL_FIRST_EVAL_AS_OF: "2026-08-03T02:00:00+08:00" },
+        "prod",
+      ),
+    ).toThrow(/FOOTBALL_LEVEL_FIRST_EVAL_AS_OF must be Monday 10:00:00\.000 Asia\/Shanghai/);
+    expect(() =>
+      parseLevelFirstEvalAsOf(
+        { FOOTBALL_LEVEL_FIRST_EVAL_AS_OF: "2026-02-30T10:00:00+08:00" },
+        "prod",
+      ),
+    ).toThrow(/FOOTBALL_LEVEL_FIRST_EVAL_AS_OF must be a valid calendar date/);
   });
 });

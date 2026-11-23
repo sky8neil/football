@@ -41,6 +41,8 @@ export const WEEKLY_LEVEL_EVAL_LOCK_KEY = `sync:${SyncJobType.WeeklyLevelEval}`;
 const LEVEL_EVAL_START_DELAY_MILLISECONDS =
   FIXED_CONFIG_V1.LEVEL_EVAL_START_DELAY_MINUTES * 60 * 1000;
 const LEVEL_JOB_LEASE_MILLISECONDS = FIXED_CONFIG_V1.JOB_LEASE_MINUTES * 60 * 1000;
+const LEVEL_LOCK_RENEW_BATCH_USERS = 20;
+const LEVEL_LOCK_RENEW_INTERVAL_MS = 2 * 60 * 1000;
 const WEEK_MILLISECONDS = 7 * 24 * 60 * 60 * 1000;
 
 export interface WeeklyLevelEvalOutcome {
@@ -49,6 +51,13 @@ export interface WeeklyLevelEvalOutcome {
   evaluated_count: number;
   changed_count: number;
   skipped_count: number;
+  settlement_skipped_count?: number;
+  failed_count?: number;
+  deferred_count?: number;
+}
+
+function isSettlementAlreadyRunning(error: unknown): error is DomainError {
+  return error instanceof DomainError && error.code === "SETTLEMENT_ALREADY_RUNNING";
 }
 
 export function weeklyEvalAsOf(serverNow: Date): Date {
@@ -74,14 +83,13 @@ export async function listDueSeasonFinalIds(
   if (repo.userSeasonStats === undefined || repo.boardSnapshots === undefined) {
     throw internalError("weekly level eval 缺少赛季统计或快照 repository");
   }
-  const seasonIds = new Set<string>();
-  for (const user of await repo.users.findAll()) {
-    for (const stats of await repo.userSeasonStats.findByUser(user.user_id)) {
-      seasonIds.add(stats.level_season_id);
-    }
+  const currentStartYear = Number(levelSeasonOf(asOf).slice(0, 4));
+  const candidateSeasonIds: string[] = [];
+  for (let year = currentStartYear - 5; year <= currentStartYear; year += 1) {
+    candidateSeasonIds.push(`${year}_${year + 1}`);
   }
   const due: string[] = [];
-  for (const seasonId of [...seasonIds].sort()) {
+  for (const seasonId of candidateSeasonIds) {
     if (asOf.getTime() < seasonFinalEvalAsOf(seasonId).getTime()) continue;
     if ((await repo.boardSnapshots.findFinalBySeason(seasonId)).length > 0) continue;
     const stats = await repo.userSeasonStats.findByLevelSeason(seasonId);
@@ -240,6 +248,7 @@ export class WeeklyLevelEvalService {
   constructor(
     private readonly repo: AppRepository,
     private readonly firstEvalAsOf: Date | null = FIXED_CONFIG_V1.LEVEL_FIRST_EVAL_AS_OF,
+    private readonly log?: (entry: Record<string, unknown>) => void,
   ) {}
 
   async run(serverNow: Date): Promise<WeeklyLevelEvalOutcome> {
@@ -252,6 +261,9 @@ export class WeeklyLevelEvalService {
         evaluated_count: 0,
         changed_count: 0,
         skipped_count: 0,
+        settlement_skipped_count: 0,
+        failed_count: 0,
+        deferred_count: 0,
       };
       await new BoardSnapshotService(this.repo).generate(RankingBoard.Strength, serverNow);
       await generateDueSeasonFinals(this.repo, asOf, serverNow);
@@ -259,38 +271,144 @@ export class WeeklyLevelEvalService {
     }
 
     const ownerId = newUuid();
+    const leaseDeadline = (): Date =>
+      new Date(Math.max(serverNow.getTime(), Date.now()) + LEVEL_JOB_LEASE_MILLISECONDS);
     const acquired = await this.repo.jobLocks.acquire(
       WEEKLY_LEVEL_EVAL_LOCK_KEY,
       ownerId,
-      new Date(serverNow.getTime() + LEVEL_JOB_LEASE_MILLISECONDS),
+      leaseDeadline(),
     );
     if (!acquired) {
-      return { kind: "skipped", as_of: asOf, evaluated_count: 0, changed_count: 0, skipped_count: 0 };
+      return {
+        kind: "skipped",
+        as_of: asOf,
+        evaluated_count: 0,
+        changed_count: 0,
+        skipped_count: 0,
+        settlement_skipped_count: 0,
+        failed_count: 0,
+        deferred_count: 0,
+      };
     }
 
     let evaluatedCount = 0;
     let changedCount = 0;
     let skippedCount = 0;
+    let settlementSkippedCount = 0;
+    let failedCount = 0;
+    let deferredCount = 0;
     let outcome: WeeklyLevelEvalOutcome;
     try {
       const { LevelCorrectionReevalService } = await import("./level-correction-reeval.js");
       const correctionReeval = new LevelCorrectionReevalService(this.repo, this.firstEvalAsOf);
       await correctionReeval.runPendingBefore(asOf, serverNow);
       const users = await this.repo.users.findAll();
+      let processedActiveUsers = 0;
+      let lastRenewWallMs = Date.now();
       for (const candidate of users) {
         if (candidate.status !== UserStatus.Active) continue;
         if (candidate.career_valid_predictions >= 1) {
-          const career = await this.evaluateCareer(candidate.user_id, asOf, serverNow);
-          evaluatedCount += career.evaluated ? 1 : 0;
-          changedCount += career.changed ? 1 : 0;
-          skippedCount += career.skipped ? 1 : 0;
+          try {
+            const career = await this.evaluateCareer(candidate.user_id, asOf, serverNow);
+            evaluatedCount += career.evaluated ? 1 : 0;
+            changedCount += career.changed ? 1 : 0;
+            skippedCount += career.skipped ? 1 : 0;
+            deferredCount += career.deferred ? 1 : 0;
+          } catch (error) {
+            if (isSettlementAlreadyRunning(error)) {
+              skippedCount += 1;
+              settlementSkippedCount += 1;
+              this.log?.({
+                event: "weekly_level_eval_user_skipped",
+                user_id: candidate.user_id,
+                scope: LevelScope.Career,
+                as_of: asOf.toISOString(),
+                reason: error.code,
+                message: error.message,
+              });
+            } else {
+              failedCount += 1;
+              this.log?.({
+                event: "weekly_level_eval_user_failed",
+                user_id: candidate.user_id,
+                scope: LevelScope.Career,
+                as_of: asOf.toISOString(),
+                error_code: error instanceof DomainError ? error.code : "INTERNAL_ERROR",
+                error_message: error instanceof Error ? error.message : String(error),
+              });
+            }
+          }
         }
 
-        const seasonResults = await this.evaluateSeasons(candidate.user_id, asOf, serverNow);
-        for (const result of seasonResults) {
-          evaluatedCount += result.evaluated ? 1 : 0;
-          changedCount += result.changed ? 1 : 0;
-          skippedCount += result.skipped ? 1 : 0;
+        try {
+          const seasonResults = await this.evaluateSeasons(candidate.user_id, asOf, serverNow);
+          for (const result of seasonResults) {
+            evaluatedCount += result.evaluated ? 1 : 0;
+            changedCount += result.changed ? 1 : 0;
+            skippedCount += result.skipped ? 1 : 0;
+            settlementSkippedCount += result.settlementSkipped ? 1 : 0;
+            failedCount += result.failed ? 1 : 0;
+            deferredCount += result.deferred ? 1 : 0;
+          }
+        } catch (error) {
+          if (isSettlementAlreadyRunning(error)) {
+            skippedCount += 1;
+            settlementSkippedCount += 1;
+            this.log?.({
+              event: "weekly_level_eval_user_skipped",
+              user_id: candidate.user_id,
+              scope: LevelScope.Season,
+              as_of: asOf.toISOString(),
+              reason: error.code,
+              message: error.message,
+            });
+          } else {
+            failedCount += 1;
+            this.log?.({
+              event: "weekly_level_eval_user_failed",
+              user_id: candidate.user_id,
+              scope: LevelScope.Season,
+              as_of: asOf.toISOString(),
+              error_code: error instanceof DomainError ? error.code : "INTERNAL_ERROR",
+              error_message: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+
+        processedActiveUsers += 1;
+        const nowWallMs = Date.now();
+        if (
+          processedActiveUsers % LEVEL_LOCK_RENEW_BATCH_USERS === 0 ||
+          nowWallMs - lastRenewWallMs >= LEVEL_LOCK_RENEW_INTERVAL_MS
+        ) {
+          let renewed = false;
+          try {
+            renewed = await this.repo.jobLocks.renew(
+              WEEKLY_LEVEL_EVAL_LOCK_KEY,
+              ownerId,
+              leaseDeadline(),
+            );
+          } catch {
+            renewed = false;
+          }
+          lastRenewWallMs = Date.now();
+          if (!renewed) {
+            this.log?.({
+              event: "weekly_level_eval_lock_lost",
+              as_of: asOf.toISOString(),
+              processed_users: processedActiveUsers,
+            });
+            return {
+              kind: "skipped",
+              as_of: asOf,
+              evaluated_count: evaluatedCount,
+              changed_count: changedCount,
+              skipped_count: skippedCount,
+              settlement_skipped_count: settlementSkippedCount,
+              failed_count: failedCount,
+              deferred_count: deferredCount,
+            };
+          }
         }
       }
       await correctionReeval.runPending(asOf, serverNow);
@@ -300,6 +418,9 @@ export class WeeklyLevelEvalService {
         evaluated_count: evaluatedCount,
         changed_count: changedCount,
         skipped_count: skippedCount,
+        settlement_skipped_count: settlementSkippedCount,
+        failed_count: failedCount,
+        deferred_count: deferredCount,
       };
     } finally {
       await this.repo.jobLocks.release(WEEKLY_LEVEL_EVAL_LOCK_KEY, ownerId);
@@ -313,7 +434,7 @@ export class WeeklyLevelEvalService {
     userId: string,
     asOf: Date,
     changedAt: Date,
-  ): Promise<{ evaluated: boolean; changed: boolean; skipped: boolean }> {
+  ): Promise<{ evaluated: boolean; changed: boolean; skipped: boolean; deferred?: boolean }> {
     const lockKey = levelScopeLockKey(userId, LevelScope.Career, null);
     const ownerId = newUuid();
     if (!(await this.repo.jobLocks.acquire(
@@ -321,7 +442,7 @@ export class WeeklyLevelEvalService {
       ownerId,
       new Date(changedAt.getTime() + LEVEL_JOB_LEASE_MILLISECONDS),
     ))) {
-      return { evaluated: false, changed: false, skipped: true };
+      return { evaluated: false, changed: false, skipped: false, deferred: true };
     }
     try {
       return await this.repo.withTransaction(async (tx) => {
@@ -373,11 +494,25 @@ export class WeeklyLevelEvalService {
     userId: string,
     asOf: Date,
     changedAt: Date,
-  ): Promise<Array<{ evaluated: boolean; changed: boolean; skipped: boolean }>> {
+  ): Promise<Array<{
+    evaluated: boolean;
+    changed: boolean;
+    skipped: boolean;
+    settlementSkipped: boolean;
+    failed: boolean;
+    deferred?: boolean;
+  }>> {
     const statsRows = this.repo.userSeasonStats === undefined
       ? []
       : await this.repo.userSeasonStats.findByUser(userId);
-    const results: Array<{ evaluated: boolean; changed: boolean; skipped: boolean }> = [];
+    const results: Array<{
+      evaluated: boolean;
+      changed: boolean;
+      skipped: boolean;
+      settlementSkipped: boolean;
+      failed: boolean;
+      deferred?: boolean;
+    }> = [];
     for (const row of statsRows) {
       if (!eligibleSeasonStats(row, asOf)) continue;
       const lockKey = levelScopeLockKey(userId, LevelScope.Season, row.level_season_id);
@@ -387,11 +522,18 @@ export class WeeklyLevelEvalService {
         ownerId,
         new Date(changedAt.getTime() + LEVEL_JOB_LEASE_MILLISECONDS),
       ))) {
-        results.push({ evaluated: false, changed: false, skipped: true });
+        results.push({
+          evaluated: false,
+          changed: false,
+          skipped: false,
+          settlementSkipped: false,
+          failed: false,
+          deferred: true,
+        });
         continue;
       }
       try {
-        results.push(await this.repo.withTransaction(async (tx) => {
+        const result = await this.repo.withTransaction(async (tx) => {
           requireLevelPorts(tx);
           const user = await tx.users.findById(userId);
           const stats = await tx.userSeasonStats.findByUserAndSeason(userId, row.level_season_id);
@@ -411,16 +553,16 @@ export class WeeklyLevelEvalService {
           const facts = await userFacts(tx, userId, asOf);
           const inputs = buildLevelInputs(facts, LevelScope.Season, asOf, stats.level_season_id);
           const base = evalState(stats.level, stats.best_level, previous.below_count);
-          const result = evaluateWithProtection(base, inputs, asOf, this.firstEvalAsOf);
-          const nextState = levelStateAfterEval(previous, base, result, inputs, asOf);
-          const changed = result.level !== stats.level;
+          const evalResult = evaluateWithProtection(base, inputs, asOf, this.firstEvalAsOf);
+          const nextState = levelStateAfterEval(previous, base, evalResult, inputs, asOf);
+          const changed = evalResult.level !== stats.level;
           if (changed) {
             await tx.levelHistory.insert(historyEntry({
               userId,
               scope: LevelScope.Season,
               seasonId: stats.level_season_id,
               fromLevel: stats.level,
-              toLevel: result.level,
+              toLevel: evalResult.level,
               inputs,
               asOf,
               changedAt,
@@ -429,14 +571,39 @@ export class WeeklyLevelEvalService {
           const freeze = levelSeasonOf(asOf) !== stats.level_season_id;
           await tx.userSeasonStats.update({
             ...stats,
-            level: result.level,
-            best_level: Math.max(stats.best_level, result.level),
+            level: evalResult.level,
+            best_level: Math.max(stats.best_level, evalResult.level),
             level_state: nextState,
             is_level_frozen: freeze,
             updated_at: changedAt,
           });
           return { evaluated: true, changed, skipped: false };
-        }));
+        });
+        results.push({ ...result, settlementSkipped: false, failed: false });
+      } catch (error) {
+        if (isSettlementAlreadyRunning(error)) {
+          this.log?.({
+            event: "weekly_level_eval_user_skipped",
+            user_id: userId,
+            scope: LevelScope.Season,
+            level_season_id: row.level_season_id,
+            as_of: asOf.toISOString(),
+            reason: error.code,
+            message: error.message,
+          });
+          results.push({ evaluated: false, changed: false, skipped: true, settlementSkipped: true, failed: false });
+        } else {
+          this.log?.({
+            event: "weekly_level_eval_user_failed",
+            user_id: userId,
+            scope: LevelScope.Season,
+            level_season_id: row.level_season_id,
+            as_of: asOf.toISOString(),
+            error_code: error instanceof DomainError ? error.code : "INTERNAL_ERROR",
+            error_message: error instanceof Error ? error.message : String(error),
+          });
+          results.push({ evaluated: false, changed: false, skipped: false, settlementSkipped: false, failed: true });
+        }
       } finally {
         await this.repo.jobLocks.release(lockKey, ownerId);
       }

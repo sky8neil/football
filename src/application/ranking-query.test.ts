@@ -228,7 +228,18 @@ describe("RankingQueryService v2", () => {
 
     expect(result.items[0]).toMatchObject({ rank: 1, user_id: user.user_id, period_score: 99, valid_predictions: 5, exact_hits: 1 });
     expect(result.items[0]).not.toHaveProperty("wdl_accuracy_percent");
-    expect(result).toMatchObject({ updated_at: NOW.toISOString(), me: { status: "ranked", rank: 1, top_percent: null } });
+    expect(result).toMatchObject({
+      updated_at: NOW.toISOString(),
+      first_period_key: "2026-W31",
+      me: {
+        status: "ranked",
+        rank: 1,
+        top_percent: null,
+        period_score: 99,
+        valid_predictions: 5,
+        exact_hits: 1,
+      },
+    });
     expect(result.current_period_key).toBe("2026-W32");
   });
 
@@ -242,9 +253,23 @@ describe("RankingQueryService v2", () => {
     const service = new RankingQueryService(repo, SECRET);
 
     const atTwentyOne = await service.list(query({ authenticated_user_id: id(21) }));
-    expect(atTwentyOne.me).toEqual({ status: "ranked", rank: null, top_percent: 21 });
+    expect(atTwentyOne.me).toEqual({
+      status: "ranked",
+      rank: null,
+      top_percent: 21,
+      period_score: 79,
+      valid_predictions: 5,
+      exact_hits: 1,
+    });
     const atLast = await service.list(query({ authenticated_user_id: id(100) }));
-    expect(atLast.me).toEqual({ status: "ranked", rank: null, top_percent: 99 });
+    expect(atLast.me).toEqual({
+      status: "ranked",
+      rank: null,
+      top_percent: 99,
+      period_score: 0,
+      valid_predictions: 5,
+      exact_hits: 1,
+    });
   });
 
   it("未登录不返回 me，未入快照用户按 not_participated/below_threshold 返回", async () => {
@@ -633,5 +658,96 @@ describe("RankingQueryService v2", () => {
     await expect(service.list(query({ board: RankingBoard.Career, period_key: WEEK_KEY }))).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
     await expect(service.list(query({ scope: RankingScope.Group, group_id: null }))).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
     await expect(service.list(query({ scope: RankingScope.Global, group_id: id(1) }))).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+  });
+
+  it("returns the injected first_period_key and ranked me metrics outside the page", async () => {
+    const repo = new InMemoryRepository();
+    for (let rank = 1; rank <= 30; rank += 1) {
+      await repo.users.insert(makeUser(id(rank)));
+      await repo.rankings.insert(makeRanking(id(rank), rank, {
+        period_score: 200 - rank,
+        valid_predictions: 8,
+        exact_hits: 3,
+      }));
+    }
+    const service = new RankingQueryService(repo, SECRET, { firstPeriodKey: "2026-W32" });
+    const result = await service.list(query({
+      authenticated_user_id: id(25),
+      limit: 10,
+    }));
+
+    expect(result.first_period_key).toBe("2026-W32");
+    expect(result.items).toHaveLength(10);
+    expect(result.items.some((item) => item.user_id === id(25))).toBe(false);
+    expect(result.me).toEqual({
+      status: "ranked",
+      rank: null,
+      top_percent: 84,
+      period_score: 175,
+      valid_predictions: 8,
+      exact_hits: 3,
+    });
+  });
+
+  it("returns ranked me metrics for career, season, and strength boards", async () => {
+    const repo = new InMemoryRepository();
+    for (let rank = 1; rank <= 25; rank += 1) {
+      const user = makeUser(id(rank), {
+        career_level_state: { ...defaultLevelState(), last_eval_n: 50, last_eval_score_sum: 120 },
+      });
+      await repo.users.insert(user);
+      await repo.boardSnapshots.insert(makeSnapshot(RankingBoard.Career, user.user_id, rank));
+      await repo.boardSnapshots.insert(makeSnapshot(RankingBoard.Strength, user.user_id, rank));
+      await repo.boardSnapshots.insert(makeSeasonSnapshot(user.user_id, rank, 80 - rank));
+    }
+    await repo.userSeasonStats.insert(makeSeasonStats(id(25), "2025_2026"));
+    await repo.userSeasonStats.insert(makeSeasonStats(id(25), "2026_2027"));
+    const service = new RankingQueryService(repo, SECRET, { firstPeriodKey: "2026-W40" });
+
+    const career = await service.list(query({
+      board: RankingBoard.Career,
+      period_key: null,
+      authenticated_user_id: id(25),
+      limit: 10,
+    }));
+    expect(career.first_period_key).toBe("2026-W40");
+    expect(career.items.some((item) => item.user_id === id(25))).toBe(false);
+    expect(career.me).toEqual({
+      status: "ranked",
+      rank: null,
+      top_percent: 99,
+      career_points: 75,
+      career_valid_predictions: 5,
+      exact_hits: 1,
+    });
+
+    const season = await service.list(query({
+      board: RankingBoard.Season,
+      period_key: null,
+      authenticated_user_id: id(25),
+      limit: 10,
+    }));
+    expect(season.me).toEqual({
+      status: "ranked",
+      rank: null,
+      top_percent: 99,
+      season_points: 55,
+      season_valid_predictions: 2,
+      exact_hits: 1,
+    });
+
+    const strength = await service.list(query({
+      board: RankingBoard.Strength,
+      period_key: null,
+      authenticated_user_id: id(25),
+      limit: 10,
+    }));
+    expect(strength.me).toEqual({
+      status: "ranked",
+      rank: null,
+      top_percent: 99,
+      strength_index: "2.08",
+      window_n: 50,
+    });
   });
 });

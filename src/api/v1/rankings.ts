@@ -38,6 +38,7 @@ export interface GetRankingsSuccessResponse {
       board: RankingQueryResult["board"];
       scope: RankingQueryResult["scope"];
       period_key: string | null;
+      first_period_key: string;
       updated_at: string | null;
       server_now: string;
       current_period_key?: string;
@@ -148,6 +149,7 @@ export async function getRankings(
         board: result.board,
         scope: result.scope,
         period_key: result.period_key,
+        first_period_key: result.first_period_key,
         updated_at: result.updated_at,
         server_now: input.server_now.toISOString(),
         ...(result.current_period_key === undefined

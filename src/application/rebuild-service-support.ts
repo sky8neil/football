@@ -53,6 +53,37 @@ export async function loadAppliedSettlementFacts(
   options: { skipActiveSettlement?: boolean } = {},
 ): Promise<AppliedSettlementFact[]> {
   const facts: AppliedSettlementFact[] = [];
+  const settlementCache = new Map<string, SettlementDoc | null>();
+  const matchCache = new Map<string, Match | null>();
+  const matchResultCache = new Map<string, MatchResult | null>();
+
+  const loadSettlement = async (settlementId: string): Promise<SettlementDoc | null> => {
+    if (settlementCache.has(settlementId)) {
+      return settlementCache.get(settlementId) ?? null;
+    }
+    const found = await tx.settlements.findById(settlementId);
+    settlementCache.set(settlementId, found);
+    return found;
+  };
+
+  const loadMatch = async (matchId: string): Promise<Match | null> => {
+    if (matchCache.has(matchId)) {
+      return matchCache.get(matchId) ?? null;
+    }
+    const found = await tx.matches.findById(matchId);
+    matchCache.set(matchId, found);
+    return found;
+  };
+
+  const loadMatchResult = async (matchId: string, resultVersion: number): Promise<MatchResult | null> => {
+    const cacheKey = `${matchId}\u0000${resultVersion}`;
+    if (matchResultCache.has(cacheKey)) {
+      return matchResultCache.get(cacheKey) ?? null;
+    }
+    const found = await tx.matchResults.findByMatchAndVersion(matchId, resultVersion);
+    matchResultCache.set(cacheKey, found);
+    return found;
+  };
 
   for (const item of items) {
     if (item.status !== SettlementItemStatus.Applied) {
@@ -67,7 +98,7 @@ export async function loadAppliedSettlementFacts(
       throw invalidLedger(`settlement item invariant 失败（prediction_id=${item.prediction_id}）`);
     }
 
-    const settlement = await tx.settlements.findById(item.settlement_id);
+    const settlement = await loadSettlement(item.settlement_id);
     if (settlement === null) {
       throw invalidLedger(`applied item 缺少 settlement（prediction_id=${item.prediction_id}）`);
     }
@@ -75,7 +106,7 @@ export async function loadAppliedSettlementFacts(
       throw invalidLedger(`item 与 settlement result_version 不一致（prediction_id=${item.prediction_id}）`);
     }
 
-    const match = await tx.matches.findById(settlement.match_id);
+    const match = await loadMatch(settlement.match_id);
     if (match === null) {
       throw invalidLedger(`applied item 缺少 match（prediction_id=${item.prediction_id}）`);
     }
@@ -99,10 +130,7 @@ export async function loadAppliedSettlementFacts(
       throw invalidLedger(`item 超过 match 当前 result_version（prediction_id=${item.prediction_id}）`);
     }
 
-    const result = await tx.matchResults.findByMatchAndVersion(
-      match.match_id,
-      item.source_result_version,
-    );
+    const result = await loadMatchResult(match.match_id, item.source_result_version);
     if (result === null) {
       throw invalidLedger(`applied item 缺少 match_results 版本（prediction_id=${item.prediction_id}）`);
     }
@@ -128,7 +156,7 @@ export async function loadAppliedSettlementFacts(
     if (
       prediction === null ||
       prediction.user_id !== item.user_id ||
-      prediction.match_id !== match.match_id ||
+      (prediction.canonical_match_id ?? prediction.match_id) !== (match.canonical_match_id ?? match.match_id) ||
       prediction.scoring_rule_version !== settlement.rule_version
     ) {
       throw invalidLedger(`applied item 与 prediction 不一致（prediction_id=${item.prediction_id}）`);
