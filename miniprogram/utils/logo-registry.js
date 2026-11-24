@@ -164,7 +164,7 @@ const TEAM_ALIASES = {
     "athletic-bilbao": "athletic-club", "atletico-de-madrid": "atletico-madrid",
     "club-atletico-de-madrid": "atletico-madrid",
     "celta-vigo": "celta", "rc-celta-de-vigo": "celta", "fc-barcelona": "barcelona",
-    "ca-osasuna": "osasuna", "elche-cf": "elche", "getafe-cf": "getafe",
+    "ca-osasuna": "osasuna", "deportivo-alaves": "deportivo", "elche-cf": "elche", "getafe-cf": "getafe",
     "levante-ud": "levante", "malaga-cf": "malaga",
     "rc-deportivo-la-coruna": "deportivo-la-coruna",
     "rcd-espanyol-de-barcelona": "espanyol",
@@ -214,6 +214,13 @@ const TEAM_ALIASES = {
   },
 };
 
+const TEAM_DISPLAY_ALIASES = {
+  chinese_super_league: {
+    "长春亚泰": "changchun-yatai",
+    "梅州客家": "meizhou-hakka",
+  },
+};
+
 function normalizeTeamName(name) {
   return String(name || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "")
     .toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
@@ -222,6 +229,9 @@ function normalizeTeamName(name) {
 function lookupLeagueLogo(leagueId, name) {
   const league = MANIFEST[leagueId];
   if (!league) return null;
+  const rawName = String(name || "").trim();
+  const displaySlug = (TEAM_DISPLAY_ALIASES[leagueId] || {})[rawName];
+  if (displaySlug && league.teams[displaySlug]) return league.teams[displaySlug];
   const key = normalizeTeamName(name);
   if (!key) return null;
   const aliases = TEAM_ALIASES[leagueId] || {};
@@ -238,7 +248,10 @@ function lookupLeagueLogo(leagueId, name) {
 function getTeamLogo(leagueId, team) {
   const teamId = team && typeof team === "object" ? team.team_id : undefined;
   const found = findTeam(teamId);
-  if (found) return lookupLeagueLogo(found.league_id, found.source_name) || PLACEHOLDER;
+  if (found) {
+    const logo = lookupLeagueLogo(found.league_id, found.source_name);
+    if (logo) return logo;
+  }
   const name = team && typeof team === "object" ? team.name : team;
   return lookupLeagueLogo(leagueId, name) || PLACEHOLDER;
 }

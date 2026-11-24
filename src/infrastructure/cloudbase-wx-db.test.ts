@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { SyncJobType } from "../domain/enums.js";
 import { CloudBaseDocumentNotFoundError } from "./cloudbase-db.js";
 import { CloudBaseProviderLeagueStateStore } from "./cloudbase-provider-league-state.js";
@@ -20,6 +20,7 @@ function fakeDatabase(format: "nested" | "top-level" = "nested") {
     skip: number;
     limit: number;
     order: { field: string; direction: "asc" | "desc" } | null;
+    orders: Array<{ field: string; direction: "asc" | "desc" }>;
     projection: Record<string, boolean> | null;
   }> = [];
   let committed = 0;
@@ -31,6 +32,10 @@ function fakeDatabase(format: "nested" | "top-level" = "nested") {
     lte(value: number | Date) { return { __operation: "lte", value }; },
     gte(value: number | Date) { return { __operation: "gte", value }; },
     in(values: readonly string[]) { return { __operation: "in", value: values }; },
+    neq(value: unknown) { return { __operation: "neq", value }; },
+    or(conditions: ReadonlyArray<Record<string, unknown>>) {
+      return { __operation: "or", value: conditions };
+    },
   };
   const makeDatabase = (transaction = false) => ({
     command,
@@ -38,12 +43,16 @@ function fakeDatabase(format: "nested" | "top-level" = "nested") {
       let filter: Record<string, unknown> = {};
       let offset = 0;
       let limit = 1000;
-      let order: { field: string; direction: "asc" | "desc" } | null = null;
+      const orders: Array<{ field: string; direction: "asc" | "desc" }> = [];
       let projection: Record<string, boolean> | null = null;
-      const matches = (value: Record<string, unknown>) => Object.entries(filter).every(([key, expected]) => {
+      const matchesCondition = (value: Record<string, unknown>, key: string, expected: unknown) => {
         if (typeof expected === "object" && expected !== null && "__operation" in expected) {
-          const condition = expected as { __operation: string; value: number | Date | readonly string[] };
-          if (condition.__operation === "lt") return Number(value[key]) < Number(condition.value);
+          const condition = expected as { __operation: string; value: number | Date | string | readonly string[] };
+          if (condition.__operation === "lt") {
+            return typeof value[key] === "string" && typeof condition.value === "string"
+              ? value[key] < condition.value
+              : Number(value[key]) < Number(condition.value);
+          }
           if (condition.__operation === "lte") {
             const left = value[key] instanceof Date ? (value[key] as Date).getTime() : Number(value[key]);
             const right = condition.value instanceof Date ? condition.value.getTime() : Number(condition.value);
@@ -57,22 +66,45 @@ function fakeDatabase(format: "nested" | "top-level" = "nested") {
           if (condition.__operation === "in") {
             return (condition.value as readonly string[]).includes(String(value[key] ?? ""));
           }
+          if (condition.__operation === "neq") {
+            return value[key] !== condition.value;
+          }
+          return false;
+        }
+        if (value[key] instanceof Date && expected instanceof Date) {
+          return (value[key] as Date).getTime() === expected.getTime();
         }
         return value[key] === expected;
-      });
+      };
+      const matchesFilter = (value: Record<string, unknown>, active: Record<string, unknown>): boolean => {
+        if (typeof active === "object" && active !== null && "__operation" in active) {
+          const operation = active as { __operation: string; value: ReadonlyArray<Record<string, unknown>> };
+          if (operation.__operation === "or") {
+            return operation.value.some((condition) => matchesFilter(value, condition));
+          }
+          return false;
+        }
+        return Object.entries(active).every(([key, expected]) => matchesCondition(value, key, expected));
+      };
+      const matches = (value: Record<string, unknown>) => matchesFilter(value, filter);
       const rows = () => [...docs.entries()].filter(([key]) => key.startsWith(`${name}/`))
         .map(([, value]) => value).filter(matches);
       const chain = {
         where(value: Record<string, unknown>) { filter = value; return chain; },
-        orderBy(field: string, direction: "asc" | "desc") { order = { field, direction }; return chain; },
+        orderBy(field: string, direction: "asc" | "desc") { orders.push({ field, direction }); return chain; },
         skip(value: number) { offset = value; return chain; },
         limit(value: number) { limit = value; return chain; },
         field(value: Record<string, boolean>) { projection = value; return chain; },
         async get() {
           const values = rows();
-          if (order) {
-            const { field, direction } = order;
-            values.sort((a, b) => compareField(a[field], b[field]) * (direction === "desc" ? -1 : 1));
+          if (orders.length > 0) {
+            values.sort((a, b) => {
+              for (const spec of orders) {
+                const cmp = compareField(a[spec.field], b[spec.field]);
+                if (cmp !== 0) return cmp * (spec.direction === "desc" ? -1 : 1);
+              }
+              return 0;
+            });
           }
           const page = values.slice(offset, offset + limit).map((row) => {
             if (projection === null) return row;
@@ -83,7 +115,8 @@ function fakeDatabase(format: "nested" | "top-level" = "nested") {
             return projected;
           });
           getSizes.push(page.length);
-          queries.push({ collection: name, filter, skip: offset, limit, order, projection });
+          const order = orders.length > 0 ? orders[orders.length - 1]! : null;
+          queries.push({ collection: name, filter, skip: offset, limit, order, orders: [...orders], projection });
           return { data: page };
         },
         async count() { return { total: rows().length }; },
@@ -259,7 +292,7 @@ describe("CloudBaseWxDb.findPredictionHistoryPage", () => {
     await db.add(predictions, "p2", { _id: "p2", prediction_id: "p2", user_id: "u1", match_id: "m1", submitted_at: older });
     await db.add(predictions, "other", { _id: "other", prediction_id: "other", user_id: "u2", match_id: "m1", submitted_at: older });
 
-    const rows = await db.findPredictionHistoryPage({
+    const result = await db.findPredictionHistoryPage({
       predictions_collection: predictions,
       matches_collection: matches,
       user_id: "u1",
@@ -269,17 +302,27 @@ describe("CloudBaseWxDb.findPredictionHistoryPage", () => {
       limit: 10,
     });
 
-    expect(rows.map((row) => row._id)).toEqual(["p2"]);
+    expect(result.documents.map((row) => row._id)).toEqual(["p2"]);
+    expect(result.exhausted).toBe(true);
+    expect(result.resumeCursor).toBeNull();
     const predictionQueries = predictionQueriesOf(fake);
     expect(predictionQueries.length).toBeGreaterThan(0);
     for (const query of predictionQueries) {
-      expect(query.filter.user_id).toBe("u1");
       expect(Number.isFinite(query.limit)).toBe(true);
       expect(query.limit).toBeGreaterThan(0);
       expect(query.limit).toBeLessThanOrEqual(100);
-      expect(query.order).toEqual({ field: "submitted_at", direction: "desc" });
-      expect(query.filter.submitted_at).toEqual({ __operation: "lte", value: cursorAt });
+      expect(query.orders).toEqual([
+        { field: "submitted_at", direction: "desc" },
+        { field: "prediction_id", direction: "desc" },
+      ]);
     }
+    expect(predictionQueries[0]?.filter).toEqual({
+      __operation: "or",
+      value: [
+        { user_id: "u1", submitted_at: { __operation: "lt", value: cursorAt } },
+        { user_id: "u1", submitted_at: cursorAt, prediction_id: { __operation: "lt", value: "p1" } },
+      ],
+    });
     expect(fake.queries.some((query) => query.filter.user_id === undefined && !(Number.isFinite(query.limit) && query.limit < 1000))).toBe(false);
   });
 
@@ -302,7 +345,7 @@ describe("CloudBaseWxDb.findPredictionHistoryPage", () => {
       });
     }
 
-    const rows = await db.findPredictionHistoryPage({
+    const result = await db.findPredictionHistoryPage({
       predictions_collection: predictions,
       matches_collection: matches,
       user_id: "u1",
@@ -312,7 +355,7 @@ describe("CloudBaseWxDb.findPredictionHistoryPage", () => {
       limit: 3,
     });
 
-    expect(rows.map((row) => row._id)).toEqual(["p100", "p101", "p102"]);
+    expect(result.documents.map((row) => row._id)).toEqual(["p100", "p101", "p102"]);
     expect(predictionQueriesOf(fake).length).toBeGreaterThan(1);
   });
 
@@ -331,7 +374,7 @@ describe("CloudBaseWxDb.findPredictionHistoryPage", () => {
       });
     }
 
-    const rows = await db.findPredictionHistoryPage({
+    const result = await db.findPredictionHistoryPage({
       predictions_collection: predictions,
       matches_collection: matches,
       user_id: "u1",
@@ -341,7 +384,7 @@ describe("CloudBaseWxDb.findPredictionHistoryPage", () => {
       limit: 5,
     });
 
-    expect(rows).toEqual([]);
+    expect(result).toEqual({ documents: [], exhausted: true, resumeCursor: null });
     expect(predictionQueriesOf(fake).length).toBeGreaterThan(0);
     expect(predictionQueriesOf(fake).length).toBeLessThanOrEqual(10);
   });
@@ -362,7 +405,7 @@ describe("CloudBaseWxDb.findPredictionHistoryPage", () => {
       });
     }
 
-    const rows = await db.findPredictionHistoryPage({
+    const result = await db.findPredictionHistoryPage({
       predictions_collection: predictions,
       matches_collection: matches,
       user_id: "u1",
@@ -372,10 +415,197 @@ describe("CloudBaseWxDb.findPredictionHistoryPage", () => {
       limit: 1,
     });
 
-    expect(rows).toEqual([]);
+    expect(result.documents).toEqual([]);
+    expect(result.exhausted).toBe(false);
+    expect(result.resumeCursor).not.toBeNull();
     const predictionQueries = predictionQueriesOf(fake);
     expect(predictionQueries.length).toBeGreaterThan(1);
     expect(predictionQueries.length).toBeLessThanOrEqual(64);
+  });
+
+  it("[Slice 3.4] 250 条同 submitted_at 跨 100 行批边界时，lteFilter 与无 lteFilter 均不重不漏不死循环", async () => {
+    const sameTs = new Date("2026-08-09T12:00:00.000Z");
+
+    const runScenario = async (withCommand: boolean) => {
+      const fake = fakeDatabase();
+      const db = new CloudBaseWxDb(
+        fake.db as unknown as CloudBaseSdkDatabase,
+        "football_test",
+        false,
+        withCommand ? fake.db.command : undefined,
+      );
+      fake.docs.set(`${matches}/m_other`, { _id: "m_other", match_id: "m_other", league_id: "other", season_id: "2026" });
+      fake.docs.set(`${matches}/m_ok`, { _id: "m_ok", match_id: "m_ok", league_id: "premier", season_id: "2026" });
+
+      // 250 条相同 submitted_at（p000..p249，倒序 p249 最前 -> p000 最后）：
+      // 前 220 条（p249..p030）是其他联赛（需跨过 2 个完整 100 行批），最后 30 条（p029..p000）命中目标联赛。
+      for (let i = 0; i < 250; i += 1) {
+        const id = `p${String(i).padStart(3, "0")}`;
+        fake.docs.set(`${predictions}/${id}`, {
+          _id: id,
+          prediction_id: id,
+          user_id: "u1",
+          match_id: i < 30 ? "m_ok" : "m_other",
+          submitted_at: sameTs,
+        });
+      }
+
+      const collected: string[] = [];
+      let cursor: { submitted_at: Date; prediction_id: string } | null = null;
+      for (let pageNo = 0; pageNo < 10; pageNo += 1) {
+        const result = await db.findPredictionHistoryPage({
+          predictions_collection: predictions,
+          matches_collection: matches,
+          user_id: "u1",
+          league_id: "premier",
+          season_id: "2026",
+          cursor,
+          limit: 12,
+        });
+        const page = result.documents;
+        if (page.length === 0 && result.exhausted) break;
+        collected.push(...page.map((doc) => String(doc.prediction_id)));
+        const last = page.at(-1);
+        cursor = result.resumeCursor ?? (last === undefined ? null : {
+          submitted_at: last.submitted_at as Date,
+          prediction_id: String(last.prediction_id),
+        });
+        if (result.exhausted) break;
+      }
+
+      const expected = Array.from({ length: 30 }, (_, idx) => `p${String(29 - idx).padStart(3, "0")}`);
+      expect(collected).toEqual(expected);
+      expect(new Set(collected).size).toBe(30);
+    };
+
+    await runScenario(true);
+    await runScenario(false);
+  });
+
+  it("[Slice 3.4] historyMaxBatches=1 下 250 条同 submitted_at 通过下推双键游标持续推进且不重不漏", async () => {
+    const fake = fakeDatabase();
+    const db = new CloudBaseWxDb(
+      fake.db as unknown as CloudBaseSdkDatabase,
+      "football_test",
+      false,
+      fake.db.command,
+      { historyMaxBatches: 1 },
+    );
+    const sameTs = new Date("2026-08-09T12:00:00.000Z");
+    fake.docs.set(`${matches}/m_other`, { _id: "m_other", match_id: "m_other", league_id: "other", season_id: "2026" });
+    fake.docs.set(`${matches}/m_ok`, { _id: "m_ok", match_id: "m_ok", league_id: "premier", season_id: "2026" });
+    for (let i = 0; i < 250; i += 1) {
+      const id = `p${String(i).padStart(3, "0")}`;
+      fake.docs.set(`${predictions}/${id}`, {
+        _id: id,
+        prediction_id: id,
+        user_id: "u1",
+        match_id: i < 30 ? "m_ok" : "m_other",
+        submitted_at: sameTs,
+      });
+    }
+
+    const collected: string[] = [];
+    let cursor: { submitted_at: Date; prediction_id: string } | null = null;
+    const cursors: string[] = [];
+    for (let pageNo = 0; pageNo < 10; pageNo += 1) {
+      const result = await db.findPredictionHistoryPage({
+        predictions_collection: predictions,
+        matches_collection: matches,
+        user_id: "u1",
+        league_id: "premier",
+        season_id: "2026",
+        cursor,
+        limit: 12,
+      });
+      collected.push(...result.documents.map((doc) => String(doc.prediction_id)));
+      if (result.exhausted) break;
+      const last = result.documents.at(-1);
+      const next = result.resumeCursor ?? (last === undefined ? null : {
+        submitted_at: last.submitted_at as Date,
+        prediction_id: String(last.prediction_id),
+      });
+      expect(next).not.toBeNull();
+      cursors.push(next!.prediction_id);
+      if (cursor !== null) {
+        expect(
+          next!.submitted_at.getTime() < cursor.submitted_at.getTime()
+          || (next!.submitted_at.getTime() === cursor.submitted_at.getTime()
+            && next!.prediction_id < cursor.prediction_id),
+        ).toBe(true);
+      }
+      cursor = next!;
+    }
+
+    const expected = Array.from({ length: 30 }, (_, idx) => `p${String(29 - idx).padStart(3, "0")}`);
+    expect(collected).toEqual(expected);
+    expect(cursors.length).toBeGreaterThan(1);
+    const pushedBoundaries = predictionQueriesOf(fake).filter((query) => "__operation" in query.filter);
+    expect(pushedBoundaries.length).toBeGreaterThan(0);
+    for (const query of pushedBoundaries) {
+      const conditions = (query.filter as unknown as {
+        value: Array<Record<string, unknown>>;
+      }).value;
+      expect(conditions[0]).toMatchObject({
+        user_id: "u1",
+        submitted_at: { __operation: "lt" },
+      });
+      expect(conditions[1]).toMatchObject({
+        user_id: "u1",
+        prediction_id: { __operation: "lt" },
+      });
+    }
+  });
+
+  it("[Slice 3.4] 触及 historyMaxBatches 或 distinctMaxRows 上限时支持配置并记录告警日志", async () => {
+    const fake = fakeDatabase();
+    const log = vi.fn();
+    const db = new CloudBaseWxDb(
+      fake.db as unknown as CloudBaseSdkDatabase,
+      "football_test",
+      false,
+      fake.db.command,
+      { historyMaxBatches: 2, distinctMaxRows: 100, log },
+    );
+    fake.docs.set(`${matches}/m_other`, { _id: "m_other", match_id: "m_other", league_id: "other", season_id: "2026" });
+    const origin = Date.parse("2026-08-01T00:00:00.000Z");
+    for (let i = 0; i < 250; i += 1) {
+      const id = `p${String(i).padStart(3, "0")}`;
+      fake.docs.set(`${predictions}/${id}`, {
+        _id: id,
+        prediction_id: id,
+        user_id: "u1",
+        match_id: "m_other",
+        submitted_at: new Date(origin + i * 1000),
+      });
+    }
+
+    const hist = await db.findPredictionHistoryPage({
+      predictions_collection: predictions,
+      matches_collection: matches,
+      user_id: "u1",
+      league_id: "premier",
+      season_id: "2026",
+      cursor: null,
+      limit: 5,
+    });
+    expect(hist.documents).toEqual([]);
+    expect(hist.exhausted).toBe(false);
+    expect(hist.resumeCursor).not.toBeNull();
+    expect(predictionQueriesOf(fake)).toHaveLength(2);
+    expect(log).toHaveBeenCalledWith(expect.objectContaining({
+      event: "cloudbase_history_scan_cap_reached",
+      history_max_batches: 2,
+    }));
+
+    for (let i = 0; i < 150; i += 1) {
+      fake.docs.set(`${matches}/m-${i}`, { _id: `m-${i}`, league_id: `L-${i}`, season_id: "2026" });
+    }
+    await db.distinctQuery(matches, ["league_id"]);
+    expect(log).toHaveBeenCalledWith(expect.objectContaining({
+      event: "cloudbase_distinct_scan_cap_reached",
+      distinct_max_rows: 100,
+    }));
   });
 });
 
@@ -405,6 +635,46 @@ describe("CloudBaseWxDb.distinctQuery", () => {
       expect(query.projection).toEqual({ league_id: true, season_id: true });
       expect(query.limit).toBeGreaterThan(0);
       expect(query.limit).toBeLessThanOrEqual(100);
+      expect(query.orders).toContainEqual({ field: "_id", direction: "asc" });
     }
+  });
+});
+
+describe("CloudBaseWxDb.patch", () => {
+  it("通过 doc.update 仅局部写入传入字段，缺失文档抛 CloudBaseDocumentNotFoundError", async () => {
+    const fake = fakeDatabase();
+    const db = new CloudBaseWxDb(fake.db, "football_test");
+    const id = "week|2026-W32|u1";
+    await db.add("football_test_rankings", id, {
+      _id: id,
+      schema_version: 1,
+      period_type: "week",
+      period_key: "2026-W32",
+      user_id: "u1",
+      period_score: 12,
+      valid_predictions: 3,
+      wdl_hits: 2,
+      exact_hits: 1,
+      global_rank: null,
+      updated_at: new Date(0),
+    });
+    const updatedAt = new Date("2026-08-09T01:00:00.000Z");
+
+    await db.patch!("football_test_rankings", id, {
+      global_rank: 2,
+      updated_at: updatedAt,
+    });
+
+    expect(fake.docs.get(`football_test_rankings/${id}`)).toMatchObject({
+      period_score: 12,
+      valid_predictions: 3,
+      wdl_hits: 2,
+      exact_hits: 1,
+      global_rank: 2,
+      updated_at: updatedAt,
+    });
+    await expect(
+      db.patch!("football_test_rankings", "missing", { global_rank: 1 }),
+    ).rejects.toBeInstanceOf(CloudBaseDocumentNotFoundError);
   });
 });

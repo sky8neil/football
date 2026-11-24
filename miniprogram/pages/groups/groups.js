@@ -28,13 +28,18 @@ Page({
     rules: COPY.groupRules,
   },
 
+  groupsRequestSerial: 0,
+
   onShow() {
-    this.loadGroups();
+    return this.loadGroups();
   },
 
   loadGroups() {
+    const requestSerial = (this.groupsRequestSerial || 0) + 1;
+    this.groupsRequestSerial = requestSerial;
     this.setData({ state: "loading", errorMessage: "" });
-    listMyGroups({ limit: MAX_JOINED_GROUPS }).then((result) => {
+    return listMyGroups({ limit: MAX_JOINED_GROUPS }).then((result) => {
+      if (this.groupsRequestSerial !== requestSerial) return;
       if (result.statusCode !== 200) {
         this.setData({ state: "error", errorMessage: result.message || COPY.groupLoadFailed });
         return;
@@ -56,6 +61,12 @@ Page({
         usageText: COPY.groupUsage(`${groups.length} / ${MAX_JOINED_GROUPS}`, `${ownedCount} / ${MAX_OWNED_GROUPS}`),
         errorMessage: "",
       });
+    }).catch(() => {
+      if (this.groupsRequestSerial !== requestSerial) return;
+      this.setData({
+        state: "error",
+        errorMessage: COPY.groupLoadFailed,
+      });
     });
   },
 
@@ -70,7 +81,7 @@ Page({
   onCreateTap() {
     if (!this.data.canCreate || this.data.loadingAction) return;
     this.setData({ loadingAction: true, errorMessage: "" });
-    createGroup().then((result) => {
+    return createGroup().then((result) => {
       if (result.statusCode !== 201 || !result.data || !result.data.group_id) {
         this.setData({
           loadingAction: false,
@@ -80,7 +91,13 @@ Page({
         });
         return;
       }
+      this.setData({ loadingAction: false });
       wx.navigateTo({ url: `/pages/groups/detail?group_id=${result.data.group_id}&created=1&owned_count=${this.data.ownedCount + 1}` });
+    }).catch(() => {
+      this.setData({
+        loadingAction: false,
+        errorMessage: COPY.groupActionFailed,
+      });
     });
   },
 
@@ -91,6 +108,6 @@ Page({
   },
 
   onRetry() {
-    this.loadGroups();
+    return this.loadGroups();
   },
 });

@@ -235,4 +235,35 @@ describe("ProfileMutationService.deleteMyProfile", () => {
     });
   });
 
+  it("注销账号同时将未冻结的 user_season_stats 标记为 is_level_frozen=true", async () => {
+    const repo = new InMemoryRepository();
+    const user = makeUser();
+    await repo.users.insert(user);
+    await repo.userSeasonStats.insert({
+      schema_version: 1,
+      user_id: user.user_id,
+      level_season_id: "2026_2027",
+      points: 18,
+      valid_predictions: 2,
+      wdl_hits: 2,
+      exact_hits: 1,
+      last_scoring_match_at: NOW,
+      level: 1,
+      best_level: 1,
+      level_state: defaultLevelState(),
+      is_level_frozen: false,
+      created_at: NOW,
+      updated_at: NOW,
+    });
+
+    await new ProfileMutationService(repo).deleteMyProfile(user.user_id, NOW);
+    await expect(
+      repo.userSeasonStats.findByUserAndSeason(user.user_id, "2026_2027"),
+    ).resolves.toMatchObject({
+      is_level_frozen: true,
+      points: 18,
+      updated_at: NOW,
+    });
+  });
+
 });

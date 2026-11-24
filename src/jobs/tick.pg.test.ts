@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import pg from "pg";
 import {
   MatchScoreValue,
@@ -177,6 +177,11 @@ describe.skipIf(!ENABLED)("jobs:tick over isolated postgres", () => {
     await applyPostgresSchema(createPostgresQueryFn(pool), buildPostgresSchemaPlan(NAMESPACE, SCHEMA));
   });
 
+  beforeEach(async () => {
+    await pool.query(`DROP SCHEMA IF EXISTS ${quoteIdent(SCHEMA)} CASCADE`);
+    await applyPostgresSchema(createPostgresQueryFn(pool), buildPostgresSchemaPlan(NAMESPACE, SCHEMA));
+  });
+
   afterAll(async () => {
     if (pool === undefined) return;
     await pool.query(`DROP SCHEMA IF EXISTS ${quoteIdent(SCHEMA)} CASCADE`);
@@ -250,12 +255,13 @@ describe.skipIf(!ENABLED)("jobs:tick over isolated postgres", () => {
       },
       { task: SyncJobType.BoardSnapshotCareer, action: "run", reason: "due" },
       { task: SyncJobType.BoardSnapshotSeason, action: "run", reason: "due" },
-      { task: SyncJobType.BoardSnapshotStrength, action: "skip", reason: "inline_weekly_refresh" },
-      { task: SyncJobType.BoardSnapshotSeasonFinal, action: "skip", reason: "inline_weekly_refresh" },
+      { task: SyncJobType.BoardSnapshotStrength, action: "run", reason: "due" },
+      { task: SyncJobType.BoardSnapshotSeasonFinal, action: "skip", reason: "no_due_season" },
     ]));
   });
 
   it("real tick settles once, emits timer_summary, and a second tick does not double-score", async () => {
+    await seedLedger();
     const log = vi.fn();
     const first = await runJobsTick({
       env: ENV,
@@ -290,9 +296,12 @@ describe.skipIf(!ENABLED)("jobs:tick over isolated postgres", () => {
       SyncJobType.DailyConsistency,
       SyncJobType.WeeklyLevelEval,
       SyncJobType.BoardSnapshotCareer,
+      SyncJobType.BoardSnapshotStrength,
       SyncJobType.BoardSnapshotSeason,
     ]));
-    expect(summaries[0]?.ran ?? []).not.toContain(SyncJobType.BoardSnapshotStrength);
+    expect(summaries[0]?.skipped).toEqual(expect.arrayContaining([
+      { task: SyncJobType.BoardSnapshotSeasonFinal, reason: "no_due_season" },
+    ]));
 
     const secondLog = vi.fn();
     const second = await runJobsTick({
@@ -387,6 +396,7 @@ describe.skipIf(!ENABLED)("jobs:tick over isolated postgres", () => {
       database_schema: SCHEMA,
       resource_namespace: NAMESPACE,
     });
+    await repo.users.insert(makeUser());
     const rankings = repo.rankings;
     expect(rankings).toBeDefined();
     const week32Seed = makeRanking();

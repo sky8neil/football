@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   MatchScoreValue,
   MatchStatus,
@@ -21,9 +21,12 @@ import type {
   User,
   UserSeasonStats,
 } from "../domain/types.js";
-import { InMemoryRepository } from "../infrastructure/repositories.js";
+import { InMemoryRepository, type AppRepository } from "../infrastructure/repositories.js";
 import {
   rankingPeriodLockKey,
+  rebuildGlobalRanks,
+  rebuildGlobalRanksInTransaction,
+  rebuildSettlementWeekRanks,
   SettlementItemApplicationService,
 } from "./settlement-item-application-service.js";
 import { SettlementOrchestrationService } from "./settlement-orchestration-service.js";
@@ -794,4 +797,288 @@ describe("SettlementItemApplicationService", () => {
 
   it("rankingPeriodLockKey 使用规范 15.8 冻结格式", () => {
     expect(rankingPeriodLockKey(PeriodType.Week, "2026-W32")).toBe("ranking:week:2026-W32");
+  });
+
+  it("[Slice 1] 排名重算原子局部更新，不覆盖并发新增的积分/有效场次/精确命中", async () => {
+    const repo = new InMemoryRepository();
+    const ranking = (userId: string, overrides: Partial<RankingEntry> = {}): RankingEntry => ({
+      schema_version: 1,
+      period_type: PeriodType.Week,
+      period_key: "2026-W32",
+      user_id: userId,
+      period_score: 0,
+      valid_predictions: 1,
+      wdl_hits: 0,
+      exact_hits: 0,
+      last_scoring_match_at: null,
+      global_rank: null,
+      is_final: false,
+      created_at: NOW,
+      updated_at: NOW,
+      ...overrides,
+    });
+    await repo.rankings.insert(ranking("u1"));
+    await repo.rankings.insert(ranking("u2", {
+      period_score: 12,
+      valid_predictions: 3,
+      wdl_hits: 1,
+      exact_hits: 1,
+    }));
+    const staleSnapshot = structuredClone(
+      await repo.rankings.findByPeriod(PeriodType.Week, "2026-W32"),
+    );
+    const u1 = await repo.rankings.findByPeriodAndUser(PeriodType.Week, "2026-W32", "u1");
+    await repo.rankings.update({
+      ...u1!,
+      period_score: 12,
+      valid_predictions: 3,
+      wdl_hits: 1,
+      exact_hits: 1,
+    });
+
+    await repo.withTransaction(async (tx) => {
+      const staleTx = new Proxy(tx, {
+        get(target, prop, receiver) {
+          if (prop === "rankings") {
+            return {
+              ...Reflect.get(target, prop, receiver),
+              findByPeriod: async () => staleSnapshot,
+            };
+          }
+          return Reflect.get(target, prop, receiver);
+        },
+      });
+      await rebuildGlobalRanksInTransaction(staleTx, PeriodType.Week, "2026-W32", NOW);
+    });
+
+    expect(await repo.rankings.findByPeriodAndUser(PeriodType.Week, "2026-W32", "u1"))
+      .toMatchObject({
+        period_score: 12,
+        valid_predictions: 3,
+        wdl_hits: 1,
+        exact_hits: 1,
+        global_rank: 2,
+      });
+    expect(await repo.rankings.findByPeriodAndUser(PeriodType.Week, "2026-W32", "u2"))
+      .toMatchObject({ global_rank: 1 });
+  });
+
+  it("[Slice 1] 周榜重算在 repo.withTransaction 外持锁并在完成后释放", async () => {
+    const repo = new InMemoryRepository();
+    await repo.rankings.insert({
+      schema_version: 1,
+      period_type: PeriodType.Week,
+      period_key: "2026-W32",
+      user_id: "u1",
+      period_score: 12,
+      valid_predictions: 1,
+      wdl_hits: 1,
+      exact_hits: 1,
+      last_scoring_match_at: ANCHOR,
+      global_rank: null,
+      is_final: false,
+      created_at: NOW,
+      updated_at: NOW,
+    });
+    const lockKey = rankingPeriodLockKey(PeriodType.Week, "2026-W32");
+    let lockHeldInsideTransaction = false;
+    const repoProxy = new Proxy(repo, {
+      get(target, prop, receiver) {
+        if (prop === "withTransaction") {
+          return async (fn: Parameters<AppRepository["withTransaction"]>[0]) =>
+            target.withTransaction(async (tx) => {
+              lockHeldInsideTransaction = await target.jobLocks.isHeld(lockKey, new Date());
+              return fn(tx);
+            });
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+
+    await rebuildSettlementWeekRanks(
+      repoProxy as unknown as AppRepository,
+      ANCHOR,
+      new Date(),
+    );
+
+    expect(lockHeldInsideTransaction).toBe(true);
+    expect(
+      await repo.jobLocks.acquire(lockKey, "after-rebuild", new Date(Date.now() + 60_000)),
+    ).toBe(true);
+  });
+
+  it("[Slice 1] ranking 锁释放失败不掩盖事务原始异常", async () => {
+    const repo = new InMemoryRepository();
+    await repo.rankings.insert({
+      schema_version: 1,
+      period_type: PeriodType.Week,
+      period_key: "2026-W32",
+      user_id: "u1",
+      period_score: 12,
+      valid_predictions: 1,
+      wdl_hits: 1,
+      exact_hits: 1,
+      last_scoring_match_at: ANCHOR,
+      global_rank: null,
+      is_final: false,
+      created_at: NOW,
+      updated_at: NOW,
+    });
+    const rankBoom = new Error("rank transaction boom");
+    const repoProxy = new Proxy(repo, {
+      get(target, prop, receiver) {
+        if (prop === "jobLocks") {
+          return {
+            ...target.jobLocks,
+            release: async () => {
+              throw new Error("release boom");
+            },
+          };
+        }
+        if (prop === "withTransaction") {
+          return async (fn: Parameters<AppRepository["withTransaction"]>[0]) =>
+            target.withTransaction((tx) => {
+              const failingTx = new Proxy(tx, {
+                get(txTarget, txProp, txReceiver) {
+                  if (txProp === "rankings") {
+                    return {
+                      ...Reflect.get(txTarget, txProp, txReceiver),
+                      updateGlobalRank: async () => {
+                        throw rankBoom;
+                      },
+                    };
+                  }
+                  return Reflect.get(txTarget, txProp, txReceiver);
+                },
+              });
+              return fn(failingTx);
+            });
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+
+    await expect(
+      rebuildSettlementWeekRanks(
+        repoProxy as unknown as AppRepository,
+        ANCHOR,
+        new Date(),
+      ),
+    ).rejects.toBe(rankBoom);
+  });
+
+  it("[Slice 2] 落后墙钟的 now 仍按 Date.now() 计算 leaseUntil", async () => {
+    const repo = new InMemoryRepository();
+    await repo.rankings.insert({
+      schema_version: 1,
+      period_type: PeriodType.Week,
+      period_key: "2026-W32",
+      user_id: "u1",
+      period_score: 12,
+      valid_predictions: 1,
+      wdl_hits: 1,
+      exact_hits: 1,
+      last_scoring_match_at: ANCHOR,
+      global_rank: null,
+      is_final: false,
+      created_at: NOW,
+      updated_at: NOW,
+    });
+    const jobLocks = repo.jobLocks;
+    const acquireSpy = vi.spyOn(jobLocks, "acquire");
+    const repoProxy = new Proxy(repo, {
+      get(target, prop, receiver) {
+        if (prop === "jobLocks") return jobLocks;
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const staleNow = new Date(Date.now() - 15 * 60 * 1000);
+    const wallClockBefore = Date.now();
+
+    await rebuildGlobalRanks(
+      repoProxy as unknown as AppRepository,
+      PeriodType.Week,
+      "2026-W32",
+      staleNow,
+      { retryDelaysMs: [] },
+    );
+
+    expect(acquireSpy).toHaveBeenCalled();
+    const leaseUntil = acquireSpy.mock.calls[0]![2] as Date;
+    expect(leaseUntil.getTime()).toBeGreaterThan(wallClockBefore);
+    expect(leaseUntil.getTime()).toBeGreaterThan(Date.now());
+  });
+
+  it("[Slice 2] acquire 短退避：第二次成功则完成并释放，全部失败则抛 RANKING_REBUILD_ALREADY_RUNNING", async () => {
+    const ranking = {
+      schema_version: 1,
+      period_type: PeriodType.Week,
+      period_key: "2026-W32",
+      user_id: "u1",
+      period_score: 12,
+      valid_predictions: 1,
+      wdl_hits: 1,
+      exact_hits: 1,
+      last_scoring_match_at: ANCHOR,
+      global_rank: null,
+      is_final: false,
+      created_at: NOW,
+      updated_at: NOW,
+    };
+    const lockKey = rankingPeriodLockKey(PeriodType.Week, "2026-W32");
+
+    const successRepo = new InMemoryRepository();
+    await successRepo.rankings.insert({ ...ranking });
+    const successLocks = successRepo.jobLocks;
+    const originalAcquire = successLocks.acquire.bind(successLocks);
+    let acquireCalls = 0;
+    vi.spyOn(successLocks, "acquire").mockImplementation(async (key, ownerId, leaseUntil) => {
+      acquireCalls += 1;
+      if (acquireCalls === 1) return false;
+      return originalAcquire(key, ownerId, leaseUntil);
+    });
+    const successProxy = new Proxy(successRepo, {
+      get(target, prop, receiver) {
+        if (prop === "jobLocks") return successLocks;
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+
+    await rebuildGlobalRanks(
+      successProxy as unknown as AppRepository,
+      PeriodType.Week,
+      "2026-W32",
+      new Date(),
+      { retryDelaysMs: [0, 0] },
+    );
+    expect(acquireCalls).toBe(2);
+    expect(await successRepo.rankings.findByPeriodAndUser(PeriodType.Week, "2026-W32", "u1"))
+      .toMatchObject({ global_rank: 1 });
+    expect(
+      await successRepo.jobLocks.acquire(lockKey, "after-retry", new Date(Date.now() + 60_000)),
+    ).toBe(true);
+
+    const failRepo = new InMemoryRepository();
+    await failRepo.rankings.insert({ ...ranking });
+    const failLocks = failRepo.jobLocks;
+    vi.spyOn(failLocks, "acquire").mockResolvedValue(false);
+    const failProxy = new Proxy(failRepo, {
+      get(target, prop, receiver) {
+        if (prop === "jobLocks") return failLocks;
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+
+    await expect(
+      rebuildGlobalRanks(
+        failProxy as unknown as AppRepository,
+        PeriodType.Week,
+        "2026-W32",
+        new Date(),
+        { retryDelaysMs: [0, 0] },
+      ),
+    ).rejects.toMatchObject({ code: "RANKING_REBUILD_ALREADY_RUNNING" });
+    expect(
+      await failRepo.jobLocks.acquire(lockKey, "after-fail", new Date(Date.now() + 60_000)),
+    ).toBe(true);
   });

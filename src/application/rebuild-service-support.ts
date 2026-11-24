@@ -14,6 +14,7 @@ import type {
   LevelPredictionFact,
 } from "../domain/levels.js";
 import type { UnitOfWork } from "../infrastructure/repositories.js";
+import { fetchByIds } from "./match-identity.js";
 
 export interface AppliedSettlementFact {
   item: SettlementItem;
@@ -56,6 +57,37 @@ export async function loadAppliedSettlementFacts(
   const settlementCache = new Map<string, SettlementDoc | null>();
   const matchCache = new Map<string, Match | null>();
   const matchResultCache = new Map<string, MatchResult | null>();
+  const predictionCache = new Map<string, Prediction | null>();
+
+  if (tx.settlements.findByIds !== undefined) {
+    const settlementIds = [...new Set(items.map((item) => item.settlement_id))];
+    if (settlementIds.length > 1) {
+      const loadedSettlements = await fetchByIds(tx.settlements, settlementIds);
+      for (const id of settlementIds) {
+        settlementCache.set(id, loadedSettlements.get(id) ?? null);
+      }
+      if (tx.matches.findByIds !== undefined) {
+        const matchIds = [...new Set(
+          [...loadedSettlements.values()].map((settlement) => settlement.match_id),
+        )];
+        if (matchIds.length > 1) {
+          const loadedMatches = await fetchByIds(tx.matches, matchIds);
+          for (const id of matchIds) {
+            matchCache.set(id, loadedMatches.get(id) ?? null);
+          }
+        }
+      }
+    }
+  }
+  if (tx.predictions.findByIds !== undefined) {
+    const predictionIds = [...new Set(items.map((item) => item.prediction_id))];
+    if (predictionIds.length > 1) {
+      const loadedPredictions = await fetchByIds(tx.predictions, predictionIds);
+      for (const id of predictionIds) {
+        predictionCache.set(id, loadedPredictions.get(id) ?? null);
+      }
+    }
+  }
 
   const loadSettlement = async (settlementId: string): Promise<SettlementDoc | null> => {
     if (settlementCache.has(settlementId)) {
@@ -82,6 +114,15 @@ export async function loadAppliedSettlementFacts(
     }
     const found = await tx.matchResults.findByMatchAndVersion(matchId, resultVersion);
     matchResultCache.set(cacheKey, found);
+    return found;
+  };
+
+  const loadPrediction = async (predictionId: string): Promise<Prediction | null> => {
+    if (predictionCache.has(predictionId)) {
+      return predictionCache.get(predictionId) ?? null;
+    }
+    const found = await tx.predictions.findById(predictionId);
+    predictionCache.set(predictionId, found);
     return found;
   };
 
@@ -152,7 +193,7 @@ export async function loadAppliedSettlementFacts(
       throw invalidLedger(`match_results 正式比分非法（prediction_id=${item.prediction_id}）`);
     }
 
-    const prediction = await tx.predictions.findById(item.prediction_id);
+    const prediction = await loadPrediction(item.prediction_id);
     if (
       prediction === null ||
       prediction.user_id !== item.user_id ||

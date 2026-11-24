@@ -105,9 +105,11 @@ describe("postgres schema plan §6.1", () => {
     expect(index?.sql).toContain("COALESCE((document ->> 'canonical_match_id'), (document ->> 'match_id'))");
   });
 
-  it("uses the match id fallback for canonical match queries", () => {
+  it("uses the match id fallback for canonical match queries and index", () => {
     expect(postgresDocumentFieldExpr(SCHEMA, "matches", "canonical_match_id"))
       .toBe("COALESCE((document ->> 'canonical_match_id'), (document ->> 'match_id'))");
+    const index = plan.indexes.find((item) => item.name === "ix_matches_canonical_match");
+    expect(index?.sql).toContain("COALESCE((document ->> 'canonical_match_id'), (document ->> 'match_id'))");
   });
 
   it("covers every COLLECTION_DEFINITIONS table as _id + jsonb, using physical aliases", () => {
@@ -196,6 +198,8 @@ describe("postgres schema plan §6.1", () => {
       "ix_level_history_user_changed:changed_at",
       "ix_level_history_user_scope_season:changed_at",
       "ix_matches_league_season_kickoff:kickoff_at",
+      "ix_matches_period_anchor:period_anchor_at",
+      "ix_matches_season_kickoff:kickoff_at",
       "ix_matches_settlement_kickoff:kickoff_at",
       "ix_matches_settlement_status_finish:finish_detected_at",
       "ix_matches_status_kickoff:kickoff_at",
@@ -203,11 +207,14 @@ describe("postgres schema plan §6.1", () => {
       "ix_predictions_user_submitted:submitted_at",
       "ix_predictions_user_submitted_id:submitted_at",
       "ix_provider_league_state_success:last_success_at",
+      "ix_provider_usage_bucket_start:bucket_start",
       "ix_provider_usage_source_bucket:bucket_start",
       "ix_reconcile_status_kickoff:kickoff_at",
       "ix_scheduler_state_updated:updated_at",
       "ix_settlements_status_updated:updated_at",
+      "ix_snapshots_created_at:created_at",
       "ix_snapshots_entity:created_at",
+      "ix_sync_logs_started_at:started_at",
       "ix_sync_logs_type_started:started_at",
       "uk_board_snapshot_user:snapshot_at",
     ]);

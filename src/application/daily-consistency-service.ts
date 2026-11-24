@@ -17,7 +17,11 @@ const DAILY_CONSISTENCY_LEASE_MILLISECONDS =
   FIXED_CONFIG_V1.JOB_LEASE_MINUTES * 60 * 1000;
 
 export interface DailyConsistencySnapshotSource {
-  load(serverNow: Date, firstEvalAsOf?: Date | null): Promise<DailyConsistencyInput>;
+  load(
+    serverNow: Date,
+    firstEvalAsOf?: Date | null,
+    assertHealthy?: () => void,
+  ): Promise<DailyConsistencyInput>;
 }
 
 export type DailyConsistencyRunOutcome =
@@ -176,9 +180,10 @@ export class DailyConsistencyService {
       await syncLogs.insert(runningLog);
 
       try {
+        const assertHealthy = () => lockRenewal.assertHealthy();
         const input = this.firstEvalAsOf === undefined
-          ? await this.source.load(serverNow)
-          : await this.source.load(serverNow, this.firstEvalAsOf);
+          ? await this.source.load(serverNow, undefined, assertHealthy)
+          : await this.source.load(serverNow, this.firstEvalAsOf, assertHealthy);
         lockRenewal.assertHealthy();
         const result = checkDailyConsistency(input);
         lockRenewal.assertHealthy();

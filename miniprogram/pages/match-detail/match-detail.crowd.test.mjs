@@ -82,6 +82,100 @@ describe("match detail crowd card", () => {
     expect(page.data.myPrediction).toBeTruthy();
   });
 
+  it("[UX-04] renders cancellation, postponement and abandonment copy", () => {
+    const { page } = loadPage();
+    page.data.matchId = "match-1";
+    page.applyMatch({
+      match_id: "match-1",
+      match_status: "cancelled",
+      settlement_status: "voided",
+      can_predict_reason: "CLOSED",
+      my_prediction: {
+        pred_home_score: 1,
+        pred_away_score: 0,
+        submitted_at: "2026-11-14T12:00:00.000Z",
+        match_score: null,
+        wdl_hit: null,
+        exact_hit: null,
+      },
+      home_team: {},
+      away_team: {},
+    });
+    expect(page.data.predictionPointsText).toBe("不计分");
+    expect(page.data.predictionResultText).toBe("比赛取消 · 不计分");
+    expect(page.data.myMatchScoreText).toBe("—");
+
+    page.applyMatch({
+      match_id: "match-1",
+      match_status: "postponed",
+      can_predict_reason: "CLOSED",
+      my_prediction: {
+        pred_home_score: 1,
+        pred_away_score: 0,
+        submitted_at: "2026-11-14T12:00:00.000Z",
+        match_score: null,
+        wdl_hit: null,
+        exact_hit: null,
+      },
+      home_team: {},
+      away_team: {},
+    });
+    expect(page.data.predictionResultText).toBe("比赛延期");
+
+    page.applyMatch({
+      match_id: "match-1",
+      match_status: "abandoned",
+      can_predict_reason: "CLOSED",
+      my_prediction: {
+        pred_home_score: 1,
+        pred_away_score: 0,
+        submitted_at: "2026-11-14T12:00:00.000Z",
+        match_score: null,
+        wdl_hit: null,
+        exact_hit: null,
+      },
+      home_team: {},
+      away_team: {},
+    });
+    expect(page.data.predictionResultText).toBe("比赛腰斩");
+  });
+
+  it("loads once on the first show and refreshes on later shows unless submitting", async () => {
+    const { page, getMatchDetail } = loadPage();
+    page.onLoad({ id: "match-1" });
+    await vi.waitFor(() => expect(page.data.state).toBe("ready"));
+    expect(getMatchDetail).toHaveBeenCalledTimes(1);
+
+    page.onShow();
+    await Promise.resolve();
+    expect(getMatchDetail).toHaveBeenCalledTimes(1);
+    expect(page.initialized).toBeUndefined();
+
+    page.onShow();
+    await vi.waitFor(() => expect(getMatchDetail).toHaveBeenCalledTimes(2));
+
+    page.setData({ submitting: true });
+    page.onShow();
+    await Promise.resolve();
+    expect(getMatchDetail).toHaveBeenCalledTimes(2);
+  });
+
+  it("refreshes detail and crowd after a 409 PREDICTION_LOCKED", async () => {
+    const { page, getMatchDetail, getMatchCrowd } = loadPage();
+    page.onLoad({ id: "match-1" });
+    await vi.waitFor(() => expect(page.data.state).toBe("ready"));
+    await vi.waitFor(() => expect(getMatchCrowd).toHaveBeenCalledTimes(1));
+
+    page.applySubmitResult({
+      statusCode: 409,
+      code: "PREDICTION_LOCKED",
+      message: "预测已截止",
+    });
+
+    await vi.waitFor(() => expect(getMatchDetail).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(getMatchCrowd).toHaveBeenCalledTimes(2));
+  });
+
   it("maps 401 to guest state and discards a stale response", async () => {
     const pending = [];
     const { page } = loadPage({ crowd: () => new Promise((resolve) => pending.push(resolve)) });

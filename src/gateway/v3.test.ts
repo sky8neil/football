@@ -20,6 +20,8 @@ const FROZEN_HISTORY_ITEM_KEYS = [
   "round_id",
   "home_team_id",
   "away_team_id",
+  "home_team",
+  "away_team",
   "kickoff_at",
   "pred_home_score",
   "pred_away_score",
@@ -170,7 +172,7 @@ describe("GET /v1/predictions/me", () => {
     });
   });
 
-  it("freezes history item fields and omits nested team objects", async () => {
+  it("freezes history item fields and returns nested team objects", async () => {
     const harness = await initAuthedHarness();
     const matchIds = await predictableMatchIds(harness);
     expect(matchIds.length).toBeGreaterThan(0);
@@ -203,8 +205,8 @@ describe("GET /v1/predictions/me", () => {
       match_status: expect.any(String),
     }));
     expect(Object.keys(item).sort()).toEqual([...FROZEN_HISTORY_ITEM_KEYS].sort());
-    expect(item).not.toHaveProperty("home_team");
-    expect(item).not.toHaveProperty("away_team");
+    expect(item.home_team).toEqual({ team_id: expect.any(String), name: expect.any(String) });
+    expect(item.away_team).toEqual({ team_id: expect.any(String), name: expect.any(String) });
   });
 
   it("pages two match predictions with limit=1 and the server next_cursor", async () => {

@@ -12,7 +12,10 @@
       <view class="filter-chip {{leagueIndex === 0 ? 'disabled' : ''}}">{{seasonOptions[seasonIndex]}}</view>
     </picker>
   </view>
-  <view wx:if="{{filterError}}" class="filter-error">{{filterError}}</view>
+  <view wx:if="{{filterError}}" class="filter-error">
+    <text>{{filterError}}</text>
+    <button bindtap="onFilterRetry">重试</button>
+  </view>
   <button wx:if="{{state === 'list' || state === 'empty'}}" class="share-entry" bindtap="onShareCardTap">分享轮次成绩</button>
   <view wx:if="{{state === 'loading'}}" class="loading"></view>
   <view wx:elif="{{state === 'unauthorized'}}" class="state-panel">
@@ -64,7 +67,7 @@
     </view>
     <view wx:if="{{errorMessage}}" class="inline-error">{{errorMessage}}</view>
     <button wx:if="{{hasMore}}" class="more" bindtap="onMore" disabled="{{loadingMore}}">
-      {{loadingMore ? '加载中…' : '加载更多'}}
+      {{loadingMore ? '加载中…' : (items.length === 0 ? '加载更早记录' : '加载更多')}}
     </button>
     <view wx:if="{{!hasMore && !errorMessage}}" class="history-end">{{endText}}</view>
   </view>

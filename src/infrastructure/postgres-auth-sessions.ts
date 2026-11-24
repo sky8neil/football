@@ -28,7 +28,7 @@ export interface FindAuthSessionInput {
 export interface AuthSessionStore {
   create(input: CreateAuthSessionInput): Promise<AuthSessionRecord>;
   findActiveByToken(input: FindAuthSessionInput): Promise<AuthSessionRecord | null>;
-  deleteExpiredBefore?(cutoff: Date): Promise<number>;
+  deleteExpiredBefore?(cutoff: Date, options?: { limit?: number }): Promise<number>;
 }
 
 export interface PostgresAuthSessionStoreOptions {
@@ -68,6 +68,8 @@ export function createPostgresAuthSessionStore(
   const selectSql =
     `SELECT token, openid, expires_at FROM ${table} WHERE token = $1 AND expires_at > $2`;
   const deleteExpiredSql = `DELETE FROM ${table} WHERE expires_at < $1`;
+  const deleteExpiredLimitedSql =
+    `DELETE FROM ${table} WHERE token IN (SELECT token FROM ${table} WHERE expires_at < $1 LIMIT $2)`;
 
   return {
     async create(input) {
@@ -107,11 +109,15 @@ export function createPostgresAuthSessionStore(
       return { token, openid, expires_at: expiresAt };
     },
 
-    async deleteExpiredBefore(cutoff) {
+    async deleteExpiredBefore(cutoff, options) {
       if (!(cutoff instanceof Date) || Number.isNaN(cutoff.getTime())) {
         throw new Error("cutoff must be a valid Date");
       }
-      const result = await query(deleteExpiredSql, [cutoff]);
+      const limit = options?.limit;
+      const limited = typeof limit === "number" && Number.isInteger(limit) && limit > 0;
+      const result = limited
+        ? await query(deleteExpiredLimitedSql, [cutoff, limit])
+        : await query(deleteExpiredSql, [cutoff]);
       return typeof result.rowCount === "number" ? result.rowCount : result.rows.length;
     },
   };

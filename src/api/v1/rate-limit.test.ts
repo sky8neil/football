@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   InMemoryRateLimiter,
   RATE_LIMIT_DEFAULTS,
@@ -50,5 +50,34 @@ describe("API rate limit middleware", () => {
     expect(() => limiter.check("predictions", USER_ID, FIRST_MINUTE)).toThrowError(
       expect.objectContaining({ code: "RATE_LIMITED" }),
     );
+  });
+
+  it("prunes expired buckets over time so long-running memory usage stays bounded", () => {
+    const limiter = new InMemoryRateLimiter();
+    for (let i = 0; i < 1200; i += 1) {
+      limiter.check("public_reads", `ip:10.0.${Math.floor(i / 256)}.${i % 256}`, FIRST_MINUTE);
+    }
+    expect(limiter.bucketCount).toBe(1200);
+
+    const nextMinute = new Date(FIRST_MINUTE.getTime() + 60_000);
+    limiter.check("public_reads", "ip:10.1.0.1", nextMinute);
+    expect(limiter.bucketCount).toBe(1);
+  });
+
+  it("[Slice 3.4] 同一分钟 2,000 个活跃 key 后连续 200 次请求不会每次全表 prune", () => {
+    const limiter = new InMemoryRateLimiter();
+    const prune = vi.spyOn(
+      limiter as unknown as { pruneExpired(nowMs: number): void },
+      "pruneExpired",
+    );
+    for (let i = 0; i < 2000; i += 1) {
+      limiter.check("public_reads", `ip:10.2.${Math.floor(i / 256)}.${i % 256}`, FIRST_MINUTE);
+    }
+    prune.mockClear();
+
+    for (let i = 0; i < 200; i += 1) {
+      limiter.check("public_reads", `ip:10.3.0.${i}`, FIRST_MINUTE);
+    }
+    expect(prune.mock.calls.length).toBeLessThanOrEqual(1);
   });
 });

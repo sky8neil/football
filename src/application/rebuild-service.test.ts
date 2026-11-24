@@ -10,6 +10,7 @@ import {
   SettlementItemStatus,
   SettlementPhase,
   SettlementStatus,
+  UserStatus,
 } from "../domain/enums.js";
 import type {
   Match,
@@ -21,7 +22,7 @@ import type {
   User,
   UserSeasonStats,
 } from "../domain/types.js";
-import { InMemoryRepository } from "../infrastructure/repositories.js";
+import { InMemoryRepository, type UnitOfWork } from "../infrastructure/repositories.js";
 import {
   RebuildUserStatsService,
   userStatsRebuildLockKey,
@@ -274,6 +275,35 @@ async function insertFact(
   }
 }
 
+async function insertExactHitFacts(
+  repo: InMemoryRepository,
+  userId: string,
+  count: number,
+  prefix: string,
+): Promise<Date> {
+  const base = new Date("2026-08-01T02:00:00.000Z");
+  let latest = base;
+  for (let index = 0; index < count; index += 1) {
+    const anchor = new Date(base.getTime() + index * 60_000);
+    latest = anchor;
+    const matchId = `${prefix}-m${index}`;
+    const predictionId = `${prefix}-p${index}`;
+    const settlementId = `${prefix}-s${index}`;
+    await insertFact(
+      repo,
+      makeMatch(matchId, anchor),
+      makePrediction(predictionId, userId, matchId),
+      [1],
+      [{
+        id: settlementId,
+        version: 1,
+        item: makeItem(settlementId, predictionId, userId, 1),
+      }],
+    );
+  }
+  return latest;
+}
+
 describe("RebuildUserStatsService", () => {
   it("无效 server_now 时在获取 maintenance lock 前 Fail Closed", async () => {
     const repo = new InMemoryRepository();
@@ -469,6 +499,57 @@ describe("RebuildUserStatsService", () => {
       .toMatchObject({ code: "SETTLEMENT_ALREADY_RUNNING" });
   });
 
+  it("[Slice 3.3] uses settlementItems.findByUserAndStatus (not global findByStatus) and detects settling M_new through superseded_by chain", async () => {
+    const repo = new InMemoryRepository();
+    await repo.users.insert(makeUser("u1"));
+    const canonical = "canonical-rebuild-chain";
+    const oldMatch = {
+      ...makeMatch("m-old-chain", WEEK_ANCHOR, { settlement_status: SettlementStatus.Settled }),
+      canonical_match_id: canonical,
+      match_id: "m-old-chain",
+    };
+    const newMatch = {
+      ...makeMatch("m-new-chain", WEEK_ANCHOR, { settlement_status: SettlementStatus.Settling }),
+      canonical_match_id: canonical,
+      match_id: "m-new-chain",
+    };
+    await repo.matches.insert(newMatch);
+    await repo.matches.insert(oldMatch);
+    await repo.matches.update({ ...oldMatch, superseded_by: newMatch.match_id });
+    await repo.predictions.insert(makePrediction("pred-old", "u1", oldMatch.match_id));
+
+    await expect(new RebuildUserStatsService(repo).rebuildUserStats("u1", NOW)).rejects
+      .toMatchObject({ code: "SETTLEMENT_ALREADY_RUNNING" });
+
+    // Once M_new finishes settling, rebuild uses findByUserAndStatus (not global findByStatus)
+    await repo.matches.update({ ...newMatch, settlement_status: SettlementStatus.Settled });
+    const settlementItems = repo.settlementItems;
+    const findByStatusSpy = vi.spyOn(settlementItems, "findByStatus");
+    const findByUserAndStatusSpy = vi.fn(settlementItems.findByUserAndStatus!);
+    settlementItems.findByUserAndStatus = findByUserAndStatusSpy;
+    const withTransaction = async <T>(work: (tx: UnitOfWork) => Promise<T>) =>
+      repo.withTransaction((tx) => {
+        const txProxy = new Proxy(tx, {
+          get(target, prop, receiver) {
+            if (prop === "settlementItems") return settlementItems;
+            return Reflect.get(target, prop, receiver);
+          },
+        });
+        return work(txProxy);
+      });
+    const repoProxy = new Proxy(repo, {
+      get(target, prop, receiver) {
+        if (prop === "withTransaction") return withTransaction;
+        if (prop === "settlementItems") return settlementItems;
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    await new RebuildUserStatsService(repoProxy).rebuildUserStats("u1", NOW);
+    expect(findByUserAndStatusSpy).toHaveBeenCalledTimes(1);
+    expect(findByUserAndStatusSpy).toHaveBeenCalledWith("u1", SettlementItemStatus.Applied);
+    expect(findByStatusSpy).not.toHaveBeenCalled();
+  });
+
   it("同一用户 rebuild 使用 maintenance lock 串行化", async () => {
     const repo = new InMemoryRepository();
     await repo.users.insert(makeUser("u1"));
@@ -526,6 +607,182 @@ describe("RebuildUserStatsService", () => {
     await expect(loadAppliedSettlementFacts(repo, [item])).rejects.toMatchObject({
       code: "SETTLEMENT_ALREADY_RUNNING",
     });
+  });
+
+  it("[Slice 1] 活跃未冻结用户仍按 serverNow 重放 last_eval_as_of 之后的周评", async () => {
+    const repo = new InMemoryRepository();
+    const userId = "active-after-last-eval";
+    const lastEvalAsOf = new Date("2026-08-03T02:00:00.000Z");
+    const serverNow = new Date("2026-09-14T02:00:00.000Z");
+    const levelState = {
+      below_count: 0,
+      week_base_level: 1,
+      week_base_below_count: 0,
+      week_base_as_of: lastEvalAsOf,
+      last_eval_as_of: lastEvalAsOf,
+      last_eval_n: 20,
+      last_eval_score_sum: 240,
+      last_eval_b_points: 0,
+      last_eval_rule_version: "level_v3.0",
+    };
+    await repo.users.insert(makeUser(userId, {
+      career_points: 240,
+      career_valid_predictions: 20,
+      career_wdl_hits: 20,
+      career_exact_hits: 20,
+      career_level: 2,
+      career_best_level: 2,
+      career_level_state: levelState,
+    }));
+    await repo.userSeasonStats.insert(makeSeasonStats(userId, "2026_2027", {
+      points: 240,
+      valid_predictions: 20,
+      wdl_hits: 20,
+      exact_hits: 20,
+      last_scoring_match_at: null,
+      level: 2,
+      best_level: 2,
+      level_state: levelState,
+      is_level_frozen: false,
+    }));
+    await insertExactHitFacts(repo, userId, 20, "active-after-last-eval");
+
+    const outcome = await new RebuildUserStatsService(
+      repo,
+      new Date("2026-08-03T02:00:00.000Z"),
+    ).rebuildUserStats(userId, serverNow);
+
+    expect(outcome.user.career_level).toBeGreaterThan(2);
+    expect(outcome.user.career_level_state.last_eval_as_of?.getTime())
+      .toBeGreaterThan(lastEvalAsOf.getTime());
+    expect(outcome.created_level_history.some(
+      (entry) => entry.to_level > 2 && entry.changed_at.getTime() === serverNow.getTime(),
+    )).toBe(true);
+    const season = await repo.userSeasonStats.findByUserAndSeason(userId, "2026_2027");
+    expect(season?.level).toBeGreaterThan(2);
+    expect(season?.is_level_frozen).toBe(false);
+  });
+
+  it("[Slice 1] 已注销且首评跳过时重建只更新统计，保留冻结等级且不补造周评", async () => {
+    const repo = new InMemoryRepository();
+    const userId = "deleted-first-eval";
+    await repo.users.insert(makeUser(userId, {
+      status: UserStatus.Deleted,
+      openid: `deleted:${userId}`,
+      deleted_at: new Date("2026-08-05T00:00:00.000Z"),
+    }));
+    await repo.userSeasonStats.insert(makeSeasonStats(userId, "2026_2027", {
+      points: 0,
+      valid_predictions: 0,
+      wdl_hits: 0,
+      exact_hits: 0,
+      last_scoring_match_at: null,
+      level: 1,
+      best_level: 1,
+      level_state: defaultLevelState(),
+      is_level_frozen: true,
+    }));
+    const lastScoring = await insertExactHitFacts(repo, userId, 20, "deleted-first");
+
+    const outcome = await new RebuildUserStatsService(
+      repo,
+      new Date("2026-08-03T02:00:00.000Z"),
+    ).rebuildUserStats(userId, new Date("2026-12-01T00:00:00.000Z"));
+
+    expect(outcome.user).toMatchObject({
+      status: UserStatus.Deleted,
+      career_points: 240,
+      career_valid_predictions: 20,
+      career_wdl_hits: 20,
+      career_exact_hits: 20,
+      career_last_scoring_match_at: lastScoring,
+      career_level: 1,
+      career_best_level: 1,
+      career_level_state: defaultLevelState(),
+    });
+    expect(outcome.season_stats).toEqual([
+      expect.objectContaining({
+        level_season_id: "2026_2027",
+        points: 240,
+        valid_predictions: 20,
+        wdl_hits: 20,
+        exact_hits: 20,
+        level: 1,
+        best_level: 1,
+        level_state: defaultLevelState(),
+        is_level_frozen: true,
+      }),
+    ]);
+    expect(outcome.created_level_history).toEqual([]);
+    expect(await repo.levelHistory.findByUser(userId)).toEqual([]);
+    expect(outcome.level_state_changed).toBe(false);
+  });
+
+  it("[Slice 1] 已注销且已有 last_eval_as_of 时重建保留 career/冻结 season 等级状态", async () => {
+    const repo = new InMemoryRepository();
+    const userId = "deleted-evaluated";
+    const lastEvalAsOf = new Date("2026-08-10T02:00:00.000Z");
+    const levelState = {
+      below_count: 0,
+      week_base_level: 2,
+      week_base_below_count: 0,
+      week_base_as_of: lastEvalAsOf,
+      last_eval_as_of: lastEvalAsOf,
+      last_eval_n: 20,
+      last_eval_score_sum: 240,
+      last_eval_b_points: 0,
+      last_eval_rule_version: "level_v3.0",
+    };
+    await repo.users.insert(makeUser(userId, {
+      status: UserStatus.Deleted,
+      openid: `deleted:${userId}`,
+      deleted_at: new Date("2026-08-15T00:00:00.000Z"),
+      career_points: 999,
+      career_valid_predictions: 20,
+      career_wdl_hits: 0,
+      career_exact_hits: 0,
+      career_level: 2,
+      career_best_level: 2,
+      career_level_state: levelState,
+    }));
+    await repo.userSeasonStats.insert(makeSeasonStats(userId, "2026_2027", {
+      points: 999,
+      valid_predictions: 20,
+      wdl_hits: 0,
+      exact_hits: 0,
+      last_scoring_match_at: null,
+      level: 2,
+      best_level: 2,
+      level_state: levelState,
+      is_level_frozen: true,
+    }));
+    await insertExactHitFacts(repo, userId, 20, "deleted-evaluated");
+
+    const outcome = await new RebuildUserStatsService(
+      repo,
+      new Date("2026-08-03T02:00:00.000Z"),
+    ).rebuildUserStats(userId, new Date("2026-12-01T00:00:00.000Z"));
+
+    expect(outcome.user).toMatchObject({
+      career_points: 240,
+      career_valid_predictions: 20,
+      career_level: 2,
+      career_best_level: 2,
+      career_level_state: levelState,
+    });
+    expect(outcome.season_stats).toEqual([
+      expect.objectContaining({
+        level_season_id: "2026_2027",
+        points: 240,
+        level: 2,
+        best_level: 2,
+        level_state: levelState,
+        is_level_frozen: true,
+      }),
+    ]);
+    expect(outcome.created_level_history).toEqual([]);
+    expect(await repo.levelHistory.findByUser(userId)).toEqual([]);
+    expect(outcome.level_state_changed).toBe(false);
   });
 });
 

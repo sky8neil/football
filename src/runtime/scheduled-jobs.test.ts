@@ -7,11 +7,14 @@ import { BoardSnapshotService } from "../application/board-snapshot.js";
 import { PeriodFinalizeService } from "../application/period-finalize-service.js";
 import { weeklyEvalAsOf, WeeklyLevelEvalService } from "../application/weekly-level-eval.js";
 import {
+  MAINTENANCE_CLEANUP_CYCLE_KEY,
+  MAINTENANCE_CLEANUP_LOCK_KEY,
   TIMER_TASK_TYPES,
   UNWIRED_PERIODIC_TASKS,
   WIRED_PERIODIC_TASKS,
   planScheduledJobs,
   planDueProviderJobs,
+  runDuePeriodicJobs,
   runDueProviderJobs,
   runScheduledJobs,
 } from "./scheduled-jobs.js";
@@ -432,6 +435,27 @@ describe("runDueProviderJobs outcomes", () => {
 });
 
 describe("planScheduledJobs", () => {
+  it("[Slice 2] weekly due 超过 1 小时宽限后恢复独立 Strength 与 SeasonFinal 调度", async () => {
+    const runtime = runtimeStub();
+    const within = await planScheduledJobs({
+      runtime,
+      serverNow: new Date(WEEKLY_AS_OF.getTime() + 30 * 60_000),
+    });
+    expect(within.tasks).toEqual(expect.arrayContaining([
+      { task: SyncJobType.BoardSnapshotStrength, action: "skip", reason: "inline_weekly_refresh" },
+      { task: SyncJobType.BoardSnapshotSeasonFinal, action: "skip", reason: "inline_weekly_refresh" },
+    ]));
+
+    const beyond = await planScheduledJobs({
+      runtime,
+      serverNow: new Date(WEEKLY_AS_OF.getTime() + 61 * 60_000),
+    });
+    expect(beyond.tasks).toEqual(expect.arrayContaining([
+      { task: SyncJobType.BoardSnapshotStrength, action: "run", reason: "due" },
+      { task: SyncJobType.BoardSnapshotSeasonFinal, action: "skip", reason: "no_due_season" },
+    ]));
+  });
+
   it("prints due/skip decisions without dispatching provider work", async () => {
     const dispatcherRun = vi.fn();
     const reconcileRun = vi.fn();
@@ -462,9 +486,9 @@ describe("planScheduledJobs", () => {
         as_of: weeklyEvalAsOf(new Date("2026-08-09T00:00:00.000Z")).toISOString(),
       },
       { task: SyncJobType.BoardSnapshotCareer, action: "run", reason: "due" },
-      { task: SyncJobType.BoardSnapshotStrength, action: "skip", reason: "inline_weekly_refresh" },
+      { task: SyncJobType.BoardSnapshotStrength, action: "run", reason: "due" },
       { task: SyncJobType.BoardSnapshotSeason, action: "run", reason: "due" },
-      { task: SyncJobType.BoardSnapshotSeasonFinal, action: "skip", reason: "inline_weekly_refresh" },
+      { task: SyncJobType.BoardSnapshotSeasonFinal, action: "skip", reason: "no_due_season" },
     ]));
   });
 });
@@ -1352,5 +1376,180 @@ describe("wired board_snapshot_season_final event", () => {
     expect(second.providerData.skipped).toEqual(expect.arrayContaining([
       { task: "maintenance_cleanup", reason: "interval_not_due" },
     ]));
+  });
+
+  it("[Slice 2] truncated maintenance cleanup 不推进周期，留待下一 tick 继续清理", async () => {
+    const repo = new InMemoryRepository();
+    const schedulerState = new InMemorySchedulerStateStore();
+    const cleanupRun = vi.fn(async (now: Date) => ({
+      ran_at: now.toISOString(),
+      deleted: {
+        auth_sessions: 0,
+        provider_usage: 0,
+        sync_logs: 0,
+        provider_snapshots: 0,
+        board_snapshots: 0,
+      },
+      truncated: true,
+    }));
+    const runtime = runtimeStub({
+      repo,
+      schedulerState,
+      maintenanceCleanup: { run: cleanupRun },
+    });
+
+    const result = await runDuePeriodicJobs({ runtime, serverNow: NOW });
+    expect(result.jobs_run).toContain(MAINTENANCE_CLEANUP_CYCLE_KEY);
+    expect(cleanupRun).toHaveBeenCalledTimes(1);
+    expect(await schedulerState.getPeriodicJobCycle(MAINTENANCE_CLEANUP_CYCLE_KEY)).toBeNull();
+  });
+
+  it("[Slice 3.2] planScheduledJobs observes due maintenance_cleanup and runScheduledJobs respects sync:maintenance_cleanup lock", async () => {
+    const repo = new InMemoryRepository();
+    const schedulerState = new InMemorySchedulerStateStore();
+    const cleanupRun = vi.fn(async (now: Date) => ({
+      ran_at: now.toISOString(),
+      deleted: {
+        auth_sessions: 0,
+        provider_usage: 0,
+        sync_logs: 0,
+        provider_snapshots: 0,
+        board_snapshots: 0,
+      },
+    }));
+    const runtime = runtimeStub({
+      repo,
+      schedulerState,
+      periodFinalize: new PeriodFinalizeService(repo),
+      boardSnapshot: { generate: vi.fn(async () => []), generateSeasonFinal: vi.fn(async () => []) },
+      weeklyLevelEval: {
+        run: vi.fn(async (now: Date) => ({
+          kind: "completed" as const,
+          as_of: weeklyEvalAsOf(now),
+          evaluated_count: 0,
+          changed_count: 0,
+          skipped_count: 0,
+        })),
+      },
+      dailyConsistency: {
+        run: vi.fn(async (now: Date) => ({
+          kind: "completed" as const,
+          checked_at: now,
+          differences: [],
+          skipped_active_settlement: [],
+        })),
+      },
+      maintenanceCleanup: { run: cleanupRun },
+    });
+
+    const dryPlan = await planScheduledJobs({ runtime, serverNow: NOW, mode: "periodic" });
+    expect(dryPlan.tasks).toEqual(expect.arrayContaining([
+      { task: MAINTENANCE_CLEANUP_CYCLE_KEY, action: "run", reason: "due" },
+    ]));
+
+    // Hold distributed lock -> cleanup must skip with lock_held and NOT advance cycle
+    const lockLease = new Date(Math.max(Date.now(), NOW.getTime()) + 10 * 60_000);
+    await repo.jobLocks.acquire(MAINTENANCE_CLEANUP_LOCK_KEY, "other-worker", lockLease);
+    const blocked = await runDuePeriodicJobs({ runtime, serverNow: NOW });
+    expect(cleanupRun).not.toHaveBeenCalled();
+    expect(blocked.skipped).toEqual(expect.arrayContaining([
+      { task: MAINTENANCE_CLEANUP_CYCLE_KEY, reason: "lock_held" },
+    ]));
+    expect(await schedulerState.getPeriodicJobCycle(MAINTENANCE_CLEANUP_CYCLE_KEY)).toBeNull();
+
+    // Release lock -> cleanup runs and releases lock on completion
+    await repo.jobLocks.release(MAINTENANCE_CLEANUP_LOCK_KEY, "other-worker");
+    const ranRes = await runDuePeriodicJobs({ runtime, serverNow: NOW });
+    expect(cleanupRun).toHaveBeenCalledTimes(1);
+    expect(ranRes.jobs_run).toContain(MAINTENANCE_CLEANUP_CYCLE_KEY);
+    const nextPlan = await planScheduledJobs({
+      runtime,
+      serverNow: new Date(NOW.getTime() + 60 * 60_000),
+      mode: "periodic",
+    });
+    expect(nextPlan.tasks).toEqual(expect.arrayContaining([
+      { task: MAINTENANCE_CLEANUP_CYCLE_KEY, action: "skip", reason: "interval_not_due" },
+    ]));
+  });
+
+  it("[Slice 2] runDuePeriodicJobs 在 WeeklyLevelEval failed_count>0 时返回 failed、不推进周期且不刷爆 Strength 快照；user_lock_held 仍按 skipped 处理", async () => {
+    const repo = new InMemoryRepository();
+    const schedulerState = new InMemorySchedulerStateStore();
+    const boardSnapshot = new BoardSnapshotService(repo);
+    const generateSpy = vi.spyOn(boardSnapshot, "generate");
+    await schedulerState.upsertPeriodicJobCycle({
+      job_type: SyncJobType.PeriodFinalize,
+      completed_cycle_at: WEEKLY_START,
+      updated_at: WEEKLY_START,
+    });
+    await schedulerState.upsertPeriodicJobCycle({
+      job_type: SyncJobType.DailyConsistency,
+      completed_cycle_at: WEEKLY_START,
+      updated_at: WEEKLY_START,
+    });
+    await schedulerState.upsertPeriodicJobCycle({
+      job_type: SyncJobType.BoardSnapshotCareer,
+      completed_cycle_at: WEEKLY_START,
+      updated_at: WEEKLY_START,
+    });
+    await schedulerState.upsertPeriodicJobCycle({
+      job_type: SyncJobType.BoardSnapshotSeason,
+      completed_cycle_at: WEEKLY_START,
+      updated_at: WEEKLY_START,
+    });
+
+    // Case 1: failed_count = 1 (如 INVALID_LEDGER) -> outcome="failed", errors 非空, 无 Strength 快照, 不推进周期
+    const log = vi.fn();
+    const failedWeekly = new WeeklyLevelEvalService(repo);
+    const failedSpy = vi.spyOn(failedWeekly, "run").mockResolvedValue({
+      kind: "completed",
+      as_of: WEEKLY_AS_OF,
+      evaluated_count: 1,
+      changed_count: 0,
+      skipped_count: 0,
+      settlement_skipped_count: 0,
+      failed_count: 1,
+      deferred_count: 0,
+    });
+    const failedRuntime = runtimeStub({
+      repo,
+      schedulerState,
+      boardSnapshot,
+      weeklyLevelEval: failedWeekly,
+      log,
+    });
+    const failedTick = await runDuePeriodicJobs({ runtime: failedRuntime, serverNow: WEEKLY_START });
+    expect(failedTick.outcome).toBe("failed");
+    expect(failedTick.failed).toEqual([
+      { task: SyncJobType.WeeklyLevelEval, reason: "user_eval_failed", items_failed: 1 },
+    ]);
+    expect((failedTick.errors as unknown[]).length).toBeGreaterThanOrEqual(1);
+    expect(log).toHaveBeenCalledWith(expect.objectContaining({
+      event: "weekly_level_eval_job_failed",
+      failed_count: 1,
+    }));
+    expect(await schedulerState.getPeriodicJobCycle(SyncJobType.WeeklyLevelEval)).toBeNull();
+    expect(await schedulerState.getPeriodicJobCycle(SyncJobType.BoardSnapshotStrength)).toBeNull();
+    expect(generateSpy).not.toHaveBeenCalled();
+
+    // Case 2: 仅 user_lock_held (deferred_count = 1, failed_count = 0) -> 保持 skipped, 不误报 failed
+    failedSpy.mockResolvedValueOnce({
+      kind: "completed",
+      as_of: WEEKLY_AS_OF,
+      evaluated_count: 0,
+      changed_count: 0,
+      skipped_count: 0,
+      settlement_skipped_count: 0,
+      failed_count: 0,
+      deferred_count: 1,
+    });
+    const deferredTick = await runDuePeriodicJobs({ runtime: failedRuntime, serverNow: WEEKLY_REPEAT });
+    expect(deferredTick.outcome).toBe("completed");
+    expect(deferredTick.failed).toEqual([]);
+    expect(deferredTick.errors).toEqual([]);
+    expect(deferredTick.skipped).toEqual(expect.arrayContaining([
+      { task: SyncJobType.WeeklyLevelEval, reason: "user_lock_held" },
+    ]));
+    expect(generateSpy).not.toHaveBeenCalled();
   });
 });

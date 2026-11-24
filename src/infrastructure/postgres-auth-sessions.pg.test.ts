@@ -90,7 +90,8 @@ describe.skipIf(!ENABLED)("Postgres auth sessions 创建/读取/过期重登", (
     const stored = await pool.query(
       `SELECT token, openid FROM ${qualifiedTable(SCHEMA, AUTH_SESSIONS_TABLE)} ORDER BY token`,
     );
-    expect(stored.rows).toEqual(
+    const storedRows = [...stored.rows].sort((a, b) => a.token.localeCompare(b.token));
+    expect(storedRows).toEqual(
       [
         { token: created.token, openid: OPENID },
         { token: issued.access_token, openid: OPENID },

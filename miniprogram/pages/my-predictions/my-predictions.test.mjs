@@ -13,6 +13,7 @@ const ARSENAL_ID = "f490a3bf-b29f-42ce-a5bc-3cb67ad2baee";
 const CHELSEA_ID = "e575463d-244b-461b-9b17-dd49f90adb4c";
 const REAL_MADRID_ID = "393c67e2-45f7-48a2-b3cd-9684901614ef";
 const ALAVES_ID = "00235af4-869b-4953-a3b7-afc3f8024d81";
+const CHANGCHUN_YATAI_ID = "9a2c1c5f-5b6f-4a9e-9f7e-0d2a3c4b5d6e";
 const UNKNOWN_ID = "00000000-0000-4000-8000-000000000000";
 
 const originals = {
@@ -103,8 +104,11 @@ function prediction(overrides = {}) {
   };
 }
 
-function loadPage({ listMyPredictions, listMatches, listLeagueSeasons } = {}) {
+function loadPage({ listMyPredictions, listMatches, listLeagueSeasons, getLoginGeneration } = {}) {
   const wxStub = installWxStub();
+  const auth = {
+    getLoginGeneration: typeof getLoginGeneration === "function" ? getLoginGeneration : () => 0,
+  };
   const listMatchesFn = listMatches || vi.fn(async () => {
     throw new Error("listMatches must not be called");
   });
@@ -148,6 +152,7 @@ function loadPage({ listMyPredictions, listMatches, listLeagueSeasons } = {}) {
     if (id === "../../services/predictions.js") return { listMyPredictions: listMyPredictionsFn };
     if (id === "../../services/league-seasons.js") return { listLeagueSeasons: listLeagueSeasonsFn };
     if (id === "../../services/matches.js") return { listMatches: listMatchesFn };
+    if (id === "../../services/auth.js") return auth;
     if (id === "../../utils/rankings-copy.js") return copy;
     if (id === "../../utils/logo-registry.js") return logos;
     if (id === "../../utils/team-registry.js") return registry;
@@ -296,10 +301,96 @@ describe("DATA-01 my-predictions registry names", () => {
     expect(page.data.items[1].homeNameZh).toBe("皇家马德里");
     expect(page.data.items[1].homeLogo).toBe(logos.MANIFEST.la_liga.teams["real-madrid"]);
     expect(page.data.items[1].awayNameZh).toBe("阿拉维斯");
-    expect(page.data.items[1].awayLogo).toBe(logos.PLACEHOLDER);
+    expect(page.data.items[1].awayLogo).toBe(logos.MANIFEST.la_liga.teams.deportivo);
     expect(page.data.items[2].homeLogo).toBe(logos.MANIFEST.premier_league.teams.arsenal);
     expect(page.data.items[2].awayNameZh).toBe("球队资料待补全");
     expect(page.data.items[2].awayLogo).toBe(logos.PLACEHOLDER);
+  });
+
+  it("[DATA-01] uses server home_team/away_team for unregistered clubs and prefers registry names", async () => {
+    const listMyPredictions = vi.fn(async () => ({
+      statusCode: 200,
+      data: {
+        items: [prediction({
+          league_id: "chinese_super_league",
+          home_team_id: CHANGCHUN_YATAI_ID,
+          away_team_id: ARSENAL_ID,
+          home_team: { team_id: CHANGCHUN_YATAI_ID, name: "长春亚泰" },
+          away_team: { team_id: ARSENAL_ID, name: "Arsenal FC" },
+        })],
+        page: { has_more: false, next_cursor: null },
+      },
+    }));
+    const { page, presentTeamCalls, logos } = loadPage({ listMyPredictions });
+    await page.loadFirstPage();
+    expect(presentTeamCalls[0]).toEqual([
+      { team_id: CHANGCHUN_YATAI_ID, name: "长春亚泰" },
+      "chinese_super_league",
+    ]);
+    expect(page.data.items[0].homeNameZh).toBe("长春亚泰");
+    expect(page.data.items[0].homeLogo).toBe(logos.MANIFEST.chinese_super_league.teams["changchun-yatai"]);
+    expect(page.data.items[0].awayNameZh).toBe("阿森纳");
+    expect(page.data.items[0].awayLogo).toBe(logos.MANIFEST.premier_league.teams.arsenal);
+  });
+
+  it("[UX-04] shows cancellation, postponement and abandonment copy without pending settlement", async () => {
+    const listMyPredictions = vi.fn(async () => ({
+      statusCode: 200,
+      data: {
+        items: [
+          prediction({
+            prediction_id: "pred-cancelled",
+            match_id: "match-cancelled",
+            match_status: "cancelled",
+            regular_home_score: 2,
+            regular_away_score: 1,
+            match_score: 12,
+            wdl_hit: true,
+            exact_hit: true,
+          }),
+          prediction({
+            prediction_id: "pred-postponed",
+            match_id: "match-postponed",
+            match_status: "postponed",
+            regular_home_score: null,
+            regular_away_score: null,
+            match_score: null,
+            wdl_hit: null,
+            exact_hit: null,
+          }),
+          prediction({
+            prediction_id: "pred-abandoned",
+            match_id: "match-abandoned",
+            match_status: "abandoned",
+            regular_home_score: null,
+            regular_away_score: null,
+            match_score: null,
+            wdl_hit: null,
+            exact_hit: null,
+          }),
+        ],
+        page: { has_more: false, next_cursor: null },
+      },
+    }));
+    const { page } = loadPage({ listMyPredictions });
+    await page.loadFirstPage();
+    expect(page.data.items[0]).toMatchObject({
+      actualText: "—",
+      pointsText: "不计分",
+      resultText: "比赛取消 · 不计分",
+      statusText: "取消",
+    });
+    expect(page.data.items[0].resultText).not.toMatch(/待结算|等待比赛结算/);
+    expect(page.data.items[1]).toMatchObject({
+      resultText: "比赛延期",
+      statusText: "延期",
+    });
+    expect(page.data.items[1].resultText).not.toBe("等待比赛结算");
+    expect(page.data.items[2]).toMatchObject({
+      resultText: "比赛腰斩",
+      statusText: "腰斩",
+    });
+    expect(page.data.items[2].resultText).not.toBe("等待比赛结算");
   });
 
   it("loads only the first page until the user taps 加载更多, then assigns Chinese names to every record", async () => {
@@ -566,5 +657,181 @@ describe("my-predictions league/season filters", () => {
     expect(navs).toEqual([
       ["navigateTo", "/pages/share-card/share-card?league_id=premier_league&season_id=2026_2027"],
     ]);
+  });
+
+  it("[Slice 3.4] silently scans at most five empty pages, then keeps manual load-earlier entry instead of empty dead-end", async () => {
+    const emptyPage = (cursor) => ({
+      statusCode: 200,
+      data: { items: [], page: { has_more: true, next_cursor: cursor } },
+    });
+    const listMyPredictions = vi.fn()
+      .mockResolvedValueOnce(emptyPage("page-2"))
+      .mockResolvedValueOnce(emptyPage("page-3"))
+      .mockResolvedValueOnce(emptyPage("page-4"))
+      .mockResolvedValueOnce(emptyPage("page-5"))
+      .mockResolvedValueOnce(emptyPage("page-6"))
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        data: { items: [prediction()], page: { has_more: false, next_cursor: null } },
+      });
+    const { page } = loadPage({ listMyPredictions });
+
+    await page.loadFirstPage();
+    expect(listMyPredictions).toHaveBeenCalledTimes(5);
+    expect(page.data.state).toBe("list");
+    expect(page.data.items).toHaveLength(0);
+    expect(page.data.hasMore).toBe(true);
+    expect(page.data.nextCursor).toBe("page-6");
+    expect(page.data.loadingMore).toBe(false);
+    const wxml = readFileSync(join(HERE, "my-predictions.wxml"), "utf8");
+    expect(wxml).toContain("加载更早记录");
+
+    await page.loadNextPage();
+    expect(listMyPredictions).toHaveBeenCalledTimes(6);
+    expect(page.data.state).toBe("list");
+    expect(page.data.items).toHaveLength(1);
+    expect(page.data.hasMore).toBe(false);
+  });
+
+  it("keeps existing items and weeks when pagination fails and supports inline retry", async () => {
+    const listMyPredictions = vi.fn()
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        data: { items: [prediction()], page: { has_more: true, next_cursor: "page-2" } },
+      })
+      .mockResolvedValueOnce({
+        statusCode: 0,
+        code: "NETWORK_ERROR",
+      })
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        data: { items: [prediction({ prediction_id: "pred-2", match_id: "match-2" })], page: { has_more: false, next_cursor: null } },
+      });
+    const { page } = loadPage({ listMyPredictions });
+    await page.loadFirstPage();
+    expect(page.data.state).toBe("list");
+    expect(page.data.items).toHaveLength(1);
+
+    await page.loadNextPage();
+    expect(page.data.state).toBe("list");
+    expect(page.data.items).toHaveLength(1);
+    expect(page.data.weeks).toHaveLength(1);
+    expect(page.data.hasMore).toBe(true);
+    expect(page.data.loadingMore).toBe(false);
+    expect(page.data.errorMessage).toBe("网络异常，请重试");
+
+    await page.loadNextPage();
+    expect(page.data.items).toHaveLength(2);
+    expect(page.data.errorMessage).toBe("");
+  });
+
+  it("discards a stale filter failure after a newer filter request succeeds", async () => {
+    let rejectFirst;
+    const listLeagueSeasons = vi.fn()
+      .mockImplementationOnce(() => new Promise((resolve, reject) => {
+        rejectFirst = reject;
+      }))
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        data: { items: catalogItems() },
+      });
+    const { page } = loadPage({ listLeagueSeasons });
+    const pendingFirst = page.loadFilters();
+    await page.loadFilters();
+    expect(page.data.filterReady).toBe(true);
+    expect(page.data.filterError).toBe("");
+    rejectFirst(new Error("network"));
+    await pendingFirst;
+    expect(page.data.filterReady).toBe(true);
+    expect(page.data.filterError).toBe("");
+  });
+
+  it("enters error state when the first page request rejects", async () => {
+    const listMyPredictions = vi.fn(async () => {
+      throw new Error("network");
+    });
+    const { page } = loadPage({ listMyPredictions });
+    await page.loadFirstPage();
+    expect(page.data.state).toBe("error");
+    expect(page.data.errorMessage).toBe("网络异常，请重试");
+    expect(page.data.items).toEqual([]);
+  });
+
+  it("reloads and resets filters after the login generation changes", async () => {
+    let generation = 0;
+    const listMyPredictions = vi.fn()
+      .mockResolvedValueOnce({ statusCode: 401, code: "UNAUTHORIZED" })
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        data: { items: [prediction()], page: { has_more: false, next_cursor: null } },
+      });
+    const listLeagueSeasons = vi.fn(async () => ({
+      statusCode: 200,
+      data: { items: catalogItems() },
+    }));
+    const { page } = loadPage({
+      listMyPredictions,
+      listLeagueSeasons,
+      getLoginGeneration: () => generation,
+    });
+    page.onLoad();
+    page.onShow();
+    await vi.waitFor(() => expect(page.data.state).toBe("unauthorized"));
+    page.setData({
+      leagueIndex: 1,
+      seasonIndex: 2,
+      selectedLeagueId: "premier_league",
+      selectedSeasonId: "2025_2026",
+      seasonOptions: ["全部赛季", "2026/27"],
+    });
+
+    generation = 1;
+    page.onShow();
+    await vi.waitFor(() => expect(page.data.state).toBe("list"));
+
+    expect(page.data.leagueIndex).toBe(0);
+    expect(page.data.seasonIndex).toBe(0);
+    expect(page.data.selectedLeagueId).toBeNull();
+    expect(page.data.selectedSeasonId).toBeNull();
+    expect(page.data.seasonOptions).toEqual(["全部赛季"]);
+    expect(listMyPredictions).toHaveBeenLastCalledWith({
+      leagueId: undefined,
+      seasonId: undefined,
+      limit: 20,
+    });
+  });
+
+  it("returns to this page after session initialization", () => {
+    const { page, navs } = loadPage();
+    page.onSessionTap();
+    expect(navs).toEqual([["navigateTo", "/pages/session/session?return_to=my-predictions"]]);
+  });
+
+  it("retries filter catalog via onFilterRetry and via onRetry when filterReady is false", async () => {
+    const wxml = readFileSync(join(HERE, "my-predictions.wxml"), "utf8");
+    expect(wxml).toContain('bindtap="onFilterRetry"');
+    const listMyPredictions = vi.fn()
+      .mockResolvedValueOnce({ statusCode: 500, message: "boom" })
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        data: { items: [prediction()], page: { has_more: false, next_cursor: null } },
+      });
+    const listLeagueSeasons = vi.fn()
+      .mockResolvedValueOnce({ statusCode: 500, message: "catalog failed" })
+      .mockResolvedValueOnce({ statusCode: 500, message: "still failing" })
+      .mockResolvedValueOnce({ statusCode: 200, data: { items: catalogItems() } });
+    const { page } = loadPage({ listMyPredictions, listLeagueSeasons });
+    await page.onLoad();
+    expect(page.data.filterReady).toBe(false);
+    expect(page.data.filterError).toBe("筛选选项加载失败");
+
+    await page.onFilterRetry();
+    expect(page.data.filterReady).toBe(false);
+
+    await page.onRetry();
+    await vi.waitFor(() => expect(page.data.filterReady).toBe(true));
+    expect(page.data.filterError).toBe("");
+    expect(page.data.state).toBe("list");
+    expect(listLeagueSeasons).toHaveBeenCalledTimes(3);
   });
 });

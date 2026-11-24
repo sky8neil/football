@@ -142,7 +142,7 @@ export const QUERY_INDEXES: readonly IndexDef[] = [
   {
     collection: "matches",
     name: "ix_matches_status_kickoff",
-    fields: ["match_status", "kickoff_at"],
+    fields: ["match_status", "kickoff_at", "match_id"],
     unique: false,
   },
   {
@@ -161,6 +161,30 @@ export const QUERY_INDEXES: readonly IndexDef[] = [
     collection: "matches",
     name: "ix_matches_settlement_kickoff",
     fields: ["settlement_status", "kickoff_at"],
+    unique: false,
+  },
+  {
+    collection: "matches",
+    name: "ix_matches_season_kickoff",
+    fields: ["season_id", "kickoff_at"],
+    unique: false,
+  },
+  {
+    collection: "matches",
+    name: "ix_matches_league_season_round",
+    fields: ["league_id", "season_id", "round_id"],
+    unique: false,
+  },
+  {
+    collection: "matches",
+    name: "ix_matches_canonical_match",
+    fields: ["canonical_match_id"],
+    unique: false,
+  },
+  {
+    collection: "matches",
+    name: "ix_matches_period_anchor",
+    fields: ["period_anchor_at"],
     unique: false,
   },
   {
@@ -296,9 +320,21 @@ export const QUERY_INDEXES: readonly IndexDef[] = [
     unique: false,
   },
   {
+    collection: "provider_snapshots",
+    name: "ix_snapshots_created_at",
+    fields: ["created_at"],
+    unique: false,
+  },
+  {
     collection: "provider_usage",
     name: "ix_provider_usage_source_bucket",
     fields: ["source_id", "bucket_type", "bucket_start"],
+    unique: false,
+  },
+  {
+    collection: "provider_usage",
+    name: "ix_provider_usage_bucket_start",
+    fields: ["bucket_type", "bucket_start"],
     unique: false,
   },
   {
@@ -311,6 +347,12 @@ export const QUERY_INDEXES: readonly IndexDef[] = [
     collection: "sync_logs",
     name: "ix_sync_logs_type_started",
     fields: ["job_type", "started_at:desc"],
+    unique: false,
+  },
+  {
+    collection: "sync_logs",
+    name: "ix_sync_logs_started_at",
+    fields: ["started_at"],
     unique: false,
   },
   {

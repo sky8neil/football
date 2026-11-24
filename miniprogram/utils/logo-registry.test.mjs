@@ -154,18 +154,19 @@ describe("team_id-first logo resolution", () => {
     );
   });
 
-  it("does not reuse another club's crest for Alavés or unknown identities", () => {
+  it("resolves Deportivo Alavés to its own crest and keeps unknown identities on placeholder", () => {
     const r = loadLogoRegistry();
-    expect(r.getTeamLogo("la_liga", { team_id: ALAVES_ID, name: "Deportivo Alavés" })).toBe(r.PLACEHOLDER);
-    expect(r.getTeamLogo("la_liga", { team_id: ALAVES_ID, name: "Deportivo" })).toBe(r.PLACEHOLDER);
-    expect(r.getTeamLogo("la_liga", "Deportivo Alavés")).toBe(r.PLACEHOLDER);
-    expect(r.getTeamLogo("la_liga", { team_id: UNKNOWN_ID, name: "Deportivo Alavés" })).toBe(r.PLACEHOLDER);
+    expect(r.getTeamLogo("la_liga", { team_id: ALAVES_ID, name: "Deportivo Alavés" })).toBe(r.MANIFEST.la_liga.teams.deportivo);
+    expect(r.getTeamLogo("la_liga", { team_id: ALAVES_ID })).toBe(r.MANIFEST.la_liga.teams.deportivo);
+    expect(r.getTeamLogo("la_liga", "Deportivo Alavés")).toBe(r.MANIFEST.la_liga.teams.deportivo);
+    expect(r.getTeamLogo("la_liga", { team_id: DEPORTIVO_ID })).toBe(r.MANIFEST.la_liga.teams["deportivo-la-coruna"]);
+    expect(r.getTeamLogo("la_liga", { team_id: UNKNOWN_ID, name: "Unknown Club" })).toBe(r.PLACEHOLDER);
     expect(r.getTeamLogo("unknown_league", { team_id: UNKNOWN_ID, name: "Real Madrid CF" })).toBe(r.PLACEHOLDER);
     expect(r.getTeamLogo("la_liga", { team_id: UNKNOWN_ID })).toBe(r.PLACEHOLDER);
     expect(r.getTeamLogo("premier_league", "Wolverhampton Wanderers")).toBe(r.PLACEHOLDER);
   });
 
-  it("falls back to source_name aliases for registered clubs that the old suffix strip missed", () => {
+  it("resolves every club in TEAM_REGISTRY to a packaged crest without falling back to placeholder", () => {
     const r = loadLogoRegistry();
     const teamRegistry = loadTeamRegistry();
     expect(r.getTeamLogo("la_liga", "Real Madrid CF")).toBe(r.MANIFEST.la_liga.teams["real-madrid"]);
@@ -177,17 +178,14 @@ describe("team_id-first logo resolution", () => {
     expect(r.getTeamLogo("chinese_super_league", "Shenzhen Peng City")).toBe(
       r.MANIFEST.chinese_super_league.teams["shenzhen-xinpengcheng"],
     );
-    let missingAsset = 0;
-    for (const [teamId, team] of Object.entries(teamRegistry.TEAM_REGISTRY)) {
-      const logo = r.getTeamLogo(team.league_id, { team_id: teamId });
-      if (teamId === ALAVES_ID) {
-        expect(logo).toBe(r.PLACEHOLDER);
-        missingAsset += 1;
-        continue;
-      }
-      expect(logo).not.toBe(r.PLACEHOLDER);
-      expect(existsSync(join(ROOT, "pages", "matches", logo))).toBe(true);
+    const entries = Object.entries(teamRegistry.TEAM_REGISTRY);
+    expect(entries.length).toBe(112);
+    for (const [teamId, team] of entries) {
+      const byId = r.getTeamLogo(team.league_id, { team_id: teamId });
+      const byIdAndName = r.getTeamLogo(team.league_id, { team_id: teamId, name: team.source_name });
+      expect(byId).not.toBe(r.PLACEHOLDER);
+      expect(byIdAndName).toBe(byId);
+      expect(existsSync(join(ROOT, "pages", "matches", byId))).toBe(true);
     }
-    expect(missingAsset).toBe(1);
   });
 });

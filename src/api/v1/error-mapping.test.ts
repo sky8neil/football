@@ -31,4 +31,14 @@ describe("mapErrorToHttp DATA-03 internal error sanitization", () => {
     expect(invalid.status).toBe(422);
     expect(invalid.body.message).toBe("参数错误");
   });
+
+  it("maps RANKING_REBUILD_ALREADY_RUNNING to 409 instead of 500", () => {
+    const mapped = mapErrorToHttp(
+      new DomainError("RANKING_REBUILD_ALREADY_RUNNING", "周期排行榜重算锁被占用"),
+      "req-rank-lock",
+    );
+
+    expect(mapped.status).toBe(409);
+    expect(mapped.body.code).toBe("RANKING_REBUILD_ALREADY_RUNNING");
+  });
 });

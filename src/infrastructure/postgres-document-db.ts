@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { MatchStatus, SettlementStatus } from "../domain/enums.js";
 import { COLLECTION_DEFINITIONS, type FieldType } from "../schema/collections.js";
 import { UNIQUE_INDEXES } from "../schema/indexes.js";
 import {
@@ -7,6 +8,7 @@ import {
   logicalCollectionFromPhysical,
   type CloudBaseDb,
   type CloudBaseDocument,
+  type CloudBasePredictionHistoryPage,
   type CloudBaseQueryOptions,
 } from "./cloudbase-db.js";
 import { decodeDocument, encodeDocument, encodeQueryValue } from "./document-codec.js";
@@ -22,6 +24,7 @@ export const POSTGRES_IN_OP = "__in" as const;
 export const POSTGRES_LT_OP = "__lt" as const;
 export const POSTGRES_LTE_OP = "__lte" as const;
 export const POSTGRES_GTE_OP = "__gte" as const;
+export const POSTGRES_NE_OP = "__ne" as const;
 
 const FIELD_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
@@ -205,6 +208,7 @@ type FilterOp =
   | { kind: "eq"; field: string; value: unknown }
   | { kind: "null"; field: string }
   | { kind: "in"; field: string; values: readonly string[] }
+  | { kind: "ne"; field: string; value: unknown }
   | { kind: "lt" | "lte" | "gte"; field: string; value: unknown };
 
 function documentFieldType(logical: string, field: string): FieldType | undefined {
@@ -240,6 +244,9 @@ export function parseDocumentFilter(filter: Record<string, unknown>): FilterOp[]
           throw new Error(`unsupported inFilter values on ${field}`);
         }
         return { kind: "in", field, values };
+      }
+      if (keys.length === 1 && keys[0] === POSTGRES_NE_OP) {
+        return { kind: "ne", field, value: value[POSTGRES_NE_OP] };
       }
       if (
         keys.length > 0 &&
@@ -280,14 +287,22 @@ function compileOps(
     }
     if (op.kind === "in") {
       params.push([...op.values]);
-      clauses.push(`${postgresDocumentFieldExpr(schema, logical, op.field)} = ANY($${params.length}::text[])`);
+      const expr = op.field === "_id" ? "_id" : postgresDocumentFieldExpr(schema, logical, op.field);
+      clauses.push(`${expr} = ANY($${params.length}::text[])`);
       continue;
     }
     const value = op.value;
     const type = comparisonType(logical, op.field, value);
-    const expr = postgresDocumentFieldExpr(schema, logical, op.field);
+    const expr = op.field === "_id" ? "_id" : postgresDocumentFieldExpr(schema, logical, op.field);
     params.push(type === "date" ? encodeQueryValue(value) : value);
     const placeholder = `$${params.length}`;
+    if (op.kind === "ne") {
+      if (type === "date") clauses.push(`${expr} IS DISTINCT FROM ${placeholder}::timestamptz`);
+      else if (type === "int") clauses.push(`${expr} IS DISTINCT FROM ${placeholder}::numeric`);
+      else if (type === "bool") clauses.push(`${expr} IS DISTINCT FROM ${placeholder}::boolean`);
+      else clauses.push(`${expr} IS DISTINCT FROM ${placeholder}`);
+      continue;
+    }
     if (op.kind === "lt" || op.kind === "lte" || op.kind === "gte") {
       const operator = op.kind === "lt" ? "<" : op.kind === "lte" ? "<=" : ">=";
       if (type === "date") clauses.push(`${expr} ${operator} ${placeholder}::timestamptz`);
@@ -351,6 +366,29 @@ export function compilePostgresDocumentUpdate(
   };
 }
 
+export function compilePostgresDocumentPatch(
+  config: PostgresDocumentDbConfig,
+  collection: string,
+  id: string,
+  fields: Record<string, unknown>,
+): CompiledSql {
+  const encoded = encodeDocument(fields as CloudBaseDocument);
+  const entries = Object.entries(encoded);
+  const params: unknown[] = [id];
+  let expression = "document";
+  for (const [field, value] of entries) {
+    assertField(field);
+    const json = JSON.stringify(value);
+    if (json === undefined) throw new Error(`invalid patch value for ${field}`);
+    params.push(field, json);
+    expression = `jsonb_set(${expression}, ARRAY[$${params.length - 1}]::text[], $${params.length}::jsonb, true)`;
+  }
+  return {
+    sql: `UPDATE ${qualifiedCollection(config.schema, collection)} SET document = ${expression} WHERE _id = $1 RETURNING _id`,
+    params,
+  };
+}
+
 export function compilePostgresDocumentEnsure(
   config: PostgresDocumentDbConfig,
   collection: string,
@@ -409,6 +447,47 @@ export function compilePostgresAcquireJobLock(
   };
 }
 
+export function compilePostgresRenewJobLock(
+  config: PostgresDocumentDbConfig,
+  collection: string,
+  lockKey: string,
+  ownerId: string,
+  leaseUntil: Date,
+  now: Date,
+): CompiledSql {
+  const table = qualifiedCollection(config.schema, collection);
+  const leaseExpr = postgresDocumentFieldExpr(config.schema, "job_locks", "lease_until")
+    .replace(/\bdocument\b/g, `${table}.document`);
+  const { _id: _ignored, ...patch } = encodeDocument({
+    _id: lockKey,
+    lease_until: leaseUntil,
+    updated_at: now,
+  });
+  return {
+    sql: `UPDATE ${table} SET document = document || $4::jsonb WHERE _id = $1 AND (document ->> 'owner_id') = $2 AND ${leaseExpr} > $3::timestamptz RETURNING _id`,
+    params: [lockKey, ownerId, now.toISOString(), patch],
+  };
+}
+
+export function compilePostgresReleaseJobLock(
+  config: PostgresDocumentDbConfig,
+  collection: string,
+  lockKey: string,
+  ownerId: string,
+  now: Date = new Date(),
+): CompiledSql {
+  const table = qualifiedCollection(config.schema, collection);
+  const { _id: _ignored, ...patch } = encodeDocument({
+    _id: lockKey,
+    lease_until: new Date(0),
+    updated_at: now,
+  });
+  return {
+    sql: `UPDATE ${table} SET document = document || $3::jsonb WHERE _id = $1 AND (document ->> 'owner_id') = $2`,
+    params: [lockKey, ownerId, patch],
+  };
+}
+
 export function compilePostgresDocumentQuery(
   config: PostgresDocumentDbConfig,
   collection: string,
@@ -458,17 +537,72 @@ export function compilePredictionHistoryPage(
   const predictionsTable = qualifiedCollection(config.schema, params.predictions_collection);
   const matchesTable = qualifiedCollection(config.schema, params.matches_collection);
   const ts = postgresDocumentFieldExpr(config.schema, "predictions", "submitted_at", "p.document");
+  const predCanonical = postgresDocumentFieldExpr(config.schema, "predictions", "canonical_match_id", "p.document");
+  const matchCanonical = postgresDocumentFieldExpr(config.schema, "matches", "canonical_match_id", "m.document");
   const queryParams: unknown[] = [params.user_id, params.league_id, params.season_id];
   let cursorSql = "";
   if (params.cursor !== null) {
     queryParams.push(encodeQueryValue(params.cursor.submitted_at), params.cursor.prediction_id);
     const tsPlaceholder = `$${queryParams.length - 1}`;
     const idPlaceholder = `$${queryParams.length}`;
-    cursorSql = ` AND (${ts} < ${tsPlaceholder}::timestamptz OR (${ts} = ${tsPlaceholder}::timestamptz AND (p.document ->> 'prediction_id') < ${idPlaceholder}))`;
+    cursorSql = ` AND (${ts}, (p.document ->> 'prediction_id')) < (${tsPlaceholder}::timestamptz, ${idPlaceholder})`;
   }
   queryParams.push(params.limit);
   return {
-    sql: `SELECT p.document FROM ${predictionsTable} p WHERE (p.document ->> 'user_id') = $1 AND EXISTS (SELECT 1 FROM ${matchesTable} m WHERE (m.document ->> 'superseded_by') IS NULL AND COALESCE(m.document ->> 'canonical_match_id', m._id) = COALESCE(p.document ->> 'canonical_match_id', p.document ->> 'match_id') AND ($2::text IS NULL OR m.document ->> 'league_id' = $2) AND ($3::text IS NULL OR m.document ->> 'season_id' = $3))${cursorSql} ORDER BY ${ts} DESC, (p.document ->> 'prediction_id') DESC LIMIT $${queryParams.length}`,
+    sql: `SELECT p.document FROM ${predictionsTable} p WHERE (p.document ->> 'user_id') = $1 AND EXISTS (SELECT 1 FROM ${matchesTable} m WHERE (m.document ->> 'superseded_by') IS NULL AND ${matchCanonical} = ${predCanonical} AND ($2::text IS NULL OR m.document ->> 'league_id' = $2) AND ($3::text IS NULL OR m.document ->> 'season_id' = $3))${cursorSql} ORDER BY ${ts} DESC, (p.document ->> 'prediction_id') DESC LIMIT $${queryParams.length}`,
+    params: queryParams,
+  };
+}
+
+export function compileLatestRegularBoardSnapshot(
+  config: PostgresDocumentDbConfig,
+  params: {
+    collection: string;
+    board: string;
+    level_season_id?: string | null;
+  },
+): CompiledSql {
+  const table = qualifiedCollection(config.schema, params.collection);
+  const ts = postgresDocumentFieldExpr(config.schema, "board_snapshots", "snapshot_at");
+  const isFinal = postgresDocumentFieldExpr(config.schema, "board_snapshots", "is_final");
+  const rank = postgresDocumentFieldExpr(config.schema, "board_snapshots", "rank");
+  const queryParams: unknown[] = [params.board];
+  let seasonSql = "";
+  if (params.level_season_id != null) {
+    queryParams.push(params.level_season_id);
+    seasonSql = ` AND (document ->> 'level_season_id') = $${queryParams.length}`;
+  }
+  const regularWhere = `(document ->> 'board') = $1 AND ${isFinal} = false${seasonSql}`;
+  return {
+    sql: `SELECT document FROM ${table} WHERE ${regularWhere} AND ${ts} = (SELECT ${ts} FROM ${table} WHERE ${regularWhere} ORDER BY ${ts} DESC LIMIT 1) ORDER BY ${rank} ASC`,
+    params: queryParams,
+  };
+}
+
+export function compileSettlementFallbackPage(
+  config: PostgresDocumentDbConfig,
+  params: {
+    collection: string;
+    limit: number;
+    after?: { kickoff_at: Date; match_id: string } | null;
+  },
+): CompiledSql {
+  const table = qualifiedCollection(config.schema, params.collection);
+  const statusExpr = postgresDocumentFieldExpr(config.schema, "matches", "match_status");
+  const settlementExpr = postgresDocumentFieldExpr(config.schema, "matches", "settlement_status");
+  const kickoffExpr = postgresDocumentFieldExpr(config.schema, "matches", "kickoff_at");
+  const matchIdExpr = postgresDocumentFieldExpr(config.schema, "matches", "match_id");
+  const queryParams: unknown[] = [MatchStatus.Finished, SettlementStatus.Voided];
+  let afterSql = "";
+  if (params.after != null) {
+    queryParams.push(encodeQueryValue(params.after.kickoff_at), params.after.match_id);
+    const tsPlaceholder = `$${queryParams.length - 1}`;
+    const idPlaceholder = `$${queryParams.length}`;
+    afterSql = ` AND (${kickoffExpr}, ${matchIdExpr}) > (${tsPlaceholder}::timestamptz, ${idPlaceholder})`;
+  }
+  queryParams.push(Math.max(0, params.limit));
+  return {
+    sql: `SELECT document FROM ${table} WHERE ${statusExpr} = $1 AND COALESCE(${settlementExpr}, '') <> $2${afterSql} ORDER BY ${kickoffExpr} ASC, ${matchIdExpr} ASC LIMIT $${queryParams.length}`,
     params: queryParams,
   };
 }
@@ -496,6 +630,7 @@ export function compilePostgresDocumentDelete(
   config: PostgresDocumentDbConfig,
   collection: string,
   filter: Record<string, unknown>,
+  options?: { limit?: number },
 ): CompiledSql {
   if (Object.keys(filter).length === 0) {
     throw new Error("deleteWhere requires a non-empty filter");
@@ -503,6 +638,18 @@ export function compilePostgresDocumentDelete(
   const logical = logicalName(config, collection);
   const where = compileOps(config.schema, logical, parseDocumentFilter(filter));
   const table = qualifiedCollection(config.schema, collection);
+  const rawLimit = options?.limit;
+  if (rawLimit !== undefined) {
+    if (!Number.isInteger(rawLimit) || rawLimit <= 0) {
+      throw new Error(`deleteWhere limit must be a positive integer: ${String(rawLimit)}`);
+    }
+    const params = [...where.params, rawLimit];
+    const limitPlaceholder = `$${params.length}`;
+    return {
+      sql: `DELETE FROM ${table} WHERE _id IN (SELECT _id FROM ${table} WHERE ${where.sql} LIMIT ${limitPlaceholder})`,
+      params,
+    };
+  }
   return {
     sql: `DELETE FROM ${table} WHERE ${where.sql}`,
     params: where.params,
@@ -614,6 +761,10 @@ export class PostgresDocumentDb implements CloudBaseDb {
     return { [field]: { [POSTGRES_GTE_OP]: value } };
   }
 
+  neFilter(field: string, value: unknown): Record<string, unknown> {
+    return { [field]: { [POSTGRES_NE_OP]: value } };
+  }
+
   async get(collection: string, id: string): Promise<CloudBaseDocument | null> {
     const compiled = compilePostgresDocumentGet(this.config, collection, id);
     const result = await this.queryFn(compiled.sql, compiled.params);
@@ -642,6 +793,21 @@ export class PostgresDocumentDb implements CloudBaseDb {
     }
   }
 
+  async patch(
+    collection: string,
+    id: string,
+    fields: Record<string, unknown>,
+  ): Promise<void> {
+    const compiled = compilePostgresDocumentPatch(this.config, collection, id, fields);
+    try {
+      const result = await this.queryFn(compiled.sql, compiled.params);
+      if (result.rows.length === 0) throw new CloudBaseDocumentNotFoundError(collection, id);
+    } catch (error) {
+      if (error instanceof CloudBaseDocumentNotFoundError) throw error;
+      mapWriteError(error, collection, id, { ...fields, _id: id });
+    }
+  }
+
   async query(
     collection: string,
     filter: Record<string, unknown> = {},
@@ -663,12 +829,43 @@ export class PostgresDocumentDb implements CloudBaseDb {
     season_id: string | null;
     cursor: { submitted_at: Date; prediction_id: string } | null;
     limit: number;
-  }): Promise<CloudBaseDocument[]> {
+  }): Promise<CloudBasePredictionHistoryPage> {
     const compiled = compilePredictionHistoryPage(this.config, params);
+    const result = await this.queryFn(compiled.sql, compiled.params);
+    const documents = result.rows.flatMap((row) => {
+      const document = asDocument(row.document);
+      return document === null ? [] : [decodeDocument(params.predictions_collection, document)];
+    });
+    return {
+      documents,
+      exhausted: documents.length < Math.max(0, params.limit),
+      resumeCursor: null,
+    };
+  }
+
+  async findLatestRegularBoardSnapshot(params: {
+    collection: string;
+    board: string;
+    level_season_id?: string | null;
+  }): Promise<CloudBaseDocument[]> {
+    const compiled = compileLatestRegularBoardSnapshot(this.config, params);
     const result = await this.queryFn(compiled.sql, compiled.params);
     return result.rows.flatMap((row) => {
       const document = asDocument(row.document);
-      return document === null ? [] : [decodeDocument(params.predictions_collection, document)];
+      return document === null ? [] : [decodeDocument(params.collection, document)];
+    });
+  }
+
+  async findSettlementFallbackPage(params: {
+    collection: string;
+    limit: number;
+    after?: { kickoff_at: Date; match_id: string } | null;
+  }): Promise<CloudBaseDocument[]> {
+    const compiled = compileSettlementFallbackPage(this.config, params);
+    const result = await this.queryFn(compiled.sql, compiled.params);
+    return result.rows.flatMap((row) => {
+      const document = asDocument(row.document);
+      return document === null ? [] : [decodeDocument(params.collection, document)];
     });
   }
 
@@ -678,8 +875,12 @@ export class PostgresDocumentDb implements CloudBaseDb {
     return Number(result.rows[0]?.count ?? 0);
   }
 
-  async deleteWhere(collection: string, filter: Record<string, unknown>): Promise<number> {
-    const compiled = compilePostgresDocumentDelete(this.config, collection, filter);
+  async deleteWhere(
+    collection: string,
+    filter: Record<string, unknown>,
+    options?: { limit?: number },
+  ): Promise<number> {
+    const compiled = compilePostgresDocumentDelete(this.config, collection, filter, options);
     const result = await this.queryFn(compiled.sql, compiled.params);
     return typeof result.rowCount === "number" ? result.rowCount : result.rows.length;
   }
@@ -731,6 +932,40 @@ export class PostgresDocumentDb implements CloudBaseDb {
     const compiled = compilePostgresAcquireJobLock(this.config, collection, lockKey, document, now);
     const result = await this.queryFn(compiled.sql, compiled.params);
     return result.rows.length > 0;
+  }
+
+  async renewJobLock(
+    collection: string,
+    lockKey: string,
+    ownerId: string,
+    leaseUntil: Date,
+    now: Date,
+  ): Promise<boolean> {
+    const compiled = compilePostgresRenewJobLock(
+      this.config,
+      collection,
+      lockKey,
+      ownerId,
+      leaseUntil,
+      now,
+    );
+    const result = await this.queryFn(compiled.sql, compiled.params);
+    return result.rows.length > 0;
+  }
+
+  async releaseJobLock(
+    collection: string,
+    lockKey: string,
+    ownerId: string,
+  ): Promise<void> {
+    const compiled = compilePostgresReleaseJobLock(
+      this.config,
+      collection,
+      lockKey,
+      ownerId,
+      new Date(),
+    );
+    await this.queryFn(compiled.sql, compiled.params);
   }
 
   private runReserveCounter(

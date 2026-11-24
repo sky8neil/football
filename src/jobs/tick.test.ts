@@ -115,8 +115,8 @@ describe("runJobsTick", () => {
       },
       { task: SyncJobType.BoardSnapshotCareer, action: "run", reason: "due" },
       { task: SyncJobType.BoardSnapshotSeason, action: "run", reason: "due" },
-      { task: SyncJobType.BoardSnapshotStrength, action: "skip", reason: "inline_weekly_refresh" },
-      { task: SyncJobType.BoardSnapshotSeasonFinal, action: "skip", reason: "inline_weekly_refresh" },
+      { task: SyncJobType.BoardSnapshotStrength, action: "run", reason: "due" },
+      { task: SyncJobType.BoardSnapshotSeasonFinal, action: "skip", reason: "no_due_season" },
     ]));
   });
 
@@ -148,13 +148,12 @@ describe("runJobsTick", () => {
       SyncJobType.DailyConsistency,
       SyncJobType.WeeklyLevelEval,
       SyncJobType.BoardSnapshotCareer,
+      SyncJobType.BoardSnapshotStrength,
       SyncJobType.BoardSnapshotSeason,
     ]));
-    expect(summaries[0]?.ran ?? []).not.toContain(SyncJobType.BoardSnapshotStrength);
     expect(summaries[0]?.skipped).toEqual(expect.arrayContaining([
       { task: SyncJobType.LiveMatch, reason: "no_provider_sources" },
-      { task: SyncJobType.BoardSnapshotStrength, reason: "inline_weekly_refresh" },
-      { task: SyncJobType.BoardSnapshotSeasonFinal, reason: "inline_weekly_refresh" },
+      { task: SyncJobType.BoardSnapshotSeasonFinal, reason: "no_due_season" },
     ]));
     expect(summaries[0]?.wired_periodic_tasks).toEqual(WIRED_PERIODIC_TASKS);
     expect(summaries[0]?.unwired_periodic_tasks).toEqual(UNWIRED_PERIODIC_TASKS);
@@ -238,9 +237,9 @@ describe("runJobsTick", () => {
       SyncJobType.DailyConsistency,
       SyncJobType.WeeklyLevelEval,
       SyncJobType.BoardSnapshotCareer,
+      SyncJobType.BoardSnapshotStrength,
       SyncJobType.BoardSnapshotSeason,
     ]));
-    expect(summary?.ran ?? []).not.toContain(SyncJobType.BoardSnapshotStrength);
     expect(summary?.failed).toEqual([
       { task: SyncJobType.LiveMatch, reason: "items_failed", items_failed: 1 },
     ]);
@@ -308,9 +307,9 @@ describe("runJobsTick", () => {
       SyncJobType.DailyConsistency,
       SyncJobType.WeeklyLevelEval,
       SyncJobType.BoardSnapshotCareer,
+      SyncJobType.BoardSnapshotStrength,
       SyncJobType.BoardSnapshotSeason,
     ]));
-    expect(summary?.ran ?? []).not.toContain(SyncJobType.BoardSnapshotStrength);
     expect(summary?.deferred).toEqual([
       {
         task: SyncJobType.LiveMatch,

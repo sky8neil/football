@@ -42,7 +42,11 @@ export interface RateLimiter {
 interface WindowState {
   window_start: number;
   request_count: number;
+  expires_at: number;
 }
+
+const PRUNE_SIZE_THRESHOLD = 1024;
+const PRUNE_COOLDOWN_MS = 10_000;
 
 /**
  * 进程内固定窗口实现，供 API middleware 和测试适配器使用。
@@ -50,6 +54,23 @@ interface WindowState {
  */
 export class InMemoryRateLimiter implements RateLimiter {
   private readonly windows = new Map<string, WindowState>();
+  private lastPruneAt = 0;
+  private nextPruneSize = PRUNE_SIZE_THRESHOLD;
+
+  private pruneExpired(nowMs: number): void {
+    for (const [key, state] of this.windows.entries()) {
+      if (state.expires_at <= nowMs) {
+        this.windows.delete(key);
+      }
+    }
+    this.lastPruneAt = nowMs;
+    this.nextPruneSize = Math.max(PRUNE_SIZE_THRESHOLD, this.windows.size * 2);
+  }
+
+  /** 仅用于诊断与单测观测当前内存桶数量。 */
+  get bucketCount(): number {
+    return this.windows.size;
+  }
 
   check(scope: RateLimitScope, identity: string, serverNow: Date): void {
     if (typeof identity !== "string" || identity.length === 0) {
@@ -59,9 +80,17 @@ export class InMemoryRateLimiter implements RateLimiter {
       throw validationError("server_now 必须是有效时间", { field: "server_now" });
     }
 
+    const nowMs = serverNow.getTime();
+    if (
+      nowMs - this.lastPruneAt >= ONE_MINUTE_MS
+      || (this.windows.size >= this.nextPruneSize && nowMs - this.lastPruneAt >= PRUNE_COOLDOWN_MS)
+    ) {
+      this.pruneExpired(nowMs);
+    }
+
     const config = RATE_LIMIT_DEFAULTS[scope];
     const windowStart =
-      Math.floor(serverNow.getTime() / config.window_ms) * config.window_ms;
+      Math.floor(nowMs / config.window_ms) * config.window_ms;
     const key = `${scope}\u0000${identity}`;
     const previous = this.windows.get(key);
     const requestCount =
@@ -69,6 +98,7 @@ export class InMemoryRateLimiter implements RateLimiter {
     this.windows.set(key, {
       window_start: windowStart,
       request_count: requestCount,
+      expires_at: windowStart + config.window_ms,
     });
 
     if (requestCount > config.max_requests) {

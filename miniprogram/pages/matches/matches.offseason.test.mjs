@@ -15,8 +15,18 @@ const deferred = () => { let resolve; const promise = new Promise((done) => { re
 function createPage({ statuses = [status("chinese_super_league", "completed"), status("la_liga", "in_season")], getLeagueStatus, getMyLeagueSummary, listMatches } = {}) {
   let definition;
   const switchTab = vi.fn();
+  const storage = new Map();
   Object.defineProperty(globalThis, "Page", { value: (value) => { definition = value; }, configurable: true });
-  Object.defineProperty(globalThis, "wx", { value: { switchTab, stopPullDownRefresh: vi.fn() }, configurable: true });
+  Object.defineProperty(globalThis, "wx", {
+    value: {
+      switchTab,
+      stopPullDownRefresh: vi.fn(),
+      getStorageSync: (key) => storage.get(key),
+      setStorageSync: (key, value) => { storage.set(key, value); },
+      removeStorageSync: (key) => { storage.delete(key); },
+    },
+    configurable: true,
+  });
   const requests = {
     getLeagueStatus: getLeagueStatus || vi.fn(async () => response({ items: statuses })),
     getMyLeagueSummary: getMyLeagueSummary || vi.fn(async () => summary()),
@@ -64,7 +74,7 @@ function createPage({ statuses = [status("chinese_super_league", "completed"), s
   page.data.selectedDate = "2026-11-16";
   page.data.dates = module.exports.buildDates(new Date());
   page.data.leagues = ["chinese_super_league", "la_liga"].map((id) => ({ id }));
-  return { page, requests, switchTab };
+  return { page, requests, switchTab, storage };
 }
 
 beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(new Date("2026-11-15T16:00:00Z")); });
@@ -83,18 +93,31 @@ describe("league status and personal summary", () => {
   });
 
   it.each(["completed", "between_seasons"])("shows the confirmed %s card and summary", async (phase) => {
-    const { page, requests, switchTab } = createPage({ statuses: [status("chinese_super_league", phase, { next_season_kickoff_at: "2026-12-08T12:00:00+08:00" }), status("la_liga", "in_season")] });
+    const { page, requests, switchTab, storage } = createPage({ statuses: [status("chinese_super_league", phase, { next_season_kickoff_at: "2026-12-08T12:00:00+08:00" }), status("la_liga", "in_season")] });
     await page.loadFirstPage();
     expect(page.data.leagues[0].offSeason).toBe(true);
     expect(page.data.state).toBe("offseason");
     expect(page.data.summarySeasonId).toBe("2025");
+    expect(page.data.summarySeasonLabel).toBe("2025");
     expect(page.data.leagueSummary).toEqual({ predicted_matches: 10, wdl_hits: 6, exact_hits: 2, is_provisional: false });
     expect(page.data.offseasonInfo.countdownDays).toBe(phase === "between_seasons" ? 22 : null);
     expect(requests.getMyLeagueSummary).toHaveBeenCalledWith({ leagueId: "chinese_super_league" });
     page.onRankingsTap();
     expect(switchTab).toHaveBeenCalledWith({ url: "/pages/rankings/rankings" });
+    expect(storage.get("pending_ranking_target")).toEqual({
+      board: "season",
+      levelSeasonId: "2026_2027",
+    });
     expect(template).toContain("查看 {{levelSeasonLabel}}榜 →");
     expect(template).toContain("查看赛季排行榜 →");
+  });
+
+  it("formats a cross-year summary season with slashes", async () => {
+    const { page } = createPage({ getMyLeagueSummary: vi.fn(async () => summary({ season_id: "2026_2027" })) });
+    await page.loadFirstPage();
+    expect(page.data.summarySeasonId).toBe("2026_2027");
+    expect(page.data.summarySeasonLabel).toBe("2026/2027");
+    expect(template).toContain("{{summarySeasonLabel ? summarySeasonLabel + ' 赛季 · ' : ''}}");
   });
 
   it.each([

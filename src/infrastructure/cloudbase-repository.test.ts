@@ -1,8 +1,18 @@
 import { describe, expect, it, vi } from "vitest";
-import { GroupStatus, MatchStatus, SettlementStatus } from "../domain/enums.js";
-import type { BoardSnapshot, Group, LeagueSeason, Match, Prediction, ProviderReconcileTodo, SeasonTeam, User } from "../domain/types.js";
+import {
+  GroupStatus,
+  MatchScoreValue,
+  MatchStatus,
+  SettlementDocStatus,
+  SettlementItemStatus,
+  SettlementPhase,
+  SettlementStatus,
+  UserStatus,
+} from "../domain/enums.js";
+import type { BoardSnapshot, Group, LeagueSeason, Match, Prediction, ProviderReconcileTodo, SeasonTeam, SettlementDoc, User } from "../domain/types.js";
 import { defaultLevelState } from "../domain/types.js";
 import { GroupsService } from "../application/groups.js";
+import { RebuildUserStatsService } from "../application/stats-rebuild-service.js";
 import { COLLECTION_DEFINITIONS } from "../schema/collections.js";
 import { UNIQUE_INDEXES } from "../schema/indexes.js";
 import {
@@ -113,26 +123,39 @@ class MemoryCloudBaseDb implements CloudBaseDb {
       .filter(([key]) => key.startsWith(`${collection}/`))
       .map(([, document]) => cloneValue(document))
       .filter((document) => Object.entries(filter).every(([field, value]) => {
+        if (typeof value === "object" && value !== null && "__ne" in value) {
+          return !equal(document[field], (value as { __ne?: unknown }).__ne);
+        }
         if (isLteOp(value) || (typeof value === "object" && value !== null && "__gte" in value)) {
           const range = value as { __gte?: unknown; __lte?: unknown };
-          return (range.__gte === undefined || toMs(document[field]) >= toMs(range.__gte)) &&
-            (range.__lte === undefined || toMs(document[field]) <= toMs(range.__lte));
+          const compare = (left: unknown, right: unknown): number =>
+            typeof left === "string" && typeof right === "string"
+              ? left.localeCompare(right)
+              : toMs(left) - toMs(right);
+          return (range.__gte === undefined || compare(document[field], range.__gte) >= 0) &&
+            (range.__lte === undefined || compare(document[field], range.__lte) <= 0);
         }
         if (typeof value === "object" && value !== null && "__in" in value) {
           return (value.__in as readonly unknown[]).includes(document[field]);
         }
         return equal(document[field], value);
       }));
-    if (options.order_by) {
-      const direction = options.direction === "desc" ? -1 : 1;
-      const field = options.order_by;
+    const orders = options.order_bys?.length
+      ? options.order_bys
+      : options.order_by === undefined
+        ? []
+        : [{ field: options.order_by, direction: options.direction ?? "asc" }];
+    if (orders.length > 0) {
       result = result.sort((a, b) => {
-        const left = a[field];
-        const right = b[field];
-        const compare = left instanceof Date && right instanceof Date
-          ? left.getTime() - right.getTime()
-          : String(left).localeCompare(String(right));
-        return compare * direction;
+        for (const order of orders) {
+          const left = a[order.field];
+          const right = b[order.field];
+          const compare = left instanceof Date && right instanceof Date
+            ? left.getTime() - right.getTime()
+            : String(left).localeCompare(String(right));
+          if (compare !== 0) return compare * (order.direction === "desc" ? -1 : 1);
+        }
+        return 0;
       });
     }
     const offset = options.offset ?? 0;
@@ -147,6 +170,9 @@ class MemoryCloudBaseDb implements CloudBaseDb {
 
   inFilter(field: string, values: readonly string[]): Record<string, unknown> {
     return { [field]: { __in: values } };
+  }
+  neFilter(field: string, value: unknown): Record<string, unknown> {
+    return { [field]: { __ne: value } };
   }
 
   async reserveCounter(collection: string, id: string, field: string, limit: number, initial: CloudBaseDocument): Promise<boolean> {
@@ -501,6 +527,98 @@ function makeWindowMatch(overrides: Partial<Match> = {}): Match {
     updated_at: NOW,
     ...overrides,
   } as Match;
+}
+
+async function insertExactHitFacts(
+  repo: CloudBaseAppRepository,
+  userId: string,
+  count: number,
+  prefix: string,
+): Promise<Date> {
+  const base = new Date("2026-08-01T02:00:00.000Z");
+  let latest = base;
+  for (let index = 0; index < count; index += 1) {
+    const anchor = new Date(base.getTime() + index * 60_000);
+    latest = anchor;
+    const matchId = `${prefix}-m${index}`;
+    const predictionId = `${prefix}-p${index}`;
+    const settlementId = `${prefix}-s${index}`;
+    await repo.matches.insert(makeWindowMatch({
+      match_id: matchId,
+      canonical_match_id: matchId,
+      period_anchor_at: anchor,
+      match_status: MatchStatus.Finished,
+      settlement_status: SettlementStatus.Settled,
+      regular_home_score: 1,
+      regular_away_score: 0,
+      result_version: 1,
+      settled_result_version: 1,
+      finish_detected_at: NOW,
+      settled_at: NOW,
+      prediction_closed_at: NOW,
+    }));
+    await repo.predictions.insert(makeHistoryPrediction({
+      prediction_id: predictionId,
+      user_id: userId,
+      match_id: matchId,
+      canonical_match_id: matchId,
+      idempotency_key: `${prefix}-key-${index}`,
+      pred_home_score: 1,
+      pred_away_score: 0,
+    }));
+    await repo.matchResults.insert({
+      schema_version: 1,
+      match_id: matchId,
+      result_version: 1,
+      regular_home_score: 1,
+      regular_away_score: 0,
+      source: "provider",
+      provider_status: "FT",
+      admin_id: null,
+      reason: null,
+      created_at: NOW,
+    });
+    await repo.settlements.insert({
+      schema_version: 1,
+      settlement_id: settlementId,
+      match_id: matchId,
+      result_version: 1,
+      rule_version: "scoring_v1",
+      status: SettlementDocStatus.Settled,
+      phase: SettlementPhase.Done,
+      is_correction: false,
+      started_at: NOW,
+      settled_at: NOW,
+      attempt_count: 1,
+      last_error_code: null,
+      last_error_message: null,
+      created_at: NOW,
+      updated_at: NOW,
+    });
+    await repo.settlementItems.insert({
+      schema_version: 1,
+      settlement_id: settlementId,
+      prediction_id: predictionId,
+      user_id: userId,
+      old_score: MatchScoreValue.Miss,
+      new_score: MatchScoreValue.ExactHit,
+      score_delta: 12,
+      old_wdl_hit: false,
+      new_wdl_hit: true,
+      old_exact_hit: false,
+      new_exact_hit: true,
+      valid_prediction_delta: 1,
+      source_result_version: 1,
+      status: SettlementItemStatus.Applied,
+      applied_at: NOW,
+      attempt_count: 1,
+      last_error_code: null,
+      last_error_message: null,
+      created_at: NOW,
+      updated_at: NOW,
+    });
+  }
+  return latest;
 }
 
 function makeHistoryPrediction(overrides: Partial<Prediction> = {}): Prediction {
@@ -1298,7 +1416,7 @@ describe("CloudBaseAppRepository.findActiveWindow", () => {
     expect(latestBoard[0]?.snapshot_at.toISOString()).toBe(t2.toISOString());
     expect(querySpy).toHaveBeenCalledWith(
       expect.any(String),
-      { board: "season" },
+      { board: "season", is_final: false },
       { order_by: "snapshot_at", direction: "desc", limit: 100, offset: 0 },
     );
     expect(querySpy).toHaveBeenCalledWith(
@@ -1313,7 +1431,7 @@ describe("CloudBaseAppRepository.findActiveWindow", () => {
     expect(latestSeason[0]?.snapshot_at.toISOString()).toBe(t2.toISOString());
     expect(querySpy).toHaveBeenCalledWith(
       expect.any(String),
-      { board: "season", level_season_id: "2026_2027" },
+      { board: "season", level_season_id: "2026_2027", is_final: false },
       { order_by: "snapshot_at", direction: "desc", limit: 100, offset: 0 },
     );
   });
@@ -1443,6 +1561,139 @@ describe("CloudBaseAppRepository.findActiveWindow", () => {
     expect(unfinalized.map((r) => r.period_key)).toEqual(["2026-W32"]);
   });
 
+  it("[Slice 2] findByPeriodAnchorWindow 与 findWeekEntriesSince 下推范围/未定稿过滤", async () => {
+    const db = new RangeAwareMemoryCloudBaseDb();
+    const repo = createCloudBaseRepository(db);
+    const start = new Date("2026-08-24T00:00:00.000Z");
+    const end = new Date("2026-08-31T00:00:00.000Z");
+    await repo.matches.insert(makeWindowMatch({
+      match_id: "anchor-in",
+      period_anchor_at: new Date("2026-08-26T12:00:00.000Z"),
+    }));
+    await repo.matches.insert(makeWindowMatch({
+      match_id: "anchor-before",
+      period_anchor_at: new Date("2026-08-23T12:00:00.000Z"),
+    }));
+    await repo.matches.insert(makeWindowMatch({
+      match_id: "anchor-after",
+      period_anchor_at: end,
+    }));
+    const inWindow = await repo.matches.findByPeriodAnchorWindow!(start, end);
+    expect(inWindow.map((match) => match.match_id)).toEqual(["anchor-in"]);
+
+    for (const [key, final] of [
+      ["2026-W32", false],
+      ["2026-W33", true],
+      ["2026-W34", false],
+      ["2026-W35", true],
+    ] as const) {
+      await repo.rankings.insert({
+        schema_version: 1,
+        period_type: "week",
+        period_key: key,
+        user_id: USER_ID,
+        period_score: 12,
+        valid_predictions: 1,
+        wdl_hits: 1,
+        exact_hits: 1,
+        last_scoring_match_at: NOW,
+        global_rank: 1,
+        is_final: final,
+        created_at: NOW,
+        updated_at: NOW,
+      });
+    }
+    const sinceOnly = (await repo.rankings.findWeekEntriesSince!("2026-W34", false))
+      .map((row) => row.period_key)
+      .sort();
+    expect(sinceOnly).toEqual(["2026-W34", "2026-W35"]);
+    const weeks = (await repo.rankings.findWeekEntriesSince!("2026-W34", true))
+      .map((row) => row.period_key)
+      .sort();
+    expect(weeks).toEqual(["2026-W32", "2026-W34", "2026-W35"]);
+
+    const memory = new InMemoryRepository();
+    for (const [key, final] of [
+      ["2026-W32", false],
+      ["2026-W33", true],
+      ["2026-W34", false],
+      ["2026-W35", true],
+    ] as const) {
+      await memory.rankings.insert({
+        schema_version: 1,
+        period_type: "week",
+        period_key: key,
+        user_id: USER_ID,
+        period_score: 12,
+        valid_predictions: 1,
+        wdl_hits: 1,
+        exact_hits: 1,
+        last_scoring_match_at: NOW,
+        global_rank: 1,
+        is_final: final,
+        created_at: NOW,
+        updated_at: NOW,
+      });
+    }
+    expect((await memory.rankings.findWeekEntriesSince!("2026-W34", false))
+      .map((row) => row.period_key)
+      .sort()).toEqual(["2026-W34", "2026-W35"]);
+    expect((await memory.rankings.findWeekEntriesSince!("2026-W34", true))
+      .map((row) => row.period_key)
+      .sort()).toEqual(["2026-W32", "2026-W34", "2026-W35"]);
+  });
+
+  it("[Slice 2] findSettledCorrectionsPendingReeval 在查询层排除 completed 并保留 legacy 缺失字段", async () => {
+    const makeSettlement = (
+      settlementId: string,
+      levelReevalStatus?: "pending" | "completed",
+    ): SettlementDoc => ({
+      schema_version: 1,
+      settlement_id: settlementId,
+      match_id: `match-${settlementId}`,
+      result_version: 2,
+      rule_version: "scoring_v1",
+      status: SettlementDocStatus.Settled,
+      phase: SettlementPhase.Done,
+      is_correction: true,
+      ...(levelReevalStatus === undefined ? {} : { level_reeval_status: levelReevalStatus }),
+      started_at: NOW,
+      settled_at: NOW,
+      attempt_count: 1,
+      last_error_code: null,
+      last_error_message: null,
+      created_at: NOW,
+      updated_at: NOW,
+    });
+    const seed = async (repo: InMemoryRepository | CloudBaseAppRepository) => {
+      await repo.settlements.insert(makeSettlement("completed", "completed"));
+      await repo.settlements.insert(makeSettlement("pending", "pending"));
+      await repo.settlements.insert(makeSettlement("legacy"));
+    };
+
+    const memory = new InMemoryRepository();
+    await seed(memory);
+    expect((await memory.settlements.findSettledCorrectionsPendingReeval!())
+      .map((row) => row.settlement_id)
+      .sort()).toEqual(["legacy", "pending"]);
+
+    const db = new MemoryCloudBaseDb();
+    const cloud = createCloudBaseRepository(db);
+    await seed(cloud);
+    const querySpy = vi.spyOn(db, "query");
+    const rows = await cloud.settlements.findSettledCorrectionsPendingReeval!();
+    expect(rows.map((row) => row.settlement_id).sort()).toEqual(["legacy", "pending"]);
+    expect(querySpy).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        status: "settled",
+        is_correction: true,
+        level_reeval_status: { __ne: "completed" },
+      }),
+      undefined,
+    );
+  });
+
   it("[Slice 4] jobLocks.acquire 在 fallback 并发冲突时捕获唯一冲突并返回 false", async () => {
     // 事务视图复用同一实例，唯一冲突才真正落在 jobLocks.acquire 的 add 调用上；
     // MemoryCloudBaseDb.runTransaction 会新建实例，无法观察 add 抛错。
@@ -1509,6 +1760,55 @@ describe("InMemoryRepository.findLeagueSeasonCatalog", () => {
   it("returns [] when there are no matches", async () => {
     const repo = new InMemoryRepository();
     await expect(repo.matches.findLeagueSeasonCatalog()).resolves.toEqual([]);
+  });
+
+  it("excludes superseded matches across InMemoryRepository and CloudBaseAppRepository (distinct & fallback)", async () => {
+    const repo = new InMemoryRepository();
+    await repo.matches.insert(makeWindowMatch({
+      match_id: "pl-active",
+      canonical_match_id: "pl-active",
+      league_id: "premier_league",
+      season_id: "2026_2027",
+      round_id: "01",
+    }));
+    const oldMatch = makeWindowMatch({
+      match_id: "pl-old-superseded",
+      canonical_match_id: "pl-active",
+      league_id: "premier_league",
+      season_id: "2026_2027",
+      round_id: "99",
+    });
+    await repo.matches.insert(oldMatch);
+    await repo.matches.update({ ...oldMatch, superseded_by: "pl-active", updated_at: NOW });
+    await expect(repo.matches.findLeagueSeasonCatalog()).resolves.toEqual([
+      { league_id: "premier_league", season_id: "2026_2027", round_ids: ["01"] },
+    ]);
+
+    const db = new MemoryCloudBaseDb();
+    (db as CloudBaseDb).distinctQuery = vi.fn(async () => [
+      { league_id: "premier_league", season_id: "2026_2027", round_id: "01", superseded_by: "" },
+      { league_id: "premier_league", season_id: "2026_2027", round_id: "99", superseded_by: "pl-active" },
+    ]);
+    const cbRepo = new CloudBaseAppRepository(CONFIG, db);
+    await expect(cbRepo.matches.findLeagueSeasonCatalog()).resolves.toEqual([
+      { league_id: "premier_league", season_id: "2026_2027", round_ids: ["01"] },
+    ]);
+
+    const fallbackDb = new MemoryCloudBaseDb();
+    delete (fallbackDb as CloudBaseDb).distinctQuery;
+    const fallbackRepo = new CloudBaseAppRepository(CONFIG, fallbackDb);
+    await fallbackRepo.matches.insert(makeWindowMatch({
+      match_id: "pl-active",
+      canonical_match_id: "pl-active",
+      league_id: "premier_league",
+      season_id: "2026_2027",
+      round_id: "01",
+    }));
+    await fallbackRepo.matches.insert(oldMatch);
+    await fallbackRepo.matches.update({ ...oldMatch, superseded_by: "pl-active", updated_at: NOW });
+    await expect(fallbackRepo.matches.findLeagueSeasonCatalog()).resolves.toEqual([
+      { league_id: "premier_league", season_id: "2026_2027", round_ids: ["01"] },
+    ]);
   });
 });
 
@@ -1662,5 +1962,324 @@ describe("InMemoryRepository.predictions.findHistoryPage", () => {
     });
     expect(page).toHaveLength(2);
     expect(page.map((item) => item.prediction_id)).toEqual(["pred-3", "pred-2"]);
+  });
+});
+
+describe("CloudBaseAppRepository Slice 3.3 batch & pushdown methods", () => {
+  it("batches users/teams/matches/settlements/settlementItems/levelHistory/userSeasonStats in O(1) inFilter queries", async () => {
+    const db = new MemoryCloudBaseDb();
+    const repo = new CloudBaseAppRepository(CONFIG, db);
+    await repo.users.insert(makeUser("u1"));
+    await repo.users.insert(makeUser("u2"));
+    await repo.teams.insert({
+      schema_version: 1, team_id: "t1", league_id: "premier_league", name: "Home", short_name: "H",
+      primary_color: null, secondary_color: null, status: "active", created_at: NOW, updated_at: NOW,
+    });
+    await repo.teams.insert({
+      schema_version: 1, team_id: "t2", league_id: "premier_league", name: "Away", short_name: "A",
+      primary_color: null, secondary_color: null, status: "active", created_at: NOW, updated_at: NOW,
+    });
+    await repo.matches.insert(makeWindowMatch({ match_id: "m1" }));
+    await repo.matches.insert(makeWindowMatch({ match_id: "m2" }));
+    await repo.settlementItems.insert({
+      schema_version: 1, settlement_id: "s1", prediction_id: "p1", user_id: "u1",
+      source_result_version: 1, old_score: 0, new_score: 3, old_wdl_hit: false, new_wdl_hit: true,
+      old_exact_hit: false, new_exact_hit: false, score_delta: 3, valid_prediction_delta: 1,
+      status: "applied", applied_at: NOW, attempt_count: 1, last_error_code: null, last_error_message: null,
+      created_at: NOW, updated_at: NOW,
+    });
+
+    const querySpy = vi.spyOn(db, "query");
+    const getSpy = vi.spyOn(db, "get");
+
+    const usersMap = await repo.users.findByIds!(["u1", "u2", "missing"]);
+    expect([...usersMap.keys()].sort()).toEqual(["u1", "u2"]);
+    const teamsMap = await repo.teams.findByIds!(["t1", "t2"]);
+    expect([...teamsMap.keys()].sort()).toEqual(["t1", "t2"]);
+    const matchesMap = await repo.matches.findByIds!(["m1", "m2"]);
+    expect([...matchesMap.keys()].sort()).toEqual(["m1", "m2"]);
+    const appliedForU1 = await repo.settlementItems.findByUserAndStatus!("u1", "applied");
+    expect(appliedForU1).toHaveLength(1);
+    expect(querySpy).toHaveBeenCalledTimes(4);
+    expect(getSpy).not.toHaveBeenCalled();
+  });
+
+  it("[Slice 3.4] predictions.findHistoryPageWithScanResume 透传适配器 exhausted/resumeCursor", async () => {
+    const db = new MemoryCloudBaseDb();
+    const prediction = makeHistoryPrediction({ prediction_id: "p1", match_id: "m1" });
+    const resumeCursor = { submitted_at: NOW, prediction_id: "p1" };
+    (db as CloudBaseDb).findPredictionHistoryPage = vi.fn(async () => ({
+      documents: [{ ...prediction, _id: "p1" }],
+      exhausted: false,
+      resumeCursor,
+    }));
+    const repo = new CloudBaseAppRepository(CONFIG, db);
+
+    const page = await repo.predictions.findHistoryPageWithScanResume!({
+      user_id: USER_ID,
+      league_id: null,
+      season_id: null,
+      cursor: null,
+      limit: 21,
+    });
+
+    expect(page.exhausted).toBe(false);
+    expect(page.resume_cursor).toEqual(resumeCursor);
+    expect(page.predictions.map((item) => item.prediction_id)).toEqual(["p1"]);
+    expect(await repo.predictions.findHistoryPage({
+      user_id: USER_ID,
+      league_id: null,
+      season_id: null,
+      cursor: null,
+      limit: 21,
+    })).toHaveLength(1);
+  });
+
+  it("uses db.findLatestRegularBoardSnapshot and db.findSettlementFallbackPage when available, and pushes gteFilter on fallback", async () => {
+    const db = new MemoryCloudBaseDb();
+    const regularDoc = {
+      ...makeSeasonSnapshot({ snapshot_id: "reg-1", snapshot_at: NOW, user_id: "u1", is_final: false }),
+      _id: "reg-1",
+    };
+    const findLatestRegularBoardSnapshot = vi.fn(async () => [regularDoc]);
+    const findSettlementFallbackPage = vi.fn(async () => [{ ...makeWindowMatch({ match_id: "m-fb" }), _id: "m-fb" }]);
+    (db as CloudBaseDb).findLatestRegularBoardSnapshot = findLatestRegularBoardSnapshot;
+    (db as CloudBaseDb).findSettlementFallbackPage = findSettlementFallbackPage;
+
+    const querySpy = vi.spyOn(db, "query");
+    const repo = new CloudBaseAppRepository(CONFIG, db);
+    const snap = await repo.boardSnapshots.findLatestBySeason("2026_2027");
+    expect(snap).toHaveLength(1);
+    expect(findLatestRegularBoardSnapshot).toHaveBeenCalledTimes(1);
+
+    const after = { kickoff_at: NOW, match_id: "m-0" };
+    const fb = await repo.matches.findSettlementFallbackPage({ limit: 10, after });
+    expect(fb).toHaveLength(1);
+    expect(findSettlementFallbackPage).toHaveBeenCalledTimes(1);
+    expect(querySpy).not.toHaveBeenCalled();
+
+    // Non-PG fallback pushes gteFilter("kickoff_at", after.kickoff_at)
+    const fallbackDb = new MemoryCloudBaseDb();
+    (fallbackDb as CloudBaseDb).gteFilter = (field, value) => ({ [field]: { __gte: value } });
+    const fbRepo = new CloudBaseAppRepository(CONFIG, fallbackDb);
+    const fbQuerySpy = vi.spyOn(fallbackDb, "query");
+    await fbRepo.matches.findSettlementFallbackPage({ limit: 10, after });
+    expect(fbQuerySpy).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        match_status: "finished",
+        kickoff_at: { __gte: NOW },
+      }),
+      expect.objectContaining({
+        order_by: "kickoff_at",
+        order_bys: [
+          { field: "kickoff_at", direction: "asc" },
+          { field: "match_id", direction: "asc" },
+        ],
+      }),
+    );
+  });
+
+  it("[Slice 3.4] findSettlementFallbackPage 在同 kickoff_at 多于单批 limit 时按 (kickoff_at, match_id) 无漏续扫", async () => {
+    const repo = createCloudBaseRepository();
+    const kickoff = new Date("2026-08-05T15:00:00.000Z");
+    for (const id of ["m-c", "m-a", "m-b"]) {
+      await repo.matches.insert(makeWindowMatch({
+        match_id: id,
+        canonical_match_id: id,
+        kickoff_at: kickoff,
+        match_status: MatchStatus.Finished,
+        settlement_status: SettlementStatus.Pending,
+      }));
+    }
+
+    const first = await repo.matches.findSettlementFallbackPage({ limit: 2 });
+    expect(first.map((match) => match.match_id)).toEqual(["m-a", "m-b"]);
+    const second = await repo.matches.findSettlementFallbackPage({
+      limit: 2,
+      after: { kickoff_at: first[1]!.kickoff_at, match_id: first[1]!.match_id },
+    });
+    expect(second.map((match) => match.match_id)).toEqual(["m-c"]);
+  });
+});
+
+describe("CloudBaseAppRepository Slice 1 ranking patch & deleted user rebuild", () => {
+  it("updateGlobalRank 只写 global_rank/updated_at，不覆盖积分与命中字段", async () => {
+    const db = new MemoryCloudBaseDb();
+    const repo = new CloudBaseAppRepository(CONFIG, db);
+    await repo.rankings.insert({
+      schema_version: 1,
+      period_type: "week",
+      period_key: "2026-W32",
+      user_id: USER_ID,
+      period_score: 12,
+      valid_predictions: 3,
+      wdl_hits: 2,
+      exact_hits: 1,
+      last_scoring_match_at: NOW,
+      global_rank: null,
+      is_final: false,
+      created_at: NOW,
+      updated_at: NOW,
+    });
+    const updatedAt = new Date(NOW.getTime() + 60_000);
+    expect((db as CloudBaseDb).patch).toBeUndefined();
+    const updateSpy = vi.spyOn(db, "update");
+    await repo.rankings.updateGlobalRank!(
+      "week",
+      "2026-W32",
+      USER_ID,
+      2,
+      updatedAt,
+    );
+    expect(updateSpy).toHaveBeenCalledWith(
+      expect.stringContaining("rankings"),
+      expect.any(String),
+      { global_rank: 2, updated_at: updatedAt },
+    );
+    expect(await repo.rankings.findByPeriodAndUser("week", "2026-W32", USER_ID))
+      .toMatchObject({
+        period_score: 12,
+        valid_predictions: 3,
+        wdl_hits: 2,
+        exact_hits: 1,
+        last_scoring_match_at: NOW,
+        global_rank: 2,
+        updated_at: updatedAt,
+      });
+  });
+
+  it("已注销且首评跳过时重建只改统计，保留冻结等级状态且不新增历史", async () => {
+    const db = new MemoryCloudBaseDb();
+    const repo = new CloudBaseAppRepository(CONFIG, db);
+    const deletedAt = new Date("2026-08-05T00:00:00.000Z");
+    await repo.users.insert({
+      ...makeUser(USER_ID),
+      status: UserStatus.Deleted,
+      openid: `deleted:${USER_ID}`,
+      deleted_at: deletedAt,
+    });
+    await repo.userSeasonStats.insert({
+      schema_version: 1,
+      user_id: USER_ID,
+      level_season_id: "2026_2027",
+      points: 0,
+      valid_predictions: 0,
+      wdl_hits: 0,
+      exact_hits: 0,
+      last_scoring_match_at: null,
+      level: 1,
+      best_level: 1,
+      level_state: defaultLevelState(),
+      is_level_frozen: true,
+      created_at: NOW,
+      updated_at: NOW,
+    });
+    const lastScoring = await insertExactHitFacts(repo, USER_ID, 20, "deleted-first");
+
+    const outcome = await new RebuildUserStatsService(
+      repo,
+      new Date("2026-08-03T02:00:00.000Z"),
+    ).rebuildUserStats(USER_ID, new Date("2026-12-01T00:00:00.000Z"));
+
+    expect(outcome.user).toMatchObject({
+      status: UserStatus.Deleted,
+      career_points: 240,
+      career_valid_predictions: 20,
+      career_wdl_hits: 20,
+      career_exact_hits: 20,
+      career_last_scoring_match_at: lastScoring,
+      career_level: 1,
+      career_best_level: 1,
+      career_level_state: defaultLevelState(),
+    });
+    expect(outcome.season_stats).toEqual([
+      expect.objectContaining({
+        level_season_id: "2026_2027",
+        points: 240,
+        valid_predictions: 20,
+        wdl_hits: 20,
+        exact_hits: 20,
+        level: 1,
+        best_level: 1,
+        level_state: defaultLevelState(),
+        is_level_frozen: true,
+      }),
+    ]);
+    expect(outcome.created_level_history).toEqual([]);
+    expect(await repo.levelHistory.findByUser(USER_ID)).toEqual([]);
+  });
+
+  it("已注销且已有评估时间时重建保留 career/冻结 season 等级与 level_state", async () => {
+    const db = new MemoryCloudBaseDb();
+    const repo = new CloudBaseAppRepository(CONFIG, db);
+    const lastEvalAsOf = new Date("2026-08-03T02:00:00.000Z");
+    const levelState = {
+      below_count: 0,
+      week_base_level: 1,
+      week_base_below_count: 0,
+      week_base_as_of: lastEvalAsOf,
+      last_eval_as_of: lastEvalAsOf,
+      last_eval_n: 20,
+      last_eval_score_sum: 240,
+      last_eval_b_points: 0,
+      last_eval_rule_version: "level_v3.0",
+    };
+    await repo.users.insert({
+      ...makeUser(USER_ID_2),
+      status: UserStatus.Deleted,
+      openid: `deleted:${USER_ID_2}`,
+      deleted_at: new Date("2026-08-15T00:00:00.000Z"),
+      career_points: 999,
+      career_valid_predictions: 20,
+      career_wdl_hits: 0,
+      career_exact_hits: 0,
+      career_level: 2,
+      career_best_level: 2,
+      career_level_state: levelState,
+    });
+    await repo.userSeasonStats.insert({
+      schema_version: 1,
+      user_id: USER_ID_2,
+      level_season_id: "2026_2027",
+      points: 999,
+      valid_predictions: 20,
+      wdl_hits: 0,
+      exact_hits: 0,
+      last_scoring_match_at: null,
+      level: 2,
+      best_level: 2,
+      level_state: levelState,
+      is_level_frozen: true,
+      created_at: NOW,
+      updated_at: NOW,
+    });
+    await insertExactHitFacts(repo, USER_ID_2, 20, "deleted-evaluated");
+
+    const outcome = await new RebuildUserStatsService(
+      repo,
+      new Date("2026-08-03T02:00:00.000Z"),
+    ).rebuildUserStats(USER_ID_2, new Date("2026-12-01T00:00:00.000Z"));
+
+    expect(outcome.user).toMatchObject({
+      career_points: 240,
+      career_valid_predictions: 20,
+      career_level: 2,
+      career_best_level: 2,
+      career_level_state: levelState,
+    });
+    expect(outcome.season_stats).toEqual([
+      expect.objectContaining({
+        level_season_id: "2026_2027",
+        points: 240,
+        valid_predictions: 20,
+        level: 2,
+        best_level: 2,
+        level_state: levelState,
+        is_level_frozen: true,
+      }),
+    ]);
+    expect(outcome.created_level_history).toEqual([]);
+    expect(await repo.levelHistory.findByUser(USER_ID_2)).toEqual([]);
   });
 });

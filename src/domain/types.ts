@@ -288,6 +288,8 @@ export interface SettlementDoc extends BaseDoc {
   status: SettlementDocStatus;
   phase: SettlementPhase;
   is_correction: boolean;
+  level_reeval_status?: "pending" | "completed" | null;
+  level_reeval_completed_at?: Date | null;
   started_at: Date | null;
   settled_at: Date | null;
   attempt_count: number;

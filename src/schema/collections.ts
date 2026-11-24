@@ -333,6 +333,8 @@ export const COLLECTION_DEFINITIONS: readonly CollectionDef[] = [
         enum: ["prepare", "apply_items", "rebuild_ranks", "finalize", "done"],
       },
       is_correction: { type: "bool", required: true },
+      level_reeval_status: { type: "string", enum: ["pending", "completed"], nullable: true },
+      level_reeval_completed_at: { type: "date", nullable: true },
       started_at: { type: "date", nullable: true },
       settled_at: { type: "date", nullable: true },
       attempt_count: { type: "int", required: true, min: 0, default: 0 },

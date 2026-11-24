@@ -6,6 +6,13 @@ const { buildRankingViewModel } = require("../../utils/rankings-view-model.js");
 const { headerHeight } = require("../../utils/ui-layout.js");
 const { formatLevelSeasonLabel } = require("../../utils/level-season.js");
 const COPY = require("../../utils/rankings-copy.js");
+const authService = require("../../services/auth.js");
+
+function currentLoginGeneration() {
+  if (!authService || typeof authService.getLoginGeneration !== "function") return 0;
+  const value = authService.getLoginGeneration();
+  return Number.isFinite(value) ? value : 0;
+}
 
 function displayTeamId(value) {
   if (value === null || value === undefined) {
@@ -70,6 +77,34 @@ function previousAvailableSeason(availableLevelSeasons, currentLevelSeasonId) {
   return earlierSeasons.length > 0 ? earlierSeasons[0].seasonId : null;
 }
 
+function applyAuthOrDeletedState(page, result) {
+  if (!result) return false;
+  if (result.statusCode === 401 && result.code === "UNAUTHORIZED") {
+    page.setData({
+      state: "guest",
+      guestText: COPY.emptyGuestLine,
+      view: buildRankingViewModel({ guest: true }),
+      nickname: "",
+      avatarText: "球",
+      currentUserId: "",
+      loadingMore: false,
+    });
+    return true;
+  }
+  if (result.statusCode === 409 && result.code === "USER_DELETED") {
+    page.setData({
+      state: "userDeleted",
+      errorMessage: result.message || "账号已注销",
+      nickname: "",
+      avatarText: "球",
+      currentUserId: "",
+      loadingMore: false,
+    });
+    return true;
+  }
+  return false;
+}
+
 Page({
   data: {
     state: "loading",
@@ -123,20 +158,82 @@ Page({
   onLoad() {
     this.userChangedSeason = false;
     this.autoSeasonFallback = false;
+    this.userSelectedWeek = false;
+    this.explicitTargetSeasonId = null;
     this.invalidGroupIds = {};
+    this.loginGeneration = currentLoginGeneration();
+  },
+
+  resetLoginGeneration() {
+    this.userSelectedWeek = false;
+    this.userChangedSeason = false;
+    this.autoSeasonFallback = false;
+    this.explicitTargetSeasonId = null;
+    this.invalidGroupIds = {};
+    this.profileData = null;
+    this.currentSeasonRanked = false;
+    this.setData({
+      scope: "global",
+      groupId: null,
+      board: "week",
+      selectedLevelSeasonId: null,
+      selectedPeriodKey: null,
+      groups: [],
+      groupNames: [],
+      selectedGroupIndex: 0,
+      nickname: "",
+      avatarText: "球",
+      currentUserId: "",
+    });
   },
 
   onShow() {
     const tabBar = this.getTabBar && this.getTabBar();
     if (tabBar) tabBar.setData({ selected: 1 });
+    const generation = currentLoginGeneration();
+    if (generation !== this.loginGeneration) {
+      this.loginGeneration = generation;
+      this.resetLoginGeneration();
+    }
+    if (!this.userSelectedWeek) {
+      this.setData({ selectedPeriodKey: null });
+    }
     const pendingGroupId = wx.getStorageSync("pending_ranking_group_id");
     if (pendingGroupId) {
       wx.removeStorageSync("pending_ranking_group_id");
+      wx.removeStorageSync("pending_ranking_target");
       this.forgetInvalidGroup(pendingGroupId);
-      this.setData({ scope: "group", groupId: pendingGroupId }, () => this.loadFirstPage());
+      this.userChangedSeason = false;
+      this.autoSeasonFallback = false;
+      this.userSelectedWeek = false;
+      this.explicitTargetSeasonId = null;
+      this.setData({
+        scope: "group",
+        groupId: pendingGroupId,
+        board: "week",
+        selectedLevelSeasonId: null,
+        selectedPeriodKey: null,
+      }, () => this.loadFirstPage());
       return;
     }
-    this.loadFirstPage();
+    const pendingTarget = wx.getStorageSync("pending_ranking_target");
+    if (pendingTarget && typeof pendingTarget === "object") {
+      wx.removeStorageSync("pending_ranking_target");
+      const targetSeasonId = pendingTarget.levelSeasonId || null;
+      this.userChangedSeason = false;
+      this.autoSeasonFallback = false;
+      this.userSelectedWeek = false;
+      this.explicitTargetSeasonId = targetSeasonId;
+      this.setData({
+        board: "season",
+        scope: "global",
+        groupId: null,
+        selectedLevelSeasonId: targetSeasonId,
+        selectedPeriodKey: null,
+      }, () => this.loadFirstPage());
+      return;
+    }
+    return this.loadFirstPage();
   },
 
   loadFirstPage() {
@@ -154,16 +251,7 @@ Page({
     });
     return getMyProfile().then((profileResult) => {
       if (this.requestSerial !== requestSerial) return;
-      if (profileResult.statusCode === 401 && profileResult.code === "UNAUTHORIZED") {
-        this.setData({
-          state: "guest",
-          guestText: COPY.emptyGuestLine,
-          view: buildRankingViewModel({ guest: true }),
-        });
-        return;
-      }
-      if (profileResult.statusCode === 409 && profileResult.code === "USER_DELETED") {
-        this.setData({ state: "userDeleted", errorMessage: profileResult.message || "账号已注销" });
+      if (applyAuthOrDeletedState(this, profileResult)) {
         return;
       }
       if (profileResult.statusCode === 500 || profileResult.code === "INTERNAL_ERROR") {
@@ -184,17 +272,24 @@ Page({
         if (this.isGroupBoardUnavailable(rankingsResult)) {
           return this.recoverInvalidGroup(requestSerial);
         }
+        if (
+          applyAuthOrDeletedState(this, groupsResult)
+          || applyAuthOrDeletedState(this, levelsResult)
+          || applyAuthOrDeletedState(this, rankingsResult)
+        ) {
+          return;
+        }
         if (groupsResult.statusCode !== 200 || levelsResult.statusCode !== 200) {
           if (this.data.scope === "group" && !this.hasGroupId()) {
             this.enterGroupInvalidState(this.data.groups);
             return;
           }
           if (this.data.scope === "group" && groupsResult.statusCode === 200) {
-            const groupItems = this.excludeInvalidGroups(
-              groupsResult.data && Array.isArray(groupsResult.data.items)
-                ? groupsResult.data.items
-                : [],
-            );
+            const rawGroupItems = groupsResult.data && Array.isArray(groupsResult.data.items)
+              ? groupsResult.data.items
+              : [];
+            this.clearInvalidGroups(rawGroupItems);
+            const groupItems = this.excludeInvalidGroups(rawGroupItems);
             if (groupItems.findIndex((item) => item.group_id === this.data.groupId) < 0) {
               this.rememberInvalidGroup(this.data.groupId);
               this.enterGroupInvalidState(groupItems);
@@ -209,11 +304,11 @@ Page({
           this.setData({ state: "error", errorMessage: failed.message || "读取用户数据失败" });
           return;
         }
-        const groupItems = this.excludeInvalidGroups(
-          groupsResult.data && Array.isArray(groupsResult.data.items)
-            ? groupsResult.data.items
-            : [],
-        );
+        const rawGroupItems = groupsResult.data && Array.isArray(groupsResult.data.items)
+          ? groupsResult.data.items
+          : [];
+        this.clearInvalidGroups(rawGroupItems);
+        const groupItems = this.excludeInvalidGroups(rawGroupItems);
         const season = levelsResult.data && levelsResult.data.season || {};
         this.profileData = profile;
         this.currentSeasonRanked = season.valid_predictions > 0;
@@ -254,6 +349,13 @@ Page({
           });
         });
       });
+    }).catch(() => {
+      if (this.requestSerial !== requestSerial) return;
+      this.setData({
+        state: "error",
+        errorMessage: "暂时无法读取排行榜数据，请稍后重试",
+        loadingMore: false,
+      });
     });
   },
 
@@ -270,6 +372,13 @@ Page({
   forgetInvalidGroup(groupId) {
     if (!this.invalidGroupIds || groupId == null || groupId === "") return;
     delete this.invalidGroupIds[groupId];
+  },
+
+  clearInvalidGroups(groupItems) {
+    if (!Array.isArray(groupItems)) return;
+    for (const item of groupItems) {
+      if (item && item.group_id) this.forgetInvalidGroup(item.group_id);
+    }
   },
 
   isKnownInvalidGroup(groupId) {
@@ -368,6 +477,8 @@ Page({
     if (board === this.data.board) {
       return;
     }
+    this.userSelectedWeek = false;
+    this.explicitTargetSeasonId = null;
     return this.queueLoadFirstPage({ board, selectedPeriodKey: null, selectedLevelSeasonId: null });
   },
 
@@ -375,6 +486,8 @@ Page({
     const scope = event.currentTarget.dataset.scope;
     if (scope === "global") {
       if (this.data.scope === "global") return;
+      this.userSelectedWeek = false;
+      this.explicitTargetSeasonId = null;
       return this.queueLoadFirstPage({ scope, groupId: null, selectedPeriodKey: null });
     }
     if (scope !== "group") return;
@@ -387,6 +500,8 @@ Page({
       return;
     }
     const group = this.data.groups[this.data.selectedGroupIndex] || this.data.groups[0];
+    this.userSelectedWeek = false;
+    this.explicitTargetSeasonId = null;
     return this.queueLoadFirstPage({ scope, groupId: group.group_id, selectedPeriodKey: null });
   },
 
@@ -395,12 +510,15 @@ Page({
     const group = this.data.groups[index];
     if (!group) return;
     this.forgetInvalidGroup(group.group_id);
+    this.explicitTargetSeasonId = null;
     return this.queueLoadFirstPage({ selectedGroupIndex: index, scope: "group", groupId: group.group_id });
   },
 
   onWeekChange(event) {
-    const option = this.data.weekOptions[Number(event.detail.value)];
+    const index = Number(event.detail.value);
+    const option = this.data.weekOptions[index];
     if (!option || option.key === this.data.selectedPeriodKey) return;
+    this.userSelectedWeek = index !== 0;
     return this.queueLoadFirstPage({ selectedPeriodKey: option.key });
   },
 
@@ -409,6 +527,7 @@ Page({
     if (!seasonId) return;
     this.userChangedSeason = true;
     if (seasonId === this.data.selectedLevelSeasonId) return;
+    this.explicitTargetSeasonId = null;
     const selectedIndex = this.data.availableLevelSeasons.indexOf(seasonId);
     const scope = seasonId !== this.data.currentLevelSeasonId ? "global" : this.data.scope;
     return this.queueLoadFirstPage({
@@ -473,7 +592,11 @@ Page({
     if (this.isGroupBoardUnavailable(result)) {
       return this.recoverInvalidGroup(requestSerial);
     }
+    if (applyAuthOrDeletedState(this, result)) {
+      return;
+    }
     if (result.statusCode === 422 && result.code === "VALIDATION_ERROR") {
+      this.explicitTargetSeasonId = null;
       this.setData({
         state: "validationError",
         errorMessage: result.message || result.code,
@@ -481,6 +604,7 @@ Page({
       });
       return;
     }
+    const isPagination = replace === false && this.data.items.length > 0;
     if (result.statusCode === 429 && result.code === "RATE_LIMITED") {
       this.setData({
         state: replace && this.data.items.length === 0 ? "rateLimited" : this.data.state,
@@ -491,7 +615,7 @@ Page({
     }
     if (result.statusCode === 500 || result.code === "INTERNAL_ERROR") {
       this.setData({
-        state: "error",
+        ...(isPagination ? {} : { state: "error" }),
         errorMessage: "暂时无法读取排行榜数据，请稍后重试",
         loadingMore: false,
       });
@@ -499,7 +623,7 @@ Page({
     }
     if (result.statusCode !== 200) {
       this.setData({
-        state: "error",
+        ...(isPagination ? {} : { state: "error" }),
         errorMessage: result.message || String(result.code || result.statusCode),
         loadingMore: false,
       });
@@ -522,13 +646,17 @@ Page({
       firstPeriodKey: payload.first_period_key,
     });
     if (this.data.board !== "week" && availableBoards.indexOf(this.data.board) === -1) {
+      this.explicitTargetSeasonId = null;
       this.setData({
         board: "week",
         availableBoards,
         showCareerBoard: availableBoards.indexOf("career") !== -1,
         showStrengthBoard: availableBoards.indexOf("strength") !== -1,
         showSeasonBoard: availableBoards.indexOf("season") !== -1,
-      }, () => this.loadFirstPage());
+      }, () => {
+        if (requestSerial !== undefined && this.requestSerial !== requestSerial) return;
+        this.loadFirstPage();
+      });
       return;
     }
     const items = Array.isArray(payload.items)
@@ -556,6 +684,7 @@ Page({
       replace === true &&
       this.userChangedSeason !== true &&
       this.autoSeasonFallback !== true &&
+      this.explicitTargetSeasonId == null &&
       payload.level_season_id === currentLevelSeasonId &&
       Array.isArray(payload.items) && payload.items.length === 0 &&
       fallbackSeasonId
@@ -570,7 +699,10 @@ Page({
         currentLevelSeasonId,
         scope: "global",
         groupId: null,
-      }, () => this.loadFirstPage());
+      }, () => {
+        if (requestSerial !== undefined && this.requestSerial !== requestSerial) return;
+        this.loadFirstPage();
+      });
       return;
     }
     const selectedWeekIndex = Math.max(0, view.weekOptions.findIndex((item) => item.key === payload.period_key));
@@ -653,14 +785,31 @@ Page({
     const requestSerial = this.requestSerial;
     return this.fetchRankings(false, this.data.nextCursor).then((result) => {
       return this.applyListResult(result, false, requestSerial);
+    }).catch(() => {
+      if (this.requestSerial !== requestSerial) return;
+      this.setData({
+        loadingMore: false,
+        errorMessage: "暂时无法读取排行榜数据，请稍后重试",
+      });
     });
   },
 
   onRetry() {
+    if (!this.userSelectedWeek) {
+      this.setData({ selectedPeriodKey: null });
+    }
+    if (this.data.state === "validationError") {
+      this.userSelectedWeek = false;
+      this.userChangedSeason = false;
+      this.autoSeasonFallback = false;
+      this.setData({ selectedPeriodKey: null, selectedLevelSeasonId: null });
+    }
     return this.loadFirstPage();
   },
 
   onSwitchToGlobal() {
+    this.userSelectedWeek = false;
+    this.explicitTargetSeasonId = null;
     return this.queueLoadFirstPage({
       scope: "global",
       groupId: null,

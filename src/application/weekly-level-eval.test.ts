@@ -735,6 +735,8 @@ describe("WeeklyLevelEvalService §17.6 / §32.9", () => {
       user_id: u1.user_id,
       error_code: "SPEC_GAP",
     }));
+    // [Slice 2] 出现失败用户时不得生成半成品 Strength 快照，也不得触发终榜冻结
+    expect(await repo.boardSnapshots.findLatestByBoard(RankingBoard.Strength)).toEqual([]);
   });
 
   it("[Slice 4] listDueSeasonFinalIds 不调用 users.findAll()，无 N+1 查询", async () => {
@@ -807,5 +809,116 @@ describe("WeeklyLevelEvalService §17.6 / §32.9", () => {
       processed_users: 20,
     }));
     expect(await repo.boardSnapshots.findLatestByBoard(RankingBoard.Strength)).toEqual([]);
+  });
+
+  it("[Slice 1] 存量已注销用户未冻结的 user_season_stats 不阻塞赛季终榜生成", async () => {
+    const repo = new InMemoryRepository();
+    const activeUser = makeUser({ user_id: "active-final-user", openid: "openid-active-final" });
+    const deletedUser = makeUser({
+      user_id: "deleted-unfrozen-user",
+      openid: "deleted:deleted-unfrozen-user",
+      status: UserStatus.Deleted,
+      nickname: null,
+      deleted_at: AS_OF,
+    });
+    await repo.users.insert(activeUser);
+    await repo.users.insert(deletedUser);
+    await repo.userSeasonStats.insert(makeSeasonStats(activeUser.user_id, {
+      level_season_id: "2025_2026",
+      points: 30,
+      valid_predictions: 3,
+      wdl_hits: 3,
+      exact_hits: 1,
+      last_scoring_match_at: new Date("2026-06-28T12:00:00.000Z"),
+      is_level_frozen: true,
+    }));
+    await repo.userSeasonStats.insert(makeSeasonStats(deletedUser.user_id, {
+      level_season_id: "2025_2026",
+      points: 12,
+      valid_predictions: 1,
+      wdl_hits: 1,
+      exact_hits: 1,
+      last_scoring_match_at: new Date("2026-06-28T12:00:00.000Z"),
+      is_level_frozen: false,
+    }));
+
+    const findAllUsers = vi.spyOn(repo.users, "findAll");
+    await expect(listDueSeasonFinalIds(repo, AS_OF)).resolves.toEqual(["2025_2026"]);
+    expect(findAllUsers).not.toHaveBeenCalled();
+
+    const evalOutcome = await new WeeklyLevelEvalService(repo, FIRST_EVAL).run(RUN_AT);
+    expect(evalOutcome.kind).toBe("completed");
+    const finals = await repo.boardSnapshots.findFinalBySeason("2025_2026");
+    expect(finals.map((row) => row.user_id)).toEqual([activeUser.user_id]);
+  });
+
+  it("[Slice 2] 存在 INVALID_LEDGER 失败用户时不生成 Strength 快照与赛季终榜", async () => {
+    const repo = new InMemoryRepository();
+    const uBad = await seedUser(repo, 20, {
+      indexOffset: 0,
+      user: makeUser({
+        user_id: "u-bad-ledger",
+        openid: "openid_u_bad_ledger",
+        career_points: 240,
+        career_valid_predictions: 20,
+      }),
+    });
+    const uGood = await seedUser(repo, 20, {
+      indexOffset: 100,
+      user: makeUser({
+        user_id: "u-good-ledger",
+        openid: "openid_u_good_ledger",
+        career_points: 240,
+        career_valid_predictions: 20,
+      }),
+    });
+    await repo.userSeasonStats.insert(makeSeasonStats(uGood.user_id, {
+      level_season_id: "2025_2026",
+      points: 24,
+      valid_predictions: 2,
+      is_level_frozen: true,
+    }));
+    const badItems = await repo.settlementItems.findByStatus(SettlementItemStatus.Applied);
+    const firstBad = badItems.find((row) => row.user_id === uBad.user_id)!;
+    // 破坏版本链触发 INVALID_LEDGER
+    await repo.settlementItems.update({ ...firstBad, valid_prediction_delta: 0 });
+
+    const log = vi.fn();
+    const outcome = await new WeeklyLevelEvalService(repo, FIRST_EVAL, log).run(RUN_AT);
+
+    expect(outcome.failed_count).toBe(2);
+    expect(log).toHaveBeenCalledWith(expect.objectContaining({
+      event: "weekly_level_eval_user_failed",
+      user_id: uBad.user_id,
+      error_code: "INVALID_LEDGER",
+    }));
+    expect(await repo.boardSnapshots.findLatestByBoard(RankingBoard.Strength)).toEqual([]);
+    expect(await repo.boardSnapshots.findFinalBySeason("2025_2026")).toEqual([]);
+  });
+
+  it("[Slice 2] 落后墙钟的 serverNow 时内层 levelScopeLockKey 租约仍晚于 Date.now()", async () => {
+    const repo = new InMemoryRepository();
+    await seedUser(repo, 1);
+    const jobLocks = repo.jobLocks;
+    const acquireSpy = vi.spyOn(jobLocks, "acquire");
+    const repoProxy = new Proxy(repo, {
+      get(target, prop, receiver) {
+        if (prop === "jobLocks") return jobLocks;
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const staleNow = new Date(Date.now() - 15 * 60 * 1000);
+    const wallClockBefore = Date.now();
+
+    await new WeeklyLevelEvalService(repoProxy, FIRST_EVAL).run(staleNow);
+
+    const innerAcquires = acquireSpy.mock.calls.filter(([key]) =>
+      String(key).startsWith("sync:level_scope:"),
+    );
+    expect(innerAcquires.length).toBeGreaterThan(0);
+    for (const [, , leaseUntil] of innerAcquires) {
+      expect((leaseUntil as Date).getTime()).toBeGreaterThan(wallClockBefore);
+      expect((leaseUntil as Date).getTime()).toBeGreaterThan(Date.now());
+    }
   });
 });

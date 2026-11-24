@@ -627,6 +627,60 @@ describe("InMemoryRepository - rankings", () => {
       repo.rankings.findByPeriodAndUser(valid.period_type, valid.period_key, valid.user_id),
     ).resolves.toEqual(valid);
   });
+
+  it("[Slice 1] updateGlobalRank 只改排名/更新时间，并随事务回滚", async () => {
+    const repo = new InMemoryRepository();
+    const valid = makeRanking({
+      period_score: 12,
+      valid_predictions: 3,
+      wdl_hits: 2,
+      exact_hits: 1,
+      global_rank: null,
+    });
+    await repo.rankings.insert(valid);
+    const updatedAt = new Date(LOCK_NOW.getTime() + 60_000);
+
+    await repo.withTransaction((tx) =>
+      tx.rankings!.updateGlobalRank!(
+        valid.period_type,
+        valid.period_key,
+        valid.user_id,
+        2,
+        updatedAt,
+      ),
+    );
+    expect(
+      await repo.rankings.findByPeriodAndUser(valid.period_type, valid.period_key, valid.user_id),
+    ).toMatchObject({
+      period_score: 12,
+      valid_predictions: 3,
+      wdl_hits: 2,
+      exact_hits: 1,
+      global_rank: 2,
+      updated_at: updatedAt,
+    });
+
+    await expect(repo.withTransaction(async (tx) => {
+      await tx.rankings!.updateGlobalRank!(
+        valid.period_type,
+        valid.period_key,
+        valid.user_id,
+        1,
+        updatedAt,
+      );
+      throw new Error("ranking rollback");
+    })).rejects.toThrow("ranking rollback");
+    expect(
+      await repo.rankings.findByPeriodAndUser(valid.period_type, valid.period_key, valid.user_id),
+    ).toMatchObject({
+      period_score: 12,
+      valid_predictions: 3,
+      wdl_hits: 2,
+      exact_hits: 1,
+      global_rank: 2,
+      updated_at: updatedAt,
+    });
+  });
 });
 
 describe("InMemoryRepository - transactions", () => {

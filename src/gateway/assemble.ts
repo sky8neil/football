@@ -70,6 +70,8 @@ export interface GatewayRequestInput {
   config: GatewayRuntimeConfig;
   /** 可选：运行时注入的可信 openid（云函数）；缺省回退 HTTP Bearer 或 mock。 */
   trusted_openid?: string | null;
+  /** 可选：客户端 IP，用于匿名公开读限流隔离；缺省回退 public_source。 */
+  client_ip?: string;
   /** 可选：外部注入的 request_id（云函数）；缺省由网关生成。 */
   request_id?: string;
   authorization?: unknown;
@@ -187,6 +189,24 @@ function writePredictionUserId(identity: ResolvedIdentity): string | null {
   return null;
 }
 
+/** 公开读限流分桶键：优先按已解析用户隔离，其次按客户端 IP，无来源信息时兼容回落配置常量。 */
+function resolvePublicReadRateKey(
+  identity: ResolvedIdentity,
+  clientIp: string | undefined,
+  fallbackPublicSource: string,
+): string {
+  if (identity.kind === "active" || identity.kind === "deleted") {
+    return `user:${identity.user_id}`;
+  }
+  if (typeof clientIp === "string" && clientIp.trim().length > 0) {
+    return `ip:${clientIp.trim()}`;
+  }
+  if (identity.kind === "unregistered") {
+    return `openid:${identity.openid}`;
+  }
+  return fallbackPublicSource;
+}
+
 /** 公开读（matches/rankings）：deleted 也传 user_id 使 can_predict_reason=USER_DELETED。 */
 function publicReadUserId(identity: ResolvedIdentity): string | null {
   if (identity.kind === "active" || identity.kind === "deleted") {
@@ -301,7 +321,7 @@ export async function handleGatewayRequest(
       const identity = await resolveIdentity(trustedOpenid, input.repo);
       const result = await getMatches(input.services.matches, {
         authenticated_user_id: publicReadUserId(identity),
-        public_source: input.config.public_source,
+        public_source: resolvePublicReadRateKey(identity, input.client_ip, input.config.public_source),
         query: input.query,
         server_now: input.server_now,
         request_id: requestId,
@@ -315,7 +335,7 @@ export async function handleGatewayRequest(
       const identity = await resolveIdentity(trustedOpenid, input.repo);
       const result = await getLeagueStatus(input.services.league_status ?? new LeagueStatusService(input.repo), {
         authenticated_user_id: publicReadUserId(identity),
-        public_source: input.config.public_source,
+        public_source: resolvePublicReadRateKey(identity, input.client_ip, input.config.public_source),
         query: input.query,
         server_now: input.server_now,
         request_id: requestId,
@@ -359,7 +379,7 @@ export async function handleGatewayRequest(
       const identity = await resolveIdentity(trustedOpenid, input.repo);
       const result = await getMatch(input.services.matches, {
         authenticated_user_id: publicReadUserId(identity),
-        public_source: input.config.public_source,
+        public_source: resolvePublicReadRateKey(identity, input.client_ip, input.config.public_source),
         match_id: matchId,
         server_now: input.server_now,
         request_id: requestId,
@@ -485,10 +505,11 @@ export async function handleGatewayRequest(
 
     const publicProfileUserId = singlePathParameter(path, "/v1/profiles/");
     if (method === "GET" && publicProfileUserId !== null) {
+      const identity = await resolveIdentity(trustedOpenid, input.repo);
       const profile = new ProfileQueryService(input.repo);
       const result = await getPublicProfile(profile, {
         user_id: publicProfileUserId,
-        public_source: input.config.public_source,
+        public_source: resolvePublicReadRateKey(identity, input.client_ip, input.config.public_source),
         server_now: input.server_now,
         request_id: requestId,
         rate_limiter: input.rate_limiter,

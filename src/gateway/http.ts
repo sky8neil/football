@@ -68,6 +68,28 @@ function writeJson(
   res.end(JSON.stringify(body));
 }
 
+function isLoopbackAddress(address: string): boolean {
+  return address === "127.0.0.1" || address === "::1" || address === "::ffff:127.0.0.1";
+}
+
+function headerFirstValue(value: string | string[] | undefined): string | undefined {
+  const raw = Array.isArray(value) ? value[0] : value;
+  if (typeof raw !== "string") return undefined;
+  const first = raw.split(",")[0]?.trim();
+  return first && first.length > 0 ? first : undefined;
+}
+
+/** 提取客户端 IP；仅在来自本机回环反代（如 Caddy）时采信转发头。 */
+export function extractClientIp(req: http.IncomingMessage): string | undefined {
+  const remote = req.socket?.remoteAddress?.trim();
+  if (remote && isLoopbackAddress(remote)) {
+    const forwarded = headerFirstValue(req.headers["x-real-ip"])
+      ?? headerFirstValue(req.headers["x-forwarded-for"]);
+    if (forwarded !== undefined) return forwarded;
+  }
+  return remote && remote.length > 0 ? remote : undefined;
+}
+
 export async function startGatewayServer(options: {
   env?: Record<string, string | undefined>;
   cloudbase_db?: CloudBaseDb;
@@ -155,6 +177,7 @@ export async function startGatewayServer(options: {
         if (["POST", "PATCH", "PUT"].includes(method)) {
           body = await readJsonBody(req);
         }
+        const clientIp = extractClientIp(req);
         const result = await handleGatewayRequest({
           method: req.method ?? "",
           path: requestUrl.pathname,
@@ -165,6 +188,7 @@ export async function startGatewayServer(options: {
           services: { session, matches },
           repo,
           rate_limiter: rateLimiter,
+          ...(clientIp !== undefined ? { client_ip: clientIp } : {}),
           ...(req.headers.authorization !== undefined
             ? { authorization: req.headers.authorization }
             : {}),

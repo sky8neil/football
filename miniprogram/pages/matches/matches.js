@@ -26,6 +26,11 @@ const scope = (league, date, matchId) => `${league}:${date}:${matchId}`;
 const pad = (n) => (n < 10 ? `0${n}` : String(n));
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+function formatSummarySeasonLabel(seasonId) {
+  const match = /^(\d{4})_(\d{4})$/.exec(seasonId || "");
+  return match ? `${match[1]}/${match[2]}` : (seasonId || "");
+}
+
 function currentLoginGeneration() {
   if (typeof getLoginGeneration !== "function") return 0;
   const value = getLoginGeneration();
@@ -137,10 +142,10 @@ Page({
     headerHeight: headerHeight(),
     avatarText: "球",
     state: "loading", items: [], errorMessage: "", hasMore: false, nextCursor: null, loadingMore: false, nickname: "",
-    leagues: [], activeLeagueIds: [], leagueStatusById: {}, selectedLeague: "premier_league", dates: [], selectedDate: "", nextMatch: null, offseasonInfo: null, emptyIsBreak: false, summaryState: "loading", summarySeasonId: null, summaryReason: null, leagueSummary: null, openCount: 0, doneCount: 0, hintText: "", recentScore: null, levelSeasonLabel: "",
+    leagues: [], activeLeagueIds: [], leagueStatusById: {}, selectedLeague: "premier_league", dates: [], selectedDate: "", nextMatch: null, offseasonInfo: null, emptyIsBreak: false, summaryState: "loading", summarySeasonId: null, summarySeasonLabel: "", summaryReason: null, leagueSummary: null, openCount: 0, doneCount: 0, hintText: "", recentScore: null, levelSeasonLabel: "", submitErrors: {},
     scrollIntoView: "", resultsTransition: "results-enter",
   },
-  drafts: {}, uiStates: {}, submittedMap: {}, idempotencyKeys: {}, lastPayloads: {}, requestSerial: 0, statusSerial: 0, summarySerial: 0, loginGeneration: undefined,
+  drafts: {}, uiStates: {}, submittedMap: {}, idempotencyKeys: {}, lastPayloads: {}, requestSerial: 0, statusSerial: 0, summarySerial: 0, loginGeneration: undefined, reloadTimer: null, scrollTimer: null,
 
   onLoad() {
     const dates = buildDates(new Date());
@@ -150,6 +155,49 @@ Page({
     this.hasShown = false;
     this.needsDefaultLeague = true;
     this.loadFirstPage(true);
+  },
+
+  syncHeaderDatesAndSeason() {
+    const now = new Date();
+    const today = beijingParts(now);
+    const nextSeasonLabel = formatLevelSeasonLabel(currentSeasonId(now.toISOString()));
+    const currentDates = Array.isArray(this.data.dates) ? this.data.dates : [];
+    const patch = {};
+    if (today && (currentDates.length === 0 || currentDates[0].key !== today.key)) {
+      const dates = buildDates(now);
+      const previousTodayKey = currentDates.length > 0 ? currentDates[0].key : "";
+      const currentSelected = this.data.selectedDate;
+      const stillValid = dates.some((item) => item.key === currentSelected);
+      patch.dates = dates;
+      if (!currentSelected || currentSelected === previousTodayKey || !stillValid) {
+        patch.selectedDate = dates[0] ? dates[0].key : "";
+      }
+    }
+    if (nextSeasonLabel !== this.data.levelSeasonLabel) {
+      patch.levelSeasonLabel = nextSeasonLabel;
+    }
+    if (Object.keys(patch).length > 0) {
+      this.setData(patch);
+    }
+  },
+
+  clearReloadTimer() {
+    if (this.reloadTimer) {
+      clearTimeout(this.reloadTimer);
+      this.reloadTimer = null;
+    }
+  },
+
+  clearScrollTimer() {
+    if (this.scrollTimer) {
+      clearTimeout(this.scrollTimer);
+      this.scrollTimer = null;
+    }
+  },
+
+  clearTimers() {
+    this.clearReloadTimer();
+    this.clearScrollTimer();
   },
 
   rememberLoginGeneration() {
@@ -165,7 +213,9 @@ Page({
         items: [],
         leagueSummary: null,
         summarySeasonId: null,
+        summarySeasonLabel: "",
         summaryReason: null,
+        submitErrors: {},
         loadingMore: false,
         hasMore: false,
         nextCursor: null,
@@ -185,11 +235,20 @@ Page({
     if (this.initialized) {
       const nickname = truncateNickname(resolveNickname());
       this.setData({ nickname, avatarText: Array.from(nickname)[0] || "球" });
+      this.syncHeaderDatesAndSeason();
     }
     const tabBar = this.getTabBar && this.getTabBar();
     if (tabBar) tabBar.setData({ selected: 0 });
     if (this.initialized && this.hasShown) this.loadFirstPage();
     this.hasShown = true;
+  },
+
+  onHide() {
+    this.clearTimers();
+  },
+
+  onUnload() {
+    this.clearTimers();
   },
 
   onLeagueTap(event) {
@@ -198,22 +257,30 @@ Page({
     this.userChangedLeague = true;
     this.needsDefaultLeague = false;
     this.closeEditors();
+    this.clearReloadTimer();
     this.requestSerial += 1;
     this.statusSerial += 1;
     this.summarySerial += 1;
-    this.setData({ selectedLeague: league, scrollIntoView: "", state: "loading", items: [], nextMatch: null, offseasonInfo: null, leagueSummary: null, summarySeasonId: null, summaryReason: null, summaryState: "loading", hasMore: false, nextCursor: null, openCount: 0, doneCount: 0, hintText: "", resultsTransition: "results-exit" });
-    setTimeout(() => this.loadFirstPage(), 180);
+    this.setData({ selectedLeague: league, scrollIntoView: "", state: "loading", items: [], nextMatch: null, offseasonInfo: null, leagueSummary: null, summarySeasonId: null, summarySeasonLabel: "", summaryReason: null, summaryState: "loading", hasMore: false, nextCursor: null, openCount: 0, doneCount: 0, hintText: "", resultsTransition: "results-exit" });
+    this.reloadTimer = setTimeout(() => {
+      this.reloadTimer = null;
+      this.loadFirstPage();
+    }, 180);
   },
 
   onDateTap(event) {
     const date = event.currentTarget.dataset.key;
     if (!date || date === this.data.selectedDate) return;
     this.closeEditors();
+    this.clearReloadTimer();
     this.requestSerial += 1;
     this.statusSerial += 1;
     this.summarySerial += 1;
-    this.setData({ selectedDate: date, state: "loading", items: [], nextMatch: null, offseasonInfo: null, leagueSummary: null, summarySeasonId: null, summaryReason: null, summaryState: "loading", scrollIntoView: "", resultsTransition: "results-exit" });
-    setTimeout(() => this.loadFirstPage(), 180);
+    this.setData({ selectedDate: date, state: "loading", items: [], nextMatch: null, offseasonInfo: null, leagueSummary: null, summarySeasonId: null, summarySeasonLabel: "", summaryReason: null, summaryState: "loading", hasMore: false, nextCursor: null, openCount: 0, doneCount: 0, hintText: "", scrollIntoView: "", resultsTransition: "results-exit" });
+    this.reloadTimer = setTimeout(() => {
+      this.reloadTimer = null;
+      this.loadFirstPage();
+    }, 180);
   },
 
   onNextMatchTap(event) {
@@ -221,20 +288,26 @@ Page({
     if (!this.data.nextMatch || !this.data.nextMatch.inDateStrip || date !== this.data.nextMatch.date) return;
     if (date === this.data.selectedDate) return;
     this.closeEditors();
+    this.clearReloadTimer();
     this.requestSerial += 1;
     this.statusSerial += 1;
     this.summarySerial += 1;
-    this.setData({ selectedDate: date, state: "loading", items: [], nextMatch: null, offseasonInfo: null, leagueSummary: null, summarySeasonId: null, summaryReason: null, summaryState: "loading", hasMore: false, nextCursor: null, scrollIntoView: "", resultsTransition: "results-exit" });
+    this.setData({ selectedDate: date, state: "loading", items: [], nextMatch: null, offseasonInfo: null, leagueSummary: null, summarySeasonId: null, summarySeasonLabel: "", summaryReason: null, summaryState: "loading", hasMore: false, nextCursor: null, openCount: 0, doneCount: 0, hintText: "", scrollIntoView: "", resultsTransition: "results-exit" });
     return this.loadFirstPage();
   },
 
   onRankingsTap() {
+    wx.setStorageSync("pending_ranking_target", {
+      board: "season",
+      levelSeasonId: currentSeasonId(new Date().toISOString()),
+    });
     wx.switchTab({ url: "/pages/rankings/rankings" });
   },
 
   onRetry() { this.loadFirstPage(); },
 
   onPullDownRefresh() {
+    this.syncHeaderDatesAndSeason();
     return this.loadFirstPage().finally(() => wx.stopPullDownRefresh());
   },
 
@@ -244,7 +317,7 @@ Page({
     const loginGeneration = this.rememberLoginGeneration();
     const leagueId = this.data.selectedLeague;
     this.summarySerial += 1;
-    this.setData({ state: "loading", items: [], nextMatch: null, offseasonInfo: null, leagueSummary: null, summarySeasonId: null, summaryReason: null, summaryState: "loading", hasMore: false, nextCursor: null, errorMessage: "", loadingMore: false, resultsTransition: "results-enter" });
+    this.setData({ state: "loading", items: [], nextMatch: null, offseasonInfo: null, leagueSummary: null, summarySeasonId: null, summarySeasonLabel: "", summaryReason: null, summaryState: "loading", hasMore: false, nextCursor: null, errorMessage: "", loadingMore: false, openCount: 0, doneCount: 0, hintText: "", resultsTransition: "results-enter" });
     let statusResult;
     try {
       statusResult = await getLeagueStatus();
@@ -298,7 +371,7 @@ Page({
   async loadLeagueSummary(serial, leagueId, loginGeneration) {
     const summarySerial = ++this.summarySerial;
     const generation = loginGeneration === undefined ? currentLoginGeneration() : loginGeneration;
-    this.setData({ summaryState: "loading", leagueSummary: null, summarySeasonId: null, summaryReason: null });
+    this.setData({ summaryState: "loading", leagueSummary: null, summarySeasonId: null, summarySeasonLabel: "", summaryReason: null });
     try {
       const result = await getMyLeagueSummary({ leagueId });
       if (serial !== this.requestSerial || summarySerial !== this.summarySerial || leagueId !== this.data.selectedLeague) return;
@@ -306,7 +379,7 @@ Page({
       if (stale) return stale;
       if (result.statusCode !== 200) { this.setData({ summaryState: "error" }); return; }
       const data = result.data;
-      this.setData({ summaryState: "ready", summarySeasonId: data.season_id, leagueSummary: data.availability === "available" ? data.summary : null, summaryReason: data.availability === "available" ? null : data.reason });
+      this.setData({ summaryState: "ready", summarySeasonId: data.season_id, summarySeasonLabel: formatSummarySeasonLabel(data.season_id), leagueSummary: data.availability === "available" ? data.summary : null, summaryReason: data.availability === "available" ? null : data.reason });
     } catch (error) {
       if (serial !== this.requestSerial || summarySerial !== this.summarySerial || leagueId !== this.data.selectedLeague) return;
       const stale = this.handleStaleLoginGeneration(generation);
@@ -322,7 +395,14 @@ Page({
       const stale = this.handleStaleLoginGeneration(loginGeneration);
       if (stale) return stale;
     }
-    if (result.statusCode !== 200) { this.setData({ state: "error", errorMessage: result.message || String(result.code || result.statusCode), loadingMore: false, nextMatch: null, offseasonInfo: null }); return; }
+    if (result.statusCode !== 200) {
+      if (replace === false && this.data.items.length > 0) {
+        this.setData({ errorMessage: result.message || String(result.code || result.statusCode), loadingMore: false });
+        return;
+      }
+      this.setData({ state: "error", errorMessage: result.message || String(result.code || result.statusCode), loadingMore: false, nextMatch: null, offseasonInfo: null, openCount: 0, doneCount: 0, hintText: "" });
+      return;
+    }
     const payload = result.data || {};
     const rawItems = Array.isArray(payload.items) ? payload.items : [];
     const items = (replace ? rawItems : this.data.items.concat(rawItems)).map((item) => this.decorateItem(item));
@@ -352,15 +432,29 @@ Page({
     if (replace && items.length === 0) return this.loadEmptyStateFollowup(this.requestSerial, loginGeneration);
   },
 
+  clearSubmitError(key) {
+    if (!this.data.submitErrors || !(key in this.data.submitErrors)) return;
+    const errors = { ...this.data.submitErrors };
+    delete errors[key];
+    this.setData({ submitErrors: errors });
+  },
+
   decorateItem(item) {
     const loginGeneration = this.rememberLoginGeneration();
     const kick = beijingParts(item.kickoff_at);
     const key = scope(this.data.selectedLeague, this.data.selectedDate, item.match_id);
-    const draft = this.drafts[key] || { home: 0, away: 0 };
+    let draft = this.drafts[key] || { home: 0, away: 0 };
     const submitted = resolveSubmitted(item, this.submittedMap[key], loginGeneration);
     const cardState = buildCardState(item, submitted);
     const hasScore = item.regular_home_score !== null && item.regular_home_score !== undefined && item.regular_away_score !== null && item.regular_away_score !== undefined;
-    const storedUi = this.uiStates[key];
+    let storedUi = this.uiStates[key];
+    if (!submitted && storedUi === "editing" && !cardState.showPredict) {
+      this.uiStates[key] = "collapsed";
+      delete this.drafts[key];
+      this.clearSubmitError(key);
+      storedUi = "collapsed";
+      draft = { home: 0, away: 0 };
+    }
     const uiState = submitted ? "submitted_locked" : (storedUi && storedUi !== "submitted_locked" ? storedUi : "collapsed");
     const leagueName = (LEAGUES.find((league) => league.id === item.league_id) || {}).name || "比赛";
     const roundText = formatRound(item.round_id);
@@ -381,7 +475,7 @@ Page({
       scoreText: hasScore ? `${item.regular_home_score} : ${item.regular_away_score}` : "VS",
       bugClass: item.match_status === "live" || item.match_status === "finished" ? "dark" : "",
       derivedResult: draft.home > draft.away ? "主胜" : draft.home < draft.away ? "客胜" : "平局",
-      submitError: this.data.submitErrors ? this.data.submitErrors[key] : "",
+      submitError: (this.data.submitErrors && this.data.submitErrors[key]) || "",
     });
   },
 
@@ -403,7 +497,16 @@ Page({
       }),
     });
   },
-  closeEditors() { Object.keys(this.uiStates).forEach((key) => { if (this.uiStates[key] !== "collapsed") { this.uiStates[key] = "collapsed"; delete this.drafts[key]; } }); this.refreshItems(); },
+  closeEditors() {
+    Object.keys(this.uiStates).forEach((key) => {
+      if (this.uiStates[key] !== "collapsed" && this.uiStates[key] !== "submitting") {
+        this.uiStates[key] = "collapsed";
+        delete this.drafts[key];
+      }
+    });
+    this.setData({ submitErrors: {} });
+    this.refreshItems();
+  },
 
   onCardTap(event) { const id = event.currentTarget.dataset.matchId; if (id) wx.navigateTo({ url: `/pages/match-detail/match-detail?id=${id}` }); },
   stopCardTap() {},
@@ -417,12 +520,17 @@ Page({
     if (!this.drafts[key]) this.drafts[key] = { home: 0, away: 0 };
     this.refreshItems();
     this.setData({ scrollIntoView: `match-${id}` });
-    setTimeout(() => this.setData({ scrollIntoView: "" }), 900);
+    this.clearScrollTimer();
+    this.scrollTimer = setTimeout(() => {
+      this.scrollTimer = null;
+      this.setData({ scrollIntoView: "" });
+    }, 900);
   },
 
   onScoreTap(event) {
     const { matchId, side, delta } = event.currentTarget.dataset;
     const key = scope(this.data.selectedLeague, this.data.selectedDate, matchId);
+    this.clearSubmitError(key);
     const current = this.drafts[key] || { home: 0, away: 0 };
     current[side] = Math.max(0, Math.min(20, current[side] + Number(delta)));
     this.drafts[key] = current;
@@ -434,6 +542,7 @@ Page({
     const key = scope(this.data.selectedLeague, this.data.selectedDate, matchId);
     const item = this.data.items.find((entry) => entry.match_id === matchId);
     if (!item || this.uiStates[key] === "submitting") return;
+    this.clearSubmitError(key);
     const previousGeneration = this.loginGeneration;
     const draft = this.drafts[key] || { home: 0, away: 0 };
     const previousPayload = this.lastPayloads[key];
@@ -456,6 +565,7 @@ Page({
       const stale = this.handleStaleLoginGeneration(loginGeneration);
       if (stale) return stale;
       if (result.statusCode === 200 || result.statusCode === 201) {
+        this.clearSubmitError(key);
         this.submittedMap[key] = { ...draft, generation: loginGeneration };
         this.uiStates[key] = "submitted_locked";
         delete this.drafts[key];
@@ -466,12 +576,14 @@ Page({
         return;
       }
       if (result.statusCode === 409 && result.code === "PREDICTION_ALREADY_SUBMITTED") {
+        this.clearSubmitError(key);
         this.uiStates[key] = "submitted_locked";
         delete this.drafts[key];
         this.loadFirstPage();
         return;
       }
       if (result.statusCode === 409 && ["MATCH_NOT_PREDICTABLE", "PREDICTION_LOCKED"].includes(result.code)) {
+        this.clearSubmitError(key);
         this.uiStates[key] = "collapsed";
         this.loadFirstPage();
         return;
@@ -501,6 +613,9 @@ Page({
     }).then((result) => {
       if (serial !== this.requestSerial) return;
       return this.applyListResult(result, false, loginGeneration);
+    }).catch(() => {
+      if (serial !== this.requestSerial) return;
+      this.setData({ loadingMore: false });
     });
   },
 });

@@ -266,7 +266,7 @@ describe("CorrectionSettlementService.correct - 成功路径", () => {
     expect(s?.phase).toBe(SettlementPhase.Done);
     expect(s?.is_correction).toBe(true);
     expect(s?.result_version).toBe(2);
-    expect(s?.settled_at?.getTime()).toBe(NOW.getTime());
+    expect(s?.settled_at?.getTime()).toBe(NOW.getTime() + 1);
 
     expect(
       await repo.settlementItems.findBySettlementAndPrediction(settlement.settlement_id, "p1"),
@@ -281,7 +281,7 @@ describe("CorrectionSettlementService.correct - 成功路径", () => {
     const matchAfter = await repo.matches.findById(match.match_id);
     expect(matchAfter?.settlement_status).toBe(SettlementStatus.Settled);
     expect(matchAfter?.settled_result_version).toBe(2);
-    expect(matchAfter?.settled_at?.getTime()).toBe(NOW.getTime());
+    expect(matchAfter?.settled_at?.getTime()).toBe(NOW.getTime() + 1);
 
     expect(worker).toHaveBeenCalledTimes(1);
     expect(worker.mock.calls[0]?.[0]?.prediction_id).toBe("p1");
@@ -521,6 +521,7 @@ describe("CorrectionSettlementService.correct - 版本推进", () => {
             settlements: tx.settlements,
             settlementItems: tx.settlementItems,
             unlocks: tx.unlocks,
+            jobLocks: tx.jobLocks!,
             savepoint: (callback) => tx.savepoint(callback),
           }),
         ),
@@ -849,6 +850,7 @@ describe("CorrectionSettlementService.correct - 部分失败恢复", () => {
             settlements: tx.settlements,
             settlementItems: tx.settlementItems,
             unlocks: tx.unlocks,
+            jobLocks: tx.jobLocks!,
             savepoint: (callback) => tx.savepoint(callback),
           });
         }),
@@ -1006,5 +1008,45 @@ describe("CorrectionSettlementService.correct - 部分失败恢复", () => {
     const matchAfter = await repo.matches.findById(match.match_id);
     expect(matchAfter?.settlement_status).toBe(SettlementStatus.Correcting);
     expect(matchAfter?.settled_result_version).toBe(2);
+  });
+});
+
+describe("Slice 1 finalize 事务锁围栏", () => {
+  it("DB 锁已被接管时 CorrectionSettlementService 不提交 Settled/Done", async () => {
+    const { repo, match } = await setupCorrection();
+    const repoProxy = new Proxy(repo, {
+      get(target, prop, receiver) {
+        if (prop === "withTransaction") {
+          return async (fn: Parameters<AppRepository["withTransaction"]>[0]) =>
+            target.withTransaction((tx) => {
+              const fencedTx = new Proxy(tx, {
+                get(txTarget, txProp, txReceiver) {
+                  if (txProp === "jobLocks") {
+                    return { ...target.jobLocks, renew: async () => false };
+                  }
+                  return Reflect.get(txTarget, txProp, txReceiver);
+                },
+              });
+              return fn(fencedTx);
+            });
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+
+    await expect(
+      new CorrectionSettlementService(repoProxy as unknown as AppRepository)
+        .correct(match.match_id, NOW),
+    ).rejects.toMatchObject({ code: CorrectionSettlementCode.AlreadyRunning });
+
+    const settlement = await repo.settlements.findByMatchAndVersionAndRule(
+      match.match_id,
+      2,
+      RULE,
+    );
+    expect(settlement?.status).toBe(SettlementDocStatus.Running);
+    expect(settlement?.phase).toBe(SettlementPhase.RebuildRanks);
+    expect((await repo.matches.findById(match.match_id))?.settlement_status)
+      .not.toBe(SettlementStatus.Settled);
   });
 });

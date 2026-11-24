@@ -6,8 +6,20 @@ export interface CloudBaseDocument extends Record<string, unknown> {
 export interface CloudBaseQueryOptions {
   order_by?: string;
   direction?: "asc" | "desc";
+  order_bys?: ReadonlyArray<{ field: string; direction: "asc" | "desc" }>;
   limit?: number;
   offset?: number;
+}
+
+export interface CloudBaseHistoryCursor {
+  submitted_at: Date;
+  prediction_id: string;
+}
+
+export interface CloudBasePredictionHistoryPage {
+  documents: CloudBaseDocument[];
+  exhausted: boolean;
+  resumeCursor: CloudBaseHistoryCursor | null;
 }
 
 export interface CloudBaseDb {
@@ -16,6 +28,8 @@ export interface CloudBaseDb {
   add(collection: string, id: string, document: CloudBaseDocument): Promise<void>;
   /** 仅合并传入字段，与 SDK doc.update 一致。 */
   update(collection: string, id: string, document: CloudBaseDocument): Promise<void>;
+  /** 原子局部字段更新：底层仅改写传入字段，不读取后整行覆写。 */
+  patch?(collection: string, id: string, fields: Record<string, unknown>): Promise<void>;
   query(
     collection: string,
     filter?: Record<string, unknown>,
@@ -35,6 +49,18 @@ export interface CloudBaseDb {
     season_id: string | null;
     cursor: { submitted_at: Date; prediction_id: string } | null;
     limit: number;
+  }): Promise<CloudBasePredictionHistoryPage>;
+  /** 专有下推：直接定位最新非终榜 snapshot_at（兼容缺失 is_final 字段）。 */
+  findLatestRegularBoardSnapshot?(params: {
+    collection: string;
+    board: string;
+    level_season_id?: string | null;
+  }): Promise<CloudBaseDocument[]>;
+  /** 专有游标续扫：finished 且非 voided 兜底页，按 (kickoff_at, match_id) 游标续扫。 */
+  findSettlementFallbackPage?(params: {
+    collection: string;
+    limit: number;
+    after?: { kickoff_at: Date; match_id: string } | null;
   }): Promise<CloudBaseDocument[]>;
   /**
    * 构造「字段 < / <= / >= 值」范围条件，返回可直接并入 query/delete filter 的对象。
@@ -43,13 +69,19 @@ export interface CloudBaseDb {
   ltFilter?(field: string, value: unknown): Record<string, unknown> | undefined;
   lteFilter?(field: string, value: unknown): Record<string, unknown> | undefined;
   gteFilter?(field: string, value: unknown): Record<string, unknown> | undefined;
-  /** 按条件删除文档（只允许用于运行日志/快照/临时数据清理），返回删除条数。 */
-  deleteWhere?(collection: string, filter: Record<string, unknown>): Promise<number>;
+  /** 按条件删除文档（只允许用于运行日志/快照/临时数据清理），支持单批上限，返回删除条数。 */
+  deleteWhere?(
+    collection: string,
+    filter: Record<string, unknown>,
+    options?: { limit?: number },
+  ): Promise<number>;
   /**
    * 构造「字段 in 数组」等值集合条件，返回可直接并入 query filter 的对象。
    * 适配器不支持时返回 undefined（调用方退化为逐条查询）。
    */
   inFilter?(field: string, values: readonly string[]): Record<string, unknown> | undefined;
+  /** 构造「字段 != 值」条件；必须同时匹配字段缺失/null（legacy 文档按未设置处理）。 */
+  neFilter?(field: string, value: unknown): Record<string, unknown> | undefined;
   reserveCounter?(collection: string, id: string, field: string, limit: number, initial: CloudBaseDocument): Promise<boolean>;
   adjustCounter?(collection: string, id: string, field: string, delta: number): Promise<void>;
   getCounter?(collection: string, id: string, field: string): Promise<number>;
@@ -59,6 +91,18 @@ export interface CloudBaseDb {
     document: CloudBaseDocument,
     now: Date,
   ): Promise<boolean>;
+  renewJobLock?(
+    collection: string,
+    lockKey: string,
+    ownerId: string,
+    leaseUntil: Date,
+    now: Date,
+  ): Promise<boolean>;
+  releaseJobLock?(
+    collection: string,
+    lockKey: string,
+    ownerId: string,
+  ): Promise<void>;
   transaction<T>(work: (transactionDb: CloudBaseDb) => Promise<T>): Promise<T>;
 }
 

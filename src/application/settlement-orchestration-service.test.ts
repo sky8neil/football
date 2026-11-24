@@ -319,6 +319,7 @@ describe("SettlementOrchestrationService 第 15.9 节 correction 队列推进", 
             settlements: tx.settlements,
             settlementItems: tx.settlementItems,
             unlocks: tx.unlocks,
+            jobLocks: tx.jobLocks!,
             savepoint: (callback) => tx.savepoint(callback),
           });
         }),
@@ -546,5 +547,53 @@ describe("SettlementOrchestrationService 第 15.9 节 correction 队列推进", 
       status: SettlementDocStatus.Settled,
       is_correction: true,
     });
+  });
+
+  it("correct() 队列 v2->v3 使用真实 LevelCorrectionReevalService 顺序收敛且满足 applied_at < settled_at", async () => {
+    const { repo, match, user } = await seedQueuedCorrections();
+    const weekBaseAsOf = new Date("2026-08-03T02:00:00.000Z");
+    const seededUser = await repo.users.findById(user.user_id);
+    await repo.users.update({
+      ...seededUser!,
+      career_level_state: {
+        ...seededUser!.career_level_state!,
+        week_base_level: 1,
+        week_base_below_count: 0,
+        week_base_as_of: weekBaseAsOf,
+        last_eval_as_of: weekBaseAsOf,
+      },
+    });
+    const season = await repo.userSeasonStats.findByUserAndSeason(user.user_id, match.season_id);
+    await repo.userSeasonStats.update({
+      ...season!,
+      level_state: {
+        ...season!.level_state!,
+        week_base_level: 1,
+        week_base_below_count: 0,
+        week_base_as_of: weekBaseAsOf,
+        last_eval_as_of: weekBaseAsOf,
+      },
+    });
+    const service = new SettlementOrchestrationService(repo);
+    const corrNow = new Date(NOW.getTime() + 60_000);
+
+    const outcome = await service.correct(match.match_id, corrNow);
+
+    expect(outcome).toMatchObject({
+      kind: "settled",
+      target_result_version: 3,
+    });
+    const s2 = await repo.settlements.findByMatchAndVersionAndRule(match.match_id, 2, RULE);
+    const s3 = await repo.settlements.findByMatchAndVersionAndRule(match.match_id, 3, RULE);
+    const i2 = await repo.settlementItems.findBySettlementAndPrediction(s2!.settlement_id, "p1");
+    const i3 = await repo.settlementItems.findBySettlementAndPrediction(s3!.settlement_id, "p1");
+    expect(i2?.applied_at?.getTime()).toBeLessThan(s2!.settled_at!.getTime());
+    expect(s2!.settled_at!.getTime()).toBeLessThanOrEqual(i3!.applied_at!.getTime());
+    expect(i3?.applied_at?.getTime()).toBeLessThan(s3!.settled_at!.getTime());
+    const updatedUser = await repo.users.findById(user.user_id);
+    expect(updatedUser?.career_level_state?.last_eval_as_of?.getTime()).toBe(
+      s3!.settled_at!.getTime(),
+    );
+    expect(updatedUser?.career_level_state?.last_eval_score_sum).toBe(0);
   });
 });

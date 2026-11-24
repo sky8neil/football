@@ -75,13 +75,17 @@ function makeCleanupFakeDb(initial: Record<string, StoredRow[]>) {
     },
     inFilter: (field, values) => ({ [field]: { __in: values } }),
     ltFilter: (field, value) => ({ [field]: { __lt: value } }),
-    deleteWhere: async (col, filter) => {
+    deleteWhere: async (col, filter, options) => {
       const list = store.get(col) ?? [];
+      const limit = options?.limit ?? Number.POSITIVE_INFINITY;
       const kept: StoredRow[] = [];
       let deleted = 0;
       for (const row of list) {
-        if (matches(row, filter)) deleted += 1;
-        else kept.push(row);
+        if (deleted < limit && matches(row, filter)) {
+          deleted += 1;
+        } else {
+          kept.push(row);
+        }
       }
       store.set(col, kept);
       return deleted;
@@ -156,6 +160,7 @@ describe("MaintenanceCleanupService [Slice 5.4]", () => {
 
     expect(authSessions.deleteExpiredBefore).toHaveBeenCalledWith(
       new Date(NOW.getTime() - MAINTENANCE_CLEANUP_DEFAULTS.authSessionsRetentionDays * DAY_MS),
+      { limit: MAINTENANCE_CLEANUP_DEFAULTS.deleteBatchSize },
     );
     expect(result.deleted).toEqual({
       auth_sessions: 4,
@@ -184,6 +189,117 @@ describe("MaintenanceCleanupService [Slice 5.4]", () => {
     expect(log).toHaveBeenCalledWith(expect.objectContaining({
       event: "maintenance_cleanup",
       deleted: result.deleted,
+    }));
+  });
+
+  it("[Slice 2] 按 level_season_id 分组滚动清理赛季快照，未终榜赛季同样保留最近 24 份", async () => {
+    const boardRows: StoredRow[] = [];
+    const oldSeason = "2025_2026";
+    const currentSeason = "2026_2027";
+    const finalizedSeason = "2024_2025";
+    for (let i = 0; i < 30; i += 1) {
+      boardRows.push({
+        _id: `old-${i}`,
+        board: RankingBoard.Season,
+        is_final: false,
+        level_season_id: oldSeason,
+        snapshot_at: new Date(NOW.getTime() - (i + 1) * DAY_MS),
+        user_id: "u1",
+      });
+    }
+    for (let i = 0; i < 25; i += 1) {
+      boardRows.push({
+        _id: `current-${i}`,
+        board: RankingBoard.Season,
+        is_final: false,
+        level_season_id: currentSeason,
+        snapshot_at: new Date(NOW.getTime() - i * 60 * 60_000),
+        user_id: "u1",
+      });
+    }
+    for (let i = 0; i < 30; i += 1) {
+      boardRows.push({
+        _id: `finalized-${i}`,
+        board: RankingBoard.Season,
+        is_final: false,
+        level_season_id: finalizedSeason,
+        snapshot_at: new Date(NOW.getTime() - (i + 10) * DAY_MS),
+        user_id: "u1",
+      });
+    }
+    boardRows.push({
+      _id: "finalized-head",
+      board: RankingBoard.Season,
+      is_final: true,
+      level_season_id: finalizedSeason,
+      snapshot_at: new Date(NOW.getTime() - 400 * DAY_MS),
+      user_id: "u1",
+    });
+
+    const { db, store } = makeCleanupFakeDb({ board_snapshots: boardRows });
+    const service = new MaintenanceCleanupService({ db, namespace: NS });
+    const result = await service.run(NOW);
+
+    expect(result.truncated).toBe(false);
+    const remaining = store.get(cloudBaseCollectionName(NS, "board_snapshots")) ?? [];
+    expect(remaining.filter((row) => row.level_season_id === oldSeason && row.is_final === false))
+      .toHaveLength(24);
+    expect(remaining.filter((row) => row.level_season_id === currentSeason && row.is_final === false))
+      .toHaveLength(24);
+    expect(remaining.filter((row) => row.level_season_id === finalizedSeason && row.is_final === false))
+      .toHaveLength(24);
+    expect(remaining.some((row) => row._id === "finalized-head")).toBe(true);
+  });
+
+  it("[Slice 3.2] batches deleteWhere calls with bounded limit and enforces maxBatchesPerTarget budget", async () => {
+    const d = (daysAgo: number) => new Date(NOW.getTime() - daysAgo * DAY_MS);
+    const oldLogs = Array.from({ length: 10 }, (_, idx) => ({
+      _id: `sl-old-${idx}`,
+      started_at: d(65),
+    }));
+    const { db, store } = makeCleanupFakeDb({
+      sync_logs: [...oldLogs, { _id: "sl-new", started_at: d(10) }],
+    });
+    const deleteSpy = vi.fn(db.deleteWhere!);
+    db.deleteWhere = deleteSpy;
+    const log = vi.fn();
+
+    const service = new MaintenanceCleanupService({
+      db,
+      namespace: NS,
+      batchSize: 3,
+      maxBatchesPerTarget: 10,
+      log,
+    });
+    const res1 = await service.run(NOW);
+    expect(res1.deleted.sync_logs).toBe(10);
+    expect(store.get(cloudBaseCollectionName(NS, "sync_logs"))?.map((r) => r._id)).toEqual(["sl-new"]);
+    const syncLogCalls = deleteSpy.mock.calls.filter(([col]) => col === cloudBaseCollectionName(NS, "sync_logs"));
+    expect(syncLogCalls).toHaveLength(4); // 3 + 3 + 3 + 1 (< batchSize stops)
+    expect(syncLogCalls.every(([, , opts]) => opts?.limit === 3)).toBe(true);
+
+    // Budget cap: 7 rows with batchSize=2, maxBatchesPerTarget=2 stops at 4 rows + logs cap warning
+    const cappedDb = makeCleanupFakeDb({
+      sync_logs: Array.from({ length: 7 }, (_, idx) => ({ _id: `cap-${idx}`, started_at: d(90) })),
+    });
+    const cappedLog = vi.fn();
+    const cappedService = new MaintenanceCleanupService({
+      db: cappedDb.db,
+      namespace: NS,
+      batchSize: 2,
+      maxBatchesPerTarget: 2,
+      log: cappedLog,
+    });
+    const res2 = await cappedService.run(NOW);
+    expect(res2.deleted.sync_logs).toBe(4);
+    expect(res2.truncated).toBe(true);
+    expect(cappedDb.store.get(cloudBaseCollectionName(NS, "sync_logs"))).toHaveLength(3);
+    expect(cappedLog).toHaveBeenCalledWith(expect.objectContaining({
+      event: "maintenance_cleanup_batch_cap_reached",
+      collection: cloudBaseCollectionName(NS, "sync_logs"),
+      batch_size: 2,
+      max_batches_per_target: 2,
+      deleted_so_far: 4,
     }));
   });
 });

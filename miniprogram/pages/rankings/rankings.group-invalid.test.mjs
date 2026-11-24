@@ -94,6 +94,7 @@ function loadPage(serviceOverrides = {}, { delaySetDataCallbacks = false, storag
     "../../utils/ui-layout.js": { headerHeight: () => 88 },
     "../../utils/rankings-copy.js": copy,
     "../../utils/level-season.js": loadCommonJs(LEVEL_SEASON),
+    "../../services/auth.js": { getLoginGeneration: () => 0 },
   };
   runInNewContext(readFileSync(PAGE, "utf8"), {
     Page: (value) => { definition = value; },
@@ -241,6 +242,60 @@ describe("ranking invalid group recovery", () => {
     expect(services.rankings.listRankings).toHaveBeenCalledWith(expect.objectContaining({
       scope: "global",
       groupId: null,
+    }));
+  });
+
+  it("resets userSelectedWeek on switch-to-global so a later onShow does not pin the old week", async () => {
+    const listRankings = vi.fn(async (query) => rankingPayload({
+      period_key: query.periodKey || "2026-W48",
+      current_period_key: "2026-W48",
+      first_period_key: "2026-W46",
+    }));
+    const { page, services } = loadPage({
+      groups: {
+        listMyGroups: vi.fn(async () => ({
+          statusCode: 200,
+          data: { items: [{ group_id: "group-1", display_name: "群一", member_count: 2 }] },
+        })),
+      },
+      rankings: { listRankings },
+    });
+    page.setData({ scope: "group", groupId: "group-1" });
+    await page.loadFirstPage();
+    expect(page.data.state).toBe("list");
+
+    await page.onWeekChange({ detail: { value: "1" } });
+    expect(page.userSelectedWeek).toBe(true);
+    expect(page.data.selectedPeriodKey).toBe("2026-W47");
+
+    listRankings.mockResolvedValueOnce({
+      statusCode: 404,
+      code: "GROUP_NOT_FOUND",
+      message: "群不存在",
+    });
+    await page.loadFirstPage();
+    expect(page.data.showSwitchToGlobal).toBe(true);
+    expect(page.userSelectedWeek).toBe(true);
+
+    await page.onSwitchToGlobal();
+    expect(page.data.scope).toBe("global");
+    expect(page.data.state).toBe("list");
+
+    listRankings.mockClear();
+    listRankings.mockImplementation(async (query) => rankingPayload({
+      period_key: query.periodKey || "2026-W49",
+      current_period_key: "2026-W49",
+      first_period_key: "2026-W46",
+    }));
+
+    page.onShow();
+    await vi.waitFor(() => {
+      expect(page.data.state).not.toBe("loading");
+    });
+
+    expect(page.userSelectedWeek).toBe(false);
+    expect(listRankings).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      periodKey: null,
     }));
   });
 
@@ -612,8 +667,8 @@ describe("ranking invalid group recovery", () => {
     }
   });
 
-  it("does not treat a stale groups list that still contains a known-invalid group as rejoin", async () => {
-    const stale = [{ group_id: "group-gone", display_name: "已失效", member_count: 2 }];
+  it("clears invalidGroupIds when a later listMyGroups includes the rejoined group", async () => {
+    const stale = [{ group_id: "group-gone", display_name: "曾失效的群", member_count: 2 }];
     const { page, services } = loadPage({
       groups: {
         listMyGroups: vi.fn()
@@ -639,19 +694,58 @@ describe("ranking invalid group recovery", () => {
 
     page.onShow();
     await vi.waitFor(() => {
+      expect(page.data.state).toBe("list");
+    });
+
+    expect(page.isKnownInvalidGroup("group-gone")).toBe(false);
+    expect(page.data.groupId).toBe("group-gone");
+    expect(page.data.groups).toEqual(stale);
+    expect(services.rankings.listRankings).toHaveBeenCalledWith(expect.objectContaining({
+      scope: "group",
+      groupId: "group-gone",
+    }));
+  });
+
+  it("resets a historical season board when entering a group via pending_ranking_group_id", async () => {
+    const { page, services, storage } = loadPage({
+      groups: {
+        listMyGroups: vi.fn(async () => ({
+          statusCode: 200,
+          data: { items: [{ group_id: "group-1", display_name: "群一", member_count: 2 }] },
+        })),
+      },
+    });
+    page.setData({
+      scope: "global",
+      groupId: null,
+      board: "season",
+      selectedLevelSeasonId: "2025_2026",
+      selectedSeasonLabel: "2025—2026 赛季",
+      selectedPeriodKey: "2026-W01",
+    });
+    page.userChangedSeason = true;
+    page.autoSeasonFallback = true;
+    page.userSelectedWeek = true;
+    storage.set("pending_ranking_group_id", "group-1");
+
+    page.onShow();
+    await vi.waitFor(() => {
       expect(page.data.state).not.toBe("loading");
     });
 
-    expect(page.data.state).toBe("error");
-    expect(page.data.errorMessage).toBe(copy.groupMembershipChanged);
-    expect(page.data.groupId).toBeNull();
     expect(page.data.scope).toBe("group");
-    expect(page.data.showSwitchToGlobal).toBe(true);
-    expect(page.data.groups.some((item) => item.group_id === "group-gone")).toBe(false);
-    expect(page.isKnownInvalidGroup("group-gone")).toBe(true);
-    for (const [query] of services.rankings.listRankings.mock.calls) {
-      expect(query.groupId).not.toBe("group-gone");
-    }
+    expect(page.data.groupId).toBe("group-1");
+    expect(page.data.board).toBe("week");
+    expect(page.userChangedSeason).toBe(false);
+    expect(page.autoSeasonFallback).toBe(false);
+    expect(page.userSelectedWeek).toBe(false);
+    expect(services.rankings.listRankings).toHaveBeenCalledWith(expect.objectContaining({
+      board: "week",
+      scope: "group",
+      groupId: "group-1",
+      periodKey: null,
+      levelSeasonId: null,
+    }));
   });
 
   it("clears the invalid mark when onShow opens a rejoined group via pending_ranking_group_id", async () => {
@@ -1128,5 +1222,33 @@ describe("ranking invalid group recovery", () => {
 
     expect(page.data.items[0].display_name).toBe("Career Player");
     expect(page.data.errorMessage).toBe("");
+  });
+
+  it("ignores delayed setData fallback callbacks when requestSerial has moved on", async () => {
+    const career = deferred();
+    const { page, services } = loadPage({
+      rankings: {
+        listRankings: vi.fn()
+          .mockImplementationOnce(() => career.promise)
+          .mockResolvedValue(rankingPayload()),
+      },
+    }, { delaySetDataCallbacks: true });
+
+    page.setData({ board: "career" });
+    page.loadFirstPage();
+    await vi.waitFor(() => expect(services.rankings.listRankings).toHaveBeenCalledTimes(1));
+
+    career.resolve(rankingPayload({ available_boards: ["week"] }));
+    await vi.waitFor(() => expect(page.pendingSetDataCount()).toBeGreaterThan(0));
+
+    // User switches board before the delayed setData callback runs
+    page.onBoardTap({ currentTarget: { dataset: { board: "week" } } });
+    // Flush the stale fallback callback from career -> week
+    page.flushNextSetData();
+    expect(services.rankings.listRankings).toHaveBeenCalledTimes(1);
+
+    // Flush the newer onBoardTap callback
+    page.flushSetData();
+    await vi.waitFor(() => expect(services.rankings.listRankings).toHaveBeenCalledTimes(2));
   });
 });

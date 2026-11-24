@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MATCHES_JS = join(HERE, "matches.js");
+const MATCHES_WXML = join(HERE, "matches.wxml");
 const LEAGUE_UTIL = join(HERE, "..", "..", "utils", "matches-default-league.js");
 const savedGlobals = {
   Page: Object.getOwnPropertyDescriptor(globalThis, "Page"),
@@ -56,8 +57,20 @@ function loadPage({
   }));
   const submitPrediction = vi.fn(async () => submitResult || ({ statusCode: 201 }));
   const pageConfig = {};
+  const storage = new Map();
+  const switchTab = vi.fn();
   Object.defineProperty(globalThis, "Page", {
     value: (config) => Object.assign(pageConfig, config),
+    configurable: true,
+  });
+  Object.defineProperty(globalThis, "wx", {
+    value: {
+      getStorageSync: (key) => storage.get(key),
+      setStorageSync: (key, value) => { storage.set(key, value); },
+      removeStorageSync: (key) => { storage.delete(key); },
+      switchTab,
+      stopPullDownRefresh: vi.fn(),
+    },
     configurable: true,
   });
   const logoRegistry = { getTeamLogo: () => "team.png", getLeagueLogo: () => "league.png" };
@@ -116,6 +129,8 @@ function loadPage({
     submitPrediction,
     getLeagueStatus,
     getMyLeagueSummary,
+    storage,
+    switchTab,
     bumpLoginGeneration() { loginGeneration += 1; },
   };
 }
@@ -788,5 +803,241 @@ describe("matches page gateway workflows", () => {
     expect(page.data.items[0].predText).toBe("已提交 2 : 0 · 不可修改");
     expect(page.data.doneCount).toBe(1);
     expect(page.data.openCount).toBe(0);
+  });
+
+  it("debounces rapid league and date switches so only the final selection triggers listMatches", async () => {
+    vi.useFakeTimers();
+    try {
+      const { page, listMatches } = loadPage();
+      page.setData({ selectedLeague: "premier_league", selectedDate: "2026-09-01" });
+      page.onLeagueTap({ currentTarget: { dataset: { id: "la_liga" } } });
+      page.onLeagueTap({ currentTarget: { dataset: { id: "serie_a" } } });
+      page.onDateTap({ currentTarget: { dataset: { key: "2026-09-02" } } });
+      expect(page.data.hasMore).toBe(false);
+      expect(page.data.nextCursor).toBeNull();
+      expect(page.data.openCount).toBe(0);
+      expect(page.data.doneCount).toBe(0);
+      expect(page.data.hintText).toBe("");
+      await vi.advanceTimersByTimeAsync(200);
+      await vi.waitFor(() => expect(listMatches).toHaveBeenCalledTimes(1));
+      expect(listMatches).toHaveBeenCalledWith(expect.objectContaining({
+        league_id: "serie_a",
+        from: "2026-09-01T16:00:00.000Z",
+        to: "2026-09-02T16:00:00.000Z",
+      }));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a submitting card locked when opening another match editor", async () => {
+    const pendingSubmit = deferred();
+    const { page, submitPrediction } = loadPage({ submitResult: pendingSubmit.promise });
+    const key1 = "premier_league:2026-09-01:match-1";
+    const key2 = "premier_league:2026-09-01:match-2";
+    page.setData({
+      selectedLeague: "premier_league",
+      selectedDate: "2026-09-01",
+      items: [page.decorateItem(match("match-1")), page.decorateItem(match("match-2"))],
+      state: "list",
+    });
+    page.drafts[key1] = { home: 2, away: 1 };
+    page.uiStates[key1] = "editing";
+    page.onSubmitTap({ currentTarget: { dataset: { matchId: "match-1" } } });
+    await vi.waitFor(() => expect(submitPrediction).toHaveBeenCalledOnce());
+    expect(page.uiStates[key1]).toBe("submitting");
+
+    page.onPredictTap({ currentTarget: { dataset: { matchId: "match-2" } } });
+    expect(page.uiStates[key1]).toBe("submitting");
+    expect(page.drafts[key1]).toEqual({ home: 2, away: 1 });
+    expect(page.uiStates[key2]).toBe("editing");
+    expect(page.data.items[0].uiState).toBe("submitting");
+    expect(page.data.items[1].uiState).toBe("editing");
+
+    pendingSubmit.resolve({ statusCode: 201 });
+    await vi.waitFor(() => expect(page.uiStates[key1]).toBe("submitted_locked"));
+  });
+
+  it("refreshes date strip across Beijing midnight and levelSeasonLabel across July 1 on onShow", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-06-30T15:59:00.000Z")); // Beijing 2026-06-30 23:59
+      const currentSeasonId = (iso) => {
+        const ms = Date.parse(iso) + 8 * 60 * 60 * 1000;
+        const d = new Date(ms);
+        const y = d.getUTCMonth() >= 6 ? d.getUTCFullYear() : d.getUTCFullYear() - 1;
+        return `${y}_${y + 1}`;
+      };
+      const pageConfig = {};
+      Object.defineProperty(globalThis, "Page", { value: (config) => Object.assign(pageConfig, config), configurable: true });
+      loadCommonJs(MATCHES_JS, (id) => {
+        if (id === "../../services/auth.js") return { getLoginGeneration: () => 0 };
+        if (id === "../../utils/logo-registry.js") return { getTeamLogo: () => "team.png", getLeagueLogo: () => "league.png" };
+        if (id === "../../utils/team-presentation.js") return { presentTeam: () => ({ nameZh: "Team", logo: "team.png", missing: false }) };
+        if (id === "../../utils/nickname.js") return { resolveNickname: () => "球友", truncateNickname: (v) => v };
+        if (id === "../../services/matches.js") return { listMatches: vi.fn(async () => listResult([])) };
+        if (id === "../../services/leagues.js") return { getLeagueStatus: vi.fn(async () => ({ statusCode: 200, data: { items: [] } })) };
+        if (id === "../../utils/matches-default-league.js") return loadCommonJs(LEAGUE_UTIL, () => { throw new Error("unexpected"); });
+        if (id === "../../services/predictions.js") return { createUuidV4: () => "uuid", submitPrediction: vi.fn(), getMyLeagueSummary: vi.fn() };
+        if (id === "../../utils/crowd-copy.js") return { COPY: { homeLink: "" } };
+        if (id === "../../utils/ui-layout.js") return { headerHeight: () => 88 };
+        if (id === "../../utils/match-presentation.js") return { formatRound: () => "" };
+        if (id === "../../utils/match-card-state.js") return loadCommonJs(join(HERE, "..", "..", "utils", "match-card-state.js"), () => { throw new Error("unexpected"); });
+        if (id === "../../utils/rankings-view-model.js") return { currentSeasonId };
+        if (id === "../../utils/level-season.js") return loadCommonJs(join(HERE, "..", "..", "utils", "level-season.js"), () => { throw new Error("unexpected"); });
+        throw new Error(`Unexpected require: ${id}`);
+      });
+      const page = Object.assign({}, pageConfig, {
+        data: JSON.parse(JSON.stringify(pageConfig.data)),
+        setData(patch) { Object.assign(this.data, patch); },
+      });
+      await page.onLoad();
+      expect(page.data.dates[0].key).toBe("2026-06-30");
+      expect(page.data.selectedDate).toBe("2026-06-30");
+      expect(page.data.levelSeasonLabel).toBe("2025—2026 赛季");
+
+      page.onShow();
+      vi.setSystemTime(new Date("2026-06-30T16:01:00.000Z")); // Beijing 2026-07-01 00:01
+      await page.onShow();
+      expect(page.data.dates[0].key).toBe("2026-07-01");
+      expect(page.data.selectedDate).toBe("2026-07-01");
+      expect(page.data.levelSeasonLabel).toBe("2026—2027 赛季");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    ["截单", { can_predict: false, can_predict_reason: "CLOSED" }],
+    ["开球", { can_predict: false, can_predict_reason: "MATCH_STARTED", match_status: "live" }],
+    ["取消", { can_predict: false, can_predict_reason: "NOT_SCHEDULED", match_status: "cancelled" }],
+  ])("collapses an open editor after %s closes the prediction window", (_label, patch) => {
+    const { page } = loadPage();
+    const key = "premier_league:2026-09-01:match-1";
+    page.setData({
+      selectedLeague: "premier_league",
+      selectedDate: "2026-09-01",
+      submitErrors: { [key]: "旧错误" },
+    });
+    page.uiStates[key] = "editing";
+    page.drafts[key] = { home: 2, away: 1 };
+
+    page.applyListResult(listResult([{ ...match("match-1"), ...patch }]), true);
+
+    expect(page.data.items[0].editorVisible).toBe(false);
+    expect(page.data.items[0].uiState).toBe("collapsed");
+    expect(page.uiStates[key]).toBe("collapsed");
+    expect(page.drafts[key]).toBeUndefined();
+    expect(page.data.submitErrors[key]).toBeUndefined();
+  });
+
+  it("clears the submit error when retrying and after a successful retry", async () => {
+    const pending = deferred();
+    const { page, submitPrediction } = loadPage({
+      submitResult: pending.promise,
+      matchesResult: listResult([predictedMatch("match-1", 2, 1)]),
+    });
+    const key = "premier_league:2026-09-01:match-1";
+    page.setData({
+      selectedLeague: "premier_league",
+      selectedDate: "2026-09-01",
+      items: [page.decorateItem(match("match-1"))],
+      state: "list",
+      submitErrors: { [key]: "网络错误" },
+    });
+    page.drafts[key] = { home: 2, away: 1 };
+    page.uiStates[key] = "editing";
+    page.refreshItems();
+    expect(page.data.items[0].submitError).toBe("网络错误");
+
+    page.onSubmitTap({ currentTarget: { dataset: { matchId: "match-1" } } });
+    expect(page.data.submitErrors[key]).toBeUndefined();
+    expect(page.data.items[0].submitError).toBe("");
+    expect(submitPrediction).toHaveBeenCalledOnce();
+
+    pending.resolve({ statusCode: 201 });
+    await vi.waitFor(() => expect(page.uiStates[key]).toBe("submitted_locked"));
+    expect(page.data.submitErrors[key]).toBeUndefined();
+    await vi.waitFor(() => expect(page.data.items.some((item) => item.submitError)).toBe(false));
+  });
+
+  it("clears submit errors when editing, closing editors, or switching identity", () => {
+    const { page, bumpLoginGeneration } = loadPage();
+    const key1 = "premier_league:2026-09-01:match-1";
+    const key2 = "premier_league:2026-09-01:match-2";
+    page.setData({
+      selectedLeague: "premier_league",
+      selectedDate: "2026-09-01",
+      items: [page.decorateItem(match("match-1")), page.decorateItem(match("match-2"))],
+      submitErrors: { [key1]: "错误一", [key2]: "错误二" },
+    });
+
+    page.onPredictTap({ currentTarget: { dataset: { matchId: "match-1" } } });
+    expect(page.data.submitErrors).toEqual({});
+
+    page.setData({ submitErrors: { [key1]: "错误一", [key2]: "错误二" } });
+    page.closeEditors();
+    expect(page.data.submitErrors).toEqual({});
+
+    page.setData({ submitErrors: { [key1]: "错误一" } });
+    bumpLoginGeneration();
+    page.rememberLoginGeneration();
+    expect(page.data.submitErrors).toEqual({});
+  });
+
+  it("clears yesterday's counters and hint when the first page load fails", async () => {
+    const { page } = loadPage({
+      matchesResult: { statusCode: 500, message: "boom" },
+    });
+    page.setData({
+      selectedLeague: "premier_league",
+      selectedDate: "2026-09-01",
+      items: [page.decorateItem(match("match-1"))],
+      openCount: 4,
+      doneCount: 3,
+      hintText: "8 月 31 日 · 待预测 4 场 · 已预测 3 场",
+    });
+
+    await page.loadFirstPage();
+
+    expect(page.data.state).toBe("error");
+    expect(page.data.openCount).toBe(0);
+    expect(page.data.doneCount).toBe(0);
+    expect(page.data.hintText).toBe("");
+  });
+
+  it("clears counters on a non-pagination list error", () => {
+    const { page } = loadPage();
+    page.setData({
+      selectedLeague: "premier_league",
+      selectedDate: "2026-09-01",
+      openCount: 2,
+      doneCount: 1,
+      hintText: "旧的统计",
+    });
+
+    page.applyListResult({ statusCode: 500, code: "INTERNAL_ERROR", message: "boom" }, true);
+
+    expect(page.data.state).toBe("error");
+    expect(page.data.openCount).toBe(0);
+    expect(page.data.doneCount).toBe(0);
+    expect(page.data.hintText).toBe("");
+  });
+
+  it("stores the target season before switching to the season rankings tab", () => {
+    const { page, storage, switchTab } = loadPage();
+
+    page.onRankingsTap();
+
+    expect(storage.get("pending_ranking_target")).toEqual({
+      board: "season",
+      levelSeasonId: "2026_2027",
+    });
+    expect(switchTab).toHaveBeenCalledWith({ url: "/pages/rankings/rankings" });
+  });
+
+  it("does not render a stale submit error on a submitted card", () => {
+    const template = readFileSync(MATCHES_WXML, "utf8");
+    expect(template).toContain("item.uiState !== 'submitted_locked' && item.submitError");
   });
 });

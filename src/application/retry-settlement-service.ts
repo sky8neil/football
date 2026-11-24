@@ -1,4 +1,8 @@
-import { reconcileSettledMatch } from "./settlement-progress.js";
+import {
+  maxAppliedTimestampMs,
+  reconcileSettledMatch,
+  resolveFinalizeTimestamp,
+} from "./settlement-progress.js";
 /**
  * 结算恢复入口：失败或租约释放后的 running 结算可恢复，包括 correction。
  * 准备、各 item、周榜和 finalize 分别提交；applied item 不随之后的失败回滚。
@@ -27,6 +31,7 @@ import type {
 } from "../infrastructure/repositories.js";
 import { FirstSettlementCode } from "./first-settlement.js";
 import {
+  renewSettlementLockForFinalize,
   settlementMatchLockKey,
   startSettlementLockRenewal,
   transitionMatchSettlementStatus,
@@ -126,7 +131,7 @@ export class RetrySettlementService {
     const lockKey = settlementMatchLockKey(existing.match_id);
     const ownerId = newUuid();
     const leaseUntil = new Date(
-      serverNow.getTime() + FIXED_CONFIG_V1.JOB_LEASE_MINUTES * 60 * 1000,
+      Date.now() + FIXED_CONFIG_V1.JOB_LEASE_MINUTES * 60 * 1000,
     );
     const acquired = await this.repo.jobLocks.acquire(
       lockKey,
@@ -205,6 +210,9 @@ export class RetrySettlementService {
             ...settlement,
             status: SettlementDocStatus.Running,
             phase: SettlementPhase.ApplyItems,
+            ...(settlement.is_correction
+              ? { level_reeval_status: "pending" as const, level_reeval_completed_at: null }
+              : {}),
             started_at: serverNow,
             attempt_count: settlement.attempt_count + 1,
             last_error_code: null,
@@ -245,9 +253,11 @@ export class RetrySettlementService {
         const tx = this.repo;
         let processedCount = 0;
         let skippedAppliedCount = 0;
+        let maxAppliedAtMs: number | null = null;
 
         for (const item of items) {
           if (item.status === SettlementItemStatus.Applied) {
+            maxAppliedAtMs = maxAppliedTimestampMs(maxAppliedAtMs, item.applied_at);
             skippedAppliedCount += 1;
             continue;
           }
@@ -319,9 +329,11 @@ export class RetrySettlementService {
           }
 
           lockRenewal.assertHealthy();
+          maxAppliedAtMs = maxAppliedTimestampMs(maxAppliedAtMs, serverNow);
           processedCount += 1;
         }
 
+        const finalizedAt = resolveFinalizeTimestamp(serverNow, maxAppliedAtMs);
         lockRenewal.assertHealthy();
         await tx.settlements.update({
           ...runningSettlement,
@@ -329,27 +341,28 @@ export class RetrySettlementService {
           updated_at: serverNow,
         });
         if (items.length > 0 && match.period_anchor_at !== null) {
-          await this.repo.withTransaction((rankTx) =>
-            rebuildSettlementWeekRanks(
-              rankTx,
-              match.period_anchor_at!,
-              serverNow,
-            ),
+          await rebuildSettlementWeekRanks(
+            this.repo,
+            match.period_anchor_at,
+            serverNow,
           );
         }
+        lockRenewal.assertHealthy();
         await this.repo.withTransaction(async (tx) => {
+          await renewSettlementLockForFinalize(tx, lockKey, ownerId);
+          lockRenewal.assertHealthy();
           const finalizingSettlement: SettlementDoc = {
             ...runningSettlement,
             phase: SettlementPhase.Finalize,
-            updated_at: serverNow,
+            updated_at: finalizedAt,
           };
           await tx.settlements.update(finalizingSettlement);
           await tx.settlements.update({
             ...finalizingSettlement,
             status: SettlementDocStatus.Settled,
             phase: SettlementPhase.Done,
-            settled_at: serverNow,
-            updated_at: serverNow,
+            settled_at: finalizedAt,
+            updated_at: finalizedAt,
           });
 
           const finalMatch = await tx.matches.findById(settlement.match_id);
@@ -361,7 +374,7 @@ export class RetrySettlementService {
           await tx.matches.updateSettlementProgress(
             finalMatch.match_id,
             settlement.result_version,
-            serverNow,
+            finalizedAt,
           );
           const afterFinalize = await tx.matches.findById(settlement.match_id);
           if (afterFinalize === null) {
@@ -375,7 +388,7 @@ export class RetrySettlementService {
             hasNewerResult
               ? SettlementStatus.Correcting
               : SettlementStatus.Settled,
-            serverNow,
+            finalizedAt,
           );
         });
 
@@ -394,7 +407,7 @@ export class RetrySettlementService {
                 oldAuditValue ??
                   (await snapshotSettlementForAudit(tx, settlementId)),
                 await snapshotSettlementForAudit(tx, settlementId),
-                serverNow,
+                finalizedAt,
               ),
             };
       })();

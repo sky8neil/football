@@ -5,6 +5,7 @@ const { storeNickname, normalizeNickname, NICKNAME_STORAGE_KEY } = require("../.
 // tabBar 页面只能用 wx.switchTab 跳转；wx.redirectTo / wx.navigateTo 不被受理，
 // 且是静默失败（不报错、不跳转），用错会让用户卡在会话页出不去。
 const HOME_URL = "/pages/matches/matches";
+const RETURN_TARGETS = ["match-detail", "share-card", "my-predictions"];
 
 // 与服务端一致：1～32 个字符（src/application/session.ts 的 validateNickname）。
 // 前端只做前置拦截，最终以服务端校验结果为准。
@@ -47,7 +48,7 @@ Page({
 
   onLoad(query) {
     const patch = {
-      returnTo: query && (query.return_to === "match-detail" || query.return_to === "share-card")
+      returnTo: query && RETURN_TARGETS.indexOf(query.return_to) !== -1
         ? query.return_to
         : "",
     };
@@ -175,14 +176,14 @@ Page({
         // 写入本地缓存，供首页第一行展示。
         const payload = result.data && typeof result.data === "object" ? result.data : {};
         storeNickname(payload.nickname);
+        if (RETURN_TARGETS.indexOf(this.data.returnTo) !== -1) {
+          wx.navigateBack({ delta: 1 });
+          return;
+        }
         const pendingInviteCode = wx.getStorageSync("pending_group_invite_code");
         if (pendingInviteCode) {
           wx.removeStorageSync("pending_group_invite_code");
           wx.reLaunch({ url: `/pages/groups/join?code=${encodeURIComponent(pendingInviteCode)}` });
-          return;
-        }
-        if (this.data.returnTo === "match-detail" || this.data.returnTo === "share-card") {
-          wx.navigateBack({ delta: 1 });
           return;
         }
         wx.switchTab({ url: HOME_URL });
@@ -217,6 +218,7 @@ Page({
   },
 
   onSkip() {
+    wx.removeStorageSync("pending_group_invite_code");
     wx.switchTab({ url: HOME_URL });
   },
 });

@@ -33,6 +33,7 @@ import type {
   UserSeasonStats,
 } from "../domain/types.js";
 import type { AppRepository, UnitOfWork } from "../infrastructure/repositories.js";
+import { fetchByIds } from "./match-identity.js";
 
 export interface RankingQuery {
   board: RankingBoardType;
@@ -541,6 +542,10 @@ export class RankingQueryService {
     const cursorPosition = input.cursor === null ? null : this.cursorCodec.decode(input.cursor);
     const currentPeriodKey = calculatePeriodKey("week", input.server_now);
     const selectableWeeks = selectableWeekKeys(currentPeriodKey, this.firstPeriodKey);
+    const preLaunchWeek = input.board === RankingBoard.Week
+      && selectableWeeks.length === 0
+      && input.period_key === null
+      && cursorPosition === null;
     let periodKey = input.board === RankingBoard.Week
       ? input.period_key ?? cursorPosition?.period_key ?? defaultWeekKey(
           input.server_now,
@@ -548,7 +553,7 @@ export class RankingQueryService {
           selectableWeeks,
         )
       : null;
-    if (input.board === RankingBoard.Week && !selectableWeeks.includes(periodKey!)) {
+    if (input.board === RankingBoard.Week && !preLaunchWeek && !selectableWeeks.includes(periodKey!)) {
       throw validationError("period_key 超出可选周范围", { field: "period_key" });
     }
     if (cursorPosition !== null && (
@@ -579,6 +584,14 @@ export class RankingQueryService {
     }
 
     const userCache = new Map<string, User>();
+    const preloadUsers = async (userIds: readonly string[]): Promise<void> => {
+      const missing = userIds.filter((id) => id.length > 0 && !userCache.has(id));
+      if (missing.length === 0) return;
+      const loaded = await fetchByIds(this.repo.users, missing);
+      for (const [id, user] of loaded) {
+        userCache.set(id, user);
+      }
+    };
     const readUser = async (userId: string): Promise<User> => {
       const cached = userCache.get(userId);
       if (cached !== undefined) return cached;
@@ -588,11 +601,12 @@ export class RankingQueryService {
       return user;
     };
 
-    let resolvedDefaultWeekRows: RankingEntry[] | null = null;
+    let resolvedDefaultWeekRows: RankingEntry[] | null = preLaunchWeek ? [] : null;
     if (
       input.board === RankingBoard.Week &&
       input.period_key === null &&
-      cursorPosition === null
+      cursorPosition === null &&
+      !preLaunchWeek
     ) {
       if (this.repo.rankings === undefined) throw internalError("rankings repository port 未配置");
       const candidateKey = periodKey!;
@@ -600,6 +614,10 @@ export class RankingQueryService {
       for (const weekKey of selectableWeeks.slice(candidateIndex)) {
         const rows = await this.repo.rankings.findByPeriod("week", weekKey);
         for (const entry of rows) assertRanking(entry, weekKey);
+        const visibleCandidateIds = rows
+          .filter((entry) => entry.global_rank !== null && (groupMembers === null || groupMembers.has(entry.user_id)))
+          .map((entry) => entry.user_id);
+        await preloadUsers(visibleCandidateIds);
         let visibleCount = 0;
         const historical = periodEndAt("week", weekKey).getTime() <= input.server_now.getTime();
         for (const entry of rows) {
@@ -630,15 +648,26 @@ export class RankingQueryService {
     }
     const currentLevelSeasonId = levelSeasonOf(input.server_now);
     const previousSeasonId = previousLevelSeasonId(currentLevelSeasonId);
-    const [careerVersion, strengthVersion, currentSeasonVersion, previousSeasonRegularVersion,
-      previousSeasonFinalVersion, finalSeasonIds] = await Promise.all([
-        this.repo.boardSnapshots.findLatestByBoard(RankingBoard.Career),
-        this.repo.boardSnapshots.findLatestByBoard(RankingBoard.Strength),
-        this.repo.boardSnapshots.findLatestBySeason(currentLevelSeasonId),
-        this.repo.boardSnapshots.findLatestBySeason(previousSeasonId),
-        this.repo.boardSnapshots.findFinalBySeason(previousSeasonId),
-        this.repo.boardSnapshots.listFinalSeasonIds(),
-      ]);
+    const [
+      careerVersion,
+      strengthVersion,
+      currentSeasonVersion,
+      previousSeasonFinalVersion,
+      finalSeasonIds,
+    ] = await Promise.all([
+      this.repo.boardSnapshots.findLatestByBoard(RankingBoard.Career),
+      input.board === RankingBoard.Strength
+        ? this.repo.boardSnapshots.findLatestByBoard(RankingBoard.Strength)
+        : Promise.resolve<BoardSnapshot[]>([]),
+      this.repo.boardSnapshots.findLatestBySeason(currentLevelSeasonId),
+      this.repo.boardSnapshots.findFinalBySeason(previousSeasonId),
+      input.board === RankingBoard.Season
+        ? this.repo.boardSnapshots.listFinalSeasonIds()
+        : Promise.resolve<string[]>([]),
+    ]);
+    const previousSeasonRegularVersion = previousSeasonFinalVersion.length === 0
+      ? await this.repo.boardSnapshots.findLatestBySeason(previousSeasonId)
+      : [];
 
     const filterSnapshotEntries = async (
       version: readonly BoardSnapshot[],
@@ -662,6 +691,13 @@ export class RankingQueryService {
     const previousSeasonVersion = previousSeasonFinalVersion.length > 0
       ? previousSeasonFinalVersion
       : previousSeasonRegularVersion;
+    await preloadUsers([
+      ...careerVersion.filter((s) => s.snapshot_kind !== "head").map((s) => s.user_id),
+      ...strengthVersion.filter((s) => s.snapshot_kind !== "head").map((s) => s.user_id),
+      ...currentSeasonVersion.filter((s) => s.snapshot_kind !== "head").map((s) => s.user_id),
+      ...previousSeasonVersion.filter((s) => s.snapshot_kind !== "head").map((s) => s.user_id),
+      ...(input.authenticated_user_id ? [input.authenticated_user_id] : []),
+    ]);
     const [currentSeasonGlobalEntries, careerEntries, currentSeasonEntries, previousSeasonEntries] =
       await Promise.all([
         filterSnapshotEntries(currentSeasonVersion, null),
@@ -684,18 +720,14 @@ export class RankingQueryService {
       selectedSeasonId = previousSeasonId;
       isProvisional = previousSeasonFinalVersion.length === 0;
     } else if (input.board === RankingBoard.Season && selectedSeasonId !== currentLevelSeasonId) {
-      if (selectedSeasonId === previousSeasonId && previousSeasonFinalVersion.length > 0) {
-        selectedSeasonVersion = previousSeasonFinalVersion;
+      if (selectedSeasonId === previousSeasonId) {
+        selectedSeasonVersion = previousSeasonVersion;
+        isProvisional =
+          previousSeasonFinalVersion.length === 0 &&
+          selectedSeasonVersion.some((snapshot) => snapshot.snapshot_kind !== "head");
       } else {
         const finalVersion = await this.repo.boardSnapshots.findFinalBySeason(selectedSeasonId);
-        if (finalVersion.length > 0) {
-          selectedSeasonVersion = finalVersion;
-        } else if (selectedSeasonId === previousSeasonId) {
-          selectedSeasonVersion = await this.repo.boardSnapshots.findLatestBySeason(selectedSeasonId);
-          isProvisional = selectedSeasonVersion.some((snapshot) => snapshot.snapshot_kind !== "head");
-        } else {
-          selectedSeasonVersion = [];
-        }
+        selectedSeasonVersion = finalVersion.length > 0 ? finalVersion : [];
       }
       if (!selectedSeasonVersion.some((snapshot) => snapshot.snapshot_kind !== "head")) {
         throw notFoundError("LEVEL_SEASON");
@@ -706,6 +738,9 @@ export class RankingQueryService {
       selectedSeasonVersion.every((snapshot) => snapshot.snapshot_kind === "head")
     ) {
       throw notFoundError("LEVEL_SEASON");
+    }
+    if (selectedSeasonVersion.length > 0 && selectedSeasonVersion !== currentSeasonVersion && selectedSeasonVersion !== previousSeasonVersion) {
+      await preloadUsers(selectedSeasonVersion.filter((s) => s.snapshot_kind !== "head").map((s) => s.user_id));
     }
     const selectedSeasonEntries = input.board === RankingBoard.Season
       ? await filterSnapshotEntries(
@@ -779,6 +814,7 @@ export class RankingQueryService {
       periodEndAt("week", periodKey!).getTime() <= input.server_now.getTime();
     const isHistoricalSeason = input.board === RankingBoard.Season &&
       selectedSeasonId !== currentLevelSeasonId;
+    await preloadUsers(sourceEntries.map(sourceUserId));
     const withUsers: RankedEntry[] = [];
     for (const source of sourceEntries) {
       const user = await readUser(sourceUserId(source));
@@ -843,16 +879,13 @@ export class RankingQueryService {
       previous_season_entry_count: previousSeasonEntries.length,
       selected_season_entry_count: selectedSeasonEntries.length,
     });
-    const historicalFinalSeasons = await Promise.all(finalSeasonIds
-      .filter((seasonId) => seasonId !== currentLevelSeasonId && seasonId !== previousSeasonId)
-      .map(async (seasonId) => {
-        const snapshots = await this.repo.boardSnapshots!.findFinalBySeason(seasonId);
-        return snapshots.some((snapshot) => snapshot.snapshot_kind !== "head") ? seasonId : null;
-      }));
+    const historicalFinalSeasons = finalSeasonIds.filter(
+      (seasonId) => seasonId !== currentLevelSeasonId && seasonId !== previousSeasonId,
+    );
     const availableLevelSeasons = [
       ...(currentSeasonGlobalEntries.length > 0 ? [currentLevelSeasonId] : []),
       ...(previousSeasonEntries.length > 0 ? [previousSeasonId] : []),
-      ...historicalFinalSeasons.filter((seasonId) => seasonId !== null),
+      ...historicalFinalSeasons,
     ].sort((a, b) => b.localeCompare(a));
 
     const topLimit = FIXED_CONFIG_V1.RANKING_TOP_LIMIT;

@@ -122,13 +122,18 @@ Page({
 
   onLoad(query) {
     const matchId = query && query.id ? String(query.id) : "";
+    this.hasShown = false;
     this.setData({ matchId });
     this.loadDetail();
   },
 
   onShow() {
-    if (this.refreshAfterSession) {
-      this.refreshAfterSession = false;
+    if (!this.hasShown) {
+      this.hasShown = true;
+      return;
+    }
+    this.refreshAfterSession = false;
+    if (!this.data.submitting && this.data.matchId) {
       this.loadDetail();
     }
   },
@@ -176,6 +181,12 @@ Page({
       this.ensureIntentKey();
     }
     const myPrediction = match.my_prediction || null;
+    const cancelled = match.match_status === "cancelled" || match.settlement_status === "voided";
+    const unsettledText = match.match_status === "postponed"
+      ? "比赛延期"
+      : match.match_status === "abandoned"
+        ? "比赛腰斩"
+        : "等待比赛结算";
     const homePresented = presentTeam(match.home_team, match.league_id);
     const awayPresented = presentTeam(match.away_team, match.league_id);
     this.setData({
@@ -188,19 +199,23 @@ Page({
       myPredictionScore: myPrediction
         ? myPrediction.pred_home_score + " - " + myPrediction.pred_away_score
         : "",
-      myMatchScoreText: myPrediction ? settlementText(myPrediction.match_score) : "",
-      myWdlHitText: myPrediction ? settlementText(myPrediction.wdl_hit) : "",
-      myExactHitText: myPrediction ? settlementText(myPrediction.exact_hit) : "",
-      predictionPointsText: myPrediction && myPrediction.match_score !== null
-        ? `+${myPrediction.match_score}`
+      myMatchScoreText: myPrediction ? (cancelled ? "—" : settlementText(myPrediction.match_score)) : "",
+      myWdlHitText: myPrediction ? (cancelled ? "—" : settlementText(myPrediction.wdl_hit)) : "",
+      myExactHitText: myPrediction ? (cancelled ? "—" : settlementText(myPrediction.exact_hit)) : "",
+      predictionPointsText: myPrediction
+        ? (cancelled ? "不计分" : myPrediction.match_score !== null ? `+${myPrediction.match_score}` : "待结算")
         : "待结算",
-      predictionResultText: myPrediction && myPrediction.exact_hit === true
-        ? "精确命中"
-        : myPrediction && myPrediction.wdl_hit === true
-          ? "赛果命中"
-          : myPrediction && myPrediction.match_score === null
-            ? "等待比赛结算"
-            : myPrediction ? "未命中" : "",
+      predictionResultText: myPrediction
+        ? (cancelled
+          ? "比赛取消 · 不计分"
+          : myPrediction.exact_hit === true
+            ? "精确命中"
+            : myPrediction.wdl_hit === true
+              ? "赛果命中"
+              : myPrediction.match_score === null
+                ? unsettledText
+                : "未命中")
+        : "",
       canSubmit,
       submitDisabledReason: canSubmit ? "" : reasonText(reason),
       identityMissing: reason === "AUTH_REQUIRED",
@@ -381,6 +396,7 @@ Page({
         submitDisabledReason: REASON_TEXT.CLOSED,
         formError: result.message || result.code,
       });
+      this.loadDetail();
       return;
     }
     if (result.statusCode === 409 && result.code === "IDEMPOTENCY_KEY_REUSED") {

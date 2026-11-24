@@ -65,6 +65,11 @@ function storeNickname(value) {
   return true;
 }
 
+/** 清除本地缓存昵称（主动退出登录时调用）。 */
+function clearNickname() {
+  wx.removeStorageSync(NICKNAME_STORAGE_KEY);
+}
+
 module.exports = {
   NICKNAME_STORAGE_KEY,
   FALLBACK_NICKNAME,
@@ -73,4 +78,5 @@ module.exports = {
   resolveNickname,
   truncateNickname,
   storeNickname,
+  clearNickname,
 };

@@ -189,15 +189,19 @@ export class AdminRetrySettlementService implements RetrySettlementCommand {
       throw internalError("管理员 retry 未生成审计记录");
     }
 
-    // 第 15.9 节：retried settlement finalize 后继续消化更高未处理 result_version。
-    // 后续版本的成败只体现在 match 状态与下一个 failed target，不回写本次响应（§30.4）。
+    // 第 15.9 节：retried settlement finalize 后先续跑更高未处理 result_version，
+    // 队列收口后再对本次修正及续跑产生的 correction 顺序触发等级重评（§30.4）。
     if (outcome.kind === "settled" || outcome.kind === "correcting") {
+      const preSettled = target.is_correction
+        ? [{ settlementId: target.settlement_id, serverNow }]
+        : [];
       await continuePendingCorrections(
         this.repo,
         this.correctionService,
         matchId,
         serverNow,
         this.levelCorrectionReeval,
+        preSettled,
       );
     }
 

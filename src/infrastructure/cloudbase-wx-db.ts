@@ -4,6 +4,7 @@ import {
   cloudBaseCollectionName,
   type CloudBaseDb,
   type CloudBaseDocument,
+  type CloudBasePredictionHistoryPage,
   type CloudBaseQueryOptions,
 } from "./cloudbase-db.js";
 
@@ -15,10 +16,12 @@ type SdkStats = {
 };
 type SdkCommand = {
   inc(value: number): unknown;
-  lt(value: number): unknown;
+  lt(value: number | Date | string): unknown;
   lte(value: number | Date): unknown;
   gte(value: number | Date): unknown;
   in(values: readonly string[]): unknown;
+  neq(value: unknown): unknown;
+  or?(conditions: ReadonlyArray<Record<string, unknown>>): unknown;
 };
 type SdkDocument = {
   get(): Promise<SdkResult<CloudBaseDocument>>;
@@ -53,9 +56,15 @@ export type CloudBaseSdkTransaction = {
 const PAGE_SIZE = 100;
 const IN_FILTER_CHUNK = 100;
 const HISTORY_FETCH_SIZE = PAGE_SIZE;
-const HISTORY_MAX_BATCHES = 64;
-const DISTINCT_MAX_ROWS = 100_000;
+const DEFAULT_HISTORY_MAX_BATCHES = 64;
+const DEFAULT_DISTINCT_MAX_ROWS = 100_000;
 const MATCH_CHAIN_MAX_HOPS = 20;
+
+export interface CloudBaseWxDbOptions {
+  historyMaxBatches?: number;
+  distinctMaxRows?: number;
+  log?: (entry: Record<string, unknown>) => void;
+}
 
 function errorCode(error: unknown): string {
   if (!error || typeof error !== "object") return "";
@@ -161,17 +170,32 @@ export class CloudBaseWxDb implements CloudBaseDb {
   private readonly namespace: string;
   private readonly transactionDb: boolean;
   private readonly command: SdkCommand | undefined;
+  private readonly options: CloudBaseWxDbOptions;
+  private readonly historyMaxBatches: number;
+  private readonly distinctMaxRows: number;
+  private readonly log: ((entry: Record<string, unknown>) => void) | undefined;
 
   constructor(
     db: Pick<CloudBaseSdkDatabase, "collection">,
     namespace: string,
     transactionDb = false,
     command?: SdkCommand,
+    options: CloudBaseWxDbOptions = {},
   ) {
     this.db = db;
     this.namespace = namespace;
     this.transactionDb = transactionDb;
     this.command = command;
+    this.options = options;
+    const rawMaxBatches = options.historyMaxBatches ?? DEFAULT_HISTORY_MAX_BATCHES;
+    const rawMaxRows = options.distinctMaxRows ?? DEFAULT_DISTINCT_MAX_ROWS;
+    this.historyMaxBatches = Number.isInteger(rawMaxBatches) && rawMaxBatches > 0
+      ? rawMaxBatches
+      : DEFAULT_HISTORY_MAX_BATCHES;
+    this.distinctMaxRows = Number.isInteger(rawMaxRows) && rawMaxRows > 0
+      ? rawMaxRows
+      : DEFAULT_DISTINCT_MAX_ROWS;
+    this.log = options.log;
   }
 
   async get(collection: string, id: string): Promise<CloudBaseDocument | null> {
@@ -210,6 +234,26 @@ export class CloudBaseWxDb implements CloudBaseDb {
     }
   }
 
+  async patch(
+    collection: string,
+    id: string,
+    fields: Record<string, unknown>,
+  ): Promise<void> {
+    try {
+      const result = await this.db.collection(collection).doc(id).update({
+        data: dataWithoutId({ ...fields } as CloudBaseDocument),
+      });
+      if ((result.stats?.updated ?? result.updated) === 0 && await this.get(collection, id) === null) {
+        throw new CloudBaseDocumentNotFoundError(collection, id);
+      }
+    } catch (error) {
+      if (error instanceof CloudBaseDocumentNotFoundError) throw error;
+      if (isMissingDocument(error)) throw new CloudBaseDocumentNotFoundError(collection, id);
+      if (isDuplicate(error)) throw new CloudBaseDuplicateKeyError(collection, "uk_unknown", { _id: id });
+      throw error;
+    }
+  }
+
   async query(
     collection: string,
     filter: Record<string, unknown> = {},
@@ -223,7 +267,13 @@ export class CloudBaseWxDb implements CloudBaseDb {
       const batchSize = Math.min(PAGE_SIZE, requestedLimit - consumed);
       let query = this.db.collection(collection);
       if (Object.keys(filter).length > 0) query = query.where(filter);
-      if (options.order_by) query = query.orderBy(options.order_by, options.direction ?? "asc");
+      if (options.order_bys !== undefined && options.order_bys.length > 0) {
+        for (const spec of options.order_bys) {
+          query = query.orderBy(spec.field, spec.direction);
+        }
+      } else if (options.order_by) {
+        query = query.orderBy(options.order_by, options.direction ?? "asc");
+      }
       const result = await query.skip(offset + consumed).limit(batchSize).get();
       const rows = result.data ?? [];
       all.push(...rows);
@@ -289,9 +339,15 @@ export class CloudBaseWxDb implements CloudBaseDb {
     return { [field]: this.command.in(values as string[]) };
   }
 
+  neFilter(field: string, value: unknown): Record<string, unknown> | undefined {
+    if (this.command?.neq === undefined) return undefined;
+    return { [field]: this.command.neq(value) };
+  }
+
   /**
-   * 可下推：user_id、submitted_at 游标（lte）、submitted_at 倒序、limit。
+   * 可下推：user_id、submitted_at/prediction_id 双键游标、双键倒序、limit。
    * 不可下推：联赛/赛季与 superseded_by（Prediction 无这些字段，云数据库无 join），按批 in 查 matches 后应用层过滤。
+   * 扫描触限且未耗尽时返回严格推进的 resumeCursor，供上层以空页 has_more=true 继续续扫。
    */
   async findPredictionHistoryPage(params: {
     predictions_collection: string;
@@ -301,29 +357,51 @@ export class CloudBaseWxDb implements CloudBaseDb {
     season_id: string | null;
     cursor: { submitted_at: Date; prediction_id: string } | null;
     limit: number;
-  }): Promise<CloudBaseDocument[]> {
-    if (params.limit <= 0) return [];
+  }): Promise<CloudBasePredictionHistoryPage> {
+    if (params.limit <= 0) return { documents: [], exhausted: true, resumeCursor: null };
     const selected: CloudBaseDocument[] = [];
     const matchCache = new Map<string, CloudBaseDocument | null>();
     const considered = new Set<string>();
+    const canPushLte = this.lteFilter("submitted_at", new Date(0)) !== undefined;
+    const canPushCompound = this.command?.or !== undefined && this.command.lt !== undefined;
     let cursor = params.cursor;
     let offset = 0;
     let batches = 0;
-    while (selected.length < params.limit && batches < HISTORY_MAX_BATCHES) {
+    let exhausted = false;
+    while (selected.length < params.limit && batches < this.historyMaxBatches) {
       batches += 1;
-      const filter: Record<string, unknown> = { user_id: params.user_id };
-      if (cursor !== null) {
-        const range = this.lteFilter("submitted_at", cursor.submitted_at);
-        if (range !== undefined) Object.assign(filter, range);
-        // 无 lteFilter 时不能下推游标范围，靠 offset + 应用层键集跳过已见行。
+      const enteredCursor = cursor;
+      const enteredCursorMs = enteredCursor?.submitted_at.getTime() ?? null;
+      let batch: CloudBaseDocument[];
+      if (canPushCompound && enteredCursor !== null) {
+        const filter = this.command!.or!([
+          { user_id: params.user_id, submitted_at: this.command!.lt!(enteredCursor.submitted_at) },
+          {
+            user_id: params.user_id,
+            submitted_at: enteredCursor.submitted_at,
+            prediction_id: this.command!.lt!(enteredCursor.prediction_id),
+          },
+        ]);
+        batch = await this.historyBatch(
+          params.predictions_collection,
+          filter as Record<string, unknown>,
+          offset,
+        );
+      } else {
+        const filter: Record<string, unknown> = { user_id: params.user_id };
+        if (enteredCursor !== null && canPushLte) {
+          const range = this.lteFilter("submitted_at", enteredCursor.submitted_at);
+          if (range !== undefined) {
+            Object.assign(filter, range);
+          }
+          // 无 lteFilter 时不能下推游标范围，靠 offset 累加 + 应用层键集跳过已见行。
+        }
+        batch = await this.historyBatch(params.predictions_collection, filter, offset);
       }
-      const batch = await this.query(params.predictions_collection, filter, {
-        order_by: "submitted_at",
-        direction: "desc",
-        limit: HISTORY_FETCH_SIZE,
-        offset,
-      });
-      if (batch.length === 0) break;
+      if (batch.length === 0) {
+        exhausted = true;
+        break;
+      }
       batch.sort(compareHistoryDesc);
       const candidates = batch.filter((document) => {
         const id = predictionIdOf(document);
@@ -342,12 +420,59 @@ export class CloudBaseWxDb implements CloudBaseDb {
         if (selected.length >= params.limit) break;
       }
       const last = batch[batch.length - 1]!;
-      const sameTimeCount = batch.filter((document) => asTime(document.submitted_at) === asTime(last.submitted_at)).length;
-      cursor = { submitted_at: new Date(asTime(last.submitted_at)), prediction_id: predictionIdOf(last) };
-      offset = sameTimeCount;
-      if (batch.length < HISTORY_FETCH_SIZE) break;
+      const lastMs = asTime(last.submitted_at);
+      const sameTimeCount = batch.filter((document) => asTime(document.submitted_at) === lastMs).length;
+      if (Number.isFinite(lastMs)) {
+        cursor = { submitted_at: new Date(lastMs), prediction_id: predictionIdOf(last) };
+      }
+      if (!canPushCompound) {
+        if (!canPushLte) {
+          offset += batch.length;
+        } else if (enteredCursorMs !== null && lastMs === enteredCursorMs) {
+          offset += sameTimeCount;
+        } else {
+          offset = sameTimeCount;
+        }
+      }
+      if (batch.length < HISTORY_FETCH_SIZE) {
+        exhausted = true;
+        break;
+      }
     }
-    return selected;
+    if (selected.length >= params.limit) {
+      return { documents: selected, exhausted: false, resumeCursor: null };
+    }
+    if (!exhausted) {
+      this.log?.({
+        event: "cloudbase_history_scan_cap_reached",
+        level: "warn",
+        collection: params.predictions_collection,
+        user_id: params.user_id,
+        league_id: params.league_id,
+        season_id: params.season_id,
+        batches,
+        history_max_batches: this.historyMaxBatches,
+        selected_count: selected.length,
+        requested_limit: params.limit,
+      });
+      return { documents: selected, exhausted: false, resumeCursor: cursor };
+    }
+    return { documents: selected, exhausted: true, resumeCursor: null };
+  }
+
+  private async historyBatch(
+    collection: string,
+    filter: Record<string, unknown>,
+    offset: number,
+  ): Promise<CloudBaseDocument[]> {
+    const result = await this.db.collection(collection)
+      .where(filter)
+      .orderBy("submitted_at", "desc")
+      .orderBy("prediction_id", "desc")
+      .skip(offset)
+      .limit(HISTORY_FETCH_SIZE)
+      .get();
+    return result.data ?? [];
   }
 
   /**
@@ -364,13 +489,18 @@ export class CloudBaseWxDb implements CloudBaseDb {
     const projection = Object.fromEntries(fields.map((field) => [field, true]));
     let offset = 0;
     let scanned = 0;
-    while (scanned < DISTINCT_MAX_ROWS) {
+    let exhausted = false;
+    while (scanned < this.distinctMaxRows) {
       let query = this.db.collection(collection);
       if (Object.keys(filter).length > 0) query = query.where(filter);
       if (typeof query.field === "function") query = query.field(projection);
+      if (typeof query.orderBy === "function") query = query.orderBy("_id", "asc");
       const result = await query.skip(offset).limit(PAGE_SIZE).get();
       const batch = result.data ?? [];
-      if (batch.length === 0) break;
+      if (batch.length === 0) {
+        exhausted = true;
+        break;
+      }
       scanned += batch.length;
       offset += batch.length;
       for (const document of batch) {
@@ -384,7 +514,20 @@ export class CloudBaseWxDb implements CloudBaseDb {
         seen.add(key);
         rows.push(dimension);
       }
-      if (batch.length < PAGE_SIZE) break;
+      if (batch.length < PAGE_SIZE) {
+        exhausted = true;
+        break;
+      }
+    }
+    if (!exhausted && scanned >= this.distinctMaxRows) {
+      this.log?.({
+        event: "cloudbase_distinct_scan_cap_reached",
+        level: "error",
+        collection,
+        scanned_rows: scanned,
+        distinct_max_rows: this.distinctMaxRows,
+        distinct_count: rows.length,
+      });
     }
     return rows;
   }
@@ -393,7 +536,7 @@ export class CloudBaseWxDb implements CloudBaseDb {
     if (this.transactionDb) return work(this);
     if (!("startTransaction" in this.db)) throw new Error("Cannot start a nested CloudBase transaction");
     const transaction = await (this.db as CloudBaseSdkDatabase).startTransaction();
-    const txDb = new CloudBaseWxDb(transaction, this.namespace, true, this.command);
+    const txDb = new CloudBaseWxDb(transaction, this.namespace, true, this.command, this.options);
     try {
       const result = await work(txDb);
       await transaction.commit();
@@ -455,6 +598,7 @@ export class CloudBaseWxDb implements CloudBaseDb {
 export function createCloudBaseWxDb(
   db: CloudBaseSdkDatabase,
   namespace: string,
+  options: CloudBaseWxDbOptions = {},
 ): CloudBaseWxDb {
-  return new CloudBaseWxDb(db, namespace, false, db.command);
+  return new CloudBaseWxDb(db, namespace, false, db.command, options);
 }

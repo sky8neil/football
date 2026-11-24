@@ -115,6 +115,14 @@ export function periodEndAt(
   );
 }
 
+/** 返回周期开始边界（北京时间周一 00:00 的 UTC instant）。 */
+export function periodStartAt(
+  periodType: PeriodTypeValue,
+  periodKey: string,
+): Date {
+  return new Date(periodEndAt(periodType, periodKey).getTime() - 7 * 24 * 60 * 60 * 1000);
+}
+
 function isLeapYear(year: number): boolean {
   return year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
 }

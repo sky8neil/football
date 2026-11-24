@@ -40,11 +40,27 @@ describe("shared mini program bottom navigation", () => {
   it.each([["matches", 0], ["rankings", 1], ["profile", 2]])("refreshes selection when cached %s page is shown", (name, index) => {
     let definition;
     const setData = vi.fn();
+    const storage = { pending_ranking_group_id: null, pending_ranking_target: null };
     runInNewContext(read(`pages/${name}/${name}.js`), {
       Page: (value) => { definition = value; },
-      require: () => ({ headerHeight: () => 88 }), wx: { getStorageSync: () => null },
+      require: (path) => path === "../../services/auth.js"
+        ? { getLoginGeneration: () => 0 }
+        : { headerHeight: () => 88 },
+      wx: {
+        getStorageSync: (key) => (key in storage ? storage[key] : null),
+        removeStorageSync: vi.fn(),
+      },
     });
-    const page = { getTabBar: () => ({ setData }), loadFirstPage: vi.fn(), loadPage: vi.fn(), loadRecentPredictions: vi.fn(), initialized: false };
+    const page = {
+      getTabBar: () => ({ setData }),
+      setData: vi.fn(),
+      resetLoginGeneration: vi.fn(),
+      forgetInvalidGroup: vi.fn(),
+      loadFirstPage: vi.fn(),
+      loadPage: vi.fn(),
+      loadRecentPredictions: vi.fn(),
+      initialized: false,
+    };
     definition.onShow.call(page);
     expect(setData).toHaveBeenCalledWith({ selected: index });
   });

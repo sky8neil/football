@@ -45,6 +45,10 @@ const LEVEL_LOCK_RENEW_BATCH_USERS = 20;
 const LEVEL_LOCK_RENEW_INTERVAL_MS = 2 * 60 * 1000;
 const WEEK_MILLISECONDS = 7 * 24 * 60 * 60 * 1000;
 
+function levelLeaseDeadline(anchor: Date): Date {
+  return new Date(Math.max(anchor.getTime(), Date.now()) + LEVEL_JOB_LEASE_MILLISECONDS);
+}
+
 export interface WeeklyLevelEvalOutcome {
   kind: "completed" | "skipped";
   as_of: Date;
@@ -56,7 +60,7 @@ export interface WeeklyLevelEvalOutcome {
   deferred_count?: number;
 }
 
-function isSettlementAlreadyRunning(error: unknown): error is DomainError {
+export function isSettlementAlreadyRunning(error: unknown): error is DomainError {
   return error instanceof DomainError && error.code === "SETTLEMENT_ALREADY_RUNNING";
 }
 
@@ -93,7 +97,23 @@ export async function listDueSeasonFinalIds(
     if (asOf.getTime() < seasonFinalEvalAsOf(seasonId).getTime()) continue;
     if ((await repo.boardSnapshots.findFinalBySeason(seasonId)).length > 0) continue;
     const stats = await repo.userSeasonStats.findByLevelSeason(seasonId);
-    if (stats.length === 0 || stats.some((row) => row.is_level_frozen !== true)) continue;
+    if (stats.length === 0) continue;
+    let blockedByActiveUnfrozen = false;
+    const checkedActiveUsers = new Map<string, boolean>();
+    for (const row of stats) {
+      if (row.is_level_frozen === true) continue;
+      let isActive = checkedActiveUsers.get(row.user_id);
+      if (isActive === undefined) {
+        const owner = await repo.users.findById(row.user_id);
+        isActive = owner?.status === UserStatus.Active;
+        checkedActiveUsers.set(row.user_id, isActive);
+      }
+      if (isActive) {
+        blockedByActiveUnfrozen = true;
+        break;
+      }
+    }
+    if (blockedByActiveUnfrozen) continue;
     due.push(seasonId);
   }
   return due;
@@ -271,8 +291,7 @@ export class WeeklyLevelEvalService {
     }
 
     const ownerId = newUuid();
-    const leaseDeadline = (): Date =>
-      new Date(Math.max(serverNow.getTime(), Date.now()) + LEVEL_JOB_LEASE_MILLISECONDS);
+    const leaseDeadline = (): Date => levelLeaseDeadline(serverNow);
     const acquired = await this.repo.jobLocks.acquire(
       WEEKLY_LEVEL_EVAL_LOCK_KEY,
       ownerId,
@@ -301,7 +320,17 @@ export class WeeklyLevelEvalService {
     try {
       const { LevelCorrectionReevalService } = await import("./level-correction-reeval.js");
       const correctionReeval = new LevelCorrectionReevalService(this.repo, this.firstEvalAsOf);
-      await correctionReeval.runPendingBefore(asOf, serverNow);
+      const renewWeeklyLock = async (): Promise<void> => {
+        const renewed = await this.repo.jobLocks.renew(
+          WEEKLY_LEVEL_EVAL_LOCK_KEY,
+          ownerId,
+          leaseDeadline(),
+        );
+        if (!renewed) {
+          throw new Error("weekly level eval lock lost during correction reeval");
+        }
+      };
+      await correctionReeval.runPendingBefore(asOf, serverNow, renewWeeklyLock);
       const users = await this.repo.users.findAll();
       let processedActiveUsers = 0;
       let lastRenewWallMs = Date.now();
@@ -411,7 +440,11 @@ export class WeeklyLevelEvalService {
           }
         }
       }
-      await correctionReeval.runPending(asOf, serverNow);
+      const weeklyComplete =
+        failedCount === 0 && settlementSkippedCount === 0 && deferredCount === 0;
+      if (weeklyComplete) {
+        await correctionReeval.runPending(asOf, serverNow, renewWeeklyLock);
+      }
       outcome = {
         kind: "completed",
         as_of: asOf,
@@ -425,8 +458,10 @@ export class WeeklyLevelEvalService {
     } finally {
       await this.repo.jobLocks.release(WEEKLY_LEVEL_EVAL_LOCK_KEY, ownerId);
     }
-    await new BoardSnapshotService(this.repo).generate(RankingBoard.Strength, serverNow);
-    await generateDueSeasonFinals(this.repo, asOf, serverNow);
+    if (failedCount === 0 && settlementSkippedCount === 0 && deferredCount === 0) {
+      await new BoardSnapshotService(this.repo).generate(RankingBoard.Strength, serverNow);
+      await generateDueSeasonFinals(this.repo, asOf, serverNow);
+    }
     return outcome;
   }
 
@@ -440,7 +475,7 @@ export class WeeklyLevelEvalService {
     if (!(await this.repo.jobLocks.acquire(
       lockKey,
       ownerId,
-      new Date(changedAt.getTime() + LEVEL_JOB_LEASE_MILLISECONDS),
+      levelLeaseDeadline(changedAt),
     ))) {
       return { evaluated: false, changed: false, skipped: false, deferred: true };
     }
@@ -520,7 +555,7 @@ export class WeeklyLevelEvalService {
       if (!(await this.repo.jobLocks.acquire(
         lockKey,
         ownerId,
-        new Date(changedAt.getTime() + LEVEL_JOB_LEASE_MILLISECONDS),
+        levelLeaseDeadline(changedAt),
       ))) {
         results.push({
           evaluated: false,

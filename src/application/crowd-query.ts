@@ -5,6 +5,7 @@ import { isValidUuid } from "../domain/ids.js";
 import { crowdStatus, roundDistribution } from "../domain/crowd-distribution.js";
 import type { CrowdStatus } from "../domain/crowd-distribution.js";
 import type { AppRepository } from "../infrastructure/repositories.js";
+import { resolveLatestMatchView } from "./match-identity.js";
 import { assertValidServerNow } from "./period-finalize.js";
 
 export interface CrowdQueryInput {
@@ -34,6 +35,9 @@ export class CrowdQueryService {
     if (match === null) {
       throw notFoundError("MATCH");
     }
+    const effectiveMatch = match.superseded_by == null
+      ? match
+      : await resolveLatestMatchView(this.repo.matches, match);
 
     const userId = input.authenticated_user_id;
     if (typeof userId !== "string" || userId.length === 0) {
@@ -53,7 +57,7 @@ export class CrowdQueryService {
     }
 
     const initialStatus = crowdStatus({
-      match,
+      match: effectiveMatch,
       predictionCount: 0,
       serverNow: input.server_now,
     });
@@ -62,10 +66,10 @@ export class CrowdQueryService {
     }
 
     const counts = await this.repo.predictions.countByMatchGroupedByResult(
-      match.canonical_match_id ?? match.match_id,
+      effectiveMatch.canonical_match_id ?? effectiveMatch.match_id,
     );
     const predictionCount = counts.HOME + counts.DRAW + counts.AWAY;
-    const status = crowdStatus({ match, predictionCount, serverNow: input.server_now });
+    const status = crowdStatus({ match: effectiveMatch, predictionCount, serverNow: input.server_now });
     return this.mapResult(
       input.match_id,
       status,

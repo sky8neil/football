@@ -12,6 +12,9 @@ function fakeDb(): CloudBaseDb {
     async getCounter() { return 0; },
     async adjustCounter() {},
     async reserveCounter() { return true; },
+    async acquireJobLock() { return true; },
+    async renewJobLock() { return true; },
+    async releaseJobLock() {},
     async transaction(work) { return work(impl); },
   };
   return impl;
@@ -173,6 +176,19 @@ describe("createCountingDb", () => {
       read: 1,
       write: 1,
       by_collection: [{ collection: "provider_snaps", read: 1, write: 1 }],
+    });
+  });
+
+  it("counts acquireJobLock, renewJobLock, and releaseJobLock as writes", async () => {
+    const { db, counter } = createCountingDb(fakeDb());
+    counter.begin();
+    await db.acquireJobLock?.("job_locks", "k1", { _id: "k1" }, new Date());
+    await db.renewJobLock?.("job_locks", "k1", "o1", new Date(), new Date());
+    await db.releaseJobLock?.("job_locks", "k1", "o1");
+    expect(counter.end()).toEqual({
+      read: 0,
+      write: 3,
+      by_collection: [{ collection: "job_locks", read: 0, write: 3 }],
     });
   });
 });

@@ -162,6 +162,18 @@ export class ProfileMutationService {
         updated_at: serverNow,
       });
 
+      if (tx.userSeasonStats !== undefined) {
+        const seasonStats = await tx.userSeasonStats.findByUser(userId);
+        for (const stats of seasonStats) {
+          if (stats.is_level_frozen) continue;
+          await tx.userSeasonStats.update({
+            ...stats,
+            is_level_frozen: true,
+            updated_at: serverNow,
+          });
+        }
+      }
+
       return { user_id: user.user_id, deleted: true };
     });
   }

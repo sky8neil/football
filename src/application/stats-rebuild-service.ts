@@ -4,6 +4,7 @@ import {
   MatchScoreValue,
   SCHEMA_VERSION,
   SettlementItemStatus,
+  UserStatus,
 } from "../domain/enums.js";
 import { FIXED_CONFIG_V1 } from "../domain/config.js";
 import { conflictError, notFoundError } from "../domain/errors.js";
@@ -29,6 +30,7 @@ import {
   invalidLedger,
   loadAppliedSettlementFacts,
 } from "./rebuild-service-support.js";
+import { resolveEffectiveMatchesByIds } from "./match-identity.js";
 import { assertValidServerNow } from "./period-finalize.js";
 import {
   defaultLevelState,
@@ -160,6 +162,41 @@ function storedLevelState(replay: ReplayLevelResult, existing: LevelState | unde
 
 function levelStatesEqual(left: LevelState | undefined, right: LevelState): boolean {
   return JSON.stringify(left ?? defaultLevelState()) === JSON.stringify(right);
+}
+
+export function resolveScopeReplayUntilAsOf(params: {
+  scope: LevelScope;
+  serverNow: Date;
+  user: User;
+  levelSeasonId?: string;
+  isLevelFrozen: boolean;
+  lastEvalAsOf: Date | null;
+}): Date {
+  const isDeleted = params.user.status !== UserStatus.Active;
+  if (params.scope === LevelScope.Career && !isDeleted) {
+    return params.serverNow;
+  }
+  if (params.scope === LevelScope.Season && !isDeleted && !params.isLevelFrozen) {
+    return params.serverNow;
+  }
+
+  let until = params.serverNow;
+  if (params.scope === LevelScope.Season && params.levelSeasonId !== undefined) {
+    until = new Date(
+      Math.min(until.getTime(), seasonFinalEvalAsOf(params.levelSeasonId).getTime()),
+    );
+  }
+  if (isDeleted) {
+    const deletedAt = params.user.deleted_at ?? params.serverNow;
+    until = new Date(Math.min(until.getTime(), deletedAt.getTime()));
+    if (params.lastEvalAsOf === null) {
+      return new Date(0);
+    }
+  }
+  if (params.lastEvalAsOf !== null) {
+    until = new Date(Math.min(until.getTime(), params.lastEvalAsOf.getTime()));
+  }
+  return until;
 }
 
 function replayScope(params: {
@@ -298,22 +335,28 @@ export class RebuildUserStatsService {
     }
 
     const predictions = await tx.predictions.findByUser(userId);
+    const effectiveMatches = await resolveEffectiveMatchesByIds(
+      tx.matches,
+      predictions.map((prediction) => prediction.match_id),
+    );
     for (const prediction of predictions) {
-      const match = await tx.matches.findById(prediction.match_id);
-      if (match === null) {
+      const effectiveMatch = effectiveMatches.get(prediction.match_id) ?? null;
+      if (effectiveMatch === null) {
         throw invalidLedger(`prediction 缺少 match（prediction_id=${prediction.prediction_id}）`);
       }
-      if (activeSettlement(match)) {
+      if (activeSettlement(effectiveMatch)) {
         throw conflictError(
           "SETTLEMENT_ALREADY_RUNNING",
           "目标用户存在正在结算的比赛",
-          { match_id: match.match_id },
+          { match_id: effectiveMatch.match_id },
         );
       }
     }
 
-    const appliedItems = (await tx.settlementItems.findByStatus(SettlementItemStatus.Applied))
-      .filter((item) => item.user_id === userId);
+    const appliedItems = tx.settlementItems.findByUserAndStatus !== undefined
+      ? await tx.settlementItems.findByUserAndStatus(userId, SettlementItemStatus.Applied)
+      : (await tx.settlementItems.findByStatus(SettlementItemStatus.Applied))
+          .filter((item) => item.user_id === userId);
     const facts = await loadAppliedSettlementFacts(tx, appliedItems);
     const levelSeasonByPrediction = new Map(
       facts.map((fact) => {
@@ -338,22 +381,41 @@ export class RebuildUserStatsService {
     };
     const history = await tx.levelHistory.findByUser(userId);
     const createdLevelHistory: LevelHistoryEntry[] = [];
+    const isDeleted = user.status !== UserStatus.Active;
 
     const careerBestFloor = Math.max(
       user.career_best_level,
       maxHistoryLevel(history, LevelScope.Career, null),
     );
-    const careerLevel = replayScope({
+    const computedCareerLevel = replayScope({
       scope: LevelScope.Career,
       facts: replayFacts.facts,
       correctionSettledAts: replayFacts.correctionSettledAts,
       firstEvalAsOf: this.firstEvalAsOf,
-      untilAsOf: serverNow,
+      untilAsOf: resolveScopeReplayUntilAsOf({
+        scope: LevelScope.Career,
+        serverNow,
+        user,
+        isLevelFrozen: false,
+        lastEvalAsOf: user.career_level_state?.last_eval_as_of ?? null,
+      }),
       currentLevel: user.career_level,
       currentBestLevel: user.career_best_level,
       currentLevelState: user.career_level_state,
       bestFloor: careerBestFloor,
     });
+    // 已注销用户只重算统计数字：等级、最佳等级与等级状态原样保留。
+    const careerLevel = isDeleted
+      ? {
+          replay: {
+            ...computedCareerLevel.replay,
+            level: user.career_level,
+            best_level: user.career_best_level,
+          },
+          levelState: user.career_level_state ?? defaultLevelState(),
+          bestLevel: user.career_best_level,
+        }
+      : computedCareerLevel;
     if (careerLevel.replay.level !== user.career_level) {
       const inputs = careerLevel.replay.last_inputs ?? {
         n: 0,
@@ -427,21 +489,36 @@ export class RebuildUserStatsService {
         oldStats.best_level,
         maxHistoryLevel(history, LevelScope.Season, seasonId),
       );
-      const level = replayScope({
+      const isFrozen = oldStats.is_level_frozen === true;
+      const computedLevel = replayScope({
         scope: LevelScope.Season,
         facts: replayFacts.facts,
         correctionSettledAts: replayFacts.correctionSettledAts,
         firstEvalAsOf: this.firstEvalAsOf,
-        untilAsOf: serverNow,
+        untilAsOf: resolveScopeReplayUntilAsOf({
+          scope: LevelScope.Season,
+          serverNow,
+          user,
+          levelSeasonId: seasonId,
+          isLevelFrozen: isFrozen,
+          lastEvalAsOf: oldStats.level_state?.last_eval_as_of ?? null,
+        }),
         currentLevel: oldStats.level,
         currentBestLevel: oldStats.best_level,
         currentLevelState: oldStats.level_state,
         bestFloor,
         levelSeasonId: seasonId,
-        isLevelFrozen: oldStats.is_level_frozen ?? false,
+        isLevelFrozen: isFrozen,
       });
-      if (level.replay.level !== oldStats.level) {
-        const inputs = level.replay.last_inputs ?? {
+      // 已注销用户与已冻结赛季只更新统计数字，等级/状态保持持久化值。
+      const preserveLevelState = isFrozen || isDeleted;
+      const nextLevel = preserveLevelState ? oldStats.level : computedLevel.replay.level;
+      const nextBestLevel = preserveLevelState ? oldStats.best_level : computedLevel.bestLevel;
+      const nextLevelState = preserveLevelState
+        ? (oldStats.level_state ?? defaultLevelState())
+        : computedLevel.levelState;
+      if (!preserveLevelState && computedLevel.replay.level !== oldStats.level) {
+        const inputs = computedLevel.replay.last_inputs ?? {
           n: 0,
           S: 0,
           b_points: 0,
@@ -452,9 +529,9 @@ export class RebuildUserStatsService {
           LevelScope.Season,
           seasonId,
           oldStats.level,
-          level.replay.level,
+          computedLevel.replay.level,
           inputs,
-          level.replay.last_eval_as_of ?? serverNow,
+          computedLevel.replay.last_eval_as_of ?? serverNow,
           serverNow,
         );
         await tx.levelHistory.insert(entry);
@@ -469,15 +546,15 @@ export class RebuildUserStatsService {
         wdl_hits: target.wdl_hits,
         exact_hits: target.exact_hits,
         last_scoring_match_at: target.last_scoring_match_at,
-        level: level.replay.level,
-        best_level: level.bestLevel,
-        level_state: level.levelState,
+        level: nextLevel,
+        best_level: nextBestLevel,
+        level_state: nextLevelState,
         updated_at: serverNow,
       };
       levelStateChanged ||=
         oldStats.level !== updated.level ||
         oldStats.best_level !== updated.best_level ||
-        !levelStatesEqual(oldStats.level_state, level.levelState);
+        !levelStatesEqual(oldStats.level_state, nextLevelState);
       assertSeasonStatsInvariants(updated);
       if (existingSeasonIds.has(seasonId)) {
         await tx.userSeasonStats.update(updated);

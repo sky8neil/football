@@ -7,9 +7,10 @@ import {
 import { UserStatus } from "../domain/enums.js";
 import { conflictError, internalError, notFoundError, validationError } from "../domain/errors.js";
 import { isValidUuid } from "../domain/ids.js";
-import type { Match } from "../domain/types.js";
+import type { Match, Team } from "../domain/types.js";
 import type { AppRepository } from "../infrastructure/repositories.js";
 import { assertLeagueSeasonAttached } from "./league-season-validation.js";
+import { fetchByIds, resolveEffectiveMatchesByIds } from "./match-identity.js";
 
 export interface PredictionDetailData {
   prediction_id: string;
@@ -40,6 +41,8 @@ export interface PredictionHistoryItem extends PredictionDetailData {
   round_id: string;
   home_team_id: string;
   away_team_id: string;
+  home_team: { team_id: string; name: string };
+  away_team: { team_id: string; name: string };
   kickoff_at: string;
 }
 
@@ -250,7 +253,9 @@ export class PredictionHistoryQueryService {
   private readonly cursorCodec: PredictionHistoryCursorCodec;
 
   constructor(
-    private readonly repo: Pick<AppRepository, "users" | "predictions" | "matches">,
+    private readonly repo: Pick<AppRepository, "users" | "predictions" | "matches"> & {
+      teams?: AppRepository["teams"];
+    },
     cursorSecret: string,
   ) {
     this.cursorCodec = new PredictionHistoryCursorCodec(cursorSecret);
@@ -285,23 +290,44 @@ export class PredictionHistoryQueryService {
     const resolvedLeagueId = input.league_id ?? cursor?.league_id ?? null;
     const resolvedSeasonId = input.season_id ?? cursor?.season_id ?? null;
 
-    const rows = await this.repo.predictions.findHistoryPage({
+    const historyParams = {
       user_id: userId,
       league_id: resolvedLeagueId,
       season_id: resolvedSeasonId,
       cursor: cursor === null ? null : { submitted_at: new Date(cursor.submitted_at), prediction_id: cursor.prediction_id },
       limit: input.limit + 1,
-    });
-    const hasMore = rows.length > input.limit;
+    };
+    const resumePage = this.repo.predictions.findHistoryPageWithScanResume === undefined
+      ? null
+      : await this.repo.predictions.findHistoryPageWithScanResume(historyParams);
+    const rows = resumePage === null
+      ? await this.repo.predictions.findHistoryPage(historyParams)
+      : resumePage.predictions;
+    const hasMore = rows.length > input.limit
+      || (resumePage !== null && !resumePage.exhausted && resumePage.resume_cursor !== null);
     const page = rows.slice(0, input.limit);
 
+    const effectiveMatches = await resolveEffectiveMatchesByIds(
+      this.repo.matches,
+      page.map((prediction) => prediction.match_id),
+    );
+    const teamIds: string[] = [];
+    for (const prediction of page) {
+      const match = effectiveMatches.get(prediction.match_id);
+      if (match !== undefined) {
+        teamIds.push(match.home_team_id, match.away_team_id);
+      }
+    }
+    const teamsById = this.repo.teams === undefined
+      ? new Map<string, Team>()
+      : await fetchByIds(this.repo.teams, teamIds);
     const items: PredictionHistoryItem[] = [];
     for (const prediction of page) {
       if (prediction.user_id !== userId) {
         throw internalError(`prediction 归属不一致（prediction_id=${prediction.prediction_id}）`);
       }
       assertValidDate(prediction.submitted_at, "submitted_at");
-      const match = await resolveEffectiveMatch(this.repo.matches, prediction.match_id);
+      const match = effectiveMatches.get(prediction.match_id) ?? null;
       if (match === null) {
         throw internalError(`prediction 缺少对应 match（prediction_id=${prediction.prediction_id}）`);
       }
@@ -320,6 +346,14 @@ export class PredictionHistoryQueryService {
         round_id: match.round_id,
         home_team_id: match.home_team_id,
         away_team_id: match.away_team_id,
+        home_team: {
+          team_id: match.home_team_id,
+          name: teamsById.get(match.home_team_id)?.name ?? "",
+        },
+        away_team: {
+          team_id: match.away_team_id,
+          name: teamsById.get(match.away_team_id)?.name ?? "",
+        },
         kickoff_at: match.kickoff_at.toISOString(),
         pred_home_score: prediction.pred_home_score,
         pred_away_score: prediction.pred_away_score,
@@ -336,15 +370,21 @@ export class PredictionHistoryQueryService {
     }
 
     const last = page.at(-1);
+    const resumeCursor = rows.length > input.limit
+      ? (last === undefined ? null : {
+          submitted_at: last.submitted_at,
+          prediction_id: last.prediction_id,
+        })
+      : resumePage?.resume_cursor ?? null;
     return {
       items,
       has_more: hasMore,
-      next_cursor: hasMore && last !== undefined
+      next_cursor: hasMore && resumeCursor !== null
         ? this.cursorCodec.encode({
             league_id: resolvedLeagueId,
             season_id: resolvedSeasonId,
-            submitted_at: last.submitted_at.toISOString(),
-            prediction_id: last.prediction_id,
+            submitted_at: resumeCursor.submitted_at.toISOString(),
+            prediction_id: resumeCursor.prediction_id,
           })
         : null,
     };

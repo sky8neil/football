@@ -121,4 +121,25 @@ describe("createPostgresAuthSessionStore", () => {
     ]);
     await expect(store.deleteExpiredBefore!(new Date("invalid"))).rejects.toThrow(/valid Date/);
   });
+
+  it("[Slice 2] deletes expired sessions with a bounded LIMIT subquery", async () => {
+    const cutoff = new Date(NOW.getTime() - 7 * 24 * 60 * 60 * 1000);
+    const calls: { sql: string; params: unknown[] }[] = [];
+    const query: PostgresQueryFn = vi.fn(async (sql, params = []) => {
+      calls.push({ sql, params });
+      return { rows: [], rowCount: 500 };
+    });
+    const store = createPostgresAuthSessionStore(query, SCHEMA);
+    const table = qualifiedTable(SCHEMA, AUTH_SESSIONS_TABLE);
+
+    const deleted = await store.deleteExpiredBefore!(cutoff, { limit: 500 });
+
+    expect(deleted).toBe(500);
+    expect(calls).toEqual([
+      {
+        sql: `DELETE FROM ${table} WHERE token IN (SELECT token FROM ${table} WHERE expires_at < $1 LIMIT $2)`,
+        params: [cutoff, 500],
+      },
+    ]);
+  });
 });

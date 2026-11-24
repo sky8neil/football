@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { MatchStatus, UserStatus } from "../domain/enums.js";
+import { MatchStatus, SettlementStatus, UserStatus } from "../domain/enums.js";
 import type { Match, Prediction, Team, User } from "../domain/types.js";
 import { InMemoryRepository } from "../infrastructure/repositories.js";
 import { newUuid } from "../domain/ids.js";
@@ -608,5 +608,183 @@ describe("MatchQueryService", () => {
     expect(listedItem?.my_prediction?.prediction_id).toBe(prediction.prediction_id);
     expect(listedItem?.can_predict_reason).toBe("ALREADY_SUBMITTED");
     expect(detail.can_predict_reason).toBe("ALREADY_SUBMITTED");
+  });
+
+  it("queries upcoming-season matches within window before UTC Jul 1 / Jan 1 rollover and narrows to requested league", async () => {
+    const repo = await seedRepository();
+    const plNextSeason = makeMatch(MATCH_A, new Date("2027-07-10T14:00:00.000Z"), {
+      league_id: "premier_league",
+      season_id: "2027_2028",
+    });
+    const cslNextSeason = makeMatch(MATCH_B, new Date("2028-01-10T11:30:00.000Z"), {
+      league_id: "chinese_super_league",
+      season_id: "2028",
+    });
+    await repo.matches.insert(plNextSeason);
+    await repo.matches.insert(cslNextSeason);
+
+    const baseMatches = repo.matches;
+    const calledSeasons: string[] = [];
+    const service = new MatchQueryService({
+      ...repo,
+      matches: {
+        ...baseMatches,
+        findBySeason: async (seasonId) => {
+          calledSeasons.push(seasonId);
+          return baseMatches.findBySeason(seasonId);
+        },
+        findBySeasonInWindow: async (seasonId, from, to) => {
+          calledSeasons.push(seasonId);
+          return baseMatches.findBySeasonInWindow!(seasonId, from, to);
+        },
+      },
+      teams: repo.teams,
+      users: repo.users,
+      predictions: repo.predictions,
+    }, "test-match-cursor-secret");
+
+    const juneResult = await service.list({
+      from: null,
+      to: null,
+      status: null,
+      league_id: "premier_league",
+      limit: 20,
+      cursor: null,
+      server_now: new Date("2027-06-15T12:00:00.000Z"),
+      authenticated_user_id: USER_ID,
+    });
+    expect(juneResult.items.map((item) => item.match_id)).toEqual([MATCH_A]);
+    expect(calledSeasons).toContain("2027_2028");
+    expect(calledSeasons).not.toContain("2027");
+
+    calledSeasons.length = 0;
+    const decResult = await service.list({
+      from: null,
+      to: null,
+      status: null,
+      league_id: "chinese_super_league",
+      limit: 20,
+      cursor: null,
+      server_now: new Date("2027-12-15T12:00:00.000Z"),
+      authenticated_user_id: USER_ID,
+    });
+    expect(decResult.items.map((item) => item.match_id)).toEqual([MATCH_B]);
+    expect(calledSeasons).toContain("2028");
+    expect(calledSeasons).not.toContain("2027_2028");
+  });
+
+  it("get reads latest settled state and my_prediction score from superseded match chain while keeping can_predict=false", async () => {
+    const repo = await seedRepository();
+    const mOld = makeMatch(MATCH_A, new Date("2026-08-09T13:00:00.000Z"), {
+      match_status: MatchStatus.Scheduled,
+      superseded_by: null,
+      settlement_status: SettlementStatus.Pending,
+      result_version: 0,
+    });
+    const mNew = makeMatch(MATCH_B, new Date("2026-08-10T13:00:00.000Z"), {
+      canonical_match_id: MATCH_A,
+      superseded_by: null,
+      match_status: MatchStatus.Finished,
+      regular_home_score: 2,
+      regular_away_score: 1,
+      settlement_status: SettlementStatus.Settled,
+      result_version: 1,
+      settled_result_version: 1,
+    });
+    const prediction: Prediction = {
+      ...makePrediction(MATCH_A),
+      canonical_match_id: MATCH_A,
+      pred_home_score: 2,
+      pred_away_score: 1,
+      applied_result_version: 1,
+      match_score: 12,
+      wdl_hit: true,
+      exact_hit: true,
+    };
+    await repo.matches.insert(mOld);
+    await repo.matches.insert(mNew);
+    await repo.matches.update({
+      ...mOld,
+      match_status: MatchStatus.Postponed,
+      superseded_by: MATCH_B,
+      updated_at: new Date("2026-08-09T13:05:00.000Z"),
+    });
+    await repo.predictions.insert(prediction);
+
+    const detail = await new MatchQueryService(repo, "test-match-cursor-secret").get(
+      MATCH_A,
+      USER_ID,
+      NOW,
+    );
+    expect(detail.match_id).toBe(MATCH_A);
+    expect(detail.match_status).toBe(MatchStatus.Finished);
+    expect(detail.settlement_status).toBe("settled");
+    expect(detail.regular_home_score).toBe(2);
+    expect(detail.regular_away_score).toBe(1);
+    expect(detail.can_predict).toBe(false);
+    expect(detail.can_predict_reason).toBe("ALREADY_SUBMITTED");
+    expect(detail.my_prediction).toMatchObject({
+      prediction_id: prediction.prediction_id,
+      match_score: 12,
+      wdl_hit: true,
+      exact_hit: true,
+    });
+
+    const anonDetail = await new MatchQueryService(repo, "test-match-cursor-secret").get(
+      MATCH_A,
+      null,
+      new Date("2026-08-09T12:00:00.000Z"),
+    );
+    expect(anonDetail.can_predict).toBe(false);
+    expect(anonDetail.can_predict_reason).toBe("AUTH_REQUIRED");
+
+    const openEffective = makeMatch("00000000-0000-4000-8000-0000000000c1", new Date("2026-08-12T14:00:00.000Z"), {
+      canonical_match_id: "00000000-0000-4000-8000-0000000000c2",
+    });
+    const closedOld = makeMatch("00000000-0000-4000-8000-0000000000c2", new Date("2026-08-12T14:00:00.000Z"));
+    await repo.matches.insert(openEffective);
+    await repo.matches.insert(closedOld);
+    await repo.matches.update({
+      ...closedOld,
+      match_status: MatchStatus.Postponed,
+      superseded_by: openEffective.match_id,
+      updated_at: NOW,
+    });
+    const otherUserDetail = await new MatchQueryService(repo, "test-match-cursor-secret").get(
+      closedOld.match_id,
+      USER_ID,
+      NOW,
+    );
+    expect(otherUserDetail.can_predict).toBe(false);
+    expect(otherUserDetail.can_predict_reason).toBe("NOT_SCHEDULED");
+  });
+
+  it("[Slice 3.3] list fetches page teams in one teams.findByIds batch instead of N+1 findById calls", async () => {
+    const repo = await seedRepository();
+    await repo.matches.insert(makeMatch(MATCH_A, new Date("2026-08-09T13:00:00.000Z")));
+    await repo.matches.insert(makeMatch(MATCH_B, new Date("2026-08-09T14:00:00.000Z")));
+    const teams = repo.teams;
+    const findByIdSpy = vi.spyOn(teams, "findById");
+    const findByIdsSpy = vi.fn(teams.findByIds!);
+    teams.findByIds = findByIdsSpy;
+    const repoProxy = new Proxy(repo, {
+      get(target, prop, receiver) {
+        if (prop === "teams") return teams;
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const service = new MatchQueryService(repoProxy, "test-match-cursor-secret");
+    const result = await service.list({
+      from: null,
+      to: null,
+      status: null,
+      limit: 20,
+      cursor: null,
+      server_now: NOW,
+      authenticated_user_id: null,
+    });
+    expect(result.items).toHaveLength(2);
+    expect(findByIdsSpy).toHaveBeenCalledTimes(1);
+    expect(findByIdSpy).not.toHaveBeenCalled();
   });
 });

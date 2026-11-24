@@ -1209,7 +1209,6 @@ components:
           $ref: '#/components/schemas/LeagueId'
         season_id:
           type: string
-          enum: [2026_2027, '2026']
         round_id:
           type: string
         home_team:
@@ -1316,7 +1315,6 @@ components:
           $ref: '#/components/schemas/LeagueId'
         season_id:
           type: string
-          enum: [2026_2027, '2026']
         round_id:
           type: string
         home_team:
@@ -2176,7 +2174,7 @@ components:
     PredictionHistoryItem:
       type: object
       additionalProperties: false
-      required: [prediction_id, match_id, league_id, season_id, round_id, home_team_id, away_team_id, kickoff_at, pred_home_score, pred_away_score, derived_result, submitted_at, scoring_rule_version, match_status, regular_home_score, regular_away_score, match_score, wdl_hit, exact_hit]
+      required: [prediction_id, match_id, league_id, season_id, round_id, home_team_id, away_team_id, home_team, away_team, kickoff_at, pred_home_score, pred_away_score, derived_result, submitted_at, scoring_rule_version, match_status, regular_home_score, regular_away_score, match_score, wdl_hit, exact_hit]
       properties:
         prediction_id:
           type: string
@@ -2188,7 +2186,6 @@ components:
           $ref: '#/components/schemas/LeagueId'
         season_id:
           type: string
-          enum: [2026_2027, '2026']
         round_id:
           type: string
         home_team_id:
@@ -2197,6 +2194,10 @@ components:
         away_team_id:
           type: string
           format: uuid
+        home_team:
+          $ref: '#/components/schemas/MatchTeam'
+        away_team:
+          $ref: '#/components/schemas/MatchTeam'
         kickoff_at:
           type: string
           format: date-time

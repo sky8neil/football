@@ -2,10 +2,11 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import {
   FIXED_CONFIG_V1,
   SUPPORTED_LEAGUES,
-  activeSeasonIds,
   findSupportedLeagueById,
   isSupportedLeagueId,
+  windowSeasonIds,
 } from "../domain/config.js";
+import { fetchByIds, resolveLatestMatchView } from "./match-identity.js";
 import { MatchStatus, SettlementStatus, UserStatus, type MatchStatus as MatchStatusValue } from "../domain/enums.js";
 import {
   canSubmitPrediction,
@@ -386,8 +387,10 @@ export class MatchQueryService {
       user = await this.repo.users.findById(userId);
     }
 
+    const targetLeague = window.league_id === null ? undefined : findSupportedLeagueById(window.league_id);
+    const leaguesToQuery = targetLeague !== undefined ? [targetLeague] : SUPPORTED_LEAGUES;
     const seasonIds = [
-      ...new Set(SUPPORTED_LEAGUES.flatMap((row) => activeSeasonIds(row, input.server_now))),
+      ...new Set(leaguesToQuery.flatMap((row) => windowSeasonIds(row, window.from, window.to))),
     ];
     const matchesRepo = requireMatches(this.repo);
     const loadedMatches: Match[] = [];
@@ -435,10 +438,12 @@ export class MatchQueryService {
         predictionsByCanonical.set(prediction.canonical_match_id, prediction);
       }
     }
+    const teamIds = page.flatMap((match) => [match.home_team_id, match.away_team_id]);
+    const teamsById = await fetchByIds(teams, teamIds);
     const items: MatchListItem[] = [];
     for (const match of page) {
-      const homeTeam = await teams.findById(match.home_team_id);
-      const awayTeam = await teams.findById(match.away_team_id);
+      const homeTeam = teamsById.get(match.home_team_id) ?? null;
+      const awayTeam = teamsById.get(match.away_team_id) ?? null;
       const prediction = user === null
         ? null
         : predictionsByCanonical.get(match.canonical_match_id ?? match.match_id) ?? null;
@@ -478,6 +483,18 @@ export class MatchQueryService {
       throw notFoundError("MATCH");
     }
     assertMatch(match);
+    const effectiveMatch = match.superseded_by == null
+      ? match
+      : await resolveLatestMatchView(this.repo.matches, match);
+    assertMatch(effectiveMatch);
+    const viewMatch: Match = effectiveMatch.match_id === match.match_id
+      ? effectiveMatch
+      : {
+          ...effectiveMatch,
+          match_id: match.match_id,
+          canonical_match_id: effectiveMatch.canonical_match_id ?? match.canonical_match_id,
+          superseded_by: match.superseded_by,
+        };
 
     let user: User | null = null;
     if (authenticatedUserId !== null && authenticatedUserId !== undefined) {
@@ -490,16 +507,17 @@ export class MatchQueryService {
     }
 
     const teams = requireTeams(this.repo);
-    const homeTeam = await teams.findById(match.home_team_id);
-    const awayTeam = await teams.findById(match.away_team_id);
+    const teamsById = await fetchByIds(teams, [viewMatch.home_team_id, viewMatch.away_team_id]);
+    const homeTeam = teamsById.get(viewMatch.home_team_id) ?? null;
+    const awayTeam = teamsById.get(viewMatch.away_team_id) ?? null;
     const prediction =
       user === null
         ? null
         : await this.repo.predictions.findByUserAndCanonicalMatch(
             user.user_id,
-            match.canonical_match_id ?? match.match_id,
+            viewMatch.canonical_match_id ?? viewMatch.match_id,
           );
 
-    return toItem(match, homeTeam, awayTeam, user, prediction, serverNow);
+    return toItem(viewMatch, homeTeam, awayTeam, user, prediction, serverNow);
   }
 }

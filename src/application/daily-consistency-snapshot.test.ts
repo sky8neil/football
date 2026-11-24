@@ -1,3 +1,4 @@
+import { calculatePeriodKey } from "../domain/time.js";
 import { FIXED_CONFIG_V1 } from "../domain/config.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -309,6 +310,35 @@ describe("RepositoryDailyConsistencySnapshotSource", () => {
         last_scoring_match_at: new Date("2026-08-08T06:00:00.000Z"),
         global_rank: 1,
       }),
+    }));
+  });
+
+  it("[Slice 2] 优先用 findWeekEntriesSince 读取周榜而非全表 findAll", async () => {
+    const repo = await setup();
+    const baseRankings = repo.rankings;
+    const calls: Array<{ minPeriodKey: string; includeUnfinalized: boolean | undefined }> = [];
+    Object.defineProperty(repo, "rankings", {
+      configurable: true,
+      value: {
+        ...baseRankings,
+        findWeekEntriesSince: async (
+          minPeriodKey: string,
+          includeUnfinalized?: boolean,
+        ) => {
+          calls.push({ minPeriodKey, includeUnfinalized });
+          return baseRankings.findWeekEntriesSince!(minPeriodKey, includeUnfinalized);
+        },
+      },
+    });
+
+    const snapshot = await loadDailyConsistencySnapshot(repo, NOW);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.includeUnfinalized).toBe(true);
+    expect(calls[0]?.minPeriodKey).toMatch(/^\d{4}-W\d{2}$/);
+    expect(snapshot.rankings).toContainEqual(expect.objectContaining({
+      period_key: "2026-W32",
+      user_id: USER_ID,
     }));
   });
 
@@ -890,5 +920,250 @@ describe("RepositoryDailyConsistencySnapshotSource", () => {
 
     expect(findByStatusSpy).not.toHaveBeenCalled();
     expect(result.differences).toEqual([]);
+  });
+
+  it("[Slice 2] 跨制式错位期 2028-02-15 与 2028-08-15 不误报差异，同时继续核查完整覆盖的 2027_2028", async () => {
+    const repo = new InMemoryRepository();
+    // 同周同等级赛季的多联赛交叉预测：
+    // - 2026 H2 CSL (2026-10-03, score=3, season="2026", level_season="2026_2027")
+    // - 2026-2027 Europe (2026-10-04, score=12, season="2026_2027", level_season="2026_2027")
+    // - 2027 H1 CSL (2027-04-10, score=3, season="2027", level_season="2026_2027")
+    // - 2026-2027 Europe spring (2027-04-11, score=12, season="2026_2027", level_season="2026_2027")
+    // - 2027-2028 Europe (2027-10-03, score=12, season="2027_2028", level_season="2027_2028")
+    const entries: ReadonlyArray<{
+      id: string;
+      league_id: "chinese_super_league" | "premier_league";
+      season_id: string;
+      anchor: Date;
+      score: 3 | 12;
+    }> = [
+      {
+        id: "csl-2026-h2",
+        league_id: "chinese_super_league" as const,
+        season_id: "2026",
+        anchor: new Date("2026-10-03T11:30:00.000Z"),
+        score: 3,
+      },
+      {
+        id: "epl-2026-autumn",
+        league_id: "premier_league" as const,
+        season_id: "2026_2027",
+        anchor: new Date("2026-10-04T14:00:00.000Z"),
+        score: 12,
+      },
+      {
+        id: "csl-2027-h1",
+        league_id: "chinese_super_league" as const,
+        season_id: "2027",
+        anchor: new Date("2027-04-10T11:30:00.000Z"),
+        score: 3,
+      },
+      {
+        id: "epl-2026-spring",
+        league_id: "premier_league" as const,
+        season_id: "2026_2027",
+        anchor: new Date("2027-04-11T14:00:00.000Z"),
+        score: 12,
+      },
+      {
+        id: "epl-2027-autumn",
+        league_id: "premier_league" as const,
+        season_id: "2027_2028",
+        anchor: new Date("2027-10-03T14:00:00.000Z"),
+        score: 12,
+      },
+    ];
+
+    const weekTotals = new Map<string, {
+      score: number;
+      valid: number;
+      wdl: number;
+      exact: number;
+      last: Date;
+    }>();
+    await repo.users.insert(makeUser({
+      career_points: 42,
+      career_valid_predictions: 5,
+      career_wdl_hits: 5,
+      career_exact_hits: 3,
+      career_last_scoring_match_at: new Date("2027-10-03T14:00:00.000Z"),
+    }));
+    await repo.userSeasonStats.insert(makeSeasonStats({
+      level_season_id: "2026_2027",
+      points: 30,
+      valid_predictions: 4,
+      wdl_hits: 4,
+      exact_hits: 2,
+      last_scoring_match_at: new Date("2027-04-11T14:00:00.000Z"),
+      is_level_frozen: true,
+    }));
+    await repo.userSeasonStats.insert(makeSeasonStats({
+      level_season_id: "2027_2028",
+      points: 12,
+      valid_predictions: 1,
+      wdl_hits: 1,
+      exact_hits: 1,
+      last_scoring_match_at: new Date("2027-10-03T14:00:00.000Z"),
+      is_level_frozen: false,
+    }));
+
+    for (const item of entries) {
+      const matchId = `m-${item.id}`;
+      const predId = `p-${item.id}`;
+      const settId = `s-${item.id}`;
+      const exact = item.score === 12;
+      await repo.matches.insert(makeMatch({
+        match_id: matchId,
+        canonical_match_id: matchId,
+        league_id: item.league_id,
+        season_id: item.season_id,
+        kickoff_at: item.anchor,
+        period_anchor_at: item.anchor,
+        prediction_deadline_at: new Date(item.anchor.getTime() - 600_000),
+        prediction_closed_at: new Date(item.anchor.getTime() - 600_000),
+        regular_home_score: exact ? 2 : 1,
+        regular_away_score: exact ? 1 : 0,
+      }));
+      await repo.predictions.insert({
+        ...makePrediction(),
+        prediction_id: predId,
+        match_id: matchId,
+        canonical_match_id: matchId,
+        idempotency_key: `idem-${item.id}`,
+        match_score: item.score,
+        wdl_hit: true,
+        exact_hit: exact,
+        submitted_at: new Date(item.anchor.getTime() - 3600_000),
+      });
+      await repo.matchResults.insert({
+        ...makeResult(),
+        match_id: matchId,
+        regular_home_score: exact ? 2 : 1,
+        regular_away_score: exact ? 1 : 0,
+      });
+      await repo.settlements.insert(makeSettlement({
+        settlement_id: settId,
+        match_id: matchId,
+        settled_at: item.anchor,
+      }));
+      await repo.settlementItems.insert(makeItem({
+        settlement_id: settId,
+        prediction_id: predId,
+        new_score: item.score,
+        score_delta: item.score,
+        new_exact_hit: exact,
+        applied_at: item.anchor,
+      }));
+      const weekKey = calculatePeriodKey(PeriodType.Week, item.anchor);
+      const current = weekTotals.get(weekKey) ?? {
+        score: 0,
+        valid: 0,
+        wdl: 0,
+        exact: 0,
+        last: item.anchor,
+      };
+      current.score += item.score;
+      current.valid += 1;
+      current.wdl += 1;
+      current.exact += exact ? 1 : 0;
+      if (item.anchor > current.last) current.last = item.anchor;
+      weekTotals.set(weekKey, current);
+    }
+    for (const [periodKey, agg] of weekTotals) {
+      await repo.rankings.insert({
+        ...makeRanking(),
+        period_key: periodKey,
+        period_score: agg.score,
+        valid_predictions: agg.valid,
+        wdl_hits: agg.wdl,
+        exact_hits: agg.exact,
+        last_scoring_match_at: agg.last,
+        global_rank: 1,
+        is_final: true,
+      });
+    }
+
+    const feb2028 = await loadDailyConsistencySnapshot(repo, new Date("2028-02-15T12:00:00.000Z"), null);
+    expect(checkDailyConsistency(feb2028).differences).toEqual([]);
+    expect(feb2028.season_stats.map((row) => row.level_season_id)).toEqual(["2027_2028"]);
+
+    const aug2028 = await loadDailyConsistencySnapshot(repo, new Date("2028-08-15T12:00:00.000Z"), null);
+    expect(checkDailyConsistency(aug2028).differences).toEqual([]);
+    expect(aug2028.season_stats.map((row) => row.level_season_id)).toEqual(["2027_2028"]);
+
+    // 验证完整覆盖的 2027_2028 若真实存在缓存偏差仍可被检出
+    const s2027 = await repo.userSeasonStats.findByUserAndSeason(USER_ID, "2027_2028");
+    await repo.userSeasonStats.update({ ...s2027!, points: 99 });
+    const realDrift = await loadDailyConsistencySnapshot(repo, new Date("2028-08-15T12:00:00.000Z"), null);
+    expect(checkDailyConsistency(realDrift).differences).toContainEqual(
+      expect.objectContaining({
+        scope: "season_stats",
+        key: `${USER_ID}:2027_2028`,
+        fields: ["points"],
+      }),
+    );
+  });
+
+  it("[Slice 3.3] batches per-match/per-user queries and aborts immediately when assertHealthy fails mid-scan", async () => {
+    const repo = new InMemoryRepository();
+    const service = repo;
+    await repo.users.insert(makeUser({ user_id: USER_ID }));
+    const m1 = makeMatch({ match_id: "m-batch-1", kickoff_at: NOW, period_anchor_at: NOW });
+    const m2 = makeMatch({ match_id: "m-batch-2", kickoff_at: NOW, period_anchor_at: NOW });
+    await repo.matches.insert(m1);
+    await repo.matches.insert(m2);
+    const s1: SettlementDoc = {
+      schema_version: 1,
+      settlement_id: "st-batch-1",
+      match_id: m1.match_id,
+      result_version: 1,
+      rule_version: "1.0.0",
+      is_correction: false,
+      status: SettlementDocStatus.Settled,
+      phase: SettlementPhase.Done,
+      started_at: NOW,
+      settled_at: NOW,
+      attempt_count: 1,
+      last_error_code: null,
+      last_error_message: null,
+      created_at: NOW,
+      updated_at: NOW,
+    };
+    await repo.settlements.insert(s1);
+
+    const settlements = repo.settlements;
+    const levelHistory = repo.levelHistory;
+    const userSeasonStats = repo.userSeasonStats;
+    const findByMatchIdsSpy = vi.fn(settlements.findByMatchIds!);
+    settlements.findByMatchIds = findByMatchIdsSpy;
+    const findByMatchSpy = vi.spyOn(settlements, "findByMatch");
+    const findByUserIdsHistSpy = vi.fn(levelHistory.findByUserIds!);
+    levelHistory.findByUserIds = findByUserIdsHistSpy;
+    const findByUserHistSpy = vi.spyOn(levelHistory, "findByUser");
+    const findByUserIdsStatsSpy = vi.fn(userSeasonStats.findByUserIds!);
+    userSeasonStats.findByUserIds = findByUserIdsStatsSpy;
+    const findByUserStatsSpy = vi.spyOn(userSeasonStats, "findByUser");
+    const repoProxy = new Proxy(service, {
+      get(target, prop, receiver) {
+        if (prop === "settlements") return settlements;
+        if (prop === "levelHistory") return levelHistory;
+        if (prop === "userSeasonStats") return userSeasonStats;
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+
+    await loadDailyConsistencySnapshot(repoProxy, NOW, null);
+    expect(findByMatchIdsSpy).toHaveBeenCalledTimes(1);
+    expect(findByMatchSpy).not.toHaveBeenCalled();
+    expect(findByUserIdsHistSpy).toHaveBeenCalledTimes(1);
+    expect(findByUserHistSpy).not.toHaveBeenCalled();
+    expect(findByUserIdsStatsSpy).toHaveBeenCalledTimes(1);
+    expect(findByUserStatsSpy).not.toHaveBeenCalled();
+
+    let calls = 0;
+    await expect(loadDailyConsistencySnapshot(repoProxy, NOW, null, () => {
+      calls += 1;
+      if (calls >= 2) throw new Error("lost lock renewal");
+    })).rejects.toThrow("lost lock renewal");
   });
 });

@@ -1,4 +1,8 @@
-import { reconcileSettledMatch } from "./settlement-progress.js";
+import {
+  maxAppliedTimestampMs,
+  reconcileSettledMatch,
+  resolveFinalizeTimestamp,
+} from "./settlement-progress.js";
 /**
  * 首次结算入口：准备账本、逐 item 原子入账、重算周榜、完成结算。
  * 准备、各 item、周榜和 finalize 分别提交；applied item 不随之后的失败回滚。
@@ -193,6 +197,30 @@ export function startSettlementLockRenewal(
   };
 }
 
+/** Finalize 事务写前围栏：确认当前 owner 仍持有有效租约，并持锁到提交。 */
+export async function renewSettlementLockForFinalize(
+  tx: UnitOfWork,
+  lockKey: string,
+  ownerId: string,
+): Promise<void> {
+  const jobLocks = tx.jobLocks;
+  if (jobLocks === undefined) {
+    throw internalError("结算 finalize 缺少 jobLocks repository port");
+  }
+  const renewed = await jobLocks.renew(
+    lockKey,
+    ownerId,
+    new Date(Date.now() + JOB_LEASE_MILLISECONDS),
+  );
+  if (!renewed) {
+    throw conflictError(
+      FirstSettlementCode.AlreadyRunning,
+      "结算锁已被接管，终止 finalize",
+      { lock_key: lockKey },
+    );
+  }
+}
+
 export class FirstSettlementService {
   constructor(
     private readonly repo: AppRepository,
@@ -208,7 +236,7 @@ export class FirstSettlementService {
     const lockKey = settlementMatchLockKey(matchId);
     const ownerId = newUuid();
     const leaseUntil = new Date(
-      serverNow.getTime() + FIXED_CONFIG_V1.JOB_LEASE_MINUTES * 60 * 1000,
+      Date.now() + FIXED_CONFIG_V1.JOB_LEASE_MINUTES * 60 * 1000,
     );
     const acquired = await this.repo.jobLocks.acquire(
       lockKey,
@@ -370,9 +398,11 @@ export class FirstSettlementService {
         const tx = this.repo;
         let processedCount = 0;
         let skippedAppliedCount = 0;
+        let maxAppliedAtMs: number | null = null;
 
         for (const item of items) {
           if (item.status === SettlementItemStatus.Applied) {
+            maxAppliedAtMs = maxAppliedTimestampMs(maxAppliedAtMs, item.applied_at);
             skippedAppliedCount += 1;
             continue;
           }
@@ -429,6 +459,7 @@ export class FirstSettlementService {
           }
 
           lockRenewal.assertHealthy();
+          maxAppliedAtMs = maxAppliedTimestampMs(maxAppliedAtMs, serverNow);
           processedCount += 1;
         }
 
@@ -442,6 +473,7 @@ export class FirstSettlementService {
           };
         }
 
+        const finalizedAt = resolveFinalizeTimestamp(serverNow, maxAppliedAtMs);
         lockRenewal.assertHealthy();
         await tx.settlements.update({
           ...runningSettlement,
@@ -449,19 +481,20 @@ export class FirstSettlementService {
           updated_at: serverNow,
         });
         if (items.length > 0 && match.period_anchor_at !== null) {
-          await this.repo.withTransaction((rankTx) =>
-            rebuildSettlementWeekRanks(
-              rankTx,
-              match.period_anchor_at!,
-              serverNow,
-            ),
+          await rebuildSettlementWeekRanks(
+            this.repo,
+            match.period_anchor_at,
+            serverNow,
           );
         }
+        lockRenewal.assertHealthy();
         await this.repo.withTransaction(async (tx) => {
+          await renewSettlementLockForFinalize(tx, lockKey, ownerId);
+          lockRenewal.assertHealthy();
           const finalizingSettlement: SettlementDoc = {
             ...runningSettlement,
             phase: SettlementPhase.Finalize,
-            updated_at: serverNow,
+            updated_at: finalizedAt,
           };
           await tx.settlements.update(finalizingSettlement);
           const finalMatch = await tx.matches.findById(matchId);
@@ -473,8 +506,8 @@ export class FirstSettlementService {
             ...finalizingSettlement,
             status: SettlementDocStatus.Settled,
             phase: SettlementPhase.Done,
-            settled_at: serverNow,
-            updated_at: serverNow,
+            settled_at: finalizedAt,
+            updated_at: finalizedAt,
           });
 
           // 49.3 / 15.9 finalize 顺序：先写 settled_result_version=v 与 settled_at，
@@ -482,7 +515,7 @@ export class FirstSettlementService {
           await tx.matches.updateSettlementProgress(
             finalMatch.match_id,
             resultVersion,
-            serverNow,
+            finalizedAt,
           );
           const afterFinalize = await tx.matches.findById(matchId);
           if (afterFinalize === null) {
@@ -495,7 +528,7 @@ export class FirstSettlementService {
             hasNewerResult
               ? SettlementStatus.Correcting
               : SettlementStatus.Settled,
-            serverNow,
+            finalizedAt,
           );
         });
 

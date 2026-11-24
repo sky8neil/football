@@ -931,4 +931,76 @@ describe("HTTP 401 silent recovery", () => {
     expect(wxRequest).not.toHaveBeenCalled();
     expect(callFunction).toHaveBeenCalledTimes(1);
   });
+
+  it("falls back to an anonymous retry for optional-auth requests when silent recovery fails", async () => {
+    const future = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+    const { api, wxRequest, auth, store } = loadApi({
+      stored: { auth_session: { access_token: "stale-token", expires_at: future } },
+      auth: ({ store: authStore }) => ({
+        clearAuth: vi.fn(() => { authStore.delete("auth_session"); }),
+        ensureAuth: vi.fn(() => Promise.resolve({
+          statusCode: 401,
+          code: "UNAUTHORIZED",
+          message: "wx.login failed",
+        })),
+      }),
+    });
+    wxRequest.mockImplementation((options) => {
+      if (options.header && options.header.Authorization === "Bearer stale-token") {
+        options.success({ statusCode: 401, data: { code: "UNAUTHORIZED", message: "需要重新登录", request_id: "opt-401" } });
+        return;
+      }
+      options.success({ statusCode: 200, data: { data: { display_name: "Sharer" }, request_id: "opt-anon-200" } });
+    });
+    await expect(api.request({ method: "GET", path: "/v1/share-card/u1", auth: "optional" })).resolves.toMatchObject({
+      statusCode: 200,
+      data: { display_name: "Sharer" },
+      request_id: "opt-anon-200",
+    });
+    expect(auth.recoverSession).toHaveBeenCalledTimes(1);
+    expect(store.has("auth_session")).toBe(false);
+    expect(wxRequest).toHaveBeenCalledTimes(2);
+    expect(wxRequest.mock.calls[0][0].header).toEqual({ Authorization: "Bearer stale-token" });
+    expect(wxRequest.mock.calls[1][0].header).toEqual({});
+  });
+
+  it("falls back to an anonymous retry for optional-auth requests when loginGeneration changes", async () => {
+    const future = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+    let generation = 0;
+    let finishRecovery;
+    const { api, wxRequest, store } = loadApi({
+      stored: { auth_session: { access_token: "stale-token", expires_at: future } },
+      auth: ({ store: authStore }) => ({
+        getLoginGeneration: () => generation,
+        clearAuth: vi.fn(() => {
+          generation += 1;
+          authStore.delete("auth_session");
+        }),
+        recoverSession: vi.fn(() => new Promise((resolve) => {
+          finishRecovery = () => resolve({ statusCode: 200, data: { access_token: "new-token" } });
+        })),
+      }),
+    });
+    wxRequest.mockImplementation((options) => {
+      if (options.header && options.header.Authorization === "Bearer stale-token") {
+        options.success({ statusCode: 401, data: { code: "UNAUTHORIZED", message: "需要重新登录" } });
+        return;
+      }
+      options.success({ statusCode: 200, data: { data: { items: [{ league_id: "premier_league" }] }, request_id: "opt-gen-200" } });
+    });
+    const pending = api.request({ method: "GET", path: "/v1/league-seasons", auth: "optional" });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(typeof finishRecovery).toBe("function");
+    generation += 1;
+    finishRecovery();
+    await expect(pending).resolves.toMatchObject({
+      statusCode: 200,
+      data: { items: [{ league_id: "premier_league" }] },
+    });
+    expect(store.has("auth_session")).toBe(false);
+    expect(wxRequest).toHaveBeenCalledTimes(2);
+    expect(wxRequest.mock.calls[0][0].header).toEqual({ Authorization: "Bearer stale-token" });
+    expect(wxRequest.mock.calls[1][0].header).toEqual({});
+  });
 });

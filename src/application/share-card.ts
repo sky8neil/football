@@ -146,14 +146,32 @@ export class ShareCardQueryService {
       query.season_id,
       query.round_id,
     );
-    for (const match of roundMatches) {
-      if (match.superseded_by != null) {
-        continue;
+    const activeRoundMatches = roundMatches.filter((match) => match.superseded_by == null);
+    const canonicalIds = activeRoundMatches.map((match) => match.canonical_match_id ?? match.match_id);
+    const predictionsByCanonical = new Map<string, Prediction>();
+    if (canonicalIds.length > 0) {
+      if (typeof this.repo.predictions.findByUserAndCanonicalMatchIds === "function") {
+        const predictions = await this.repo.predictions.findByUserAndCanonicalMatchIds(
+          userId,
+          canonicalIds,
+        );
+        for (const prediction of predictions) {
+          predictionsByCanonical.set(prediction.canonical_match_id ?? prediction.match_id, prediction);
+        }
+      } else {
+        for (const canonicalId of new Set(canonicalIds)) {
+          const prediction = await this.repo.predictions.findByUserAndCanonicalMatch(
+            userId,
+            canonicalId,
+          );
+          if (prediction !== null) {
+            predictionsByCanonical.set(canonicalId, prediction);
+          }
+        }
       }
-      const prediction = await this.repo.predictions.findByUserAndCanonicalMatch(
-        userId,
-        match.canonical_match_id ?? match.match_id,
-      );
+    }
+    for (const match of activeRoundMatches) {
+      const prediction = predictionsByCanonical.get(match.canonical_match_id ?? match.match_id) ?? null;
       if (prediction === null) {
         continue;
       }

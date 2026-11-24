@@ -27,16 +27,17 @@ function load({ transport = "http", profile } = {}) {
   const updateMyProfile = vi.fn(async () => ({ statusCode: 200, data: { nickname: "新昵称" } }));
   const listMatches = vi.fn(async () => ({ statusCode: 200, data: { items: [], page: {} } }));
   const storeNickname = vi.fn();
+  const clearNickname = vi.fn();
   const clearAuth = vi.fn();
   const required = [];
-  const wx = { getStorageSync: vi.fn(), setStorageSync: vi.fn(), navigateBack: vi.fn(), showToast: vi.fn(), showModal: vi.fn(), reLaunch: vi.fn() };
+  const wx = { getStorageSync: vi.fn(), setStorageSync: vi.fn(), removeStorageSync: vi.fn(), navigateBack: vi.fn(), showToast: vi.fn(), showModal: vi.fn(), reLaunch: vi.fn() };
   runInNewContext(readFileSync(new URL("./settings.js", import.meta.url), "utf8"), {
     Page: value => { definition = value; }, wx,
     require: (name) => {
       required.push(name);
       if (name.includes("profile")) return { getMyProfile, updateMyProfile };
       if (name.includes("matches")) return { listMatches };
-      if (name.includes("nickname")) return { storeNickname };
+      if (name.includes("nickname")) return { storeNickname, clearNickname };
       if (name.includes("auth")) return { clearAuth };
       if (name.includes("config")) return { transport };
       if (name.includes("team-presentation")) return { presentTeam };
@@ -46,7 +47,7 @@ function load({ transport = "http", profile } = {}) {
     },
   });
   const page = { ...definition, data: structuredClone(definition.data), setData(value) { Object.assign(this.data, value); } };
-  return { page, getMyProfile, updateMyProfile, listMatches, storeNickname, clearAuth, wx, required, findTeam, presentTeam };
+  return { page, getMyProfile, updateMyProfile, listMatches, storeNickname, clearNickname, clearAuth, wx, required, findTeam, presentTeam };
 }
 
 describe("personal profile settings", () => {
@@ -182,19 +183,36 @@ describe("personal profile settings", () => {
     expect(load().page.data.showLogout).toBe(true);
     expect(load({ transport: "cloud" }).page.data.showLogout).toBe(false);
   });
-  it("clears the local session and returns to login after confirmed logout", () => {
-    const { page, clearAuth, wx } = load();
+  it("clears the local session and nickname cache and returns to login after confirmed logout", () => {
+    const { page, clearAuth, clearNickname, wx } = load();
     wx.showModal.mockImplementation((options) => options.success({ confirm: true }));
     page.onLogout();
     expect(wx.showModal).toHaveBeenCalledWith(expect.objectContaining({ title: "确认退出登录？" }));
     expect(clearAuth).toHaveBeenCalledTimes(1);
+    expect(clearNickname).toHaveBeenCalledTimes(1);
     expect(wx.reLaunch).toHaveBeenCalledWith({ url: "/pages/session/session" });
+
+    // Also verify real nickname.js clearNickname removes NICKNAME_STORAGE_KEY
+    const storage = new Map([["nickname", "Sky"]]);
+    const nicknameModule = { exports: {} };
+    runInNewContext(readFileSync(new URL("../../utils/nickname.js", import.meta.url), "utf8"), {
+      module: nicknameModule,
+      exports: nicknameModule.exports,
+      wx: {
+        getStorageSync: (k) => storage.get(k),
+        setStorageSync: (k, v) => storage.set(k, v),
+        removeStorageSync: (k) => storage.delete(k),
+      },
+    });
+    nicknameModule.exports.clearNickname();
+    expect(storage.has(nicknameModule.exports.NICKNAME_STORAGE_KEY)).toBe(false);
   });
   it("does not clear the session when logout is cancelled", () => {
-    const { page, clearAuth, wx } = load();
+    const { page, clearAuth, clearNickname, wx } = load();
     wx.showModal.mockImplementation((options) => options.success({ confirm: false }));
     page.onLogout();
     expect(clearAuth).not.toHaveBeenCalled();
+    expect(clearNickname).not.toHaveBeenCalled();
     expect(wx.reLaunch).not.toHaveBeenCalled();
   });
   it("keeps CloudBase identity unchanged when logout is invoked", () => {

@@ -1,6 +1,32 @@
 import { SettlementDocStatus, SettlementStatus } from "../domain/enums.js";
 import type { AppRepository } from "../infrastructure/repositories.js";
 
+/** Track the latest applied_at millisecond timestamp observed across settlement items. */
+export function maxAppliedTimestampMs(
+  currentMaxMs: number | null,
+  appliedAt: Date | null,
+): number | null {
+  if (appliedAt === null) {
+    return currentMaxMs;
+  }
+  const ms = appliedAt.getTime();
+  return currentMaxMs === null ? ms : Math.max(currentMaxMs, ms);
+}
+
+/**
+ * Resolve Finalize timestamp after ApplyItems so every settlement's `settled_at`
+ * is strictly greater than its items' `applied_at` (§17.9.2 `applied_at < settled_at`).
+ */
+export function resolveFinalizeTimestamp(
+  serverNow: Date,
+  maxAppliedAtMs: number | null,
+): Date {
+  if (maxAppliedAtMs === null) {
+    return serverNow;
+  }
+  return new Date(Math.max(serverNow.getTime(), maxAppliedAtMs + 1));
+}
+
 /** 已完成账本是结算进度的事实来源；幂等调用补齐旧的 match 缓存。 */
 export async function reconcileSettledMatch(
   repo: AppRepository,

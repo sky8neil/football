@@ -1,6 +1,6 @@
 const config = require("../config.js");
 const { classifyCloudClientError } = require("./cloud-diagnostics.js");
-const { isAuthSessionActive, readAuthSession } = require("../utils/auth-storage.js");
+const { clearAuthSession, isAuthSessionActive, readAuthSession } = require("../utils/auth-storage.js");
 
 const AUTH_LOGIN_PATH = "/v1/auth/wechat";
 const WRITE_METHODS = ["POST", "PATCH", "PUT"];
@@ -128,12 +128,12 @@ function resolveOptionalAccessToken() {
   return session.access_token;
 }
 
-function buildHttpHeaders(method, path, authMode) {
+function buildHttpHeaders(method, path, authMode, options) {
   const header = {};
   if (WRITE_METHODS.includes(method)) {
     header["content-type"] = "application/json";
   }
-  const token = resolveRequestToken(path, authMode);
+  const token = resolveRequestToken(path, authMode, options);
   if (token) header.Authorization = "Bearer " + token;
   return header;
 }
@@ -162,9 +162,17 @@ function fromGatewayResponse(response, cloudTransport) {
   };
 }
 
-function resolveRequestToken(path, authMode) {
+function resolveRequestToken(path, authMode, options) {
   if (isAuthLoginRequest(path)) return undefined;
+  if (options && options.anonymousRetry) return undefined;
   return authMode === "optional" ? resolveOptionalAccessToken() : resolveAccessToken();
+}
+
+function clearStaleOptionalSession(sentToken) {
+  const cached = readAuthSession();
+  if (cached && (!sentToken || cached.access_token === sentToken)) {
+    clearAuthSession();
+  }
 }
 
 function resolveLoginGeneration() {
@@ -186,6 +194,11 @@ function beginSessionRecovery(sentToken, fallbackResult) {
   return auth.ensureAuth();
 }
 
+function retryOptionalAnonymously(context) {
+  clearStaleOptionalSession(context.sentToken);
+  return send({ ...context, anonymousRetry: true }, true);
+}
+
 function recoverUnauthorized(result, context) {
   if (
     context.transport !== "http"
@@ -201,6 +214,9 @@ function recoverUnauthorized(result, context) {
   if (typeof context.loginGeneration === "number") {
     const currentGeneration = resolveLoginGeneration();
     if (typeof currentGeneration === "number" && currentGeneration !== context.loginGeneration) {
+      if (context.authMode === "optional") {
+        return retryOptionalAnonymously(context);
+      }
       return Promise.resolve(result);
     }
   }
@@ -222,24 +238,32 @@ function recoverUnauthorized(result, context) {
     if (typeof context.loginGeneration === "number") {
       const currentGeneration = resolveLoginGeneration();
       if (typeof currentGeneration === "number" && currentGeneration !== context.loginGeneration) {
+        if (context.authMode === "optional") {
+          return retryOptionalAnonymously(context);
+        }
         return result;
       }
     }
-    if (authResult && authResult.statusCode !== 200) return authResult;
+    if (authResult && authResult.statusCode !== 200) {
+      if (context.authMode === "optional") {
+        return retryOptionalAnonymously(context);
+      }
+      return authResult;
+    }
     return send(context, true);
   });
 }
 
-function send({ method, path, data, query, transport, envVersion, authMode }, retried) {
-  const sentToken = transport === "http" ? resolveRequestToken(path, authMode) : undefined;
+function send({ method, path, data, query, transport, envVersion, authMode, anonymousRetry }, retried) {
+  const sentToken = transport === "http" ? resolveRequestToken(path, authMode, { anonymousRetry }) : undefined;
   const hadAuthorization = Boolean(sentToken);
   const loginGeneration = transport === "http" ? resolveLoginGeneration() : undefined;
-  return dispatchRequest({ method, path, data, query, transport, envVersion, authMode }).then((result) => (
-    recoverUnauthorized(result, { method, path, data, query, transport, envVersion, authMode, retried, hadAuthorization, sentToken, loginGeneration })
+  return dispatchRequest({ method, path, data, query, transport, envVersion, authMode, anonymousRetry }).then((result) => (
+    recoverUnauthorized(result, { method, path, data, query, transport, envVersion, authMode, anonymousRetry, retried, hadAuthorization, sentToken, loginGeneration })
   ));
 }
 
-function dispatchRequest({ method, path, data, query, transport, envVersion, authMode }) {
+function dispatchRequest({ method, path, data, query, transport, envVersion, authMode, anonymousRetry }) {
   return new Promise((resolve) => {
     if (transport === "cloud") {
       wx.cloud.callFunction({
@@ -262,7 +286,7 @@ function dispatchRequest({ method, path, data, query, transport, envVersion, aut
       url: buildUrl(path, query),
       method,
       data: WRITE_METHODS.includes(method) ? data : undefined,
-      header: buildHttpHeaders(method, path, authMode),
+      header: buildHttpHeaders(method, path, authMode, { anonymousRetry }),
       success(res) {
         const body = res.data && typeof res.data === "object" ? res.data : {};
         resolve({ data: body.data, request_id: body.request_id, statusCode: res.statusCode, code: body.code, message: body.message, details: body.details });

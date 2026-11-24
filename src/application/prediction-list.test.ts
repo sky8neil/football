@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { MatchStatus, UserStatus } from "../domain/enums.js";
-import type { Match, Prediction, User } from "../domain/types.js";
+import type { Match, Prediction, Team, User } from "../domain/types.js";
 import { DomainError } from "../domain/errors.js";
 import { newUuid } from "../domain/ids.js";
 import { InMemoryRepository } from "../infrastructure/repositories.js";
@@ -12,6 +12,8 @@ import {
 
 const USER_ID = "00000000-0000-4000-8000-000000000001";
 const OTHER_USER_ID = "00000000-0000-4000-8000-000000000002";
+const HOME_TEAM_ID = "00000000-0000-4000-8000-000000000031";
+const AWAY_TEAM_ID = "00000000-0000-4000-8000-000000000032";
 const NOW = new Date("2026-08-09T00:00:00.000Z");
 
 function makeUser(userId = USER_ID): User {
@@ -32,6 +34,21 @@ function makeUser(userId = USER_ID): User {
     career_last_scoring_match_at: null,
     career_level_state: defaultLevelState(),
     deleted_at: null,
+    created_at: NOW,
+    updated_at: NOW,
+  };
+}
+
+function makeTeam(teamId: string, name: string): Team {
+  return {
+    schema_version: 1,
+    team_id: teamId,
+    league_id: "premier_league",
+    name,
+    short_name: null,
+    primary_color: null,
+    secondary_color: null,
+    status: "active",
     created_at: NOW,
     updated_at: NOW,
   };
@@ -107,8 +124,15 @@ async function setup(): Promise<InMemoryRepository> {
   const repo = new InMemoryRepository();
   await repo.users.insert(makeUser());
   await repo.users.insert(makeUser(OTHER_USER_ID));
-  await repo.matches.insert(makeMatch("00000000-0000-4000-8000-000000000010"));
+  await repo.teams.insert(makeTeam(HOME_TEAM_ID, "Arsenal FC"));
+  await repo.teams.insert(makeTeam(AWAY_TEAM_ID, "Chelsea FC"));
+  await repo.matches.insert(makeMatch("00000000-0000-4000-8000-000000000010", {
+    home_team_id: HOME_TEAM_ID,
+    away_team_id: AWAY_TEAM_ID,
+  }));
   await repo.matches.insert(makeMatch("00000000-0000-4000-8000-000000000011", {
+    home_team_id: HOME_TEAM_ID,
+    away_team_id: AWAY_TEAM_ID,
     match_status: MatchStatus.Scheduled,
     settlement_status: "pending",
     regular_home_score: null,
@@ -120,6 +144,8 @@ async function setup(): Promise<InMemoryRepository> {
     settled_at: null,
   }));
   await repo.matches.insert(makeMatch("00000000-0000-4000-8000-000000000012", {
+    home_team_id: HOME_TEAM_ID,
+    away_team_id: AWAY_TEAM_ID,
     season_id: "2025_2026",
   }));
   await repo.predictions.insert(makePrediction(
@@ -155,6 +181,8 @@ describe("PredictionHistoryQueryService.listMyPredictions", () => {
     expect(first.items).toEqual([expect.objectContaining({
       prediction_id: "00000000-0000-4000-8000-000000000021",
       match_id: "00000000-0000-4000-8000-000000000011",
+      home_team: { team_id: HOME_TEAM_ID, name: "Arsenal FC" },
+      away_team: { team_id: AWAY_TEAM_ID, name: "Chelsea FC" },
       match_status: "scheduled",
       regular_home_score: null,
       regular_away_score: null,
@@ -340,5 +368,117 @@ describe("PredictionHistoryQueryService.listMyPredictions", () => {
     expect(firstIds.some((id) => secondIds.includes(id))).toBe(false);
     expect(new Set([...firstIds, ...secondIds]).size).toBe(3);
     expect([...firstIds, ...secondIds]).toHaveLength(3);
+  });
+
+  it("[Slice 3.4] 扫描触限空页返回 items:[], has_more:true, next_cursor，次轮续扫可取回全部命中项", async () => {
+    const repo = await setup();
+    const baseFind = repo.predictions.findHistoryPage.bind(repo.predictions);
+    const resumeCursor = {
+      submitted_at: new Date("2026-08-09T00:00:00.000Z"),
+      prediction_id: "00000000-0000-4000-8000-000000000099",
+    };
+    let calls = 0;
+    const predictions = {
+      ...repo.predictions,
+      findHistoryPageWithScanResume: vi.fn(async (params: Parameters<typeof baseFind>[0]) => {
+        calls += 1;
+        if (calls === 1) {
+          return { predictions: [], exhausted: false, resume_cursor: resumeCursor };
+        }
+        return {
+          predictions: await baseFind(params),
+          exhausted: true,
+          resume_cursor: null,
+        };
+      }),
+    };
+    const service = new PredictionHistoryQueryService(
+      { users: repo.users, matches: repo.matches, predictions },
+      "prediction-list-secret",
+    );
+
+    const first = await service.listMyPredictions(USER_ID, {
+      league_id: "premier_league",
+      season_id: "2026_2027",
+      limit: 1,
+      cursor: null,
+    });
+    expect(first.items).toEqual([]);
+    expect(first.has_more).toBe(true);
+    expect(first.next_cursor).toEqual(expect.any(String));
+
+    const second = await service.listMyPredictions(USER_ID, {
+      league_id: "premier_league",
+      season_id: "2026_2027",
+      limit: 10,
+      cursor: first.next_cursor,
+    });
+    expect(second.items).toHaveLength(2);
+    expect(second.has_more).toBe(false);
+    expect(second.next_cursor).toBeNull();
+    expect(predictions.findHistoryPageWithScanResume).toHaveBeenCalledWith(
+      expect.objectContaining({
+        league_id: "premier_league",
+        season_id: "2026_2027",
+        limit: 11,
+      }),
+    );
+  });
+
+  it("[Slice 3.3] listMyPredictions batch-resolves matches & superseded chains via matches.findByIds without N+1 findById", async () => {
+    const repo = await setup();
+    const matches = repo.matches;
+    const findByIdSpy = vi.spyOn(matches, "findById");
+    const findByIdsSpy = vi.fn(matches.findByIds!);
+    matches.findByIds = findByIdsSpy;
+    const repoProxy = new Proxy(repo, {
+      get(target, prop, receiver) {
+        if (prop === "matches") return matches;
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const service = new PredictionHistoryQueryService(repoProxy, "prediction-list-secret");
+
+    const res = await service.listMyPredictions(USER_ID, {
+      league_id: null,
+      season_id: null,
+      limit: 10,
+      cursor: null,
+    });
+
+    expect(res.items.length).toBeGreaterThanOrEqual(3);
+    expect(findByIdsSpy).toHaveBeenCalled();
+    expect(findByIdsSpy.mock.calls.length).toBeLessThanOrEqual(2);
+    expect(findByIdSpy).not.toHaveBeenCalled();
+  });
+
+  it("[Slice 4.1] batch-resolves home_team/away_team via teams.findByIds without N+1 findById", async () => {
+    const repo = await setup();
+    const teams = repo.teams;
+    const findByIdSpy = vi.spyOn(teams, "findById");
+    const findByIdsSpy = vi.fn(teams.findByIds!);
+    teams.findByIds = findByIdsSpy;
+    const repoProxy = new Proxy(repo, {
+      get(target, prop, receiver) {
+        if (prop === "teams") return teams;
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const service = new PredictionHistoryQueryService(repoProxy, "prediction-list-secret");
+
+    const res = await service.listMyPredictions(USER_ID, {
+      league_id: "premier_league",
+      season_id: null,
+      limit: 10,
+      cursor: null,
+    });
+
+    expect(findByIdsSpy).toHaveBeenCalledTimes(1);
+    expect(findByIdsSpy).toHaveBeenCalledWith([HOME_TEAM_ID, AWAY_TEAM_ID]);
+    expect(findByIdSpy).not.toHaveBeenCalled();
+    for (const item of res.items) {
+      expect(item.home_team).toEqual({ team_id: HOME_TEAM_ID, name: "Arsenal FC" });
+      expect(item.away_team).toEqual({ team_id: AWAY_TEAM_ID, name: "Chelsea FC" });
+    }
   });
 });

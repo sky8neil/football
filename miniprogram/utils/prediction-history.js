@@ -1,5 +1,10 @@
 const DAY_MS = 24 * 60 * 60 * 1000;
 const SHANGHAI_OFFSET_MS = 8 * 60 * 60 * 1000;
+const WEEKDAYS = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+
+function pad2(value) {
+  return String(value).padStart(2, "0");
+}
 
 function isoWeekKey(value) {
   const time = Date.parse(value || "");
@@ -17,15 +22,8 @@ function isoWeekKey(value) {
 function formatShanghaiKickoff(value) {
   const time = Date.parse(value || "");
   if (!Number.isFinite(time)) return "";
-  const date = new Date(time);
-  return date.toLocaleString("zh-CN", {
-    timeZone: "Asia/Shanghai",
-    month: "numeric",
-    day: "numeric",
-    weekday: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  const date = new Date(time + SHANGHAI_OFFSET_MS);
+  return `${date.getUTCMonth() + 1}月${date.getUTCDate()}日${WEEKDAYS[date.getUTCDay()]} ${pad2(date.getUTCHours())}:${pad2(date.getUTCMinutes())}`;
 }
 
 function groupPredictionsByWeek(items) {

@@ -266,12 +266,12 @@ describe("FirstSettlementService.start - 成功路径", () => {
     const settled = await repo.settlements.findById(settlement.settlement_id);
     expect(settled?.status).toBe(SettlementDocStatus.Settled);
     expect(settled?.phase).toBe(SettlementPhase.Done);
-    expect(settled?.settled_at?.getTime()).toBe(NOW.getTime());
+    expect(settled?.settled_at?.getTime()).toBe(NOW.getTime() + 1);
 
     const matchAfter = await repo.matches.findById(match.match_id);
     expect(matchAfter?.settlement_status).toBe(SettlementStatus.Settled);
     expect(matchAfter?.settled_result_version).toBe(1);
-    expect(matchAfter?.settled_at?.getTime()).toBe(NOW.getTime());
+    expect(matchAfter?.settled_at?.getTime()).toBe(NOW.getTime() + 1);
 
     expect(
       (await repo.settlementItems.findBySettlementAndPrediction(settlement.settlement_id, "p1"))
@@ -433,6 +433,7 @@ describe("FirstSettlementService.start - 成功路径", () => {
             settlements: tx.settlements,
             settlementItems: tx.settlementItems,
             unlocks: tx.unlocks,
+            jobLocks: tx.jobLocks!,
             savepoint: (callback) => tx.savepoint(callback),
           }),
         ),
@@ -444,7 +445,7 @@ describe("FirstSettlementService.start - 成功路径", () => {
     const versionWrite = matchWrites.findIndex(
       (write) =>
         write.value.settled_result_version === 1 &&
-        write.value.settled_at?.getTime() === NOW.getTime(),
+        write.value.settled_at?.getTime() === NOW.getTime() + 1,
     );
     const statusWrite = matchWrites.findIndex(
       (write) => write.value.settlement_status === SettlementStatus.Settled,
@@ -490,6 +491,7 @@ describe("FirstSettlementService.start - 成功路径", () => {
             settlements: tx.settlements,
             settlementItems: tx.settlementItems,
             unlocks: tx.unlocks,
+            jobLocks: tx.jobLocks!,
             savepoint: (callback) => tx.savepoint(callback),
           }),
         ),
@@ -686,6 +688,7 @@ describe("FirstSettlementService.start - 并发锁", () => {
             },
             settlementItems: tx.settlementItems,
             unlocks: tx.unlocks,
+            jobLocks: tx.jobLocks!,
             savepoint: (callback) => tx.savepoint(callback),
           }),
         ),
@@ -1154,12 +1157,54 @@ describe("R3 生产结算流程", () => {
     await repo.predictions.insert(prediction);
     const rankLock = rankingPeriodLockKey("week", calculatePeriodKey("week", anchor));
     await repo.jobLocks.acquire(rankLock, "other-ranking-job", new Date(NOW.getTime() + 60_000));
-    await expect(new SettlementOrchestrationService(repo).startFirst(match.match_id, NOW, false)).rejects.toMatchObject({ code: "RANKING_REBUILD_ALREADY_RUNNING" });
+    const run = expect(new SettlementOrchestrationService(repo).startFirst(match.match_id, NOW, false)).rejects.toMatchObject({ code: "RANKING_REBUILD_ALREADY_RUNNING" });
+    await vi.advanceTimersByTimeAsync(500);
+    await run;
     expect((await repo.users.findById(user.user_id))?.career_points).toBe(12);
     expect((await repo.settlementItems.findByStatus(SettlementItemStatus.Applied))).toHaveLength(1);
     await repo.jobLocks.release(rankLock, "other-ranking-job");
     await runSettlementTimer(repo, NOW);
     expect((await repo.users.findById(user.user_id))?.career_points).toBe(12);
     expect((await repo.matches.findById(match.match_id))?.settlement_status).toBe(SettlementStatus.Settled);
+  });
+});
+
+describe("Slice 1 finalize 事务锁围栏", () => {
+  it("DB 锁已被接管时 FirstSettlementService 不提交 Settled/Done", async () => {
+    const { repo, match } = await setup();
+    const repoProxy = new Proxy(repo, {
+      get(target, prop, receiver) {
+        if (prop === "withTransaction") {
+          return async (fn: Parameters<AppRepository["withTransaction"]>[0]) =>
+            target.withTransaction((tx) => {
+              const fencedTx = new Proxy(tx, {
+                get(txTarget, txProp, txReceiver) {
+                  if (txProp === "jobLocks") {
+                    return { ...target.jobLocks, renew: async () => false };
+                  }
+                  return Reflect.get(txTarget, txProp, txReceiver);
+                },
+              });
+              return fn(fencedTx);
+            });
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+
+    await expect(
+      new FirstSettlementService(repoProxy as unknown as AppRepository)
+        .start(match.match_id, NOW, false),
+    ).rejects.toMatchObject({ code: FirstSettlementCode.AlreadyRunning });
+
+    const settlement = await repo.settlements.findByMatchAndVersionAndRule(
+      match.match_id,
+      1,
+      RULE,
+    );
+    expect(settlement?.status).toBe(SettlementDocStatus.Running);
+    expect(settlement?.phase).toBe(SettlementPhase.RebuildRanks);
+    expect((await repo.matches.findById(match.match_id))?.settlement_status)
+      .not.toBe(SettlementStatus.Settled);
   });
 });

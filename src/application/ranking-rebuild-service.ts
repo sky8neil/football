@@ -8,14 +8,18 @@ import {
 } from "../domain/enums.js";
 import { conflictError, internalError, validationError } from "../domain/errors.js";
 import { newUuid } from "../domain/ids.js";
-import { calculatePeriodKey, isValidPeriodKey, periodEndAt } from "../domain/time.js";
+import {
+  calculatePeriodKey,
+  isValidPeriodKey,
+  periodEndAt,
+  periodStartAt,
+} from "../domain/time.js";
 import type { BoardSnapshot, Match, RankingEntry } from "../domain/types.js";
 import type { AppRepository, UnitOfWork } from "../infrastructure/repositories.js";
 import { rebuildPeriodRankings } from "./ranking-rebuild.js";
 import {
   activeSettlement,
   assertRankingPort,
-  invalidLedger,
   loadAppliedSettlementFacts,
 } from "./rebuild-service-support.js";
 import { assertValidServerNow } from "./period-finalize.js";
@@ -75,20 +79,28 @@ function targetMatches(matches: readonly Match[], periodType: PeriodType, period
 
 async function selectTargetItems(
   tx: UnitOfWork,
-  targetMatchIds: ReadonlySet<string>,
+  targetMatchIds: readonly string[],
 ): Promise<Awaited<ReturnType<UnitOfWork["settlementItems"]["findByStatus"]>>> {
-  const selected = [] as Awaited<ReturnType<UnitOfWork["settlementItems"]["findByStatus"]>>;
-  const applied = await tx.settlementItems.findByStatus(SettlementItemStatus.Applied);
-  for (const item of applied) {
-    const settlement = await tx.settlements.findById(item.settlement_id);
-    if (settlement === null) {
-      throw invalidLedger(`applied item 缺少 settlement（prediction_id=${item.prediction_id}）`);
-    }
-    if (targetMatchIds.has(settlement.match_id)) {
-      selected.push(item);
-    }
-  }
-  return selected;
+  const settlements = tx.settlements.findByMatchIds !== undefined
+    ? await tx.settlements.findByMatchIds(targetMatchIds)
+    : (await Promise.all(
+        targetMatchIds.map((matchId) => tx.settlements.findByMatch(matchId)),
+      )).flat();
+  const settlementIds = settlements.map((settlement) => settlement.settlement_id);
+  if (settlementIds.length === 0) return [];
+  return tx.settlementItems.findBySettlementIdsAndStatus !== undefined
+    ? await tx.settlementItems.findBySettlementIdsAndStatus(
+        settlementIds,
+        SettlementItemStatus.Applied,
+      )
+    : (await Promise.all(
+        settlementIds.map((settlementId) =>
+          tx.settlementItems.findBySettlementAndStatus(
+            settlementId,
+            SettlementItemStatus.Applied,
+          ),
+        ),
+      )).flat();
 }
 
 export class RebuildPeriodRankingsService {
@@ -178,19 +190,20 @@ export class RebuildPeriodRankingsService {
   ): Promise<RebuildPeriodRankingsOutcome> {
     assertRankingPort(tx);
     const supportedLeagueIds = new Set(SUPPORTED_LEAGUES.map((league) => league.league_id));
-    const seasonIds = [...new Set(
-      SUPPORTED_LEAGUES.flatMap((league) => activeSeasonIds(league, serverNow)),
-    )];
+    const startAt = periodStartAt(periodType, periodKey);
+    const endAt = periodEndAt(periodType, periodKey);
+    const anchorMatches = tx.matches.findByPeriodAnchorWindow !== undefined
+      ? await tx.matches.findByPeriodAnchorWindow(startAt, endAt)
+      : (await Promise.all(
+          [...supportedLeagueIds].map((leagueId) => tx.matches.findByLeague(leagueId)),
+        )).flat();
     const matchesById = new Map<string, Match>();
-    for (const seasonId of seasonIds) {
-      for (const match of await tx.matches.findBySeason(seasonId)) {
-        if (supportedLeagueIds.has(match.league_id)) {
-          matchesById.set(match.match_id, match);
-        }
+    for (const match of anchorMatches) {
+      if (supportedLeagueIds.has(match.league_id)) {
+        matchesById.set(match.match_id, match);
       }
     }
-    const matches = [...matchesById.values()];
-    const selectedMatches = targetMatches(matches, periodType, periodKey);
+    const selectedMatches = targetMatches([...matchesById.values()], periodType, periodKey);
     for (const match of selectedMatches) {
       if (activeSettlement(match)) {
         throw conflictError(
@@ -203,7 +216,7 @@ export class RebuildPeriodRankingsService {
 
     const items = await selectTargetItems(
       tx,
-      new Set(selectedMatches.map((match) => match.match_id)),
+      selectedMatches.map((match) => match.match_id),
     );
     const facts = await loadAppliedSettlementFacts(tx, items);
     const isHistoricalPeriod = periodEndAt(periodType, periodKey).getTime() <= serverNow.getTime();

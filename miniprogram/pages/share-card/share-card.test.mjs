@@ -137,7 +137,7 @@ function catalogItems() {
   ];
 }
 
-function loadPage({ getMyShareCard, getShareCardForUser, listLeagueSeasons, stored, pages } = {}) {
+function loadPage({ getMyShareCard, getShareCardForUser, listLeagueSeasons, stored, pages, transport = "http" } = {}) {
   const wxStub = installWxStub({ stored, pages });
   const getMyShareCardFn = getMyShareCard || vi.fn(async () => ({
     statusCode: 200,
@@ -158,6 +158,7 @@ function loadPage({ getMyShareCard, getShareCardForUser, listLeagueSeasons, stor
     throw new Error("auth-storage has no dependencies");
   });
   const config = capturePageConfig((id) => {
+    if (id === "../../config.js") return { transport };
     if (id === "../../services/share-card.js") {
       return { getMyShareCard: getMyShareCardFn, getShareCardForUser: getShareCardForUserFn };
     }
@@ -515,5 +516,69 @@ describe("share-card page", () => {
     page.onBackToPredictions();
     expect(navs).toContainEqual(["redirectTo", "/pages/my-predictions/my-predictions"]);
     expect(navs.some((entry) => entry[0] === "navigateBack")).toBe(false);
+  });
+
+  it("onShow after login in CloudBase transport retries without checking HTTP auth_session", async () => {
+    const getMyShareCard = vi.fn(async () => ({
+      statusCode: 401,
+      code: "UNAUTHORIZED",
+    }));
+    const { page, getMyShareCard: getMy } = loadPage({ getMyShareCard, transport: "cloud" });
+    await page.onLoad({ ...QUERY });
+    page.onLoginTap();
+    getMy.mockResolvedValueOnce({ statusCode: 200, data: shareCardData() });
+    await page.onShow();
+    expect(getMy).toHaveBeenCalledTimes(2);
+    expect(page.data.state).toBe("card");
+  });
+
+  it("onReselect after userUnavailable resets receiver mode to preview and clears sharerId", async () => {
+    const getShareCardForUser = vi.fn(async () => ({
+      statusCode: 409,
+      code: "USER_DELETED",
+      message: "用户已注销",
+    }));
+    const { page, getMyShareCard, getShareCardForUser: getForUser } = loadPage({ getShareCardForUser });
+    await page.onLoad({ user_id: SHARER_ID, ...QUERY });
+    expect(page.data.errorKind).toBe("userUnavailable");
+    page.onReselect();
+    expect(page.data.state).toBe("picker");
+    expect(page.data.mode).toBe("preview");
+    expect(page.data.sharerId).toBeNull();
+    await page.onRoundChange({ detail: { value: "1" } });
+    expect(getForUser).toHaveBeenCalledTimes(1);
+    expect(getMyShareCard).toHaveBeenCalledTimes(1);
+  });
+
+  it("resets roundIndex when reselecting so the same round can be picked again", async () => {
+    const { page } = loadPage();
+    await page.onLoad({});
+    page.setData({
+      roundIndex: 1,
+      selectedRoundId: "01",
+      selectedLeagueId: "premier_league",
+      selectedSeasonId: "2026_2027",
+      state: "card",
+    });
+
+    page.onReselect();
+
+    expect(page.data.roundIndex).toBe(0);
+    expect(page.data.selectedRoundId).toBeNull();
+    expect(page.data.selectedLeagueId).toBe("premier_league");
+    expect(page.data.selectedSeasonId).toBe("2026_2027");
+    expect(page.data.state).toBe("picker");
+  });
+
+  it("formats generated_at in UTC+8 regardless of device timezone", async () => {
+    vi.stubEnv("TZ", "UTC");
+    try {
+      const { page } = loadPage();
+      await page.onLoad({ ...QUERY });
+      // 2026-11-15T15:00:00.000Z == 2026-11-15 23:00 UTC+8
+      expect(page.data.card.generatedAtText).toBe("2026-11-15 23:00");
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });

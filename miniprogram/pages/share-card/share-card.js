@@ -1,3 +1,4 @@
+const config = require("../../config.js");
 const { getMyShareCard, getShareCardForUser } = require("../../services/share-card.js");
 const { listLeagueSeasons } = require("../../services/league-seasons.js");
 const { formatRound } = require("../../utils/match-presentation.js");
@@ -46,8 +47,8 @@ function pad2(value) {
 function formatGeneratedAt(iso) {
   const time = Date.parse(iso || "");
   if (!Number.isFinite(time)) return "";
-  const date = new Date(time);
-  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+  const date = new Date(time + 8 * 60 * 60 * 1000);
+  return `${date.getUTCFullYear()}-${pad2(date.getUTCMonth() + 1)}-${pad2(date.getUTCDate())} ${pad2(date.getUTCHours())}:${pad2(date.getUTCMinutes())}`;
 }
 
 function presentCard(data) {
@@ -149,7 +150,8 @@ Page({
   onShow() {
     if (!this.pendingLoginRetry || !this.loginReturnContext) return;
     this.pendingLoginRetry = false;
-    if (!isAuthSessionActive(readAuthSession(), new Date())) return;
+    const isHttpTransport = (config.transport || "http") === "http";
+    if (isHttpTransport && !isAuthSessionActive(readAuthSession(), new Date())) return;
     const context = this.loginReturnContext;
     this.setData({
       mode: context.mode,
@@ -501,11 +503,15 @@ Page({
 
   onReselect() {
     this.requestSerial += 1;
+    const resetReceiver = this.data.mode === "receiver" || this.data.errorKind === "userUnavailable";
     this.setData({
       state: "picker",
       card: null,
+      selectedRoundId: null,
+      roundIndex: 0,
       errorKind: "",
       errorMessage: "",
+      ...(resetReceiver ? { mode: "preview", sharerId: null } : {}),
     });
     this.syncShareMenu();
   },

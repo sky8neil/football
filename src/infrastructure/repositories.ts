@@ -21,7 +21,7 @@ import {
   SCHEMA_VERSION,
   SettlementItemStatus,
   SettlementStatus,
-  type SettlementDocStatus,
+  SettlementDocStatus,
   type SyncJobType,
 } from "../domain/enums.js";
 import {
@@ -137,6 +137,7 @@ export class StaleResultVersionError extends Error {
 export interface UserRepository {
   findByOpenid(openid: string): Promise<User | null>;
   findById(userId: string): Promise<User | null>;
+  findByIds?(userIds: readonly string[]): Promise<Map<string, User>>;
   findAll(): Promise<User[]>;
   insert(user: User): Promise<void>;
   update(user: User): Promise<void>;
@@ -155,6 +156,7 @@ export interface DeletedOpenidMappingRepository {
 /** 公开比赛查询所需的球队只读 port；写入由 Provider 同步流程负责。 */
 export interface TeamRepository {
   findById(teamId: string): Promise<Team | null>;
+  findByIds?(teamIds: readonly string[]): Promise<Map<string, Team>>;
   insert(team: Team): Promise<void>;
 }
 
@@ -345,9 +347,12 @@ function resolveEffectiveMatchForHistory(
 
 export interface MatchRepository {
   findById(matchId: string): Promise<Match | null>;
+  findByIds?(matchIds: readonly string[]): Promise<Map<string, Match>>;
   findIdsByCanonicalMatchId(canonicalMatchId: string): Promise<string[]>;
   findBySeason(seasonId: string): Promise<Match[]>;
   findBySeasonInWindow?(seasonId: string, from: Date, to: Date): Promise<Match[]>;
+  /** 按实际 period_anchor_at 半开区间 [startAt, endAt) 选赛，不依赖赛季候选集。 */
+  findByPeriodAnchorWindow?(startAt: Date, endAt: Date): Promise<Match[]>;
   findByLeague(leagueId: string): Promise<Match[]>;
   findByLeagueSeason(leagueId: string, seasonId: string): Promise<Match[]>;
   findFinishedSettledOnDay(day: string): Promise<Match[]>;
@@ -376,11 +381,19 @@ export interface MatchRepository {
   ): Promise<void>;
 }
 
+export interface PredictionHistoryPageResult {
+  predictions: Prediction[];
+  exhausted: boolean;
+  resume_cursor: { submitted_at: Date; prediction_id: string } | null;
+}
+
 export interface PredictionRepository {
   findById(predictionId: string): Promise<Prediction | null>;
+  findByIds?(predictionIds: readonly string[]): Promise<Map<string, Prediction>>;
   findByUserAndMatch(userId: string, matchId: string): Promise<Prediction | null>;
   findByUserAndMatchIds(userId: string, matchIds: readonly string[]): Promise<Prediction[]>;
   findByUserAndCanonicalMatchIds(userId: string, canonicalMatchIds: readonly string[]): Promise<Prediction[]>;
+  findByCanonicalMatchIds?(canonicalMatchIds: readonly string[]): Promise<Prediction[]>;
   findByUserAndCanonicalMatch(userId: string, canonicalMatchId: string): Promise<Prediction | null>;
   findByUserAndIdempotencyKey(
     userId: string,
@@ -399,6 +412,14 @@ export interface PredictionRepository {
     cursor: { submitted_at: Date; prediction_id: string } | null;
     limit: number;
   }): Promise<Prediction[]>;
+  /** 支持扫描触限续扫的实现返回耗尽状态与严格推进的续扫游标。 */
+  findHistoryPageWithScanResume?(params: {
+    user_id: string;
+    league_id: string | null;
+    season_id: string | null;
+    cursor: { submitted_at: Date; prediction_id: string } | null;
+    limit: number;
+  }): Promise<PredictionHistoryPageResult>;
   findByMatch(matchId: string): Promise<Prediction[]>;
   findByCanonicalMatch(canonicalMatchId: string): Promise<Prediction[]>;
   countByMatchGroupedByResult(matchId: string): Promise<{
@@ -437,14 +458,18 @@ export interface MatchResultRepository {
 /** 结算单账本：UNIQUE(match_id, result_version, rule_version)，状态/phase 基础读写。 */
 export interface SettlementRepository {
   findById(settlementId: string): Promise<SettlementDoc | null>;
+  findByIds?(settlementIds: readonly string[]): Promise<Map<string, SettlementDoc>>;
   /** 按比赛读取完整 settlement 版本序列，映射 settlements 的 match_id/result_version 索引。 */
   findByMatch(matchId: string): Promise<SettlementDoc[]>;
+  findByMatchIds?(matchIds: readonly string[]): Promise<SettlementDoc[]>;
   findByMatchAndVersionAndRule(
     matchId: string,
     resultVersion: number,
     ruleVersion: string,
   ): Promise<SettlementDoc | null>;
   findByStatus(status: SettlementDocStatus): Promise<SettlementDoc[]>;
+  /** 已结算改判单中等级重评未完成的候选；缺少 level_reeval_status 的 legacy 单据也视为未完成。 */
+  findSettledCorrectionsPendingReeval?(): Promise<SettlementDoc[]>;
   insert(settlement: SettlementDoc): Promise<void>;
   update(settlement: SettlementDoc): Promise<void>;
 }
@@ -462,6 +487,13 @@ export interface SettlementItemRepository {
     settlementId: string,
     status: SettlementItemStatus,
   ): Promise<SettlementItem[]>;
+  /** 批量读取多张 settlement 下指定状态的 items。 */
+  findBySettlementIdsAndStatus?(
+    settlementIds: readonly string[],
+    status: SettlementItemStatus,
+  ): Promise<SettlementItem[]>;
+  /** 指定用户在指定状态下的 items，避免全表 findByStatus。 */
+  findByUserAndStatus?(userId: string, status: SettlementItemStatus): Promise<SettlementItem[]>;
   /** 全局按状态查询（pending / applied / failed）。 */
   findByStatus(status: SettlementItemStatus): Promise<SettlementItem[]>;
   /** 用户在指定时刻前 applied 的账本。 */
@@ -481,6 +513,7 @@ export interface UnlockRepository {
 export interface UserSeasonStatsRepository {
   findByUserAndSeason(userId: string, levelSeasonId: string): Promise<UserSeasonStats | null>;
   findByUser(userId: string): Promise<UserSeasonStats[]>;
+  findByUserIds?(userIds: readonly string[]): Promise<Map<string, UserSeasonStats[]>>;
   findByLevelSeason(levelSeasonId: string): Promise<UserSeasonStats[]>;
   insert(stats: UserSeasonStats): Promise<void>;
   update(stats: UserSeasonStats): Promise<void>;
@@ -529,13 +562,30 @@ export interface RankingRepository {
   ): Promise<RankingEntry[]>;
   findAll(): Promise<RankingEntry[]>;
   findUnfinalizedWeeks?(): Promise<RankingEntry[]>;
+  /**
+   * 返回 period_key >= minPeriodKey 的周榜；includeUnfinalized 时再合并所有
+   * 未定稿历史周榜（含早于 minPeriodKey 的周），避免全表扫描。
+   */
+  findWeekEntriesSince?(
+    minPeriodKey: string,
+    includeUnfinalized?: boolean,
+  ): Promise<RankingEntry[]>;
   insert(entry: RankingEntry): Promise<void>;
   update(entry: RankingEntry): Promise<void>;
+  /** 原子局部更新：仅写 global_rank / updated_at，绝不覆盖积分与命中字段。 */
+  updateGlobalRank?(
+    periodType: RankingEntry["period_type"],
+    periodKey: string,
+    userId: string,
+    globalRank: number | null,
+    updatedAt: Date,
+  ): Promise<void>;
 }
 
 /** 等级变化历史只追加、不更新、不删除。 */
 export interface LevelHistoryRepository {
   findByUser(userId: string): Promise<LevelHistoryEntry[]>;
+  findByUserIds?(userIds: readonly string[]): Promise<Map<string, LevelHistoryEntry[]>>;
   insert(entry: LevelHistoryEntry): Promise<void>;
 }
 
@@ -826,6 +876,14 @@ export class InMemoryRepository implements AppRepository {
     return {
       findByOpenid: (openid) => self.findUserByOpenid(openid),
       findById: (userId) => self.findUserById(userId),
+      findByIds: async (userIds) => {
+        const found = new Map<string, User>();
+        for (const id of new Set(userIds)) {
+          const user = self.store.usersById.get(id);
+          if (user !== undefined) found.set(id, user);
+        }
+        return found;
+      },
       findAll: () => self.findAllUsers(),
       insert: (user) => self.insertUser(user),
       update: (user) => self.updateUser(user),
@@ -847,6 +905,14 @@ export class InMemoryRepository implements AppRepository {
     const self = this;
     return {
       findById: (teamId) => self.findTeamById(teamId),
+      findByIds: async (teamIds) => {
+        const found = new Map<string, Team>();
+        for (const id of new Set(teamIds)) {
+          const team = self.store.teamsById.get(id);
+          if (team !== undefined) found.set(id, team);
+        }
+        return found;
+      },
       insert: (team) => self.insertTeam(team),
     };
   }
@@ -926,6 +992,14 @@ export class InMemoryRepository implements AppRepository {
     const self = this;
     return {
       findById: (matchId) => self.findMatchById(matchId),
+      findByIds: async (matchIds) => {
+        const found = new Map<string, Match>();
+        for (const id of new Set(matchIds)) {
+          const match = self.store.matchesById.get(id);
+          if (match !== undefined) found.set(id, match);
+        }
+        return found;
+      },
       findIdsByCanonicalMatchId: async (canonicalMatchId) =>
         [...self.store.matchesById.values()]
           .filter((match) => (match.canonical_match_id ?? match.match_id) === canonicalMatchId)
@@ -936,6 +1010,13 @@ export class InMemoryRepository implements AppRepository {
           (match) =>
             match.kickoff_at.getTime() >= from.getTime() &&
             match.kickoff_at.getTime() <= to.getTime(),
+        ),
+      findByPeriodAnchorWindow: async (startAt, endAt) =>
+        [...self.store.matchesById.values()].filter(
+          (match) =>
+            match.period_anchor_at !== null &&
+            match.period_anchor_at.getTime() >= startAt.getTime() &&
+            match.period_anchor_at.getTime() < endAt.getTime(),
         ),
       findByLeague: async (leagueId) => [...self.store.matchesById.values()].filter((match) => match.league_id === leagueId),
       findByLeagueSeason: async (leagueId, seasonId) => [...self.store.matchesById.values()].filter(
@@ -969,6 +1050,18 @@ export class InMemoryRepository implements AppRepository {
     const self = this;
     return {
       findById: (predictionId) => self.findPredictionById(predictionId),
+      findByIds: async (predictionIds) => {
+        const wanted = new Set(predictionIds);
+        const found = new Map<string, Prediction>();
+        if (wanted.size === 0) return found;
+        for (const prediction of self.store.predictionsByUserMatch.values()) {
+          if (wanted.has(prediction.prediction_id)) {
+            found.set(prediction.prediction_id, prediction);
+            if (found.size >= wanted.size) break;
+          }
+        }
+        return found;
+      },
       findByUserAndMatch: (userId, matchId) => self.findPredictionByUserAndMatch(userId, matchId),
       findByUserAndMatchIds: async (userId, matchIds) =>
         [...new Set(matchIds)].flatMap((matchId) => {
@@ -980,6 +1073,16 @@ export class InMemoryRepository implements AppRepository {
         return [...self.store.predictionsByUserMatch.values()].filter(
           (prediction) => prediction.user_id === userId && ids.has(prediction.canonical_match_id),
         );
+      },
+      findByCanonicalMatchIds: async (canonicalMatchIds) => {
+        const ids = new Set(canonicalMatchIds);
+        if (ids.size === 0) return [];
+        const byId = new Map<string, Prediction>();
+        for (const prediction of self.store.predictionsByUserMatch.values()) {
+          const canonical = prediction.canonical_match_id ?? prediction.match_id;
+          if (ids.has(canonical)) byId.set(prediction.prediction_id, prediction);
+        }
+        return [...byId.values()];
       },
       findByUserAndCanonicalMatch: (userId, canonicalMatchId) =>
         self.findPredictionByUserAndCanonicalMatch(userId, canonicalMatchId),
@@ -1010,10 +1113,32 @@ export class InMemoryRepository implements AppRepository {
     const self = this;
     return {
       findById: (settlementId) => self.findSettlementById(settlementId),
+      findByIds: async (settlementIds) => {
+        const found = new Map<string, SettlementDoc>();
+        for (const id of new Set(settlementIds)) {
+          const settlement = self.store.settlementsById.get(id);
+          if (settlement !== undefined) found.set(id, settlement);
+        }
+        return found;
+      },
       findByMatch: (matchId) => self.findSettlementsByMatch(matchId),
+      findByMatchIds: async (matchIds) => {
+        const wanted = new Set(matchIds);
+        if (wanted.size === 0) return [];
+        return [...self.store.settlementsById.values()]
+          .filter((settlement) => wanted.has(settlement.match_id))
+          .sort(
+            (a, b) =>
+              a.match_id.localeCompare(b.match_id) ||
+              a.result_version - b.result_version ||
+              a.rule_version.localeCompare(b.rule_version) ||
+              a.settlement_id.localeCompare(b.settlement_id),
+          );
+      },
       findByMatchAndVersionAndRule: (matchId, resultVersion, ruleVersion) =>
         self.findSettlementByKey(matchId, resultVersion, ruleVersion),
       findByStatus: (status) => self.findSettlementsByStatus(status),
+      findSettledCorrectionsPendingReeval: () => self.findSettledCorrectionsPendingReeval(),
       insert: (settlement) => self.insertSettlement(settlement),
       update: (settlement) => self.updateSettlement(settlement),
     };
@@ -1027,6 +1152,22 @@ export class InMemoryRepository implements AppRepository {
       findBySettlement: (settlementId) => self.findSettlementItemsBySettlement(settlementId),
       findBySettlementAndStatus: (settlementId, status) =>
         self.findSettlementItemsBySettlementAndStatus(settlementId, status),
+      findBySettlementIdsAndStatus: async (settlementIds, status) => {
+        const wanted = new Set(settlementIds);
+        if (wanted.size === 0) return [];
+        const result: SettlementItem[] = [];
+        for (const item of self.store.settlementItemsByKey.values()) {
+          if (wanted.has(item.settlement_id) && item.status === status) result.push(item);
+        }
+        return result;
+      },
+      findByUserAndStatus: async (userId, status) => {
+        const result: SettlementItem[] = [];
+        for (const item of self.store.settlementItemsByKey.values()) {
+          if (item.user_id === userId && item.status === status) result.push(item);
+        }
+        return result;
+      },
       findByStatus: (status) => self.findSettlementItemsByStatus(status),
       findAppliedByUserBefore: (userId, asOf) =>
         self.findAppliedSettlementItemsByUserBefore(userId, asOf),
@@ -1051,6 +1192,15 @@ export class InMemoryRepository implements AppRepository {
       findByUserAndSeason: (userId, seasonId) =>
         self.findUserSeasonStatsByKey(userId, seasonId),
       findByUser: (userId) => self.findUserSeasonStats(userId),
+      findByUserIds: async (userIds) => {
+        const grouped = new Map<string, UserSeasonStats[]>();
+        for (const id of new Set(userIds)) grouped.set(id, []);
+        if (grouped.size === 0) return grouped;
+        for (const stats of self.store.userSeasonStatsByKey.values()) {
+          grouped.get(stats.user_id)?.push(stats);
+        }
+        return grouped;
+      },
       findByLevelSeason: (levelSeasonId) => self.findUserSeasonStatsByLevelSeason(levelSeasonId),
       insert: (stats) => self.insertUserSeasonStats(stats),
       update: (stats) => self.updateUserSeasonStats(stats),
@@ -1069,8 +1219,17 @@ export class InMemoryRepository implements AppRepository {
         (await self.findAllRankings()).filter(
           (entry) => entry.period_type === "week" && entry.is_final === false,
         ),
+      findWeekEntriesSince: async (minPeriodKey, includeUnfinalized = true) =>
+        (await self.findAllRankings()).filter(
+          (entry) =>
+            entry.period_type === "week" &&
+            (entry.period_key >= minPeriodKey ||
+              (includeUnfinalized && entry.is_final === false)),
+        ),
       insert: (entry) => self.insertRanking(entry),
       update: (entry) => self.updateRanking(entry),
+      updateGlobalRank: (periodType, periodKey, userId, globalRank, updatedAt) =>
+        self.updateRankingGlobalRank(periodType, periodKey, userId, globalRank, updatedAt),
     };
   }
 
@@ -1078,6 +1237,15 @@ export class InMemoryRepository implements AppRepository {
     const self = this;
     return {
       findByUser: (userId) => self.findLevelHistoryByUser(userId),
+      findByUserIds: async (userIds) => {
+        const grouped = new Map<string, LevelHistoryEntry[]>();
+        for (const id of new Set(userIds)) grouped.set(id, []);
+        if (grouped.size === 0) return grouped;
+        for (const entry of self.store.levelHistoryById.values()) {
+          grouped.get(entry.user_id)?.push(entry);
+        }
+        return grouped;
+      },
       insert: (entry) => self.insertLevelHistory(entry),
     };
   }
@@ -1484,7 +1652,7 @@ export class InMemoryRepository implements AppRepository {
 
   private async findLeagueSeasonCatalog(leagueId?: string): Promise<LeagueSeasonCatalogEntry[]> {
     const matches = [...this.store.matchesById.values()].filter(
-      (match) => leagueId === undefined || match.league_id === leagueId,
+      (match) => match.superseded_by == null && (leagueId === undefined || match.league_id === leagueId),
     );
     return aggregateLeagueSeasonCatalog(matches);
   }
@@ -1867,6 +2035,15 @@ export class InMemoryRepository implements AppRepository {
     return result;
   }
 
+  private async findSettledCorrectionsPendingReeval(): Promise<SettlementDoc[]> {
+    return [...this.store.settlementsById.values()].filter(
+      (settlement) =>
+        settlement.status === SettlementDocStatus.Settled &&
+        settlement.is_correction &&
+        settlement.level_reeval_status !== "completed",
+    );
+  }
+
   private async insertSettlement(settlement: SettlementDoc): Promise<void> {
     assertSettlementDocumentInvariant(settlement);
     if (this.store.settlementsById.has(settlement.settlement_id)) {
@@ -2191,6 +2368,29 @@ export class InMemoryRepository implements AppRepository {
       if (this.store.rankingsByKey.get(key) === entry) {
         this.store.rankingsByKey.set(key, old);
       }
+    });
+  }
+
+  private async updateRankingGlobalRank(
+    periodType: RankingEntry["period_type"],
+    periodKey: string,
+    userId: string,
+    globalRank: number | null,
+    updatedAt: Date,
+  ): Promise<void> {
+    const key = rankingKey(periodType, periodKey, userId);
+    const current = this.store.rankingsByKey.get(key);
+    if (current === undefined) {
+      throw new DocumentNotFoundError("rankings", key);
+    }
+    assertRankingInvariants({ ...current, global_rank: globalRank, updated_at: updatedAt });
+    const previousRank = current.global_rank;
+    const previousUpdatedAt = current.updated_at;
+    current.global_rank = globalRank;
+    current.updated_at = updatedAt;
+    this.logUndo(() => {
+      current.global_rank = previousRank;
+      current.updated_at = previousUpdatedAt;
     });
   }
 

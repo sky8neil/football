@@ -16,6 +16,8 @@ import {
   POSTGRES_IN_OP,
   POSTGRES_LT_OP,
   POSTGRES_LTE_OP,
+  POSTGRES_NE_OP,
+  compileLatestRegularBoardSnapshot,
   compilePostgresAdjustCounter,
   compilePostgresDistinctQuery,
   compilePostgresDocumentAdd,
@@ -24,8 +26,11 @@ import {
   compilePostgresDocumentGet,
   compilePostgresDocumentQuery,
   compilePostgresDocumentUpdate,
+  compilePostgresReleaseJobLock,
+  compilePostgresRenewJobLock,
   compilePostgresReserveCounter,
   compilePredictionHistoryPage,
+  compileSettlementFallbackPage,
   createPostgresDocumentDb,
   createPostgresQueryFn,
   parseDocumentFilter,
@@ -269,11 +274,28 @@ describe("postgres document SQL compilation §6.2", () => {
     expect(db.lteFilter("kickoff_at", NOW)).toEqual({
       kickoff_at: { [POSTGRES_LTE_OP]: NOW },
     });
+    expect(db.neFilter!("level_reeval_status", "completed")).toEqual({
+      level_reeval_status: { [POSTGRES_NE_OP]: "completed" },
+    });
+    expect(parseDocumentFilter(db.neFilter!("level_reeval_status", "completed")!)).toEqual([
+      { kind: "ne", field: "level_reeval_status", value: "completed" },
+    ]);
     expect(parseDocumentFilter(db.inFilter("event_type", ["discovered", "result_observed"])!)).toEqual([
       { kind: "in", field: "event_type", values: ["discovered", "result_observed"] },
     ]);
     expect(() => parseDocumentFilter({ kickoff_at: { $gt: NOW } })).toThrow("unsupported query operator");
     expect(() => parseDocumentFilter({ "kickoff_at;drop": NOW })).toThrow("invalid query field");
+  });
+
+  it("ne 查询编译为 IS DISTINCT FROM，legacy 缺失字段也满足不等于", () => {
+    const db = createPostgresDocumentDb(async () => ({ rows: [] }), CONFIG);
+    const compiled = compilePostgresDocumentQuery(
+      CONFIG,
+      users(),
+      db.neFilter!("level_reeval_status", "completed")!,
+    );
+    expect(compiled.sql).toContain("IS DISTINCT FROM $1");
+    expect(compiled.params).toEqual(["completed"]);
   });
 
   it("in 查询编译为参数化 ANY，不拼接客户端 SQL", () => {
@@ -359,7 +381,9 @@ describe("postgres document SQL compilation §6.2", () => {
     );
     const predictionsTable = `"${SCHEMA}"."${predictions()}"`;
     const matchesTable = `"${SCHEMA}"."${matches()}"`;
-    const existsSql = `EXISTS (SELECT 1 FROM ${matchesTable} m WHERE (m.document ->> 'superseded_by') IS NULL AND COALESCE(m.document ->> 'canonical_match_id', m._id) = COALESCE(p.document ->> 'canonical_match_id', p.document ->> 'match_id') AND ($2::text IS NULL OR m.document ->> 'league_id' = $2) AND ($3::text IS NULL OR m.document ->> 'season_id' = $3))`;
+    const predCanonical = "COALESCE((p.document ->> 'canonical_match_id'), (p.document ->> 'match_id'))";
+    const matchCanonical = "COALESCE((m.document ->> 'canonical_match_id'), (m.document ->> 'match_id'))";
+    const existsSql = `EXISTS (SELECT 1 FROM ${matchesTable} m WHERE (m.document ->> 'superseded_by') IS NULL AND ${matchCanonical} = ${predCanonical} AND ($2::text IS NULL OR m.document ->> 'league_id' = $2) AND ($3::text IS NULL OR m.document ->> 'season_id' = $3))`;
 
     const unfiltered = compilePredictionHistoryPage(CONFIG, {
       predictions_collection: predictions(),
@@ -397,8 +421,9 @@ describe("postgres document SQL compilation §6.2", () => {
       limit: 10,
     });
     expect(filtered.sql).toContain(
-      `(${ts} < $4::timestamptz OR (${ts} = $4::timestamptz AND (p.document ->> 'prediction_id') < $5))`,
+      `(${ts}, (p.document ->> 'prediction_id')) < ($4::timestamptz, $5)`,
     );
+    expect(filtered.sql).toContain(matchCanonical);
     expect(filtered.sql).toContain("(p.document ->> 'prediction_id') DESC");
     expect(filtered.sql).toContain("LIMIT $6");
     expect(filtered.sql).not.toContain("user-secret");
@@ -502,7 +527,7 @@ describe("PostgresDocumentDb CRUD", () => {
       }],
     });
     const db = createPostgresDocumentDb(rec.query, CONFIG);
-    const rows = await db.findPredictionHistoryPage({
+    const page = await db.findPredictionHistoryPage({
       predictions_collection: predictions(),
       matches_collection: matches(),
       user_id: "u1",
@@ -511,9 +536,11 @@ describe("PostgresDocumentDb CRUD", () => {
       cursor: null,
       limit: 20,
     });
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.submitted_at).toBeInstanceOf(Date);
-    expect((rows[0]?.submitted_at as Date).getTime()).toBe(NOW.getTime());
+    expect(page.documents).toHaveLength(1);
+    expect(page.documents[0]?.submitted_at).toBeInstanceOf(Date);
+    expect((page.documents[0]?.submitted_at as Date).getTime()).toBe(NOW.getTime());
+    expect(page.exhausted).toBe(true);
+    expect(page.resumeCursor).toBeNull();
     expect(rec.statements).toHaveLength(1);
     expect(rec.statements[0]?.sql).toContain("EXISTS");
     expect(rec.statements[0]?.params).toEqual(["u1", null, null, 20]);
@@ -1159,16 +1186,9 @@ describe("PostgresDocumentDb 事务与保存点 SQL", () => {
     expect(rec.statements[2]?.params).toEqual(["c1", "request_count", -1]);
   });
 
-  it("JobLock acquire 走单条原子 UPSERT，release 复用现有事务并走 SAVEPOINT", async () => {
+  it("JobLock acquire 与 release 均走单条原子 SQL（复用现有事务且不再额外建 SAVEPOINT）", async () => {
     const rec = new ExclusiveRecordingQuery();
-    rec.responses.push({ rows: [{ _id: "lock:round_1" }] }, { rows: [{ document: encodeDocument({
-      _id: "lock:round_1",
-      schema_version: 1,
-      lock_key: "lock:round_1",
-      owner_id: "owner_a",
-      lease_until: NOW,
-      updated_at: NOW,
-    }) }] }, { rows: [{ _id: "lock:round_1" }] });
+    rec.responses.push({ rows: [{ _id: "lock:round_1" }] }, { rows: [] });
     const db = createPostgresDocumentDb(rec.query, CONFIG, { connect: rec.connect });
     await db.transaction(async (tx) => {
       const txRepo = new CloudBaseAppRepository(REPO_CONFIG, tx);
@@ -1180,13 +1200,40 @@ describe("PostgresDocumentDb 事务与保存点 SQL", () => {
     expect(rec.statements.map((item) => item.sql)).toEqual([
       "BEGIN",
       `INSERT INTO "${SCHEMA}"."${jobLocks()}" (_id, document) VALUES ($1, $2::jsonb) ON CONFLICT (_id) DO UPDATE SET document = EXCLUDED.document WHERE "${SCHEMA}"."${JSONB_UTC_TIMESTAMPTZ_FUNCTION}"(("${SCHEMA}"."${jobLocks()}".document ->> 'lease_until')) <= $3::timestamptz RETURNING _id`,
-      'SAVEPOINT "vps_sp_1"',
-      `SELECT document FROM "${SCHEMA}"."${jobLocks()}" WHERE _id = $1`,
-      `UPDATE "${SCHEMA}"."${jobLocks()}" SET document = document || $2::jsonb WHERE _id = $1 RETURNING _id`,
-      'RELEASE SAVEPOINT "vps_sp_1"',
+      `UPDATE "${SCHEMA}"."${jobLocks()}" SET document = document || $3::jsonb WHERE _id = $1 AND (document ->> 'owner_id') = $2`,
       "COMMIT",
     ]);
     expect(rec.statements[1]?.params?.[0]).toBe("lock:round_1");
+    expect(rec.statements[2]?.params?.slice(0, 2)).toEqual(["lock:round_1", "owner_a"]);
+  });
+
+  it("JobLock renew 与 release 编译及返回值严格绑定 owner_id 与未过期条件，防止 READ COMMITTED TOCTOU", async () => {
+    const renewSql = compilePostgresRenewJobLock(
+      CONFIG,
+      jobLocks(),
+      "lock:weekly",
+      "owner_a",
+      new Date("2026-08-09T13:00:00.000Z"),
+      NOW,
+    );
+    expect(renewSql.sql).toBe(
+      `UPDATE "${SCHEMA}"."${jobLocks()}" SET document = document || $4::jsonb WHERE _id = $1 AND (document ->> 'owner_id') = $2 AND "${SCHEMA}"."${JSONB_UTC_TIMESTAMPTZ_FUNCTION}"(("${SCHEMA}"."${jobLocks()}".document ->> 'lease_until')) > $3::timestamptz RETURNING _id`,
+    );
+    expect(renewSql.params[0]).toBe("lock:weekly");
+    expect(renewSql.params[1]).toBe("owner_a");
+    expect(renewSql.params[2]).toBe(NOW.toISOString());
+
+    const releaseSql = compilePostgresReleaseJobLock(CONFIG, jobLocks(), "lock:weekly", "owner_a", NOW);
+    expect(releaseSql.sql).toBe(
+      `UPDATE "${SCHEMA}"."${jobLocks()}" SET document = document || $3::jsonb WHERE _id = $1 AND (document ->> 'owner_id') = $2`,
+    );
+
+    const rec = new ExclusiveRecordingQuery();
+    rec.responses.push({ rows: [{ _id: "lock:weekly" }] }, { rows: [] });
+    const db = createPostgresDocumentDb(rec.query, CONFIG, { connect: rec.connect });
+    const repo = new CloudBaseAppRepository(REPO_CONFIG, db);
+    await expect(repo.jobLocks.renew("lock:weekly", "owner_a", new Date("2026-08-09T13:00:00.000Z"))).resolves.toBe(true);
+    await expect(repo.jobLocks.renew("lock:weekly", "owner_a", new Date("2026-08-09T13:00:00.000Z"))).resolves.toBe(false);
   });
 
   it("acquireJobLock 锁被占用（无 RETURNING 行）时返回 false，不抛异常", async () => {
@@ -2528,10 +2575,109 @@ describe("PostgresDocumentDb.deleteWhere & ltFilter [Slice 5.4]", () => {
     expect(client.query).toHaveBeenCalledWith(compiled.sql, compiled.params);
   });
 
+  it("compiles bounded DELETE FROM with subquery LIMIT when options.limit is set", async () => {
+    const cutoff = new Date("2026-06-01T00:00:00.000Z");
+    const filter = { started_at: { [POSTGRES_LT_OP]: cutoff } };
+    const compiled = compilePostgresDocumentDelete(CONFIG, "ft_sync_logs", filter, { limit: 1000 });
+    expect(compiled.sql).toBe(
+      `DELETE FROM "football_test"."ft_sync_logs" WHERE _id IN (SELECT _id FROM "football_test"."ft_sync_logs" WHERE ${postgresDocumentFieldExpr(CONFIG.schema, "sync_logs", "started_at")} < $1::timestamptz LIMIT $2)`,
+    );
+    expect(compiled.params).toEqual([cutoff.toISOString(), 1000]);
+
+    const client = {
+      query: vi.fn(async () => ({ rows: [], command: "DELETE", rowCount: 1000 })),
+    };
+    const db = createPostgresDocumentDb(createPostgresQueryFn(client), CONFIG);
+    const deleted = await db.deleteWhere("ft_sync_logs", filter, { limit: 1000 });
+    expect(deleted).toBe(1000);
+    expect(client.query).toHaveBeenCalledWith(compiled.sql, compiled.params);
+
+    await expect(db.deleteWhere("ft_sync_logs", filter, { limit: 0 })).rejects.toThrow(/positive integer/);
+  });
+
   it("rejects empty filter in deleteWhere to guard against full-table deletion", async () => {
     const rec = new RecordingQuery();
     const db = createPostgresDocumentDb(rec.query, CONFIG);
     await expect(db.deleteWhere("ft_sync_logs", {})).rejects.toThrow(/non-empty filter/);
     expect(rec.statements).toHaveLength(0);
+  });
+});
+
+describe("PostgresDocumentDb Slice 3.3 SQL pushdowns", () => {
+  it("compiles _id inFilter using primary key column _id = ANY(...)", () => {
+    const compiled = compilePostgresDocumentQuery(CONFIG, users(), {
+      _id: { [POSTGRES_IN_OP]: ["u1", "u2"] },
+    });
+    expect(compiled.sql).toBe(
+      `SELECT document FROM "${SCHEMA}"."${users()}" WHERE _id = ANY($1::text[])`,
+    );
+    expect(compiled.params).toEqual([["u1", "u2"]]);
+  });
+
+  it("compileLatestRegularBoardSnapshot selects latest non-final timestamp in single SQL without offset scan", async () => {
+    const boardTable = cloudBaseCollectionName(NAMESPACE, "board_snapshots");
+    const ts = postgresDocumentFieldExpr(SCHEMA, "board_snapshots", "snapshot_at");
+    const isFinal = postgresDocumentFieldExpr(SCHEMA, "board_snapshots", "is_final");
+    const rank = postgresDocumentFieldExpr(SCHEMA, "board_snapshots", "rank");
+
+    const seasonSql = compileLatestRegularBoardSnapshot(CONFIG, {
+      collection: boardTable,
+      board: "season",
+      level_season_id: "2026_2027",
+    });
+    const expectedWhere = `(document ->> 'board') = $1 AND ${isFinal} = false AND (document ->> 'level_season_id') = $2`;
+    expect(seasonSql.sql).toBe(
+      `SELECT document FROM "${SCHEMA}"."${boardTable}" WHERE ${expectedWhere} AND ${ts} = (SELECT ${ts} FROM "${SCHEMA}"."${boardTable}" WHERE ${expectedWhere} ORDER BY ${ts} DESC LIMIT 1) ORDER BY ${rank} ASC`,
+    );
+    expect(seasonSql.sql).not.toContain("COALESCE");
+    expect(seasonSql.params).toEqual(["season", "2026_2027"]);
+
+    const rec = new RecordingQuery();
+    rec.responses.push({
+      rows: [{
+        document: encodeDocument({
+          _id: "s1",
+          schema_version: 1,
+          snapshot_id: "s1",
+          board: "career",
+          snapshot_at: NOW,
+          user_id: "u1",
+          rank: 1,
+          is_final: false,
+          created_at: NOW,
+        }),
+      }],
+    });
+    const db = createPostgresDocumentDb(rec.query, CONFIG);
+    const docs = await db.findLatestRegularBoardSnapshot({ collection: boardTable, board: "career" });
+    expect(docs).toHaveLength(1);
+    expect(docs[0]?.snapshot_at).toBeInstanceOf(Date);
+    expect(rec.statements).toHaveLength(1);
+  });
+
+  it("compileSettlementFallbackPage uses (kickoff_at, match_id) keyset cursor and skips voided", async () => {
+    const matchesTable = matches();
+    const afterAt = new Date("2026-08-05T15:00:00.000Z");
+    const compiled = compileSettlementFallbackPage(CONFIG, {
+      collection: matchesTable,
+      limit: 50,
+      after: { kickoff_at: afterAt, match_id: "m-cursor" },
+    });
+    const kickoff = postgresDocumentFieldExpr(SCHEMA, "matches", "kickoff_at");
+    const matchId = postgresDocumentFieldExpr(SCHEMA, "matches", "match_id");
+    expect(compiled.sql).toContain("<> $2");
+    expect(compiled.sql).toContain(`(${kickoff}, ${matchId}) > ($3::timestamptz, $4)`);
+    expect(compiled.sql).toContain(`ORDER BY ${kickoff} ASC, ${matchId} ASC LIMIT $5`);
+    expect(compiled.params).toEqual([MatchStatus.Finished, SettlementStatus.Voided, afterAt.toISOString(), "m-cursor", 50]);
+
+    const rec = new RecordingQuery();
+    rec.responses.push({ rows: [] });
+    const db = createPostgresDocumentDb(rec.query, CONFIG);
+    await expect(db.findSettlementFallbackPage({
+      collection: matchesTable,
+      limit: 50,
+      after: { kickoff_at: afterAt, match_id: "m-cursor" },
+    })).resolves.toEqual([]);
+    expect(rec.statements).toHaveLength(1);
   });
 });

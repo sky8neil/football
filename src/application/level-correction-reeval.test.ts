@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   LevelHistoryReason,
   LevelScope,
@@ -24,7 +24,10 @@ import type {
 } from "../domain/types.js";
 import { defaultLevelState } from "../domain/types.js";
 import { InMemoryRepository } from "../infrastructure/repositories.js";
-import { LevelCorrectionReevalService } from "./level-correction-reeval.js";
+import {
+  LEVEL_CORRECTION_REEVAL_LOCK_KEY,
+  LevelCorrectionReevalService,
+} from "./level-correction-reeval.js";
 import { WEEKLY_LEVEL_EVAL_LOCK_KEY, WeeklyLevelEvalService } from "./weekly-level-eval.js";
 
 const WEEKLY_AS_OF = new Date("2026-08-10T02:00:00.000Z");
@@ -367,6 +370,67 @@ function reeval(repo: InMemoryRepository): LevelCorrectionReevalService {
   return new LevelCorrectionReevalService(repo, FIRST_EVAL);
 }
 
+async function addCorrectionParticipant(
+  repo: InMemoryRepository,
+  userId: string,
+  match: Match,
+  settlementId: string,
+): Promise<void> {
+  await repo.users.insert(makeUser({
+    user_id: userId,
+    openid: `openid_${userId}`,
+    career_points: 0,
+    career_valid_predictions: 0,
+    career_wdl_hits: 0,
+    career_exact_hits: 0,
+    career_level: 1,
+    career_best_level: 1,
+    career_level_state: defaultLevelState(),
+  }));
+  const predictionId = `p-${userId}`;
+  await repo.predictions.insert({
+    schema_version: 1,
+    prediction_id: predictionId,
+    user_id: userId,
+    match_id: match.match_id,
+    canonical_match_id: match.canonical_match_id,
+    idempotency_key: newUuid(),
+    pred_home_score: 2,
+    pred_away_score: 1,
+    derived_result: Result.Home,
+    submitted_at: new Date(match.kickoff_at.getTime() - 3_600_000),
+    scoring_rule_version: RULE,
+    match_score: MatchScoreValue.ExactHit,
+    wdl_hit: true,
+    exact_hit: true,
+    applied_result_version: match.settled_result_version ?? 2,
+    created_at: CORRECTION_AS_OF,
+    updated_at: CORRECTION_AS_OF,
+  });
+  await repo.settlementItems.insert({
+    schema_version: 1,
+    settlement_id: settlementId,
+    prediction_id: predictionId,
+    user_id: userId,
+    old_score: MatchScoreValue.Miss,
+    new_score: MatchScoreValue.ExactHit,
+    score_delta: 12,
+    old_wdl_hit: false,
+    new_wdl_hit: true,
+    old_exact_hit: false,
+    new_exact_hit: true,
+    valid_prediction_delta: 1,
+    source_result_version: 2,
+    status: SettlementItemStatus.Applied,
+    applied_at: new Date(CORRECTION_AS_OF.getTime() - 1),
+    attempt_count: 1,
+    last_error_code: null,
+    last_error_message: null,
+    created_at: CORRECTION_AS_OF,
+    updated_at: CORRECTION_AS_OF,
+  });
+}
+
 describe("LevelCorrectionReevalService §17.7 / §32.10", () => {
   it("[J73] [J74] [J75] correction 改判当前等级并保留 career_best_level", async () => {
     const { repo, user, correctionSettlementId } = await seedCorrection(true);
@@ -615,6 +679,86 @@ describe("LevelCorrectionReevalService §17.7 / §32.10", () => {
     }));
   });
 
+  it("[Slice 2] 周评估未完成时不提前标记改判单已完成，解锁后补齐", async () => {
+    const { repo, user, correctionSettlementId } = await seedCorrection(true);
+    const previousWeek = new Date("2026-08-03T02:00:00.000Z");
+    const currentUser = await repo.users.findById(user.user_id);
+    const currentSeason = await repo.userSeasonStats.findByUserAndSeason(user.user_id, "2026_2027");
+    const firstMatch = await repo.matches.findById("m0");
+    const correction = await repo.settlements.findById(correctionSettlementId);
+    if (currentUser === null || currentSeason === null || firstMatch === null || correction === null) {
+      throw new Error("test state missing");
+    }
+    await repo.settlements.update({ ...correction, level_reeval_status: "pending" });
+    await repo.users.update({
+      ...currentUser,
+      career_level_state: {
+        ...currentUser.career_level_state!,
+        week_base_as_of: previousWeek,
+        last_eval_as_of: previousWeek,
+      },
+    });
+    await repo.userSeasonStats.update({
+      ...currentSeason,
+      level_state: {
+        ...currentSeason.level_state!,
+        week_base_as_of: previousWeek,
+        last_eval_as_of: previousWeek,
+      },
+    });
+    await repo.matches.update({ ...firstMatch, settlement_status: SettlementStatus.Correcting });
+
+    const service = new WeeklyLevelEvalService(repo, FIRST_EVAL);
+    const first = await service.run(new Date("2026-08-13T02:10:00.000Z"));
+
+    expect(first.settlement_skipped_count).toBeGreaterThanOrEqual(1);
+    expect((await repo.settlements.findById(correctionSettlementId))?.level_reeval_status)
+      .toBe("pending");
+    expect(await repo.users.findById(user.user_id)).toMatchObject({
+      career_level: 4,
+      career_level_state: { week_base_as_of: previousWeek },
+    });
+    expect((await repo.levelHistory.findByUser(user.user_id)).filter(
+      (entry) => entry.scope === LevelScope.Career &&
+        entry.reason === LevelHistoryReason.CorrectionReeval,
+    )).toHaveLength(0);
+
+    await repo.matches.update({ ...firstMatch, settlement_status: SettlementStatus.Settled });
+    const second = await service.run(new Date("2026-08-13T02:15:00.000Z"));
+
+    expect(second.settlement_skipped_count).toBe(0);
+    expect((await repo.settlements.findById(correctionSettlementId))?.level_reeval_status)
+      .toBe("completed");
+    expect(await repo.users.findById(user.user_id)).toMatchObject({
+      career_level_state: { week_base_as_of: WEEKLY_AS_OF },
+    });
+    expect((await repo.settlements.findById(correctionSettlementId))
+      ?.level_reeval_completed_at).toBeInstanceOf(Date);
+  });
+
+  it("[Slice 2] 停机超过 7 天的 pending 改判单恢复后补偿，completed 不再重复扫描", async () => {
+    const { repo, correctionSettlementId } = await seedCorrection(false);
+    const scanSpy = vi.spyOn(
+      InMemoryRepository.prototype as unknown as {
+        findSettlementItemsBySettlementAndStatus: (...args: unknown[]) => Promise<unknown>;
+      },
+      "findSettlementItemsBySettlementAndStatus",
+    );
+    const service = new WeeklyLevelEvalService(repo, FIRST_EVAL);
+
+    await service.run(new Date("2026-08-25T02:10:00.000Z"));
+
+    const completed = await repo.settlements.findById(correctionSettlementId);
+    expect(completed).toMatchObject({ level_reeval_status: "completed" });
+    expect(completed?.level_reeval_completed_at).toBeInstanceOf(Date);
+    expect(scanSpy).toHaveBeenCalled();
+    const callsAfterFirstRun = scanSpy.mock.calls.length;
+
+    await service.run(new Date("2026-09-01T02:10:00.000Z"));
+
+    expect(scanSpy.mock.calls.length).toBe(callsAfterFirstRun);
+  });
+
   it("[F1] 下次周评估前按 as_of 顺序重试更早的修正", async () => {
     const { repo, user } = await seedCorrection(false);
 
@@ -713,5 +857,85 @@ describe("LevelCorrectionReevalService §17.7 / §32.10", () => {
       career_level: currentUser.career_level,
       career_level_state: { last_eval_as_of: laterSameWeek },
     });
+  });
+
+  it("[Slice 2] 落后墙钟的 serverNow 时 LEVEL_CORRECTION_REEVAL_LOCK_KEY 租约仍晚于 Date.now()", async () => {
+    const { repo, correctionSettlementId } = await seedCorrection(false);
+    const jobLocks = repo.jobLocks;
+    const acquireSpy = vi.spyOn(jobLocks, "acquire");
+    const repoProxy = new Proxy(repo, {
+      get(target, prop, receiver) {
+        if (prop === "jobLocks") return jobLocks;
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const staleNow = new Date(Date.now() - 15 * 60 * 1000);
+    const wallClockBefore = Date.now();
+
+    await new LevelCorrectionReevalService(repoProxy, FIRST_EVAL)
+      .runForSettlement(correctionSettlementId, staleNow);
+
+    const correctionAcquires = acquireSpy.mock.calls.filter(
+      ([key]) => key === LEVEL_CORRECTION_REEVAL_LOCK_KEY,
+    );
+    expect(correctionAcquires.length).toBeGreaterThan(0);
+    const leaseUntil = correctionAcquires[0]![2] as Date;
+    expect(leaseUntil.getTime()).toBeGreaterThan(wallClockBefore);
+    expect(leaseUntil.getTime()).toBeGreaterThan(Date.now());
+  });
+
+  it("[Slice 2] 单单超过 20 个用户时循环内续租并回调 onStep", async () => {
+    const { repo, correctionSettlementId } = await seedCorrection(false);
+    const correction = await repo.settlements.findById(correctionSettlementId);
+    const match = await repo.matches.findById(correction!.match_id);
+    if (correction === null || match === null) throw new Error("test fixture missing correction");
+    await repo.settlements.update({ ...correction, level_reeval_status: "pending" });
+    for (let index = 1; index <= 20; index += 1) {
+      await addCorrectionParticipant(repo, `renew-u${index}`, match, correctionSettlementId);
+    }
+    const jobLocks = repo.jobLocks;
+    const renewSpy = vi.spyOn(jobLocks, "renew");
+    const repoProxy = new Proxy(repo, {
+      get(target, prop, receiver) {
+        if (prop === "jobLocks") return jobLocks;
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const onStep = vi.fn(async () => undefined);
+
+    await new LevelCorrectionReevalService(repoProxy, FIRST_EVAL).runPending(
+      WEEKLY_AS_OF,
+      CORRECTION_AS_OF,
+      onStep,
+    );
+
+    expect(renewSpy.mock.calls.some(([key]) => key === LEVEL_CORRECTION_REEVAL_LOCK_KEY)).toBe(true);
+    expect(onStep).toHaveBeenCalled();
+  });
+
+  it("[Slice 2] 单单循环内续租失败则 deferred 且不标记 completed", async () => {
+    const { repo, correctionSettlementId } = await seedCorrection(false);
+    const correction = await repo.settlements.findById(correctionSettlementId);
+    const match = await repo.matches.findById(correction!.match_id);
+    if (correction === null || match === null) throw new Error("test fixture missing correction");
+    await repo.settlements.update({ ...correction, level_reeval_status: "pending" });
+    for (let index = 1; index <= 20; index += 1) {
+      await addCorrectionParticipant(repo, `abort-u${index}`, match, correctionSettlementId);
+    }
+    const jobLocks = repo.jobLocks;
+    vi.spyOn(jobLocks, "renew").mockResolvedValue(false);
+    const repoProxy = new Proxy(repo, {
+      get(target, prop, receiver) {
+        if (prop === "jobLocks") return jobLocks;
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+
+    const outcome = await new LevelCorrectionReevalService(repoProxy, FIRST_EVAL)
+      .runForSettlement(correctionSettlementId, CORRECTION_AS_OF);
+
+    expect(outcome.kind).toBe("deferred");
+    expect((await repo.settlements.findById(correctionSettlementId))?.level_reeval_status)
+      .toBe("pending");
   });
 });

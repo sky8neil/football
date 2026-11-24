@@ -1,6 +1,7 @@
 import { PeriodType, RankingBoard, SyncJobType } from "../domain/enums.js";
 import { DomainError } from "../domain/errors.js";
 import { FIXED_CONFIG_V1 } from "../domain/config.js";
+import { newUuid } from "../domain/ids.js";
 import { cloudBaseCollectionName, type CloudBaseDb } from "../infrastructure/cloudbase-db.js";
 import { failedJobCooldownMs, providerJobIntervalMs, SYNC_TASKS_V1 } from "../sync/config.js";
 import type { ProviderFixtureFailureDiagnostic } from "../application/provider-sync-job.js";
@@ -315,6 +316,8 @@ export async function planDuePeriodicJobs(input: {
   const weeklyAsOf = weeklyEvalAsOf(input.serverNow);
   const weeklyCycle = await input.runtime.schedulerState.getPeriodicJobCycle(SyncJobType.WeeklyLevelEval);
   const weeklyDue = weeklyCycle?.completed_cycle_at.getTime() !== weeklyAsOf.getTime();
+  const withinWeeklyInlineGrace =
+    input.serverNow.getTime() - weeklyAsOf.getTime() < WEEKLY_INLINE_SNAPSHOT_GRACE_MS;
   if (weeklyDue) {
     decisions.push({
       task: SyncJobType.WeeklyLevelEval,
@@ -330,7 +333,7 @@ export async function planDuePeriodicJobs(input: {
     SyncJobType.BoardSnapshotStrength,
     SyncJobType.BoardSnapshotSeason,
   ] as const) {
-    if (jobType === SyncJobType.BoardSnapshotStrength && weeklyDue) {
+    if (jobType === SyncJobType.BoardSnapshotStrength && weeklyDue && withinWeeklyInlineGrace) {
       decisions.push({ task: jobType, action: "skip", reason: "inline_weekly_refresh" });
       continue;
     }
@@ -342,7 +345,7 @@ export async function planDuePeriodicJobs(input: {
       decisions.push({ task: jobType, action: "run", reason: "due" });
     }
   }
-  if (weeklyDue) {
+  if (weeklyDue && withinWeeklyInlineGrace) {
     decisions.push({ task: SyncJobType.BoardSnapshotSeasonFinal, action: "skip", reason: "inline_weekly_refresh" });
   } else {
     const dueLevelSeasonIds = await listDueSeasonFinals(input.runtime.repo, weeklyAsOf);
@@ -356,6 +359,21 @@ export async function planDuePeriodicJobs(input: {
         due_level_season_ids: dueLevelSeasonIds,
       });
     }
+  }
+  if (input.runtime.maintenanceCleanup !== undefined) {
+    const cleanupCycle = await input.runtime.schedulerState.getPeriodicJobCycle(
+      MAINTENANCE_CLEANUP_CYCLE_KEY,
+    );
+    const cleanupSkip = cycleSkip(
+      cleanupCycle?.completed_cycle_at,
+      input.serverNow,
+      MAINTENANCE_CLEANUP_INTERVAL_MS,
+    );
+    decisions.push(
+      cleanupSkip !== undefined
+        ? { task: MAINTENANCE_CLEANUP_CYCLE_KEY, action: "skip", reason: cleanupSkip }
+        : { task: MAINTENANCE_CLEANUP_CYCLE_KEY, action: "run", reason: "due" },
+    );
   }
   return decisions;
 }
@@ -655,17 +673,44 @@ async function runPeriodFinalizeJob(
 async function runWeeklyLevelEvalJob(
   runtime: ApplicationRuntime,
   serverNow: Date,
-): Promise<{ bucket: "ran" | "skipped"; reason?: string; as_of: Date }> {
+): Promise<{
+  bucket: "ran" | "skipped" | "failed";
+  reason?: string;
+  items_failed?: number;
+  as_of: Date;
+  error?: unknown;
+}> {
   const outcome = await runtime.weeklyLevelEval.run(serverNow);
   if (outcome.kind === "skipped") {
     return { bucket: "skipped", reason: "lock_held", as_of: outcome.as_of };
   }
   const settlementSkipped = outcome.settlement_skipped_count ?? 0;
   const failedCount = outcome.failed_count ?? 0;
-  if (settlementSkipped > 0 || failedCount > 0) {
+  if (failedCount > 0) {
+    const error = new DomainError(
+      "INTERNAL_ERROR",
+      `weekly level eval had ${failedCount} user failure(s)`,
+      { as_of: outcome.as_of.toISOString(), failed_count: failedCount },
+    );
+    runtime.log({
+      event: "weekly_level_eval_job_failed",
+      as_of: outcome.as_of.toISOString(),
+      failed_count: failedCount,
+      settlement_skipped_count: settlementSkipped,
+      deferred_count: outcome.deferred_count ?? 0,
+    });
+    return {
+      bucket: "failed",
+      reason: "user_eval_failed",
+      items_failed: failedCount,
+      as_of: outcome.as_of,
+      error,
+    };
+  }
+  if (settlementSkipped > 0) {
     return {
       bucket: "skipped",
-      reason: failedCount > 0 ? "user_eval_failed" : "settlement_already_running",
+      reason: "settlement_already_running",
       as_of: outcome.as_of,
     };
   }
@@ -755,7 +800,48 @@ async function runDailyConsistencyJob(
 }
 
 export const MAINTENANCE_CLEANUP_CYCLE_KEY = "maintenance_cleanup";
+export const MAINTENANCE_CLEANUP_LOCK_KEY = "sync:maintenance_cleanup";
+export const WEEKLY_INLINE_SNAPSHOT_GRACE_MS = 60 * 60_000;
 const MAINTENANCE_CLEANUP_INTERVAL_MS = 24 * 60 * 60_000;
+const MAINTENANCE_CLEANUP_LEASE_MS = FIXED_CONFIG_V1.JOB_LEASE_MINUTES * 60 * 1000;
+
+async function runMaintenanceCleanupJob(
+  runtime: ApplicationRuntime,
+  serverNow: Date,
+): Promise<{ bucket: "ran" | "skipped"; reason?: string }> {
+  const service = runtime.maintenanceCleanup;
+  if (service === undefined) {
+    return { bucket: "skipped", reason: "unconfigured" };
+  }
+  const jobLocks = (runtime.repo as Partial<AppRepository>).jobLocks;
+  const ownerId = newUuid();
+  const leaseUntil = (): Date =>
+    new Date(Math.max(Date.now(), serverNow.getTime()) + MAINTENANCE_CLEANUP_LEASE_MS);
+  if (jobLocks !== undefined) {
+    const acquired = await jobLocks.acquire(MAINTENANCE_CLEANUP_LOCK_KEY, ownerId, leaseUntil());
+    if (!acquired) {
+      return { bucket: "skipped", reason: "lock_held" };
+    }
+  }
+  try {
+    const result = await service.run(serverNow, jobLocks === undefined
+      ? undefined
+      : async () => {
+        const renewed = await jobLocks.renew(MAINTENANCE_CLEANUP_LOCK_KEY, ownerId, leaseUntil());
+        if (!renewed) {
+          throw new Error("maintenance cleanup lock lost");
+        }
+      });
+    if (!result.truncated) {
+      await markPeriodicCycle(runtime, MAINTENANCE_CLEANUP_CYCLE_KEY, serverNow);
+    }
+    return { bucket: "ran" };
+  } finally {
+    if (jobLocks !== undefined) {
+      await jobLocks.release(MAINTENANCE_CLEANUP_LOCK_KEY, ownerId).catch(() => undefined);
+    }
+  }
+}
 
 export async function runDuePeriodicJobs(input: {
   runtime: ApplicationRuntime;
@@ -787,7 +873,16 @@ export async function runDuePeriodicJobs(input: {
       if (decision.task === SyncJobType.WeeklyLevelEval) {
         const outcome = await runWeeklyLevelEvalJob(input.runtime, input.serverNow);
         if (outcome.bucket === "ran") ran.push(decision.task);
-        else skipped.push({ task: decision.task, reason: outcome.reason ?? "skipped" });
+        else if (outcome.bucket === "failed") {
+          if (outcome.error !== undefined) errors.push(outcome.error);
+          failed.push({
+            task: decision.task,
+            reason: outcome.reason ?? "user_eval_failed",
+            ...(outcome.items_failed === undefined ? {} : { items_failed: outcome.items_failed }),
+          });
+        } else {
+          skipped.push({ task: decision.task, reason: outcome.reason ?? "skipped" });
+        }
         continue;
       }
       if (
@@ -808,32 +903,16 @@ export async function runDuePeriodicJobs(input: {
         );
         if (outcome.bucket === "ran") ran.push(decision.task);
         else skipped.push({ task: decision.task, reason: outcome.reason ?? "skipped" });
+        continue;
+      }
+      if (decision.task === MAINTENANCE_CLEANUP_CYCLE_KEY) {
+        const outcome = await runMaintenanceCleanupJob(input.runtime, input.serverNow);
+        if (outcome.bucket === "ran") ran.push(decision.task);
+        else skipped.push({ task: decision.task, reason: outcome.reason ?? "skipped" });
       }
     } catch (error) {
       errors.push(error);
       failed.push({ task: decision.task, reason: "exception" });
-    }
-  }
-  if (input.runtime.maintenanceCleanup !== undefined) {
-    try {
-      const cleanupCycle = await input.runtime.schedulerState.getPeriodicJobCycle(
-        MAINTENANCE_CLEANUP_CYCLE_KEY,
-      );
-      const cleanupSkip = cycleSkip(
-        cleanupCycle?.completed_cycle_at,
-        input.serverNow,
-        MAINTENANCE_CLEANUP_INTERVAL_MS,
-      );
-      if (cleanupSkip !== undefined) {
-        skipped.push({ task: MAINTENANCE_CLEANUP_CYCLE_KEY, reason: cleanupSkip });
-      } else {
-        await input.runtime.maintenanceCleanup.run(input.serverNow);
-        await markPeriodicCycle(input.runtime, MAINTENANCE_CLEANUP_CYCLE_KEY, input.serverNow);
-        ran.push(MAINTENANCE_CLEANUP_CYCLE_KEY);
-      }
-    } catch (error) {
-      errors.push(error);
-      failed.push({ task: MAINTENANCE_CLEANUP_CYCLE_KEY, reason: "exception" });
     }
   }
   return {

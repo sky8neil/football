@@ -20,6 +20,7 @@ function loadPage(path, overrides = {}) {
     },
     rankings: { listRankings: vi.fn() },
     predictions: { listMyPredictions: vi.fn() },
+    auth: { getLoginGeneration: () => 0 },
     matches: { listMatches: vi.fn(async () => ({ statusCode: 200, data: { items: [], page: { has_more: false } } })) },
     ...overrides,
   };

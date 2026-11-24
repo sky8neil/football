@@ -1,4 +1,8 @@
-import { reconcileSettledMatch } from "./settlement-progress.js";
+import {
+  maxAppliedTimestampMs,
+  reconcileSettledMatch,
+  resolveFinalizeTimestamp,
+} from "./settlement-progress.js";
 /**
  * 改判结算入口：按 settled_result_version+1 逐版本应用积分差额。
  * 准备、各 item、周榜和 finalize 分别提交；applied item 不随之后的失败回滚。
@@ -23,6 +27,7 @@ import { validateSettlementTransition } from "../domain/settlement-state-machine
 import type { AdminAuditLog, Match, SettlementDoc } from "../domain/types.js";
 import type { AppRepository } from "../infrastructure/repositories.js";
 import {
+  renewSettlementLockForFinalize,
   startSettlementLockRenewal,
   transitionMatchSettlementStatus,
   type SettlementItemWorker,
@@ -103,6 +108,8 @@ function buildSettlement(
     status: SettlementDocStatus.Pending,
     phase: SettlementPhase.Prepare,
     is_correction: true,
+    level_reeval_status: "pending",
+    level_reeval_completed_at: null,
     started_at: null,
     settled_at: null,
     attempt_count: 0,
@@ -219,7 +226,7 @@ export class CorrectionSettlementService {
     const lockKey = settlementMatchLockKey(matchId);
     const ownerId = newUuid();
     const leaseUntil = new Date(
-      serverNow.getTime() + FIXED_CONFIG_V1.JOB_LEASE_MINUTES * 60 * 1000,
+      Date.now() + FIXED_CONFIG_V1.JOB_LEASE_MINUTES * 60 * 1000,
     );
     const acquired = await this.repo.jobLocks.acquire(
       lockKey,
@@ -307,6 +314,8 @@ export class CorrectionSettlementService {
             ...settlement,
             status: SettlementDocStatus.Running,
             phase: SettlementPhase.ApplyItems,
+            level_reeval_status: "pending",
+            level_reeval_completed_at: null,
             started_at: serverNow,
             attempt_count: settlement.attempt_count + 1,
             last_error_code: null,
@@ -342,9 +351,11 @@ export class CorrectionSettlementService {
         const tx = this.repo;
         let processedCount = 0;
         let skippedAppliedCount = 0;
+        let maxAppliedAtMs: number | null = null;
 
         for (const item of items) {
           if (item.status === SettlementItemStatus.Applied) {
+            maxAppliedAtMs = maxAppliedTimestampMs(maxAppliedAtMs, item.applied_at);
             skippedAppliedCount += 1;
             continue;
           }
@@ -424,39 +435,42 @@ export class CorrectionSettlementService {
           }
 
           lockRenewal.assertHealthy();
+          maxAppliedAtMs = maxAppliedTimestampMs(maxAppliedAtMs, serverNow);
           processedCount += 1;
         }
 
+        const finalizedAt = resolveFinalizeTimestamp(serverNow, maxAppliedAtMs);
+        lockRenewal.assertHealthy();
         await tx.settlements.update({
           ...runningSettlement,
           phase: SettlementPhase.RebuildRanks,
           updated_at: serverNow,
         });
         if (items.length > 0 && match.period_anchor_at !== null) {
-          await this.repo.withTransaction((rankTx) =>
-            rebuildSettlementWeekRanks(
-              rankTx,
-              match.period_anchor_at!,
-              serverNow,
-            ),
+          await rebuildSettlementWeekRanks(
+            this.repo,
+            match.period_anchor_at,
+            serverNow,
           );
         }
+        lockRenewal.assertHealthy();
         const remaining = await this.repo.withTransaction(async (tx) => {
+          await renewSettlementLockForFinalize(tx, lockKey, ownerId);
+          lockRenewal.assertHealthy();
           const finalizingSettlement: SettlementDoc = {
             ...runningSettlement,
             phase: SettlementPhase.Finalize,
-            updated_at: serverNow,
+            updated_at: finalizedAt,
           };
           await tx.settlements.update(finalizingSettlement);
           await tx.settlements.update({
             ...finalizingSettlement,
             status: SettlementDocStatus.Settled,
             phase: SettlementPhase.Done,
-            settled_at: serverNow,
-            updated_at: serverNow,
+            settled_at: finalizedAt,
+            updated_at: finalizedAt,
           });
 
-          lockRenewal.assertHealthy();
           const finalMatch = await tx.matches.findById(matchId);
           if (finalMatch === null) {
             throw notFoundError("MATCH");
@@ -466,7 +480,7 @@ export class CorrectionSettlementService {
           await tx.matches.updateSettlementProgress(
             finalMatch.match_id,
             target,
-            serverNow,
+            finalizedAt,
           );
           const afterFinalize = await tx.matches.findById(matchId);
           if (afterFinalize === null) {
@@ -479,7 +493,7 @@ export class CorrectionSettlementService {
             tx,
             matchId,
             remaining ? SettlementStatus.Correcting : SettlementStatus.Settled,
-            serverNow,
+            finalizedAt,
           );
           return remaining;
         });
@@ -504,7 +518,7 @@ export class CorrectionSettlementService {
                     settlement.settlement_id,
                   )),
                 await snapshotSettlementForAudit(tx, settlement.settlement_id),
-                serverNow,
+                finalizedAt,
               ),
             };
       })();

@@ -44,6 +44,7 @@ export interface CloudFunctionEvent {
   path?: string;
   query?: Record<string, string>;
   body?: unknown;
+  client_ip?: string;
 }
 
 export interface CloudFunctionLogEntry {
@@ -177,6 +178,9 @@ export function createCloudFunctionHandler(
     const trustedOpenid = resolveOpenid(context, deps.config);
 
     try {
+      const clientIp = typeof event.client_ip === "string" && event.client_ip.trim().length > 0
+        ? event.client_ip.trim()
+        : undefined;
       const assembled = await deps.assemble({
         method,
         path,
@@ -185,6 +189,7 @@ export function createCloudFunctionHandler(
         server_now: serverNow(),
         config: deps.config,
         trusted_openid: trustedOpenid,
+        ...(clientIp !== undefined ? { client_ip: clientIp } : {}),
         request_id: requestId,
         services: deps.services,
         repo: deps.repo,

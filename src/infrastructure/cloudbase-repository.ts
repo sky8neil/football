@@ -56,6 +56,10 @@ export class CloudBaseUserRepository implements UserRepository {
     return this.users.findById(userId);
   }
 
+  findByIds(userIds: readonly string[]): Promise<Map<string, User>> {
+    return this.users.findByIds!(userIds);
+  }
+
   findAll(): Promise<User[]> {
     return this.users.findAll();
   }

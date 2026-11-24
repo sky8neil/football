@@ -110,11 +110,22 @@ function loadRankingsPage() {
     "../../services/groups.js": { listMyGroups: vi.fn() },
     "../../utils/rankings-view-model.js": { buildRankingViewModel: vi.fn(() => ({})) },
     "../../utils/rankings-copy.js": COPY,
+    "../../services/auth.js": { getLoginGeneration: () => 0 },
   });
   return config;
 }
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((done, fail) => {
+    resolve = done;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
+}
 
 describe("groups services", () => {
   it("uses the group API methods and validates invite codes before sending", async () => {
@@ -191,6 +202,45 @@ describe("group pages", () => {
     await flush();
     expect(services.createGroup).toHaveBeenCalledOnce();
     expect(wxStub.navs).toEqual([["navigateTo", "/pages/groups/detail?group_id=group-1&created=1&owned_count=1"]]);
+  });
+
+  it("can create a second group after returning to the groups page", async () => {
+    const wxStub = installWx();
+    const { config, services } = loadPage("groups");
+    const page = instantiate(config);
+    page.onShow();
+    await flush();
+    page.onCreateTap();
+    await flush();
+    page.onShow();
+    await flush();
+    page.onCreateTap();
+    await flush();
+    expect(services.createGroup).toHaveBeenCalledTimes(2);
+    expect(wxStub.navs).toEqual([
+      ["navigateTo", "/pages/groups/detail?group_id=group-1&created=1&owned_count=1"],
+      ["navigateTo", "/pages/groups/detail?group_id=group-1&created=1&owned_count=1"],
+    ]);
+  });
+
+  it("recovers loading state when group list or creation rejects", async () => {
+    installWx();
+    const { config } = loadPage("groups", {
+      listMyGroups: vi.fn(() => Promise.reject(new Error("network"))),
+      createGroup: vi.fn(() => Promise.reject(new Error("network"))),
+    });
+    const page = instantiate(config);
+    page.onShow();
+    await flush();
+    expect(page.data.state).toBe("error");
+    expect(page.data.loadingAction).toBe(false);
+    expect(page.data.errorMessage).toBe("读取群信息失败");
+
+    page.setData({ canCreate: true });
+    page.onCreateTap();
+    await flush();
+    expect(page.data.loadingAction).toBe(false);
+    expect(page.data.errorMessage).toBe("操作失败，请重试");
   });
 
   it("shows remaining invite digits and enables join only for a valid eight-character code", () => {
@@ -370,16 +420,6 @@ describe("group pages", () => {
 });
 
 describe("join error recovery", () => {
-  function deferred() {
-    let resolve;
-    let reject;
-    const promise = new Promise((done, fail) => {
-      resolve = done;
-      reject = fail;
-    });
-    return { promise, resolve, reject };
-  }
-
   it("exposes 重新输入 and 重试 on the error panel", () => {
     const wxml = readFileSync(join(HERE, "join.wxml"), "utf8");
     const errorBlock = wxml.match(/state === 'error'[\s\S]*?<\/view>\s*<\/view>/)[0];
@@ -538,5 +578,133 @@ describe("join error recovery", () => {
 
     expect(services.joinGroup).toHaveBeenCalledTimes(1);
     expect(listMyGroups).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("groups list lock and request ordering", () => {
+  it("G-1: keeps create locked across onShow list success and failure while createGroup is pending", async () => {
+    installWx();
+    const createDeferred = deferred();
+    const listMyGroups = vi.fn()
+      .mockResolvedValueOnce({ statusCode: 200, data: { items: [] } })
+      .mockResolvedValueOnce({ statusCode: 200, data: { items: [{ group_id: "g1", role: "member", member_count: 2 }] } })
+      .mockRejectedValueOnce(new Error("network"));
+    const createGroup = vi.fn(() => createDeferred.promise);
+    const { config } = loadPage("groups", { listMyGroups, createGroup });
+    const page = instantiate(config);
+
+    page.onShow();
+    await flush();
+    expect(page.data.canCreate).toBe(true);
+
+    const creating = page.onCreateTap();
+    expect(page.data.loadingAction).toBe(true);
+    expect(createGroup).toHaveBeenCalledTimes(1);
+
+    await page.onShow();
+    expect(page.data.state).toBe("ready");
+    expect(page.data.loadingAction).toBe(true);
+    page.onCreateTap();
+    expect(createGroup).toHaveBeenCalledTimes(1);
+
+    await page.onShow();
+    expect(page.data.state).toBe("error");
+    expect(page.data.loadingAction).toBe(true);
+    page.onCreateTap();
+    expect(createGroup).toHaveBeenCalledTimes(1);
+
+    createDeferred.resolve({ statusCode: 201, data: { group_id: "created-1", invite_code: "ABCDEFGH" } });
+    await creating;
+    expect(page.data.loadingAction).toBe(false);
+  });
+
+  it("G-2: resets loadingAction and shows error message on business failure", async () => {
+    installWx();
+    const createGroup = vi.fn()
+      .mockResolvedValueOnce({ statusCode: 409, code: "GROUP_OWNED_LIMIT_REACHED" })
+      .mockResolvedValueOnce({ statusCode: 500, message: "创建失败" });
+    const { config } = loadPage("groups", { createGroup });
+    const page = instantiate(config);
+    page.setData({ canCreate: true });
+
+    await page.onCreateTap();
+    expect(page.data.loadingAction).toBe(false);
+    expect(page.data.errorMessage).toBe("已达到创建群数量上限");
+
+    await page.onCreateTap();
+    expect(page.data.loadingAction).toBe(false);
+    expect(page.data.errorMessage).toBe("创建失败");
+  });
+
+  it("G-3: ignores stale loadGroups success, non-200, or rejection", async () => {
+    installWx();
+    const reqA = deferred();
+    const reqB = deferred();
+    const reqC = deferred();
+    const reqD = deferred();
+    const reqE = deferred();
+    const reqF = deferred();
+    const staleItems = Array.from({ length: 5 }, (_, index) => ({
+      group_id: `stale-${index}`,
+      role: "owner",
+      member_count: 3,
+    }));
+    const freshItems = [{ group_id: "fresh-1", role: "member", member_count: 2 }];
+    const listMyGroups = vi.fn()
+      .mockImplementationOnce(() => reqA.promise)
+      .mockImplementationOnce(() => reqB.promise)
+      .mockImplementationOnce(() => reqC.promise)
+      .mockImplementationOnce(() => reqD.promise)
+      .mockImplementationOnce(() => reqE.promise)
+      .mockImplementationOnce(() => reqF.promise)
+      .mockResolvedValueOnce({ statusCode: 200, data: { items: freshItems } });
+    const { config } = loadPage("groups", { listMyGroups });
+    const page = instantiate(config);
+
+    // 1) B resolves first, stale A resolves later with different data and ownedCount=5
+    const pA = page.onShow();
+    const pB = page.onShow();
+    reqB.resolve({ statusCode: 200, data: { items: freshItems } });
+    await pB;
+    expect(page.data.state).toBe("ready");
+    expect(page.data.groups.map((item) => item.group_id)).toEqual(["fresh-1"]);
+    expect(page.data.ownedCount).toBe(0);
+    expect(page.data.canCreate).toBe(true);
+
+    reqA.resolve({ statusCode: 200, data: { items: staleItems } });
+    await pA;
+    expect(page.data.state).toBe("ready");
+    expect(page.data.groups.map((item) => item.group_id)).toEqual(["fresh-1"]);
+    expect(page.data.ownedCount).toBe(0);
+    expect(page.data.canCreate).toBe(true);
+
+    // 2) D resolves first, stale C rejects later
+    const pC = page.onShow();
+    const pD = page.onShow();
+    reqD.resolve({ statusCode: 200, data: { items: freshItems } });
+    await pD;
+    reqC.reject(new Error("stale network error"));
+    await pC;
+    expect(page.data.state).toBe("ready");
+    expect(page.data.groups.map((item) => item.group_id)).toEqual(["fresh-1"]);
+    expect(page.data.errorMessage).toBe("");
+
+    // 3) F fails with non-200 first, stale E resolves 200 later, then retry recovers
+    const pE = page.onShow();
+    const pF = page.onShow();
+    reqF.resolve({ statusCode: 500, message: "最新失败" });
+    await pF;
+    expect(page.data.state).toBe("error");
+    expect(page.data.errorMessage).toBe("最新失败");
+
+    reqE.resolve({ statusCode: 200, data: { items: staleItems } });
+    await pE;
+    expect(page.data.state).toBe("error");
+    expect(page.data.errorMessage).toBe("最新失败");
+    expect(page.data.groups.map((item) => item.group_id)).toEqual(["fresh-1"]);
+
+    await page.onRetry();
+    expect(page.data.state).toBe("ready");
+    expect(page.data.groups.map((item) => item.group_id)).toEqual(["fresh-1"]);
   });
 });

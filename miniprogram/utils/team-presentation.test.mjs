@@ -43,17 +43,42 @@ describe("presentTeam", () => {
     expect(team.name).toBe(sourceName);
   });
 
-  it("returns the missing placeholder for an unknown team_id", () => {
+  it("uses a valid server name for an unknown team_id", () => {
     const getTeamLogo = vi.fn(() => "placeholder.png");
     const { presentTeam } = loadPresentation(getTeamLogo);
     const team = { team_id: UNKNOWN_ID, name: "FC Mystery" };
     const result = presentTeam(team, "bundesliga");
     expect(result.teamId).toBe(UNKNOWN_ID);
-    expect(result.nameZh).toBe("球队资料待补全");
-    expect(result.missing).toBe(true);
+    expect(result.nameZh).toBe("FC Mystery");
+    expect(result.missing).toBe(false);
+    expect(result.logo).toBe("placeholder.png");
   });
 
-  it("uses the missing branch for null team or missing team_id without throwing", () => {
+  it("prefers the registered Chinese name over a valid server name", () => {
+    const getTeamLogo = vi.fn(() => "logo.png");
+    const { presentTeam } = loadPresentation(getTeamLogo);
+    const result = presentTeam({ team_id: BAYERN_ID, name: "FC Bayern Munich" }, "bundesliga");
+    expect(result.nameZh).toBe("拜仁慕尼黑");
+    expect(result.missing).toBe(false);
+  });
+
+  it("trims server names and keeps a valid name when the crest is missing", () => {
+    const getTeamLogo = vi.fn(() => "placeholder.png");
+    const { presentTeam } = loadPresentation(getTeamLogo);
+    expect(presentTeam({ team_id: UNKNOWN_ID, name: "  长春亚泰  " }, "chinese_super_league"))
+      .toMatchObject({ nameZh: "长春亚泰", missing: false, logo: "placeholder.png" });
+  });
+
+  it("falls back to the missing placeholder for blank names or the missing hint itself", () => {
+    const getTeamLogo = vi.fn(() => "placeholder.png");
+    const { presentTeam } = loadPresentation(getTeamLogo);
+    expect(presentTeam({ team_id: UNKNOWN_ID, name: "   " }, "bundesliga"))
+      .toMatchObject({ nameZh: "球队资料待补全", missing: true });
+    expect(presentTeam({ team_id: UNKNOWN_ID, name: "球队资料待补全" }, "bundesliga"))
+      .toMatchObject({ nameZh: "球队资料待补全", missing: true });
+  });
+
+  it("uses the missing branch for null team or missing name without throwing", () => {
     const getTeamLogo = vi.fn(() => "placeholder.png");
     const { presentTeam } = loadPresentation(getTeamLogo);
     expect(() => presentTeam(null, "bundesliga")).not.toThrow();
@@ -63,8 +88,8 @@ describe("presentTeam", () => {
     expect(presentTeam(null, "bundesliga")).toMatchObject({ nameZh: "球队资料待补全", missing: true });
     expect(presentTeam({}, "premier_league")).toMatchObject({ nameZh: "球队资料待补全", missing: true });
     expect(presentTeam({ name: "Arsenal FC" }, "premier_league")).toMatchObject({
-      nameZh: "球队资料待补全",
-      missing: true,
+      nameZh: "Arsenal FC",
+      missing: false,
     });
   });
 

@@ -43,6 +43,7 @@ import type {
 import { assertValidServerNow } from "./period-finalize.js";
 import { decideUnlockGrants } from "./unlock-decision.js";
 import { applySettlementItemDelta, computeSettlementItemDelta } from "./settlement.js";
+import { resolveEffectiveMatchesByIds } from "./match-identity.js";
 import type { SettlementItemWorker, SettlementItemWorkerContext } from "./first-settlement-service.js";
 
 const INVALID_LEDGER = "INVALID_LEDGER" as const;
@@ -164,27 +165,11 @@ function emptyRanking(
   };
 }
 
-async function resolveEffectiveMatch(
-  tx: UnitOfWork,
-  matchId: string,
-): Promise<Match | null> {
-  let match = await tx.matches.findById(matchId);
-  const visited = new Set<string>();
-  while (match !== null && match.superseded_by != null && !visited.has(match.match_id)) {
-    visited.add(match.match_id);
-    const next = await tx.matches.findById(match.superseded_by);
-    if (next === null) break;
-    match = next;
-  }
-  return match;
-}
-
-async function lastScoringAt(
-  tx: UnitOfWork,
-  predictions: Prediction[],
-  periodType: typeof PeriodType.Week,
-  periodKey: string,
+async function findLatestScoringAnchorAt(
+  effectiveMatches: ReadonlyMap<string, Match>,
+  predictions: readonly Prediction[],
   updatedPrediction: Prediction,
+  includeMatch: (match: Match) => boolean = () => true,
 ): Promise<Date | null> {
   let latest: Date | null = null;
   for (const original of predictions) {
@@ -194,63 +179,11 @@ async function lastScoringAt(
     if (scoreOf(prediction) <= MatchScoreValue.Miss || prediction.applied_result_version < 1) {
       continue;
     }
-    const match = await resolveEffectiveMatch(tx, prediction.match_id);
+    const match = effectiveMatches.get(prediction.match_id) ?? null;
     if (match === null || match.period_anchor_at === null) {
       throw invalidLedger(`计分 prediction 缺少 match 或 period_anchor_at（prediction_id=${prediction.prediction_id}）`);
     }
-    if (calculatePeriodKey(periodType, match.period_anchor_at) !== periodKey) {
-      continue;
-    }
-    if (latest === null || match.period_anchor_at.getTime() > latest.getTime()) {
-      latest = match.period_anchor_at;
-    }
-  }
-  return latest;
-}
-
-async function careerLastScoringAt(
-  tx: UnitOfWork,
-  predictions: Prediction[],
-  updatedPrediction: Prediction,
-): Promise<Date | null> {
-  let latest: Date | null = null;
-  for (const original of predictions) {
-    const prediction = original.prediction_id === updatedPrediction.prediction_id
-      ? updatedPrediction
-      : original;
-    if (scoreOf(prediction) <= MatchScoreValue.Miss || prediction.applied_result_version < 1) {
-      continue;
-    }
-    const match = await resolveEffectiveMatch(tx, prediction.match_id);
-    if (match === null || match.period_anchor_at === null) {
-      throw invalidLedger(`计分 prediction 缺少 match 或 period_anchor_at（prediction_id=${prediction.prediction_id}）`);
-    }
-    if (latest === null || match.period_anchor_at.getTime() > latest.getTime()) {
-      latest = match.period_anchor_at;
-    }
-  }
-  return latest;
-}
-
-async function seasonLastScoringAt(
-  tx: UnitOfWork,
-  predictions: Prediction[],
-  seasonId: string,
-  updatedPrediction: Prediction,
-): Promise<Date | null> {
-  let latest: Date | null = null;
-  for (const original of predictions) {
-    const prediction = original.prediction_id === updatedPrediction.prediction_id
-      ? updatedPrediction
-      : original;
-    if (scoreOf(prediction) <= MatchScoreValue.Miss || prediction.applied_result_version < 1) {
-      continue;
-    }
-    const match = await resolveEffectiveMatch(tx, prediction.match_id);
-    if (match === null || match.period_anchor_at === null) {
-      throw invalidLedger(`计分 prediction 缺少 match 或 period_anchor_at（prediction_id=${prediction.prediction_id}）`);
-    }
-    if (levelSeasonOf(match.period_anchor_at) !== seasonId) {
+    if (!includeMatch(match)) {
       continue;
     }
     if (latest === null || match.period_anchor_at.getTime() > latest.getTime()) {
@@ -274,67 +207,107 @@ export function rankingPeriodLockKey(
   return `ranking:${periodType}:${periodKey}`;
 }
 
-export async function rebuildGlobalRanks(
+/** 已持有周期 ranking 锁时，事务内只计算并原子局部更新 global_rank。 */
+export async function rebuildGlobalRanksInTransaction(
   tx: UnitOfWork,
-  rankings: RankingRepository,
   periodType: typeof PeriodType.Week,
   periodKey: string,
   now: Date,
 ): Promise<void> {
-  const jobLocks = tx.jobLocks;
-  if (jobLocks === undefined) {
-    throw internalError("结算 global rank 重算缺少 jobLocks repository port");
+  const rankings = tx.rankings;
+  if (rankings === undefined) {
+    throw internalError("结算 rank 重算缺少 rankings repository port");
   }
+  const updateGlobalRank = rankings.updateGlobalRank;
+  if (updateGlobalRank === undefined) {
+    throw internalError("结算 rank 重算缺少 rankings.updateGlobalRank port");
+  }
+
+  const entries = await rankings.findByPeriod(periodType, periodKey);
+  const comparable = entries.map((entry) => ({
+    entry,
+    value: {
+      period_score: entry.period_score,
+      valid_predictions: entry.valid_predictions,
+      wdl_hits: entry.wdl_hits,
+      exact_hits: entry.exact_hits,
+      last_scoring_match_at: entry.last_scoring_match_at,
+      user_id: entry.user_id,
+    },
+  }));
+  comparable.sort((a, b) => compareRankingEntry(RankingBoard.Week, a.value, b.value));
+  let position = 0;
+  for (const item of comparable) {
+    const globalRank = item.entry.valid_predictions < 1 ? null : rankForPosition(item.entry.valid_predictions, ++position);
+    if (item.entry.global_rank !== globalRank) {
+      await updateGlobalRank.call(
+        rankings,
+        periodType,
+        periodKey,
+        item.entry.user_id,
+        globalRank,
+        now,
+      );
+    }
+  }
+}
+
+const RANKING_REBUILD_RETRY_DELAYS_MS: readonly number[] = [50, 100, 200];
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** 周期 ranking 锁必须在 repo.withTransaction 之外 acquire/release。 */
+export async function rebuildGlobalRanks(
+  repo: AppRepository,
+  periodType: typeof PeriodType.Week,
+  periodKey: string,
+  now: Date,
+  options?: { retryDelaysMs?: readonly number[] },
+): Promise<void> {
   const lockKey = rankingPeriodLockKey(periodType, periodKey);
   const ownerId = newUuid();
-  const leaseUntil = new Date(now.getTime() + FIXED_CONFIG_V1.JOB_LEASE_MINUTES * 60 * 1000);
-  const acquired = await jobLocks.acquire(lockKey, ownerId, leaseUntil);
-  if (!acquired) {
-    throw conflictError("RANKING_REBUILD_ALREADY_RUNNING", "周期排行榜重算锁被占用", {
-      lock_key: lockKey,
-    });
+  const retryDelaysMs = options?.retryDelaysMs ?? RANKING_REBUILD_RETRY_DELAYS_MS;
+  let acquired = false;
+  for (let attempt = 0; ; attempt += 1) {
+    const leaseUntil = new Date(
+      Math.max(now.getTime(), Date.now()) + FIXED_CONFIG_V1.JOB_LEASE_MINUTES * 60 * 1000,
+    );
+    acquired = await repo.jobLocks.acquire(lockKey, ownerId, leaseUntil);
+    if (acquired) {
+      break;
+    }
+    if (attempt >= retryDelaysMs.length) {
+      throw conflictError("RANKING_REBUILD_ALREADY_RUNNING", "周期排行榜重算锁被占用", {
+        lock_key: lockKey,
+      });
+    }
+    await delay(retryDelaysMs[attempt]!);
   }
 
   try {
-    const entries = await rankings.findByPeriod(periodType, periodKey);
-    const comparable = entries.map((entry) => ({
-      entry,
-      value: {
-        period_score: entry.period_score,
-        valid_predictions: entry.valid_predictions,
-        wdl_hits: entry.wdl_hits,
-        exact_hits: entry.exact_hits,
-        last_scoring_match_at: entry.last_scoring_match_at,
-        user_id: entry.user_id,
-      },
-    }));
-    comparable.sort((a, b) => compareRankingEntry(RankingBoard.Week, a.value, b.value));
-    let position = 0;
-    for (const item of comparable) {
-      const globalRank = item.entry.valid_predictions < 1 ? null : rankForPosition(item.entry.valid_predictions, ++position);
-      if (item.entry.global_rank !== globalRank) {
-        await rankings.update({ ...item.entry, global_rank: globalRank, updated_at: now });
-      }
-    }
+    await repo.withTransaction((tx) =>
+      rebuildGlobalRanksInTransaction(tx, periodType, periodKey, now),
+    );
   } finally {
-    await jobLocks.release(lockKey, ownerId);
+    // 释放失败不得掩盖原始事务异常。
+    await repo.jobLocks.release(lockKey, ownerId).catch(() => undefined);
   }
 }
 
 export async function rebuildSettlementWeekRanks(
-  tx: UnitOfWork,
+  repo: AppRepository,
   periodAnchorAt: Date,
   now: Date,
+  options?: { retryDelaysMs?: readonly number[] },
 ): Promise<void> {
-  if (tx.rankings === undefined) {
-    throw internalError("结算 rank 重算缺少 rankings repository port");
-  }
   await rebuildGlobalRanks(
-    tx,
-    tx.rankings,
+    repo,
     PeriodType.Week,
     calculatePeriodKey(PeriodType.Week, periodAnchorAt),
     now,
+    options,
   );
 }
 
@@ -489,10 +462,24 @@ export class SettlementItemApplicationService {
       currentItem.old_score > MatchScoreValue.Miss &&
       currentItem.new_score === MatchScoreValue.Miss;
     const existingCareerLastScoringAt = user.career_last_scoring_match_at ?? null;
-    let predictions: Prediction[] | null = null;
-    const getPredictions = async (): Promise<Prediction[]> => {
-      predictions ??= await tx.predictions.findByUser(user.user_id);
-      return predictions;
+    let scoringHistoryContextPromise:
+      | Promise<{ predictions: Prediction[]; effectiveMatches: Map<string, Match> }>
+      | null = null;
+    const getScoringHistoryContext = async () => {
+      scoringHistoryContextPromise ??= (async () => {
+        const predictions = await tx.predictions.findByUser(user.user_id);
+        const scoringMatchIds = predictions
+          .map((original) => original.prediction_id === updatedPrediction.prediction_id ? updatedPrediction : original)
+          .filter((prediction) => scoreOf(prediction) > MatchScoreValue.Miss && prediction.applied_result_version >= 1)
+          .map((prediction) => prediction.match_id);
+        const effectiveMatches = await resolveEffectiveMatchesByIds(
+          tx.matches,
+          scoringMatchIds,
+          { lenient: true },
+        );
+        return { predictions, effectiveMatches };
+      })();
+      return scoringHistoryContextPromise;
     };
     const careerNeedsRebuild =
       needsZeroCorrectionRebuild &&
@@ -504,7 +491,10 @@ export class SettlementItemApplicationService {
       career_wdl_hits: updatedUserBase.career_wdl_hits,
       career_exact_hits: updatedUserBase.career_exact_hits,
       career_last_scoring_match_at: careerNeedsRebuild
-        ? await careerLastScoringAt(tx, await getPredictions(), updatedPrediction)
+        ? await (async () => {
+            const ctx = await getScoringHistoryContext();
+            return findLatestScoringAnchorAt(ctx.effectiveMatches, ctx.predictions, updatedPrediction);
+          })()
         : currentItem.new_score > MatchScoreValue.Miss
           ? maxScoringAt(existingCareerLastScoringAt, match.period_anchor_at)
           : existingCareerLastScoringAt,
@@ -526,12 +516,15 @@ export class SettlementItemApplicationService {
       needsZeroCorrectionRebuild &&
       existingSeasonLastScoringAt?.getTime() === match.period_anchor_at.getTime();
     const seasonLastScoring = seasonNeedsRebuild
-      ? await seasonLastScoringAt(
-          tx,
-          await getPredictions(),
-          levelSeasonId,
-          updatedPrediction,
-        )
+      ? await (async () => {
+          const ctx = await getScoringHistoryContext();
+          return findLatestScoringAnchorAt(
+            ctx.effectiveMatches,
+            ctx.predictions,
+            updatedPrediction,
+            (resolvedMatch) => levelSeasonOf(resolvedMatch.period_anchor_at as Date) === levelSeasonId,
+          );
+        })()
       : currentItem.new_score > MatchScoreValue.Miss
         ? maxScoringAt(existingSeasonLastScoringAt, match.period_anchor_at)
         : existingSeasonLastScoringAt;
@@ -567,13 +560,15 @@ export class SettlementItemApplicationService {
         needsZeroCorrectionRebuild &&
         base.last_scoring_match_at?.getTime() === match.period_anchor_at.getTime();
       const lastScoring = rankingNeedsRebuild
-        ? await lastScoringAt(
-            tx,
-            await getPredictions(),
-            ref.period_type,
-            ref.period_key,
-            updatedPrediction,
-          )
+        ? await (async () => {
+            const ctx = await getScoringHistoryContext();
+            return findLatestScoringAnchorAt(
+              ctx.effectiveMatches,
+              ctx.predictions,
+              updatedPrediction,
+              (resolvedMatch) => calculatePeriodKey(ref.period_type, resolvedMatch.period_anchor_at as Date) === ref.period_key,
+            );
+          })()
         : currentItem.new_score > MatchScoreValue.Miss
           ? maxScoringAt(base.last_scoring_match_at, match.period_anchor_at)
           : base.last_scoring_match_at;

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { MVP_SEASON } from "../domain/config.js";
 import { levelSeasonOf } from "../domain/time.js";
 import { InMemoryRepository } from "../infrastructure/repositories.js";
@@ -458,5 +458,39 @@ describe("ShareCardQueryService", () => {
 
     expect(result.round_predictions).toBe(2);
     expect(result.pending_predictions).toBe(0);
+  });
+
+  it("[Slice 3.3] getShareCard fetches predictions via one findByUserAndCanonicalMatchIds batch instead of N+1", async () => {
+    const repo = new InMemoryRepository();
+    const user = makeUser();
+    await repo.users.insert(user);
+    const m1 = makeMatch();
+    const m2 = makeMatch();
+    const m3 = makeMatch();
+    await repo.matches.insert(m1);
+    await repo.matches.insert(m2);
+    await repo.matches.insert(m3);
+    await repo.predictions.insert(makePrediction(user.user_id, m1.match_id));
+    await repo.predictions.insert(makePrediction(user.user_id, m3.match_id));
+
+    const predictions = repo.predictions;
+    const batchSpy = vi.spyOn(predictions, "findByUserAndCanonicalMatchIds");
+    const singleSpy = vi.spyOn(predictions, "findByUserAndCanonicalMatch");
+    const repoProxy = new Proxy(repo, {
+      get(target, prop, receiver) {
+        if (prop === "predictions") return predictions;
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+
+    const result = await new ShareCardQueryService(repoProxy).getShareCard(user.user_id, {
+      league_id: "premier_league",
+      season_id: MVP_SEASON.season_id,
+      round_id: "01",
+    }, NOW);
+
+    expect(result.round_predictions).toBe(2);
+    expect(batchSpy).toHaveBeenCalledTimes(1);
+    expect(singleSpy).not.toHaveBeenCalled();
   });
 });

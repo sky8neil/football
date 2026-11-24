@@ -74,6 +74,9 @@ describe("S7 OpenAPI baseline", () => {
     );
     expect(specification).toMatch(/    MatchListItem:[\s\S]*?league_id:/);
     expect(specification).toMatch(/    PredictionHistoryItem:[\s\S]*?league_id:/);
+    expect(specification).not.toMatch(/    MatchListItem:[\s\S]*?season_id:\n\s+type: string\n\s+enum:/);
+    expect(specification).not.toMatch(/    MatchDetailData:[\s\S]*?season_id:\n\s+type: string\n\s+enum:/);
+    expect(specification).not.toMatch(/    PredictionHistoryItem:[\s\S]*?season_id:\n\s+type: string\n\s+enum:/);
     expect(specification).not.toContain("wdl_accuracy");
 
     expect(pathBlock(specification, "/predictions/me/{prediction_id}")).toContain(

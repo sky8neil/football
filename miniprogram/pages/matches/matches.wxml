@@ -35,7 +35,7 @@
     </view>
     <view wx:elif="{{state === 'offseason'}}" class="offseason-card">
       <view class="offseason-title">本赛季已收官</view>
-      <view class="empty-copy">{{summarySeasonId ? summarySeasonId + ' 赛季 · ' : ''}}{{offseasonInfo.leagueName}}</view>
+      <view class="empty-copy">{{summarySeasonLabel ? summarySeasonLabel + ' 赛季 · ' : ''}}{{offseasonInfo.leagueName}}</view>
       <view class="summary-title">我的本联赛小结</view>
       <view wx:if="{{summaryState === 'loading'}}" class="empty-copy">正在加载个人小结</view>
       <view wx:elif="{{summaryState === 'error'}}" class="summary-retry" bindtap="onSummaryRetry">小结暂时加载失败，重试</view>
@@ -77,7 +77,7 @@
             <view wx:if="{{item.uiState !== 'submitted_locked'}}" class="derived">即时判定 <text>{{item.derivedResult}}</text></view>
             <view wx:if="{{item.uiState !== 'submitted_locked'}}" class="pred-hint">赛果命中 +3 · 精确比分 +12</view>
             <view wx:if="{{item.uiState !== 'submitted_locked'}}" class="pred-actions"><button class="submit-btn" catchtap="onSubmitTap" data-match-id="{{item.match_id}}" loading="{{item.uiState === 'submitting'}}" disabled="{{item.uiState === 'submitting'}}">{{item.uiState === 'submitting' ? '提交中…' : '提交预测'}}</button><text class="submit-note">提交后无法修改</text></view>
-            <view wx:if="{{item.submitError}}" class="submit-err">{{item.submitError}}</view>
+            <view wx:if="{{item.uiState !== 'submitted_locked' && item.submitError}}" class="submit-err">{{item.submitError}}</view>
             <view wx:if="{{item.uiState === 'submitted_locked'}}" class="pred-success">✓ 预测已提交</view>
           </view>
         </view>

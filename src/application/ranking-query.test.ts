@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { GroupMemberStatus, GroupStatus, PeriodType, RankingBoard, RankingScope, UserStatus } from "../domain/enums.js";
 import type {
   BoardSnapshot,
@@ -566,6 +566,31 @@ describe("RankingQueryService v2", () => {
       .rejects.toMatchObject({ code: "VALIDATION_ERROR" });
   });
 
+  it("returns 200 empty board on default week query when firstPeriodKey is a future launch week", async () => {
+    const repo = new InMemoryRepository();
+    await repo.users.insert(makeUser(id(1)));
+    await repo.rankings.insert(makeRanking(id(1), 1, { period_key: "2026-W32" }));
+    const service = new RankingQueryService(repo, SECRET, { firstPeriodKey: "2026-W33" });
+
+    const preLaunch = await service.list(query({
+      period_key: null,
+      server_now: NOW,
+    }));
+    expect(preLaunch).toMatchObject({
+      board: RankingBoard.Week,
+      period_key: "2026-W32",
+      current_period_key: "2026-W32",
+      first_period_key: "2026-W33",
+      entry_count: 0,
+      items: [],
+      has_more: false,
+      next_cursor: null,
+    });
+
+    await expect(service.list(query({ period_key: "2026-W32", server_now: NOW })))
+      .rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+  });
+
   it("按周期结束边界保留历史周榜注销用户及 global_rank", async () => {
     const repo = new InMemoryRepository();
     await repo.users.insert(makeUser(id(1)));
@@ -749,5 +774,136 @@ describe("RankingQueryService v2", () => {
       strength_index: "2.08",
       window_n: 50,
     });
+  });
+
+  it("[Slice 1 #6] 上赛季无终榜时显式查询 previousSeasonId 复用已查结果", async () => {
+    const repo = new InMemoryRepository();
+    const user = makeUser(id(1));
+    const previousSnapshotAt = new Date("2026-06-30T10:00:00.000Z");
+    await repo.users.insert(user);
+    await repo.userSeasonStats.insert(makeSeasonStats(user.user_id, "2025_2026"));
+    await repo.boardSnapshots.insert(makeSeasonSnapshot(
+      user.user_id,
+      1,
+      48,
+      "2025_2026",
+      previousSnapshotAt,
+    ));
+    const boardSnapshots = repo.boardSnapshots;
+    const findLatestBySeason = vi.spyOn(boardSnapshots, "findLatestBySeason");
+    const findFinalBySeason = vi.spyOn(boardSnapshots, "findFinalBySeason");
+    const repoProxy = new Proxy(repo, {
+      get(target, prop, receiver) {
+        if (prop === "boardSnapshots") return boardSnapshots;
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+
+    const result = await new RankingQueryService(repoProxy, SECRET).list(query({
+      board: RankingBoard.Season,
+      period_key: null,
+      level_season_id: "2025_2026",
+      authenticated_user_id: user.user_id,
+    }));
+
+    expect(result).toMatchObject({
+      level_season_id: "2025_2026",
+      is_provisional: true,
+    });
+    expect(findFinalBySeason.mock.calls.filter(([seasonId]) => seasonId === "2025_2026")).toHaveLength(1);
+    expect(findLatestBySeason.mock.calls.filter(([seasonId]) => seasonId === "2025_2026")).toHaveLength(1);
+  });
+
+  it("[Slice 3.4] 上季终榜已就绪时不再读取上季常规版快照", async () => {
+    const repo = new InMemoryRepository();
+    await repo.users.insert(makeUser(id(1)));
+    await repo.boardSnapshots.insert(makeSeasonSnapshot(id(1), 1, 10));
+    await repo.boardSnapshots.insert({
+      ...makeSeasonSnapshot(id(1), 1, 24, "2025_2026", new Date("2026-06-30T00:00:00.000Z")),
+      snapshot_id: "previous-final",
+      is_final: true,
+    });
+    const boardSnapshots = repo.boardSnapshots;
+    const findLatestBySeason = vi.spyOn(boardSnapshots, "findLatestBySeason");
+    const findFinalBySeason = vi.spyOn(boardSnapshots, "findFinalBySeason");
+    const repoProxy = new Proxy(repo, {
+      get(target, prop, receiver) {
+        if (prop === "boardSnapshots") return boardSnapshots;
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+
+    const result = await new RankingQueryService(repoProxy, SECRET).list(query({
+      board: RankingBoard.Season,
+      period_key: null,
+      limit: 10,
+    }));
+
+    expect(result.level_season_id).toBe("2026_2027");
+    expect(findFinalBySeason).toHaveBeenCalledWith("2025_2026");
+    expect(findLatestBySeason).toHaveBeenCalledWith("2026_2027");
+    expect(findLatestBySeason).not.toHaveBeenCalledWith("2025_2026");
+  });
+
+  it("[Slice 3.3] preloads users via O(1) findByIds, skips unrelated Strength/final lists on Career, and avoids historical findFinalBySeason loop on Season", async () => {
+    const repo = new InMemoryRepository();
+    for (let rank = 1; rank <= 15; rank += 1) {
+      const user = makeUser(id(rank));
+      await repo.users.insert(user);
+      await repo.boardSnapshots.insert(makeSnapshot(RankingBoard.Career, user.user_id, rank));
+      await repo.boardSnapshots.insert(makeSeasonSnapshot(user.user_id, rank, 100 - rank));
+      await repo.boardSnapshots.insert({
+        ...makeSeasonSnapshot(user.user_id, rank, 50 - rank),
+        snapshot_id: `final-2024-${rank}`,
+        level_season_id: "2024_2025",
+        is_final: true,
+        snapshot_at: new Date("2025-07-01T00:00:00.000Z"),
+      });
+    }
+    const users = repo.users;
+    const boardSnapshots = repo.boardSnapshots;
+    const usersByIdSpy = vi.spyOn(users, "findById");
+    const usersByIdsSpy = vi.fn(users.findByIds!);
+    users.findByIds = usersByIdsSpy;
+    const findLatestByBoardSpy = vi.spyOn(boardSnapshots, "findLatestByBoard");
+    const findFinalBySeasonSpy = vi.spyOn(boardSnapshots, "findFinalBySeason");
+    const listFinalSeasonIdsSpy = vi.spyOn(boardSnapshots, "listFinalSeasonIds");
+    const repoProxy = new Proxy(repo, {
+      get(target, prop, receiver) {
+        if (prop === "users") return users;
+        if (prop === "boardSnapshots") return boardSnapshots;
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+
+    const service = new RankingQueryService(repoProxy, SECRET);
+    const careerRes = await service.list(query({
+      board: RankingBoard.Career,
+      period_key: null,
+      authenticated_user_id: id(1),
+      limit: 10,
+    }));
+
+    expect(careerRes.items).toHaveLength(10);
+    expect(usersByIdSpy).not.toHaveBeenCalled();
+    expect(usersByIdsSpy).toHaveBeenCalled();
+    expect(usersByIdsSpy.mock.calls.length).toBeLessThanOrEqual(2);
+    expect(findLatestByBoardSpy).toHaveBeenCalledWith(RankingBoard.Career);
+    expect(findLatestByBoardSpy).not.toHaveBeenCalledWith(RankingBoard.Strength);
+    expect(listFinalSeasonIdsSpy).not.toHaveBeenCalled();
+
+    findFinalBySeasonSpy.mockClear();
+    listFinalSeasonIdsSpy.mockClear();
+    const seasonRes = await service.list(query({
+      board: RankingBoard.Season,
+      period_key: null,
+      authenticated_user_id: id(1),
+      limit: 10,
+    }));
+    expect(seasonRes.available_level_seasons).toContain("2024_2025");
+    expect(listFinalSeasonIdsSpy).toHaveBeenCalledTimes(1);
+    // Only called once for previousSeasonId ("2025_2026"), NOT for historical "2024_2025"
+    expect(findFinalBySeasonSpy).toHaveBeenCalledTimes(1);
+    expect(findFinalBySeasonSpy).toHaveBeenCalledWith("2025_2026");
   });
 });

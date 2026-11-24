@@ -35,12 +35,17 @@ class FakeDb implements CloudBaseDb {
   inFilter?: (field: string, values: readonly string[]) => Record<string, unknown> | undefined;
   lteFilter?: (field: string, value: unknown) => Record<string, unknown> | undefined;
   gteFilter?: (field: string, value: unknown) => Record<string, unknown> | undefined;
+  neFilter?: (field: string, value: unknown) => Record<string, unknown> | undefined;
 
   constructor(enableIn: boolean, enableLte: boolean) {
     if (enableIn) {
       this.inFilter = function inFilter(this: FakeDb, field, values) {
         if (this.documents === undefined) throw new Error("inFilter lost this");
         return { [field]: { __in: values } };
+      };
+      this.neFilter = function neFilter(this: FakeDb, field, value) {
+        if (this.documents === undefined) throw new Error("neFilter lost this");
+        return { [field]: { __ne: value } };
       };
     }
     if (enableLte) {
@@ -245,8 +250,12 @@ describe("createCountingDb passthrough of inFilter/lteFilter", () => {
       expect(typeof tx.inFilter).toBe("function");
       expect(typeof tx.lteFilter).toBe("function");
       expect(typeof tx.gteFilter).toBe("function");
+      expect(typeof tx.neFilter).toBe("function");
       expect(tx.inFilter?.("provider_match_id", ["ext-1"])).toEqual({
         provider_match_id: { __in: ["ext-1"] },
+      });
+      expect(tx.neFilter?.("level_reeval_status", "completed")).toEqual({
+        level_reeval_status: { __ne: "completed" },
       });
       expect(tx.lteFilter?.("kickoff_at", NOW)).toEqual({
         kickoff_at: { __lte: NOW },
@@ -261,10 +270,12 @@ describe("createCountingDb passthrough of inFilter/lteFilter", () => {
     expect(db.inFilter).toBeUndefined();
     expect(db.lteFilter).toBeUndefined();
     expect(db.gteFilter).toBeUndefined();
+    expect(db.neFilter).toBeUndefined();
     await db.transaction(async (tx) => {
       expect(tx.inFilter).toBeUndefined();
       expect(tx.lteFilter).toBeUndefined();
       expect(tx.gteFilter).toBeUndefined();
+      expect(tx.neFilter).toBeUndefined();
     });
 
     const repo = new CloudBaseAppRepository(CONFIG, db);
@@ -292,6 +303,70 @@ describe("createCountingDb passthrough of inFilter/lteFilter", () => {
     expect(db.lteFilter?.("kickoff_at", NOW)).toEqual({
       kickoff_at: { __lte: NOW },
     });
+    expect(db.neFilter?.("level_reeval_status", "completed")).toEqual({
+      level_reeval_status: { __ne: "completed" },
+    });
     expect(counter.end()).toEqual({ read: 0, write: 0, by_collection: [] });
+  });
+
+  it("[Slice 3.2/3.3] 透传 deleteWhere({ limit })、findLatestRegularBoardSnapshot 与 findSettlementFallbackPage 并准确计数", async () => {
+    const inner = new FakeDb(true, true) as CloudBaseDb;
+    const seen: Record<string, unknown> = {};
+    inner.deleteWhere = async (collection, filter, options) => {
+      seen.delete = { collection, filter, options };
+      return 3;
+    };
+    inner.findLatestRegularBoardSnapshot = async (params) => {
+      seen.snapshot = params;
+      return [];
+    };
+    inner.findSettlementFallbackPage = async (params) => {
+      seen.fallback = params;
+      return [];
+    };
+
+    const { db, counter } = createCountingDb(inner);
+    counter.begin();
+    await expect(db.deleteWhere!("ft_sync_logs", { started_at: NOW }, { limit: 1000 })).resolves.toBe(3);
+    await expect(db.findLatestRegularBoardSnapshot!({ collection: "ft_board_snapshots", board: "career" })).resolves.toEqual([]);
+    await expect(db.findSettlementFallbackPage!({ collection: "ft_matches", limit: 20, after: null })).resolves.toEqual([]);
+    const ops = counter.end();
+
+    expect(seen.delete).toEqual({
+      collection: "ft_sync_logs",
+      filter: { started_at: NOW },
+      options: { limit: 1000 },
+    });
+    expect(seen.snapshot).toEqual({ collection: "ft_board_snapshots", board: "career" });
+    expect(seen.fallback).toEqual({ collection: "ft_matches", limit: 20, after: null });
+    expect(ops).toMatchObject({ read: 2, write: 1 });
+  });
+});
+
+describe("createCountingDb passthrough of patch", () => {
+  it("[Slice 1] 透传 patch 字段并计一次 write", async () => {
+    const inner = new FakeDb(true, true) as CloudBaseDb;
+    const calls: Array<{ collection: string; id: string; fields: Record<string, unknown> }> = [];
+    inner.patch = async (collection, id, fields) => {
+      calls.push({ collection, id, fields });
+    };
+    const { db, counter } = createCountingDb(inner);
+    counter.begin();
+    await db.patch!("ft_rankings", "week|2026-W32|u1", {
+      global_rank: 2,
+      updated_at: NOW,
+    });
+    expect(calls).toEqual([{
+      collection: "ft_rankings",
+      id: "week|2026-W32|u1",
+      fields: { global_rank: 2, updated_at: NOW },
+    }]);
+    expect(counter.end()).toMatchObject({ read: 0, write: 1 });
+  });
+
+  it("[Slice 1] 底层无 patch 时包装后也不暴露该能力", () => {
+    const inner = new FakeDb(true, true);
+    const { db } = createCountingDb(inner);
+    expect(db.patch).toBeUndefined();
   });
 });

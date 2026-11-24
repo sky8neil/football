@@ -244,13 +244,13 @@ describe("RetrySettlementService.retry - 成功路径", () => {
     const s = await repo.settlements.findById(settlement.settlement_id);
     expect(s?.status).toBe(SettlementDocStatus.Settled);
     expect(s?.phase).toBe(SettlementPhase.Done);
-    expect(s?.settled_at?.getTime()).toBe(NOW.getTime());
+    expect(s?.settled_at?.getTime()).toBe(NOW.getTime() + 1);
     expect(s?.attempt_count).toBe(1);
 
     const matchAfter = await repo.matches.findById(match.match_id);
     expect(matchAfter?.settlement_status).toBe(SettlementStatus.Settled);
     expect(matchAfter?.settled_result_version).toBe(1);
-    expect(matchAfter?.settled_at?.getTime()).toBe(NOW.getTime());
+    expect(matchAfter?.settled_at?.getTime()).toBe(NOW.getTime() + 1);
 
     expect(worker).toHaveBeenCalledTimes(2);
     const calledPredictionIds = worker.mock.calls
@@ -365,6 +365,7 @@ describe("RetrySettlementService.retry - 成功路径", () => {
             settlements: tx.settlements,
             settlementItems: tx.settlementItems,
             unlocks: tx.unlocks,
+            jobLocks: tx.jobLocks!,
             savepoint: (callback) => tx.savepoint(callback),
           }),
         ),
@@ -376,7 +377,7 @@ describe("RetrySettlementService.retry - 成功路径", () => {
     const versionWrite = matchWrites.findIndex(
       (write) =>
         write.value.settled_result_version === 1 &&
-        write.value.settled_at?.getTime() === NOW.getTime(),
+        write.value.settled_at?.getTime() === NOW.getTime() + 1,
     );
     const statusWrite = matchWrites.findIndex(
       (write) => write.value.settlement_status === SettlementStatus.Settled,
@@ -422,6 +423,7 @@ describe("RetrySettlementService.retry - 成功路径", () => {
             settlements: tx.settlements,
             settlementItems: tx.settlementItems,
             unlocks: tx.unlocks,
+            jobLocks: tx.jobLocks!,
             savepoint: (callback) => tx.savepoint(callback),
           }),
         ),
@@ -992,5 +994,46 @@ describe("RetrySettlementService.retry - 部分失败恢复集成", () => {
         "p1",
       ))?.status,
     ).toBe(SettlementItemStatus.Applied);
+  });
+});
+
+describe("Slice 1 finalize 事务锁围栏", () => {
+  it("DB 锁已被接管时 RetrySettlementService 不提交 Settled/Done", async () => {
+    const { repo, match } = await setup();
+    const settlement = makeFailedSettlement({
+      match_id: match.match_id,
+      result_version: 1,
+    });
+    await repo.settlements.insert(settlement);
+    const repoProxy = new Proxy(repo, {
+      get(target, prop, receiver) {
+        if (prop === "withTransaction") {
+          return async (fn: Parameters<AppRepository["withTransaction"]>[0]) =>
+            target.withTransaction((tx) => {
+              const fencedTx = new Proxy(tx, {
+                get(txTarget, txProp, txReceiver) {
+                  if (txProp === "jobLocks") {
+                    return { ...target.jobLocks, renew: async () => false };
+                  }
+                  return Reflect.get(txTarget, txProp, txReceiver);
+                },
+              });
+              return fn(fencedTx);
+            });
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+
+    await expect(
+      new RetrySettlementService(repoProxy as unknown as AppRepository)
+        .retry(settlement.settlement_id, NOW),
+    ).rejects.toMatchObject({ code: FirstSettlementCode.AlreadyRunning });
+
+    const after = await repo.settlements.findById(settlement.settlement_id);
+    expect(after?.status).toBe(SettlementDocStatus.Running);
+    expect(after?.phase).toBe(SettlementPhase.RebuildRanks);
+    expect((await repo.matches.findById(match.match_id))?.settlement_status)
+      .not.toBe(SettlementStatus.Settled);
   });
 });

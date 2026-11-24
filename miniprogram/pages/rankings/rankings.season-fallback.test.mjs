@@ -24,13 +24,19 @@ const viewModel = loadCommonJs(MODEL, {
   "./rankings-copy.js": copy,
 });
 
-function loadPage() {
+function loadPage({
+  mockFirstPage = true,
+  storage = new Map(),
+  serviceOverrides = {},
+  getLoginGeneration = () => 0,
+} = {}) {
   let definition;
   const services = {
     rankings: { listRankings: vi.fn(async () => ({ statusCode: 200, data: {} })) },
     profile: { getMyProfile: vi.fn() },
     levels: { getMyLevels: vi.fn() },
     groups: { listMyGroups: vi.fn() },
+    ...serviceOverrides,
   };
   const dependencies = {
     "../../services/rankings.js": services.rankings,
@@ -41,10 +47,17 @@ function loadPage() {
     "../../utils/ui-layout.js": { headerHeight: () => 88 },
     "../../utils/rankings-copy.js": copy,
     "../../utils/level-season.js": loadCommonJs(LEVEL_SEASON),
+    "../../services/auth.js": { getLoginGeneration },
+  };
+  const wx = {
+    getStorageSync: (key) => storage.get(key),
+    setStorageSync: (key, value) => { storage.set(key, value); },
+    removeStorageSync: (key) => { storage.delete(key); },
   };
   runInNewContext(readFileSync(PAGE, "utf8"), {
     Page: (value) => { definition = value; },
     require: (name) => dependencies[name],
+    wx,
   });
   const page = {
     ...definition,
@@ -55,25 +68,54 @@ function loadPage() {
     },
   };
   page.onLoad();
-  page.loadFirstPage = vi.fn(() => page.fetchRankings(true));
+  if (mockFirstPage) page.loadFirstPage = vi.fn(() => page.fetchRankings(true));
   page.setData({ board: "season", scope: "global" });
-  return { page, services };
+  return { page, services, storage };
 }
 
 function seasonPayload({
   levelSeasonId = "2026_2027",
   availableLevelSeasons = ["2025_2026", "2024_2025"],
   items = [],
+  availableBoards = ["week", "season"],
 } = {}) {
   return {
     server_now: "2026-08-20T00:00:00.000Z",
     level_season_id: levelSeasonId,
     available_level_seasons: availableLevelSeasons,
-    available_boards: ["week", "season"],
+    available_boards: availableBoards,
     entry_count: items.length,
     items,
     page: { has_more: false, next_cursor: null },
   };
+}
+
+function weekPayload() {
+  return {
+    server_now: "2026-08-20T00:00:00.000Z",
+    period_key: "2026-W34",
+    first_period_key: "2026-W34",
+    available_boards: ["week"],
+    available_level_seasons: ["2025_2026", "2024_2025", "2026_2027"],
+    entry_count: 0,
+    items: [],
+    me: { status: "not_participated" },
+    page: { has_more: false, next_cursor: null },
+  };
+}
+
+function loadFullPage({ storage = new Map(), rankings, getLoginGeneration } = {}) {
+  return loadPage({
+    mockFirstPage: false,
+    storage,
+    getLoginGeneration,
+    serviceOverrides: {
+      rankings: rankings || { listRankings: vi.fn(async () => ({ statusCode: 200, data: seasonPayload() })) },
+      profile: { getMyProfile: vi.fn(async () => ({ statusCode: 200, data: { user_id: "user-1", nickname: "玩家" } })) },
+      levels: { getMyLevels: vi.fn(async () => ({ statusCode: 200, data: { season: { valid_predictions: 3 } } })) },
+      groups: { listMyGroups: vi.fn(async () => ({ statusCode: 200, data: { items: [] } })) },
+    },
+  });
 }
 
 describe("ranking season empty-board fallback", () => {
@@ -212,5 +254,203 @@ describe("ranking season empty-board fallback", () => {
     expect(page.data.selectedLevelSeasonId).toBe("2026_2027");
     expect(page.loadFirstPage).not.toHaveBeenCalled();
     expect(services.rankings.listRankings).not.toHaveBeenCalled();
+  });
+});
+
+describe("pending ranking target navigation", () => {
+  it("opens the target season board for an eligible user", async () => {
+    const storage = new Map([["pending_ranking_target", { board: "season", levelSeasonId: "2026_2027" }]]);
+    const rankings = {
+      listRankings: vi.fn(async () => ({
+        statusCode: 200,
+        data: seasonPayload({
+          items: [{
+            user_id: "user-1",
+            rank: 1,
+            display_name: "玩家",
+            favorite_team_id: null,
+            career_level: 1,
+            season_points: 24,
+            season_valid_predictions: 12,
+            exact_hits: 2,
+          }],
+        }),
+      })),
+    };
+    const { page, services } = loadFullPage({ storage, rankings });
+
+    page.onShow();
+    await vi.waitFor(() => expect(page.data.state).toBe("list"));
+
+    expect(storage.has("pending_ranking_target")).toBe(false);
+    expect(page.data.board).toBe("season");
+    expect(page.data.scope).toBe("global");
+    expect(page.data.groupId).toBeNull();
+    expect(page.data.selectedLevelSeasonId).toBe("2026_2027");
+    expect(page.explicitTargetSeasonId).toBe("2026_2027");
+    expect(page.userChangedSeason).toBe(false);
+    expect(page.autoSeasonFallback).toBe(false);
+    expect(page.userSelectedWeek).toBe(false);
+    expect(services.rankings.listRankings).toHaveBeenCalledWith(expect.objectContaining({
+      board: "season",
+      scope: "global",
+      groupId: null,
+      levelSeasonId: "2026_2027",
+      cursor: null,
+    }));
+  });
+
+  it("falls back to the week board when the user has no season board access", async () => {
+    const storage = new Map([["pending_ranking_target", { board: "season", levelSeasonId: "2026_2027" }]]);
+    const rankings = {
+      listRankings: vi.fn()
+        .mockResolvedValueOnce({
+          statusCode: 200,
+          data: seasonPayload({ availableBoards: ["week"] }),
+        })
+        .mockResolvedValue({ statusCode: 200, data: weekPayload() }),
+    };
+    const { page, services } = loadFullPage({ storage, rankings });
+
+    page.onShow();
+    await vi.waitFor(() => expect(page.data.state).toBe("list"));
+
+    expect(storage.has("pending_ranking_target")).toBe(false);
+    expect(page.data.board).toBe("week");
+    expect(page.data.scope).toBe("global");
+    expect(page.explicitTargetSeasonId).toBeNull();
+    expect(page.data.showSeasonBoard).toBe(false);
+    expect(services.rankings.listRankings).toHaveBeenLastCalledWith(expect.objectContaining({
+      board: "week",
+      scope: "global",
+      levelSeasonId: null,
+    }));
+  });
+
+  it("keeps an explicit target season empty instead of falling back to the previous season", () => {
+    const { page, services } = loadPage();
+    page.explicitTargetSeasonId = "2026_2027";
+    page.setData({
+      board: "season",
+      scope: "global",
+      selectedLevelSeasonId: "2026_2027",
+      currentLevelSeasonId: "2026_2027",
+      availableLevelSeasons: ["2026_2027", "2025_2026"],
+    });
+
+    page.applyListResult({
+      statusCode: 200,
+      data: seasonPayload({ levelSeasonId: "2026_2027" }),
+    }, true);
+
+    expect(page.autoSeasonFallback).toBe(false);
+    expect(page.data.selectedLevelSeasonId).toBe("2026_2027");
+    expect(page.data.items).toEqual([]);
+    expect(page.loadFirstPage).not.toHaveBeenCalled();
+    expect(services.rankings.listRankings).not.toHaveBeenCalled();
+  });
+
+  it("clears the explicit target on manual board, season, scope, or account changes", () => {
+    const { page } = loadPage();
+    page.setData({
+      board: "season",
+      scope: "global",
+      selectedLevelSeasonId: "2026_2027",
+      currentLevelSeasonId: "2026_2027",
+      availableLevelSeasons: ["2026_2027", "2025_2026"],
+      availableBoards: ["week", "season"],
+      selectedSeasonIndex: 0,
+      groups: [{ group_id: "group-1", display_name: "群一" }],
+      selectedGroupIndex: 0,
+    });
+
+    page.explicitTargetSeasonId = "2026_2027";
+    page.onSeasonChange({ detail: { value: "1" } });
+    expect(page.explicitTargetSeasonId).toBeNull();
+
+    page.explicitTargetSeasonId = "2026_2027";
+    page.onBoardTap({ currentTarget: { dataset: { board: "week" } } });
+    expect(page.explicitTargetSeasonId).toBeNull();
+
+    page.setData({ board: "season", selectedLevelSeasonId: "2026_2027" });
+    page.explicitTargetSeasonId = "2026_2027";
+    page.onScopeTap({ currentTarget: { dataset: { scope: "group" } } });
+    expect(page.explicitTargetSeasonId).toBeNull();
+
+    page.explicitTargetSeasonId = "2026_2027";
+    page.resetLoginGeneration();
+    expect(page.explicitTargetSeasonId).toBeNull();
+  });
+
+  it("keeps the new account's pending season target after a login-generation switch", async () => {
+    let generation = 1;
+    const storage = new Map();
+    const rankings = {
+      listRankings: vi.fn(async (query) => {
+        if (query.board === "season") {
+          return {
+            statusCode: 200,
+            data: seasonPayload({
+              levelSeasonId: "2026_2027",
+              availableLevelSeasons: ["2025_2026", "2024_2025"],
+              availableBoards: ["week", "season"],
+            }),
+          };
+        }
+        return { statusCode: 200, data: weekPayload() };
+      }),
+    };
+    const { page, services } = loadFullPage({
+      storage,
+      rankings,
+      getLoginGeneration: () => generation,
+    });
+    page.explicitTargetSeasonId = "2025_2026";
+    page.setData({ board: "season", selectedLevelSeasonId: "2025_2026" });
+
+    generation = 2;
+    storage.set("pending_ranking_target", {
+      board: "season",
+      levelSeasonId: "2026_2027",
+    });
+    page.onShow();
+    await vi.waitFor(() => expect(page.data.state).toBe("list"));
+
+    expect(storage.has("pending_ranking_target")).toBe(false);
+    expect(page.data.board).toBe("season");
+    expect(page.data.scope).toBe("global");
+    expect(page.data.selectedLevelSeasonId).toBe("2026_2027");
+    expect(page.data.items).toEqual([]);
+    expect(page.explicitTargetSeasonId).toBe("2026_2027");
+    expect(page.autoSeasonFallback).toBe(false);
+    expect(services.rankings.listRankings).toHaveBeenCalledTimes(1);
+    expect(services.rankings.listRankings).toHaveBeenCalledWith(expect.objectContaining({
+      board: "season",
+      scope: "global",
+      groupId: null,
+      levelSeasonId: "2026_2027",
+      cursor: null,
+    }));
+    expect(services.rankings.listRankings).not.toHaveBeenCalledWith(expect.objectContaining({
+      levelSeasonId: "2025_2026",
+    }));
+  });
+
+  it("lets pending group navigation win over a pending season target", () => {
+    const storage = new Map([
+      ["pending_ranking_group_id", "group-1"],
+      ["pending_ranking_target", { board: "season", levelSeasonId: "2026_2027" }],
+    ]);
+    const { page } = loadPage({ storage });
+    page.explicitTargetSeasonId = "2026_2027";
+
+    page.onShow();
+
+    expect(storage.has("pending_ranking_group_id")).toBe(false);
+    expect(storage.has("pending_ranking_target")).toBe(false);
+    expect(page.data.scope).toBe("group");
+    expect(page.data.groupId).toBe("group-1");
+    expect(page.data.board).toBe("week");
+    expect(page.explicitTargetSeasonId).toBeNull();
   });
 });

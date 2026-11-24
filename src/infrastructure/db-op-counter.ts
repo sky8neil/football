@@ -87,6 +87,12 @@ export function createCountingDb(db: CloudBaseDb): { db: CloudBaseDb; counter: D
         return inner.transaction((transactionDb) => work(wrap(transactionDb)));
       },
     };
+    if (inner.patch) {
+      wrapped.patch = async (collection, id, fields) => {
+        bump("write", collection);
+        return inner.patch!(collection, id, fields);
+      };
+    }
     if (inner.getCounter) {
       wrapped.getCounter = async (collection, id, field) => {
         bump("read", collection);
@@ -111,8 +117,23 @@ export function createCountingDb(db: CloudBaseDb): { db: CloudBaseDb; counter: D
         return inner.acquireJobLock!(collection, lockKey, document, now);
       };
     }
+    if (inner.renewJobLock) {
+      wrapped.renewJobLock = async (collection, lockKey, ownerId, leaseUntil, now) => {
+        bump("write", collection);
+        return inner.renewJobLock!(collection, lockKey, ownerId, leaseUntil, now);
+      };
+    }
+    if (inner.releaseJobLock) {
+      wrapped.releaseJobLock = async (collection, lockKey, ownerId) => {
+        bump("write", collection);
+        return inner.releaseJobLock!(collection, lockKey, ownerId);
+      };
+    }
     if (inner.inFilter) {
       wrapped.inFilter = (field, values) => inner.inFilter!(field, values);
+    }
+    if (inner.neFilter) {
+      wrapped.neFilter = (field, value) => inner.neFilter!(field, value);
     }
     if (inner.ltFilter) {
       wrapped.ltFilter = (field, value) => inner.ltFilter!(field, value);
@@ -124,9 +145,9 @@ export function createCountingDb(db: CloudBaseDb): { db: CloudBaseDb; counter: D
       wrapped.gteFilter = (field, value) => inner.gteFilter!(field, value);
     }
     if (inner.deleteWhere) {
-      wrapped.deleteWhere = async (collection, filter) => {
+      wrapped.deleteWhere = async (collection, filter, options) => {
         bump("write", collection);
-        return inner.deleteWhere!(collection, filter);
+        return inner.deleteWhere!(collection, filter, options);
       };
     }
     if (inner.distinctQuery) {
@@ -140,6 +161,18 @@ export function createCountingDb(db: CloudBaseDb): { db: CloudBaseDb; counter: D
         bump("read", params.predictions_collection);
         bump("read", params.matches_collection);
         return inner.findPredictionHistoryPage!(params);
+      };
+    }
+    if (inner.findLatestRegularBoardSnapshot) {
+      wrapped.findLatestRegularBoardSnapshot = async (params) => {
+        bump("read", params.collection);
+        return inner.findLatestRegularBoardSnapshot!(params);
+      };
+    }
+    if (inner.findSettlementFallbackPage) {
+      wrapped.findSettlementFallbackPage = async (params) => {
+        bump("read", params.collection);
+        return inner.findSettlementFallbackPage!(params);
       };
     }
     return wrapped;

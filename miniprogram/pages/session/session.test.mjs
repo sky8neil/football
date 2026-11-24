@@ -229,6 +229,12 @@ describe("会话页：缓存回填", () => {
     page.onLoad({ return_to: "share-card" });
     expect(page.data.returnTo).toBe("share-card");
   });
+
+  it("带 return_to=my-predictions 时记录返回目标", () => {
+    const { page } = loadSessionPage({ result: undefined });
+    page.onLoad({ return_to: "my-predictions" });
+    expect(page.data.returnTo).toBe("my-predictions");
+  });
 });
 
 describe("会话页：登录成功后的返回", () => {
@@ -242,6 +248,41 @@ describe("会话页：登录成功后的返回", () => {
     await Promise.resolve();
     expect(navs).toContainEqual(["navigateBack", 1]);
     expect(navs.some(([kind]) => kind === "switchTab")).toBe(false);
+  });
+
+  it("return_to=my-predictions 登录成功后 navigateBack，不 switchTab 回首页", async () => {
+    const { page, navs } = loadSessionPage({
+      result: { statusCode: 201, data: { nickname: "Sky" } },
+      nickname: "Sky",
+    });
+    page.onLoad({ return_to: "my-predictions" });
+    page.onSubmit();
+    await Promise.resolve();
+    expect(navs).toEqual([["navigateBack", 1]]);
+  });
+
+  it("存在残留 pending_group_invite_code 时 return_to=share-card 仍优先 navigateBack 且不消费邀请码", async () => {
+    const { page, navs, storage } = loadSessionPage({
+      result: { statusCode: 201, data: { nickname: "Sky" } },
+      stored: { pending_group_invite_code: "INVITE123" },
+      nickname: "Sky",
+    });
+    page.onLoad({ return_to: "share-card" });
+    page.onSubmit();
+    await Promise.resolve();
+    expect(navs).toEqual([["navigateBack", 1]]);
+    expect(storage.get("pending_group_invite_code")).toBe("INVITE123");
+  });
+
+  it("onSkip 清除残留 pending_group_invite_code 并回到首页", () => {
+    const { page, navs, storage } = loadSessionPage({
+      result: undefined,
+      stored: { pending_group_invite_code: "INVITE123" },
+    });
+    page.onLoad({});
+    page.onSkip();
+    expect(storage.has("pending_group_invite_code")).toBe(false);
+    expect(navs).toEqual([["switchTab", "/pages/matches/matches"]]);
   });
 });
 

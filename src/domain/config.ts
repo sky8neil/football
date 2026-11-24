@@ -435,6 +435,40 @@ export function activeSeasonIds(league: SupportedLeague, now: Date): readonly st
   )];
 }
 
+/** 覆盖 [from, to) 查询窗口内可能命中的全部赛季（兼顾跨年/自然年换季过渡与前置赛季）。 */
+export function windowSeasonIds(
+  league: SupportedLeague,
+  from: Date,
+  to: Date,
+): readonly string[] {
+  const crossYear = /^\d{4}_\d{4}$/.test(league.season_id);
+  const naturalYear = /^\d{4}$/.test(league.season_id);
+  if (
+    (!crossYear && !naturalYear) ||
+    !Number.isFinite(from.getTime()) ||
+    !Number.isFinite(to.getTime())
+  ) {
+    return [league.season_id];
+  }
+  const effectiveEnd = to.getTime() > from.getTime() ? new Date(to.getTime() - 1) : from;
+  const startSeason = activeLeagueSeason(league, from).season_id;
+  const endSeason = activeLeagueSeason(league, effectiveEnd).season_id;
+  const startYear = seasonStartYear(startSeason);
+  const endYear = seasonStartYear(endSeason);
+  if (startYear === null || endYear === null || endYear < startYear) {
+    return activeSeasonIds(league, from);
+  }
+  const ids = new Set<string>();
+  const prev = previousLeagueSeasonId(league, from);
+  if (prev !== null) {
+    ids.add(prev);
+  }
+  for (let year = startYear; year <= endYear; year += 1) {
+    ids.add(crossYear ? `${year}_${year + 1}` : String(year));
+  }
+  return [...ids];
+}
+
 /** 按 UTC 时间取该联赛在指定 provider 下的赛季引用；缺省回退到推导出的 source_season_ref。 */
 export function activeProviderSeasonRef(
   league: SupportedLeague,

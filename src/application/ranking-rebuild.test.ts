@@ -1,11 +1,24 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   MatchScoreValue,
+  MatchStatus,
   PeriodType,
+  Result,
+  SettlementDocStatus,
   SettlementItemStatus,
+  SettlementPhase,
+  SettlementStatus,
 } from "../domain/enums.js";
 import { newUuid } from "../domain/ids.js";
-import type { SettlementItem } from "../domain/types.js";
+import { calculatePeriodKey } from "../domain/time.js";
+import type {
+  Match,
+  MatchResult,
+  Prediction,
+  RankingEntry,
+  SettlementDoc,
+  SettlementItem,
+} from "../domain/types.js";
 import { InMemoryRepository } from "../infrastructure/repositories.js";
 import {
   rebuildPeriodRankings,
@@ -773,5 +786,241 @@ describe("rebuildPeriodRankings - ledger 完整性校验", () => {
       ),
     );
     expect(err).toMatchObject({ code: "INVALID_LEDGER" });
+  });
+});
+
+const SERVICE_RULE = "scoring_v1";
+
+async function seedAppliedMatch(
+  repo: InMemoryRepository,
+  params: {
+    matchId: string;
+    userId: string;
+    leagueId: Match["league_id"];
+    seasonId: string;
+    anchor: Date;
+    score: MatchScoreValue;
+  },
+): Promise<void> {
+  const predictionId = `p-${params.matchId}`;
+  const settlementId = `s-${params.matchId}`;
+  const exact = params.score === MatchScoreValue.ExactHit;
+  const wdl = params.score === MatchScoreValue.WdlHit || exact;
+  const home = exact ? 2 : 1;
+  const away = exact ? 1 : 0;
+  const appliedAt = new Date(params.anchor.getTime() + 60 * 60_000);
+  const match: Match = {
+    schema_version: 1,
+    match_id: params.matchId,
+    canonical_match_id: params.matchId,
+    superseded_by: null,
+    league_id: params.leagueId,
+    season_id: params.seasonId,
+    round_id: "01",
+    home_team_id: "home",
+    away_team_id: "away",
+    kickoff_at: params.anchor,
+    kickoff_confirmed: true,
+    prediction_deadline_at: new Date(params.anchor.getTime() - 600_000),
+    prediction_closed_at: new Date(params.anchor.getTime() - 600_000),
+    period_anchor_at: params.anchor,
+    match_status: MatchStatus.Finished,
+    settlement_status: SettlementStatus.Settled,
+    regular_home_score: home,
+    regular_away_score: away,
+    extra_home_score: null,
+    extra_away_score: null,
+    penalty_home_score: null,
+    penalty_away_score: null,
+    result_version: 1,
+    settled_result_version: 1,
+    result_source: "provider",
+    scoring_rule_version: SERVICE_RULE,
+    finish_detected_at: appliedAt,
+    settled_at: appliedAt,
+    created_at: appliedAt,
+    updated_at: appliedAt,
+  };
+  const prediction: Prediction = {
+    schema_version: 1,
+    prediction_id: predictionId,
+    user_id: params.userId,
+    match_id: params.matchId,
+    canonical_match_id: params.matchId,
+    idempotency_key: newUuid(),
+    pred_home_score: 2,
+    pred_away_score: 1,
+    derived_result: Result.Home,
+    submitted_at: new Date(params.anchor.getTime() - 3_600_000),
+    scoring_rule_version: SERVICE_RULE,
+    match_score: params.score,
+    wdl_hit: wdl,
+    exact_hit: exact,
+    applied_result_version: 1,
+    created_at: appliedAt,
+    updated_at: appliedAt,
+  };
+  const result: MatchResult = {
+    schema_version: 1,
+    match_id: params.matchId,
+    result_version: 1,
+    regular_home_score: home,
+    regular_away_score: away,
+    source: "provider",
+    provider_status: "FT",
+    admin_id: null,
+    reason: null,
+    created_at: appliedAt,
+  };
+  const settlement: SettlementDoc = {
+    schema_version: 1,
+    settlement_id: settlementId,
+    match_id: params.matchId,
+    result_version: 1,
+    rule_version: SERVICE_RULE,
+    status: SettlementDocStatus.Settled,
+    phase: SettlementPhase.Done,
+    is_correction: false,
+    started_at: appliedAt,
+    settled_at: appliedAt,
+    attempt_count: 1,
+    last_error_code: null,
+    last_error_message: null,
+    created_at: appliedAt,
+    updated_at: appliedAt,
+  };
+  const item: SettlementItem = {
+    schema_version: 1,
+    settlement_id: settlementId,
+    prediction_id: predictionId,
+    user_id: params.userId,
+    old_score: MatchScoreValue.Miss,
+    new_score: params.score,
+    score_delta: params.score,
+    old_wdl_hit: false,
+    new_wdl_hit: wdl,
+    old_exact_hit: false,
+    new_exact_hit: exact,
+    valid_prediction_delta: 1,
+    source_result_version: 1,
+    status: SettlementItemStatus.Applied,
+    applied_at: appliedAt,
+    attempt_count: 1,
+    last_error_code: null,
+    last_error_message: null,
+    created_at: appliedAt,
+    updated_at: appliedAt,
+  };
+  await repo.matches.insert(match);
+  await repo.predictions.insert(prediction);
+  await repo.matchResults.insert(result);
+  await repo.settlements.insert(settlement);
+  await repo.settlementItems.insert(item);
+}
+
+function makeServiceRanking(userId: string, periodKey: string, score: number): RankingEntry {
+  return {
+    schema_version: 1,
+    period_type: PeriodType.Week,
+    period_key: periodKey,
+    user_id: userId,
+    period_score: score,
+    valid_predictions: 1,
+    wdl_hits: 1,
+    exact_hits: 0,
+    last_scoring_match_at: null,
+    global_rank: 1,
+    is_final: false,
+    created_at: new Date("2026-09-01T00:00:00.000Z"),
+    updated_at: new Date("2026-09-01T00:00:00.000Z"),
+  };
+}
+
+describe("RebuildPeriodRankingsService - Slice 2 历史周榜选赛", () => {
+  it("2028 年重建 2026-W35 保留中超与跨年联赛历史积分，且不再全表扫 applied", async () => {
+    const repo = new InMemoryRepository();
+    const anchor = new Date("2026-08-26T12:00:00.000Z");
+    const periodKey = calculatePeriodKey(PeriodType.Week, anchor);
+    expect(periodKey).toBe("2026-W35");
+    await seedAppliedMatch(repo, {
+      matchId: "m-csl",
+      userId: "u-csl",
+      leagueId: "chinese_super_league",
+      seasonId: "2026_2027",
+      anchor,
+      score: MatchScoreValue.ExactHit,
+    });
+    await seedAppliedMatch(repo, {
+      matchId: "m-epl",
+      userId: "u-epl",
+      leagueId: "premier_league",
+      seasonId: "2025_2026",
+      anchor: new Date(anchor.getTime() + 60 * 60_000),
+      score: MatchScoreValue.WdlHit,
+    });
+    await repo.rankings.insert(makeServiceRanking("u-csl", periodKey, 99));
+    await repo.rankings.insert(makeServiceRanking("u-epl", periodKey, 99));
+    const scanSpy = vi.spyOn(
+      InMemoryRepository.prototype as unknown as {
+        findSettlementItemsByStatus: (...args: unknown[]) => Promise<unknown>;
+      },
+      "findSettlementItemsByStatus",
+    );
+
+    const outcome = await new RebuildPeriodRankingsService(repo).rebuild(
+      PeriodType.Week,
+      periodKey,
+      new Date("2028-02-15T00:00:00.000Z"),
+    );
+
+    expect(scanSpy).not.toHaveBeenCalled();
+    expect(outcome.updated_count).toBe(2);
+    const rows = await repo.rankings.findByPeriod(PeriodType.Week, periodKey);
+    expect(rows).toEqual(expect.arrayContaining([
+      expect.objectContaining({ user_id: "u-csl", period_score: 12, global_rank: 1, is_final: true }),
+      expect.objectContaining({ user_id: "u-epl", period_score: 3, global_rank: 2, is_final: true }),
+    ]));
+  });
+
+  it("按实际 period_anchor_at 加载跨季延期比赛，锚点不在目标周的比赛不混入", async () => {
+    const repo = new InMemoryRepository();
+    const anchor = new Date("2026-08-26T12:00:00.000Z");
+    const periodKey = calculatePeriodKey(PeriodType.Week, anchor);
+    const nextWeekAnchor = new Date("2026-09-02T12:00:00.000Z");
+    await seedAppliedMatch(repo, {
+      matchId: "m-postponed",
+      userId: "u-postponed",
+      leagueId: "premier_league",
+      seasonId: "2024_2025",
+      anchor,
+      score: MatchScoreValue.ExactHit,
+    });
+    await seedAppliedMatch(repo, {
+      matchId: "m-next-week",
+      userId: "u-next-week",
+      leagueId: "premier_league",
+      seasonId: "2026_2027",
+      anchor: nextWeekAnchor,
+      score: MatchScoreValue.ExactHit,
+    });
+    await repo.rankings.insert(makeServiceRanking("u-postponed", periodKey, 99));
+    await repo.rankings.insert(makeServiceRanking("u-next-week", periodKey, 99));
+
+    await new RebuildPeriodRankingsService(repo).rebuild(
+      PeriodType.Week,
+      periodKey,
+      new Date("2026-09-15T00:00:00.000Z"),
+    );
+
+    const rows = await repo.rankings.findByPeriod(PeriodType.Week, periodKey);
+    expect(rows).toEqual(expect.arrayContaining([
+      expect.objectContaining({ user_id: "u-postponed", period_score: 12, global_rank: 1 }),
+      expect.objectContaining({
+        user_id: "u-next-week",
+        period_score: 0,
+        valid_predictions: 0,
+        global_rank: null,
+      }),
+    ]));
   });
 });

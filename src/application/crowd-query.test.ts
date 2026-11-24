@@ -218,4 +218,62 @@ describe("CrowdQueryService", () => {
       server_now: NOW,
     })).rejects.toMatchObject({ code: "USER_DELETED" });
   });
+
+  it("follows superseded_by to read latest availability and canonical counts for old match IDs", async () => {
+    const repo = new InMemoryRepository();
+    const user = makeUser();
+    await repo.users.insert(user);
+    const mOldId = newUuid();
+    const mNewId = newUuid();
+    const mOld = makeMatch({
+      match_id: mOldId,
+      canonical_match_id: mOldId,
+      superseded_by: null,
+      match_status: MatchStatus.Scheduled,
+      prediction_deadline_at: new Date(NOW.getTime() + 60_000),
+    });
+    const mNew = makeMatch({
+      match_id: mNewId,
+      canonical_match_id: mOldId,
+      superseded_by: null,
+      match_status: MatchStatus.Cancelled,
+    });
+    await repo.matches.insert(mOld);
+    await repo.matches.insert(mNew);
+    await repo.matches.update({
+      ...mOld,
+      match_status: MatchStatus.Postponed,
+      superseded_by: mNewId,
+      updated_at: new Date(NOW.getTime() + 1000),
+    });
+
+    const service = new CrowdQueryService(repo);
+    await expect(service.get({
+      authenticated_user_id: user.user_id,
+      match_id: mOldId,
+      server_now: NOW,
+    })).resolves.toMatchObject({
+      match_id: mOldId,
+      status: "unavailable",
+      distribution: null,
+    });
+
+    await repo.matches.update({
+      ...mNew,
+      match_status: MatchStatus.Scheduled,
+      prediction_deadline_at: new Date(NOW.getTime() - 1000),
+    });
+    for (let i = 0; i < 20; i += 1) {
+      await repo.predictions.insert(makePrediction(mOldId, "HOME"));
+    }
+    await expect(service.get({
+      authenticated_user_id: user.user_id,
+      match_id: mOldId,
+      server_now: NOW,
+    })).resolves.toMatchObject({
+      match_id: mOldId,
+      status: "available",
+      distribution: { home: 100, draw: 0, away: 0 },
+    });
+  });
 });

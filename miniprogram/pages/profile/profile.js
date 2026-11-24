@@ -1,20 +1,40 @@
 const { getMyProfile } = require("../../services/profile.js");
 const { getMyLevels } = require("../../services/levels.js");
 const { listMyGroups, createGroup } = require("../../services/groups.js");
-const { getMatchDetail, listMatches } = require("../../services/matches.js");
+const { listMatches } = require("../../services/matches.js");
 const { getTeamLogo, PLACEHOLDER } = require("../../utils/logo-registry.js");
 const { presentTeam } = require("../../utils/team-presentation.js");
 const { findTeam } = require("../../utils/team-registry.js");
 const { listMyPredictions } = require("../../services/predictions.js");
+const authService = require("../../services/auth.js");
 const { formatShanghaiKickoff } = require("../../utils/prediction-history.js");
 const { headerHeight } = require("../../utils/ui-layout.js");
 const { buildLevelView } = require("../../utils/level-presentation.js");
 const LEVEL_NAMES = ["", "青训新人", "潜力新星", "崭露头角", "坐稳主力", "球队核心", "顶级球星"];
 const COPY = require("../../utils/rankings-copy.js");
+const MAX_TEAM_LOOKUP_PAGES = 5;
+
+function currentLoginGeneration() {
+  if (!authService || typeof authService.getLoginGeneration !== "function") return 0;
+  const value = authService.getLoginGeneration();
+  return Number.isFinite(value) ? value : 0;
+}
+
+function clearIdentityPatch(page) {
+  page.recentRequestSerial = (page.recentRequestSerial || 0) + 1;
+  return {
+    userId: "",
+    nickname: "",
+    avatarText: "球",
+    recentState: "loading",
+    recentPredictions: [],
+  };
+}
 
 function applyErrorState(page, result) {
   if (result.statusCode === 401 && result.code === "UNAUTHORIZED") {
     page.setData({
+      ...clearIdentityPatch(page),
       state: "unauthorized",
       errorMessage: result.message || "身份缺失",
     });
@@ -22,6 +42,7 @@ function applyErrorState(page, result) {
   }
   if (result.statusCode === 409 && result.code === "USER_DELETED") {
     page.setData({
+      ...clearIdentityPatch(page),
       state: "userDeleted",
       errorMessage: result.message || "账号已注销",
     });
@@ -29,6 +50,7 @@ function applyErrorState(page, result) {
   }
   if (result.statusCode === 404 && result.code === "USER_NOT_FOUND") {
     page.setData({
+      ...clearIdentityPatch(page),
       state: "userNotFound",
       errorMessage: result.message || "用户不存在",
     });
@@ -111,19 +133,31 @@ Page({
     createGroupText: COPY.createGroup,
   },
 
+  profileRequestSerial: 0,
+  recentRequestSerial: 0,
+  recentLoginGeneration: null,
+
   onShow() {
     const tabBar = this.getTabBar && this.getTabBar();
     if (tabBar) tabBar.setData({ selected: 2 });
+    const generation = currentLoginGeneration();
+    if (this.recentLoginGeneration !== null && generation !== this.recentLoginGeneration) {
+      this.setData(clearIdentityPatch(this));
+    }
+    this.recentLoginGeneration = generation;
     this.loadPage();
     this.loadRecentPredictions();
   },
 
   loadPage() {
+    const requestSerial = (this.profileRequestSerial || 0) + 1;
+    this.profileRequestSerial = requestSerial;
     this.setData({
       state: "loading",
       errorMessage: "",
     });
-    Promise.all([getMyProfile(), getMyLevels(), listMyGroups({ limit: 20 })]).then(async (results) => {
+    return Promise.all([getMyProfile(), getMyLevels(), listMyGroups({ limit: 20 })]).then(async (results) => {
+      if (this.profileRequestSerial !== requestSerial) return;
       const profileResult = results[0];
       const levelsResult = results[1];
       const groupsResult = results[2];
@@ -153,12 +187,14 @@ Page({
         }
         seenCursors.add(nextPage.cursor);
         const pageResult = await listMyGroups({ limit: 20, cursor: nextPage.cursor });
+        if (this.profileRequestSerial !== requestSerial) return;
         if (applyErrorState(this, pageResult)) {
           return;
         }
         groups.push(...myGroupsItems(pageResult));
         nextPage = myGroupsNextCursor(pageResult);
       }
+      if (this.profileRequestSerial !== requestSerial) return;
       const ownedCount = groups.filter((group) => group.role === "owner").length;
       const level = Number(profile.career_level) || 1;
       const nextThreshold = ({2: 80, 3: 170, 4: 380, 5: 630})[level] ?? null;
@@ -219,6 +255,12 @@ Page({
         ownedCount,
       });
       this.loadFavoriteTeam(profile.favorite_team_id || null);
+    }).catch(() => {
+      if (this.profileRequestSerial !== requestSerial) return;
+      this.setData({
+        state: "error",
+        errorMessage: "暂时无法读取你的等级数据，请稍后重试",
+      });
     });
   },
 
@@ -226,8 +268,6 @@ Page({
     const requestId = (this.favoriteTeamRequestId || 0) + 1;
     this.favoriteTeamRequestId = requestId;
     if (!teamId) { this.setData({ favoriteTeamLogo: PLACEHOLDER, favoriteTeamText: "未设置" }); return; }
-    const logo = wx.getStorageSync("team_logo:" + teamId);
-    if (logo && logo !== PLACEHOLDER) { this.setData({ favoriteTeamLogo: logo }); return; }
     const registered = findTeam(teamId);
     if (registered) {
       const teamLogo = getTeamLogo(registered.league_id, {
@@ -243,12 +283,20 @@ Page({
         });
         return;
       }
+    } else {
+      const logo = wx.getStorageSync("team_logo:" + teamId);
+      if (logo && logo !== PLACEHOLDER) { this.setData({ favoriteTeamLogo: logo }); return; }
+      if (logo === PLACEHOLDER && typeof wx.removeStorageSync === "function") {
+        wx.removeStorageSync("team_logo:" + teamId);
+      }
     }
     // Resolve the server's team ID after a fresh login or cleared cache.
     let cursor = null;
+    let pages = 0;
     const seen = new Set();
     try {
       do {
+        pages += 1;
         const result = await listMatches({ limit: 100, cursor });
         if (this.favoriteTeamRequestId !== requestId || result.statusCode !== 200) return;
         const payload = result.data || {};
@@ -257,13 +305,18 @@ Page({
           if (!team) continue;
           const teamLogo = getTeamLogo(match.league_id, team);
           wx.setStorageSync("team_name:" + teamId, team.name);
-          wx.setStorageSync("team_logo:" + teamId, teamLogo);
+          if (teamLogo && teamLogo !== PLACEHOLDER) {
+            wx.setStorageSync("team_logo:" + teamId, teamLogo);
+          } else if (typeof wx.removeStorageSync === "function") {
+            wx.removeStorageSync("team_logo:" + teamId);
+          }
           this.setData({
             favoriteTeamText: (findTeam(teamId) || {}).name_zh || team.name,
-            favoriteTeamLogo: teamLogo,
+            favoriteTeamLogo: teamLogo || PLACEHOLDER,
           });
           return;
         }
+        if (pages >= MAX_TEAM_LOOKUP_PAGES) return;
         cursor = (payload.page || {}).next_cursor || null;
         if (seen.has(cursor)) return;
         seen.add(cursor);
@@ -271,7 +324,12 @@ Page({
     } catch (_) { /* Team lookup must not hide the growth profile. */ }
   },
 
-  onTeamLogoError() { this.setData({ favoriteTeamLogo: PLACEHOLDER }); },
+  onTeamLogoError() {
+    if (this.data.favoriteTeamId && typeof wx.removeStorageSync === "function") {
+      wx.removeStorageSync("team_logo:" + this.data.favoriteTeamId);
+    }
+    this.setData({ favoriteTeamLogo: PLACEHOLDER });
+  },
 
   onStatScope(event) {
     this.setData({ statScope: event.currentTarget.dataset.scope });
@@ -286,15 +344,27 @@ Page({
   },
 
   loadRecentPredictions() {
-    return listMyPredictions({ limit: 2 }).then(async result => {
+    const serial = (this.recentRequestSerial || 0) + 1;
+    this.recentRequestSerial = serial;
+    const generation = currentLoginGeneration();
+    this.recentLoginGeneration = generation;
+    const isCurrent = () => serial === this.recentRequestSerial
+      && generation === currentLoginGeneration();
+    this.setData({ recentState: "loading", recentPredictions: [] });
+    return listMyPredictions({ limit: 2 }).then(result => {
+      if (!isCurrent()) return;
       if (result.statusCode !== 200) { this.setData({ recentState: "error" }); return; }
       const items = result.data && result.data.items || [];
-      const details = await Promise.all(items.map(item => getMatchDetail(item.match_id).catch(() => null)));
-      this.setData({ recentState: "ready", recentPredictions: items.map((item, index) => {
-        const detail = details[index];
-        const match = detail && detail.statusCode === 200 && detail.data || {};
-        const homePresented = presentTeam(match.home_team, item.league_id);
-        const awayPresented = presentTeam(match.away_team, item.league_id);
+      this.setData({ recentState: "ready", recentPredictions: items.map((item) => {
+        const homeTeam = item.home_team && item.home_team.team_id
+          ? item.home_team
+          : { team_id: item.home_team_id, name: (findTeam(item.home_team_id) || {}).source_name };
+        const awayTeam = item.away_team && item.away_team.team_id
+          ? item.away_team
+          : { team_id: item.away_team_id, name: (findTeam(item.away_team_id) || {}).source_name };
+        const homePresented = presentTeam(homeTeam, item.league_id);
+        const awayPresented = presentTeam(awayTeam, item.league_id);
+        const cancelled = item.match_status === "cancelled" || item.settlement_status === "voided";
         return ({
         homeNameZh: homePresented.nameZh,
         awayNameZh: awayPresented.nameZh,
@@ -303,12 +373,23 @@ Page({
         ...item,
         kickoffText: formatShanghaiKickoff(item.kickoff_at),
         predictionText: item.pred_home_score + " : " + item.pred_away_score,
-        actualText: item.regular_home_score == null ? "待结算" : item.regular_home_score + " : " + item.regular_away_score,
-        pointsText: item.match_score == null ? "待结算" : "+" + item.match_score + " 分",
-        resultClass: item.match_score == null ? "pending" : item.exact_hit ? "exact" : item.wdl_hit ? "wdl" : "miss",
-        resultText: item.exact_hit ? "精确命中" : item.wdl_hit ? "胜平负命中" : item.match_score == null ? "等待结算" : "未命中",
+        actualText: cancelled ? "—" : item.regular_home_score == null ? "待结算" : item.regular_home_score + " : " + item.regular_away_score,
+        pointsText: cancelled ? "不计分" : item.match_score == null ? "待结算" : "+" + item.match_score + " 分",
+        resultClass: cancelled ? "pending" : item.match_score == null ? "pending" : item.exact_hit ? "exact" : item.wdl_hit ? "wdl" : "miss",
+        resultText: cancelled
+          ? "比赛取消 · 不计分"
+          : item.exact_hit
+            ? "精确命中"
+            : item.wdl_hit
+              ? "胜平负命中"
+              : item.match_score == null
+                ? (item.match_status === "postponed" ? "比赛延期" : item.match_status === "abandoned" ? "比赛腰斩" : "等待结算")
+                : "未命中",
       }); }) });
-    }).catch(() => this.setData({ recentState: "error" }));
+    }).catch(() => {
+      if (!isCurrent()) return;
+      this.setData({ recentState: "error" });
+    });
   },
 
   onPredictionsTap() {
@@ -324,17 +405,24 @@ Page({
   },
 
   onCreateGroupTap() {
-    if (this.data.state !== "ready") {
+    if (this.data.state !== "ready" || this.data.groupCreating) {
       return;
     }
     this.setData({ groupCreating: true, errorMessage: "" });
     return createGroup().then((result) => {
-      this.setData({ groupCreating: false });
-      if (result.statusCode !== 201) {
-        this.setData({ errorMessage: result.message || COPY.groupActionFailed });
+      if (result.statusCode !== 201 || !result.data || !result.data.group_id) {
+        this.setData({
+          groupCreating: false,
+          errorMessage: result.code === "GROUP_OWNED_LIMIT_REACHED"
+            ? COPY.groupCreateLimitReached
+            : result.message || COPY.groupActionFailed,
+        });
         return;
       }
+      this.setData({ groupCreating: false });
       wx.navigateTo({ url: `/pages/groups/detail?group_id=${result.data.group_id}&created=1&owned_count=${this.data.ownedCount + 1}` });
+    }).catch(() => {
+      this.setData({ groupCreating: false, errorMessage: COPY.groupActionFailed });
     });
   },
 
@@ -365,6 +453,6 @@ Page({
     if (this.data.state === "rateLimited") {
       return;
     }
-    this.loadPage();
+    return Promise.all([this.loadPage(), this.loadRecentPredictions()]);
   },
 });

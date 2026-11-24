@@ -37,12 +37,19 @@ import { assertValidServerNow } from "./period-finalize.js";
 import {
   eligibleSeasonStats,
   evaluateWithProtection,
+  isSettlementAlreadyRunning,
   levelScopeLockKey,
 } from "./weekly-level-eval.js";
 
 export const LEVEL_CORRECTION_REEVAL_LOCK_KEY = `sync:${SyncJobType.LevelCorrectionReeval}`;
 const LEVEL_JOB_LEASE_MILLISECONDS = FIXED_CONFIG_V1.JOB_LEASE_MINUTES * 60 * 1000;
+const LEVEL_LOCK_RENEW_BATCH_USERS = 20;
+const LEVEL_LOCK_RENEW_INTERVAL_MS = 2 * 60 * 1000;
 const WEEK_MILLISECONDS = 7 * 24 * 60 * 60 * 1000;
+
+function levelLeaseDeadline(anchor: Date): Date {
+  return new Date(Math.max(anchor.getTime(), Date.now()) + LEVEL_JOB_LEASE_MILLISECONDS);
+}
 
 export interface LevelCorrectionReevalOutcome {
   kind: "completed" | "skipped" | "deferred";
@@ -192,13 +199,14 @@ export class LevelCorrectionReevalService {
     settlementId: string,
     serverNow: Date,
     completedWeeklyAsOf: Date | null,
+    onStep?: () => Promise<void>,
   ): Promise<LevelCorrectionReevalOutcome> {
     assertValidServerNow(serverNow);
     const ownerId = newUuid();
     if (!(await this.repo.jobLocks.acquire(
       LEVEL_CORRECTION_REEVAL_LOCK_KEY,
       ownerId,
-      new Date(serverNow.getTime() + LEVEL_JOB_LEASE_MILLISECONDS),
+      levelLeaseDeadline(serverNow),
     ))) {
       return {
         kind: "skipped",
@@ -232,6 +240,8 @@ export class LevelCorrectionReevalService {
         };
       }
       asOf = settlement.settled_at;
+      // 紧随 finalize 之后以单一时钟快照调用时，确保 effectiveNow >= settled_at。
+      const effectiveNow = new Date(Math.max(serverNow.getTime(), asOf.getTime()));
       const items = (await this.repo.settlementItems.findBySettlementAndStatus(
         settlementId,
         SettlementItemStatus.Applied,
@@ -241,15 +251,17 @@ export class LevelCorrectionReevalService {
       const cycleAsOf = currentWeeklyCycleAsOf(asOf);
       const weeklyTaskIncomplete = weeklyEvaluationIsIncomplete(
         cycleAsOf,
-        serverNow,
+        effectiveNow,
         completedWeeklyAsOf,
       );
+      let processedUsers = 0;
+      let lastRenewWallMs = Date.now();
       for (const userId of users) {
         const career = await this.evaluateCareer(
           userId,
           settlementId,
           asOf,
-          serverNow,
+          effectiveNow,
           weeklyTaskIncomplete,
         );
         evaluatedCount += career.evaluated ? 1 : 0;
@@ -272,7 +284,7 @@ export class LevelCorrectionReevalService {
               season,
               settlementId,
               asOf,
-              serverNow,
+              effectiveNow,
               weeklyTaskIncomplete,
             );
             evaluatedCount += outcome.evaluated ? 1 : 0;
@@ -281,6 +293,36 @@ export class LevelCorrectionReevalService {
             deferred ||= outcome.deferred;
           }
         }
+
+        processedUsers += 1;
+        const nowWallMs = Date.now();
+        if (
+          processedUsers % LEVEL_LOCK_RENEW_BATCH_USERS === 0 ||
+          nowWallMs - lastRenewWallMs >= LEVEL_LOCK_RENEW_INTERVAL_MS
+        ) {
+          const renewed = await this.repo.jobLocks.renew(
+            LEVEL_CORRECTION_REEVAL_LOCK_KEY,
+            ownerId,
+            levelLeaseDeadline(effectiveNow),
+          ).catch(() => false);
+          lastRenewWallMs = Date.now();
+          if (!renewed) {
+            deferred = true;
+            break;
+          }
+          await onStep?.();
+        }
+      }
+      const reevalCompletedAt = new Date(Math.max(effectiveNow.getTime(), asOf.getTime()));
+      if (!deferred) {
+        await this.repo.settlements.update({
+          ...settlement,
+          level_reeval_status: "completed",
+          level_reeval_completed_at: reevalCompletedAt,
+          updated_at: new Date(
+            Math.max(settlement.updated_at.getTime(), reevalCompletedAt.getTime()),
+          ),
+        });
       }
       return {
         kind: deferred ? "deferred" : "completed",
@@ -295,22 +337,33 @@ export class LevelCorrectionReevalService {
     }
   }
 
-  async runPendingBefore(asOf: Date, serverNow: Date): Promise<void> {
-    await this.runPendingInWindow(asOf, serverNow, "before");
+  async runPendingBefore(
+    asOf: Date,
+    serverNow: Date,
+    onStep?: () => Promise<void>,
+  ): Promise<void> {
+    await this.runPendingInWindow(asOf, serverNow, "before", onStep);
   }
 
-  async runPending(afterAsOf: Date, serverNow: Date): Promise<void> {
-    await this.runPendingInWindow(afterAsOf, serverNow, "after");
+  async runPending(
+    afterAsOf: Date,
+    serverNow: Date,
+    onStep?: () => Promise<void>,
+  ): Promise<void> {
+    await this.runPendingInWindow(afterAsOf, serverNow, "after", onStep);
   }
 
   private async runPendingInWindow(
     asOf: Date,
     serverNow: Date,
     window: "before" | "after",
+    onStep?: () => Promise<void>,
   ): Promise<void> {
-    const settlements = (await this.repo.settlements.findByStatus(SettlementDocStatus.Settled))
+    if (this.repo.settlements.findSettledCorrectionsPendingReeval === undefined) {
+      throw internalError("settlements repository 缺少 findSettledCorrectionsPendingReeval");
+    }
+    const settlements = (await this.repo.settlements.findSettledCorrectionsPendingReeval())
       .filter((settlement) =>
-        settlement.is_correction &&
         settlement.phase === SettlementPhase.Done &&
         settlement.settled_at !== null &&
         (window === "before"
@@ -320,10 +373,12 @@ export class LevelCorrectionReevalService {
       )
       .sort((left, right) => left.settled_at!.getTime() - right.settled_at!.getTime());
     for (const settlement of settlements) {
+      await onStep?.();
       const outcome = await this.runForSettlementInternal(
         settlement.settlement_id,
         serverNow,
         window === "after" ? asOf : null,
+        onStep,
       );
       if (outcome.kind !== "completed") {
         throw new Error("SPEC_GAP: completed weekly evaluation could not resume correction re-evaluation");
@@ -343,7 +398,7 @@ export class LevelCorrectionReevalService {
     if (!(await this.repo.jobLocks.acquire(
       lockKey,
       ownerId,
-      new Date(changedAt.getTime() + LEVEL_JOB_LEASE_MILLISECONDS),
+      levelLeaseDeadline(changedAt),
     ))) {
       return { evaluated: false, changed: false, skipped: true, deferred: true };
     }
@@ -409,6 +464,11 @@ export class LevelCorrectionReevalService {
         }
         return { evaluated: true, changed, skipped: false, deferred: false };
       });
+    } catch (error) {
+      if (isSettlementAlreadyRunning(error)) {
+        return { evaluated: false, changed: false, skipped: true, deferred: true };
+      }
+      throw error;
     } finally {
       await this.repo.jobLocks.release(lockKey, ownerId);
     }
@@ -427,7 +487,7 @@ export class LevelCorrectionReevalService {
     if (!(await this.repo.jobLocks.acquire(
       lockKey,
       ownerId,
-      new Date(changedAt.getTime() + LEVEL_JOB_LEASE_MILLISECONDS),
+      levelLeaseDeadline(changedAt),
     ))) {
       return { evaluated: false, changed: false, skipped: true, deferred: true };
     }
@@ -505,6 +565,11 @@ export class LevelCorrectionReevalService {
         }
         return { evaluated: true, changed, skipped: false, deferred: false };
       });
+    } catch (error) {
+      if (isSettlementAlreadyRunning(error)) {
+        return { evaluated: false, changed: false, skipped: true, deferred: true };
+      }
+      throw error;
     } finally {
       await this.repo.jobLocks.release(lockKey, ownerId);
     }

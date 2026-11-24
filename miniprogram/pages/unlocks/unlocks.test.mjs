@@ -21,6 +21,8 @@ const originals = {
   Page: Object.getOwnPropertyDescriptor(globalThis, "Page"),
   wx: Object.getOwnPropertyDescriptor(globalThis, "wx"),
 };
+const originalLocaleString = Date.prototype.toLocaleString;
+const originalLocaleDateString = Date.prototype.toLocaleDateString;
 
 afterEach(() => {
   for (const [name, descriptor] of Object.entries(originals)) {
@@ -30,7 +32,18 @@ afterEach(() => {
       delete globalThis[name];
     }
   }
+  Date.prototype.toLocaleString = originalLocaleString;
+  Date.prototype.toLocaleDateString = originalLocaleDateString;
 });
+
+function disableLocaleFormatting() {
+  Date.prototype.toLocaleString = () => {
+    throw new RangeError("locale data missing");
+  };
+  Date.prototype.toLocaleDateString = () => {
+    throw new RangeError("locale data missing");
+  };
+}
 
 function loadCommonJs(filePath, requireShim) {
   const source = readFileSync(filePath, "utf8");
@@ -105,6 +118,17 @@ describe("unlocks empty state (UI-02)", () => {
     expect(page.data.state).toBe("empty");
   });
 
+  it("recovers to the error state when loading rejects", async () => {
+    const { page } = loadUnlocksPage({
+      unlocksResult: Promise.reject(new Error("network")),
+      profileResult: { statusCode: 200, data: { career_points: 0 } },
+    });
+    page.onLoad();
+    await flushMicrotasks();
+    expect(page.data.state).toBe("error");
+    expect(page.data.errorMessage).toBe("网络异常，请重试");
+  });
+
   it("onGoPredict calls wx.switchTab to /pages/matches/matches", () => {
     const { page, navs } = loadUnlocksPage({
       unlocksResult: { statusCode: 200, data: { unlocked: [] } },
@@ -138,6 +162,28 @@ describe("unlocks empty state (UI-02)", () => {
     expect(page.data.items[0].label).toBe("资料卡样式 1");
     expect(page.data.items[0].threshold_points).toBe(30);
     expect(page.data.items[0].progressText).toBe("50/30");
+  });
+
+  it("formats unlocked_at as the Beijing date without locale APIs", async () => {
+    disableLocaleFormatting();
+    const { page } = loadUnlocksPage({
+      unlocksResult: {
+        statusCode: 200,
+        data: {
+          unlocked: [
+            {
+              unlock_code: "profile_card_style_1",
+              threshold_points: 30,
+              unlocked_at: "2026-11-06T19:50:00.000Z",
+            },
+          ],
+        },
+      },
+      profileResult: { statusCode: 200, data: { career_points: 50 } },
+    });
+    page.onLoad();
+    await flushMicrotasks();
+    expect(page.data.items[0].unlockedText).toBe("2026/11/07");
   });
 
   it("empty wxml has title, copy and 去预测 button without changing list fields", () => {

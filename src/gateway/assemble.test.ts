@@ -12,6 +12,7 @@ import type { AuthSessionRecord, AuthSessionStore } from "../infrastructure/post
 import { InMemoryRepository } from "../infrastructure/repositories.js";
 import { handleGatewayRequest, type GatewayRequestInput } from "./assemble.js";
 import { LOCAL_PUBLIC_SOURCE, type GatewayRuntimeConfig } from "./config.js";
+import { extractClientIp } from "./http.js";
 import { seedGatewayRepository } from "./seed.js";
 import type { WechatCode2SessionHttp } from "./wechat-login.js";
 
@@ -64,6 +65,7 @@ function request(
     repo: harness.repo,
     rate_limiter: harness.rateLimiter,
     ...(input.trusted_openid !== undefined ? { trusted_openid: input.trusted_openid } : {}),
+    ...(input.client_ip !== undefined ? { client_ip: input.client_ip } : {}),
     ...(input.authorization !== undefined ? { authorization: input.authorization } : {}),
     ...(input.sessions !== undefined ? { sessions: input.sessions } : {}),
     ...(input.wechat_http !== undefined ? { wechat_http: input.wechat_http } : {}),
@@ -745,5 +747,90 @@ describe("handleGatewayRequest internal error logging", () => {
     expect(spy).toHaveBeenCalled();
     expect(JSON.stringify(spy.mock.calls)).toContain(assertion);
     spy.mockRestore();
+  });
+});
+
+describe("public_reads rate limit isolation by client_ip and user_id", () => {
+  it("isolates anonymous callers by client_ip so users do not share one local_v0 bucket", async () => {
+    const harness = makeHarness();
+    for (let i = 0; i < 120; i += 1) {
+      const res = await request(harness, { method: "GET", path: "/v1/matches", client_ip: "203.0.113.10" });
+      expect(res.status).toBe(200);
+    }
+    const blocked = await request(harness, { method: "GET", path: "/v1/matches", client_ip: "203.0.113.10" });
+    expect(blocked.status).toBe(429);
+
+    const otherIp = await request(harness, { method: "GET", path: "/v1/matches", client_ip: "203.0.113.11" });
+    expect(otherIp.status).toBe(200);
+  });
+
+  it("isolates authenticated callers sharing an IP by user_id", async () => {
+    const harness = makeHarness();
+    const openidA = "openid-user-a";
+    const openidB = "openid-user-b";
+    await handleGatewayRequest({
+      method: "POST",
+      path: "/v1/session/init",
+      query: {},
+      body: { nickname: "UserA" },
+      server_now: NOW,
+      config: harness.config,
+      trusted_openid: openidA,
+      services: { session: harness.session, matches: harness.matches },
+      repo: harness.repo,
+      rate_limiter: harness.rateLimiter,
+    });
+    await handleGatewayRequest({
+      method: "POST",
+      path: "/v1/session/init",
+      query: {},
+      body: { nickname: "UserB" },
+      server_now: NOW,
+      config: harness.config,
+      trusted_openid: openidB,
+      services: { session: harness.session, matches: harness.matches },
+      repo: harness.repo,
+      rate_limiter: harness.rateLimiter,
+    });
+
+    for (let i = 0; i < 120; i += 1) {
+      const res = await request(harness, {
+        method: "GET",
+        path: "/v1/matches",
+        trusted_openid: openidA,
+        client_ip: "198.51.100.1",
+      });
+      expect(res.status).toBe(200);
+    }
+    const blockedA = await request(harness, {
+      method: "GET",
+      path: "/v1/matches",
+      trusted_openid: openidA,
+      client_ip: "198.51.100.1",
+    });
+    expect(blockedA.status).toBe(429);
+
+    const allowedB = await request(harness, {
+      method: "GET",
+      path: "/v1/matches",
+      trusted_openid: openidB,
+      client_ip: "198.51.100.1",
+    });
+    expect(allowedB.status).toBe(200);
+  });
+
+  it("extractClientIp honors forwarded headers only from loopback proxies", () => {
+    expect(extractClientIp({
+      socket: { remoteAddress: "127.0.0.1" },
+      headers: { "x-forwarded-for": "198.51.100.42, 10.0.0.1" },
+    } as never)).toBe("198.51.100.42");
+    expect(extractClientIp({
+      socket: { remoteAddress: "::ffff:127.0.0.1" },
+      headers: { "x-real-ip": "203.0.113.99" },
+    } as never)).toBe("203.0.113.99");
+    expect(extractClientIp({
+      socket: { remoteAddress: "198.51.100.7" },
+      headers: { "x-forwarded-for": "1.2.3.4" },
+    } as never)).toBe("198.51.100.7");
   });
 });

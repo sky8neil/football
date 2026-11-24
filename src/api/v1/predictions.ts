@@ -231,6 +231,8 @@ function toPublicPredictionHistoryItem(item: PredictionHistoryItem): PredictionH
     round_id: item.round_id,
     home_team_id: item.home_team_id,
     away_team_id: item.away_team_id,
+    home_team: item.home_team,
+    away_team: item.away_team,
     kickoff_at: item.kickoff_at,
     pred_home_score: item.pred_home_score,
     pred_away_score: item.pred_away_score,

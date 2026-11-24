@@ -1,6 +1,6 @@
 const config = require("../../config.js");
 const { getMyProfile, updateMyProfile } = require("../../services/profile.js");
-const { storeNickname } = require("../../utils/nickname.js");
+const { storeNickname, clearNickname } = require("../../utils/nickname.js");
 const { presentTeam } = require("../../utils/team-presentation.js");
 const { findTeam, TEAM_REGISTRY } = require("../../utils/team-registry.js");
 const { clearAuth } = require("../../services/auth.js");
@@ -132,6 +132,7 @@ Page({
       success(res) {
         if (!res || !res.confirm) return;
         clearAuth();
+        if (typeof clearNickname === "function") clearNickname();
         wx.reLaunch({ url: "/pages/session/session" });
       },
     });

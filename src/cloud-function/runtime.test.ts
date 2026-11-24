@@ -177,13 +177,12 @@ describe("Timer summary observation (simulated CloudBase SDK, not a real cloud d
       SyncJobType.DailyConsistency,
       SyncJobType.WeeklyLevelEval,
       SyncJobType.BoardSnapshotCareer,
+      SyncJobType.BoardSnapshotStrength,
       SyncJobType.BoardSnapshotSeason,
     ]));
-    expect(summaries[0]?.ran ?? []).not.toContain(SyncJobType.BoardSnapshotStrength);
     expect(summaries[0]?.ran ?? []).not.toContain(SyncJobType.BoardSnapshotSeasonFinal);
     expect(summaries[0]?.skipped).toEqual(expect.arrayContaining([
-      { task: SyncJobType.BoardSnapshotStrength, reason: "inline_weekly_refresh" },
-      { task: SyncJobType.BoardSnapshotSeasonFinal, reason: "inline_weekly_refresh" },
+      { task: SyncJobType.BoardSnapshotSeasonFinal, reason: "no_due_season" },
     ]));
     expect(summaries[0]?.task_types).toEqual(expect.arrayContaining([
       SyncJobType.PeriodFinalize,

@@ -60,17 +60,18 @@ function applyErrorState(page, result) {
   return false;
 }
 
+const SHANGHAI_OFFSET_MS = 8 * 60 * 60 * 1000;
+
+function pad2(value) {
+  return String(value).padStart(2, "0");
+}
+
 /** 云端 unlocked_at 是 ISO 字符串，直接插值会把 2026-11-06T19:50:00.000Z 甩给用户。 */
 function formatShanghaiDate(value) {
-  if (!value) return "";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "";
-  return date.toLocaleDateString("zh-CN", {
-    timeZone: "Asia/Shanghai",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  });
+  const time = Date.parse(value || "");
+  if (!Number.isFinite(time)) return "";
+  const date = new Date(time + SHANGHAI_OFFSET_MS);
+  return `${date.getUTCFullYear()}/${pad2(date.getUTCMonth() + 1)}/${pad2(date.getUTCDate())}`;
 }
 
 function presentUnlock(item, careerPoints) {
@@ -106,7 +107,7 @@ Page({
       errorMessage: "",
       items: [],
     });
-    Promise.all([getMyUnlocks(), getMyProfile()]).then((results) => {
+    return Promise.all([getMyUnlocks(), getMyProfile()]).then((results) => {
       const unlocksResult = results[0];
       const profileResult = results[1];
       if (applyErrorState(this, unlocksResult)) {
@@ -125,6 +126,8 @@ Page({
         items: items,
         errorMessage: "",
       });
+    }).catch(() => {
+      this.setData({ state: "error", errorMessage: "网络异常，请重试" });
     });
   },
 

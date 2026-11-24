@@ -1,6 +1,20 @@
 const { getGroup, leaveGroup, dissolveGroup } = require("../../services/groups.js");
 const COPY = require("../../utils/rankings-copy.js");
 
+const SHARE_MENUS = ["shareAppMessage", "shareTimeline"];
+
+function setShareMenuEnabled(enabled) {
+  if (enabled) {
+    if (typeof wx.showShareMenu === "function") {
+      wx.showShareMenu({ menus: SHARE_MENUS });
+    }
+    return;
+  }
+  if (typeof wx.hideShareMenu === "function") {
+    wx.hideShareMenu({ menus: SHARE_MENUS });
+  }
+}
+
 Page({
   data: {
     state: "loading",
@@ -42,15 +56,19 @@ Page({
 
   loadGroup() {
     if (!this.groupId) {
+      setShareMenuEnabled(false);
       this.setData({ state: "error", errorMessage: COPY.groupLoadFailed });
       return;
     }
+    setShareMenuEnabled(false);
     this.setData({ state: "loading", errorMessage: "" });
-    getGroup(this.groupId).then((result) => {
+    return getGroup(this.groupId).then((result) => {
       if (result.statusCode !== 200 || !result.data) {
+        setShareMenuEnabled(false);
         this.setData({ state: "error", errorMessage: result.message || COPY.groupLoadFailed });
         return;
       }
+      setShareMenuEnabled(true);
       this.setData({
         state: "ready",
         group: {
@@ -61,11 +79,20 @@ Page({
         },
         errorMessage: "",
       });
+    }).catch(() => {
+      setShareMenuEnabled(false);
+      this.setData({ state: "error", errorMessage: COPY.groupLoadFailed });
     });
   },
 
   onShareAppMessage() {
     const group = this.data.group;
+    if (!group || !group.invite_code) {
+      return {
+        title: COPY.groupSharedTitle,
+        path: "/pages/groups/groups",
+      };
+    }
     return {
       title: COPY.groupSharedTitle,
       path: `/pages/groups/join?code=${encodeURIComponent(group.invite_code)}`,
@@ -97,7 +124,7 @@ Page({
       success: (result) => {
         if (!result.confirm) return;
         this.setData({ loadingAction: true, errorMessage: "" });
-        action(this.groupId).then((response) => {
+        return action(this.groupId).then((response) => {
           if (response.statusCode === 204) {
             wx.navigateBack({ delta: 1 });
             return;
@@ -105,6 +132,11 @@ Page({
           this.setData({
             loadingAction: false,
             errorMessage: response.message || COPY.groupActionFailed,
+          });
+        }).catch(() => {
+          this.setData({
+            loadingAction: false,
+            errorMessage: COPY.groupActionFailed,
           });
         });
       },

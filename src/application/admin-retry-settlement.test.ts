@@ -3,10 +3,13 @@ import {
   AdminRole,
   AdminStatus,
   MatchStatus,
+  PeriodType,
   SettlementDocStatus,
+  SettlementItemStatus,
   SettlementPhase,
   SettlementStatus,
 } from "../domain/enums.js";
+import { calculatePeriodKey, levelSeasonOf } from "../domain/time.js";
 import { newUuid } from "../domain/ids.js";
 import type {
   Admin,
@@ -854,6 +857,7 @@ describe("AdminRetrySettlementService", () => {
     const { repo, match, settlement } = await setup({
       result_version: 3,
       settled_result_version: 1,
+      period_anchor_at: new Date("2026-08-08T06:00:00Z"),
     });
     await repo.settlements.update({
       ...settlement,
@@ -884,6 +888,11 @@ describe("AdminRetrySettlementService", () => {
       wdl_hit: true,
       exact_hit: true,
       applied_result_version: 1,
+    });
+    await repo.settlementItems.insert({
+      ...makeItem(settlement, prediction),
+      status: SettlementItemStatus.Applied,
+      applied_at: new Date(NOW.getTime() - 1000),
     });
     const correctionSettlement = makeFailedSettlement(match.match_id, {
       settlement_id: newUuid(),
@@ -998,5 +1007,197 @@ describe("AdminRetrySettlementService", () => {
     expect((await repo.matches.findById(match.match_id))?.settlement_status).toBe(
       SettlementStatus.Correcting,
     );
+  });
+
+  it("triggers LevelCorrectionReevalService for the retried correction settlement when settled", async () => {
+    const firstEval = new Date("2026-08-03T02:00:00.000Z");
+    const evalNow = new Date("2026-08-09T12:00:00.000Z");
+    const anchorAt = new Date("2026-08-08T06:00:00.000Z");
+    const { repo, match, settlement } = await setup({
+      result_version: 2,
+      settled_result_version: 1,
+      settlement_status: SettlementStatus.Correcting,
+      period_anchor_at: anchorAt,
+      regular_home_score: 1,
+      regular_away_score: 1,
+    });
+    await repo.settlements.update({
+      ...settlement,
+      status: SettlementDocStatus.Settled,
+      phase: SettlementPhase.Done,
+      settled_at: firstEval,
+      last_error_code: null,
+      last_error_message: null,
+    });
+    await repo.matchResults.insert({
+      ...makeResult(match.match_id),
+      result_version: 2,
+      regular_home_score: 1,
+      regular_away_score: 1,
+    });
+    const correctionSettlement = makeFailedSettlement(match.match_id, {
+      settlement_id: newUuid(),
+      result_version: 2,
+      is_correction: true,
+    });
+    await repo.settlements.insert(correctionSettlement);
+
+    const user = makeUser({
+      career_points: 72,
+      career_valid_predictions: 20,
+      career_wdl_hits: 6,
+      career_exact_hits: 6,
+      career_level: 2,
+      career_best_level: 2,
+      career_last_scoring_match_at: new Date(firstEval.getTime() - 2 * 3600_000),
+      career_level_state: {
+        ...defaultLevelState(),
+        last_eval_as_of: firstEval,
+        last_eval_n: 20,
+        last_eval_score_sum: 72,
+        last_eval_b_points: 72,
+        last_eval_rule_version: "level_v3.0",
+        week_base_level: 2,
+        week_base_below_count: 0,
+        week_base_as_of: firstEval,
+      },
+    });
+    await repo.users.insert(user);
+    await repo.userSeasonStats.insert({
+      schema_version: 1,
+      user_id: user.user_id,
+      level_season_id: levelSeasonOf(anchorAt),
+      points: 72,
+      valid_predictions: 20,
+      wdl_hits: 6,
+      exact_hits: 6,
+      last_scoring_match_at: new Date(firstEval.getTime() - 2 * 3600_000),
+      level: 2,
+      best_level: 2,
+      level_state: {
+        ...defaultLevelState(),
+        last_eval_as_of: firstEval,
+        last_eval_n: 20,
+        last_eval_score_sum: 72,
+        last_eval_b_points: 72,
+        last_eval_rule_version: "level_v3.0",
+        week_base_level: 2,
+        week_base_below_count: 0,
+        week_base_as_of: firstEval,
+      },
+      is_level_frozen: false,
+      created_at: NOW,
+      updated_at: NOW,
+    });
+    await repo.rankings.insert({
+      schema_version: 1,
+      period_type: PeriodType.Week,
+      period_key: calculatePeriodKey(PeriodType.Week, anchorAt),
+      user_id: user.user_id,
+      period_score: 72,
+      valid_predictions: 20,
+      wdl_hits: 6,
+      exact_hits: 6,
+      last_scoring_match_at: new Date(firstEval.getTime() - 2 * 3600_000),
+      global_rank: 1,
+      is_final: false,
+      created_at: NOW,
+      updated_at: NOW,
+    });
+    const priorScores = [
+      12, 12, 12, 12, 12, 12,
+      0, 0, 0, 0, 0, 0, 0,
+      0, 0, 0, 0, 0, 0,
+    ] as const;
+    for (let index = 0; index < priorScores.length; index += 1) {
+      const mId = newUuid();
+      const sId = newUuid();
+      const pId = newUuid();
+      const score = priorScores[index]!;
+      const mTime = new Date(firstEval.getTime() - (index + 2) * 3600_000);
+      await repo.matches.insert(makeMatch({
+        match_id: mId,
+        kickoff_at: mTime,
+        period_anchor_at: mTime,
+        settlement_status: SettlementStatus.Settled,
+        regular_home_score: score === 12 ? 2 : 0,
+        regular_away_score: score === 12 ? 1 : 0,
+        result_version: 1,
+        settled_result_version: 1,
+      }));
+      await repo.matchResults.insert({
+        ...makeResult(mId),
+        result_version: 1,
+        regular_home_score: score === 12 ? 2 : 0,
+        regular_away_score: score === 12 ? 1 : 0,
+      });
+      const pred: Prediction = {
+        ...makePrediction(user.user_id, mId),
+        prediction_id: pId,
+        submitted_at: new Date(mTime.getTime() - 600_000),
+        applied_result_version: 1,
+        match_score: score,
+        wdl_hit: score > 0,
+        exact_hit: score === 12,
+      };
+      await repo.predictions.insert(pred);
+      await repo.settlements.insert({
+        ...settlement,
+        settlement_id: sId,
+        match_id: mId,
+        status: SettlementDocStatus.Settled,
+        phase: SettlementPhase.Done,
+        settled_at: mTime,
+      });
+      await repo.settlementItems.insert({
+        ...makeItem(settlement, pred),
+        settlement_id: sId,
+        new_score: score,
+        score_delta: score,
+        new_wdl_hit: score > 0,
+        new_exact_hit: score === 12,
+        status: SettlementItemStatus.Applied,
+        applied_at: mTime,
+      });
+    }
+    const targetPred: Prediction = {
+      ...makePrediction(user.user_id, match.match_id),
+      pred_home_score: 1,
+      pred_away_score: 1,
+      derived_result: "DRAW",
+      match_score: 0,
+      wdl_hit: false,
+      exact_hit: false,
+      applied_result_version: 1,
+    };
+    await repo.predictions.insert(targetPred);
+    await repo.settlementItems.insert({
+      ...makeItem(settlement, targetPred),
+      new_score: 0,
+      score_delta: 0,
+      new_wdl_hit: false,
+      new_exact_hit: false,
+      status: SettlementItemStatus.Applied,
+      applied_at: new Date(firstEval.getTime() - 60_000),
+    });
+
+    const outcome = await new AdminRetrySettlementService(repo, undefined, firstEval).retry(
+      TRUSTED_OPENID,
+      match.match_id,
+      evalNow,
+    );
+
+    expect(outcome.kind).toBe("settled");
+    const updatedUser = await repo.users.findById(user.user_id);
+    expect(updatedUser?.career_points).toBe(84);
+    expect(updatedUser?.career_level).toBe(3);
+    expect(updatedUser?.career_best_level).toBe(3);
+    const history = await repo.levelHistory.findByUser(user.user_id);
+    expect(history).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        settlement_id: correctionSettlement.settlement_id,
+        to_level: 3,
+      }),
+    ]));
   });
 });

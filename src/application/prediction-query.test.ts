@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { MatchStatus, UserStatus } from "../domain/enums.js";
-import type { Match, Prediction, User } from "../domain/types.js";
+import type { Match, Prediction, Team, User } from "../domain/types.js";
 import { DomainError } from "../domain/errors.js";
 import { InMemoryRepository } from "../infrastructure/repositories.js";
 import { newUuid } from "../domain/ids.js";
@@ -14,6 +14,8 @@ const USER_ID = "00000000-0000-4000-8000-000000000001";
 const OTHER_USER_ID = "00000000-0000-4000-8000-000000000002";
 const MATCH_ID = "00000000-0000-4000-8000-000000000010";
 const PREDICTION_ID = "00000000-0000-4000-8000-000000000020";
+const HOME_TEAM_ID = "00000000-0000-4000-8000-000000000031";
+const AWAY_TEAM_ID = "00000000-0000-4000-8000-000000000032";
 const NOW = new Date("2026-08-09T00:00:00.000Z");
 
 function makeUser(userId: string): User {
@@ -39,6 +41,21 @@ function makeUser(userId: string): User {
   };
 }
 
+function makeTeam(teamId: string, name: string): Team {
+  return {
+    schema_version: 1,
+    team_id: teamId,
+    league_id: "premier_league",
+    name,
+    short_name: null,
+    primary_color: null,
+    secondary_color: null,
+    status: "active",
+    created_at: NOW,
+    updated_at: NOW,
+  };
+}
+
 function makeMatch(): Match {
   return {
     schema_version: 1,
@@ -48,8 +65,8 @@ function makeMatch(): Match {
     league_id: "premier_league",
     season_id: "2026_2027",
     round_id: "01",
-    home_team_id: newUuid(),
-    away_team_id: newUuid(),
+    home_team_id: HOME_TEAM_ID,
+    away_team_id: AWAY_TEAM_ID,
     kickoff_at: new Date("2026-08-08T14:00:00.000Z"),
     kickoff_confirmed: true,
     prediction_deadline_at: new Date("2026-08-08T13:50:00.000Z"),
@@ -100,6 +117,8 @@ async function setup(predictionUserId = USER_ID) {
   const repo = new InMemoryRepository();
   await repo.users.insert(makeUser(USER_ID));
   await repo.users.insert(makeUser(OTHER_USER_ID));
+  await repo.teams.insert(makeTeam(HOME_TEAM_ID, "Arsenal FC"));
+  await repo.teams.insert(makeTeam(AWAY_TEAM_ID, "Chelsea FC"));
   await repo.matches.insert(makeMatch());
   await repo.predictions.insert(makePrediction(predictionUserId));
   return repo;
@@ -200,6 +219,10 @@ describe("PredictionHistoryQueryService 六联赛过滤", () => {
       cursor: null,
     });
     expect(all.items.map((item) => item.league_id).sort()).toEqual(["la_liga", "premier_league"]);
+    expect(all.items.find((item) => item.league_id === "premier_league")).toMatchObject({
+      home_team: { team_id: HOME_TEAM_ID, name: "Arsenal FC" },
+      away_team: { team_id: AWAY_TEAM_ID, name: "Chelsea FC" },
+    });
 
     const filtered = await service.listMyPredictions(USER_ID, {
       league_id: "la_liga",
@@ -254,5 +277,33 @@ describe("PredictionHistoryQueryService 六联赛过滤", () => {
     });
     expect(nextPage.items.map((item) => item.prediction_id)).toEqual([laLigaSecondPredictionId]);
     expect(nextPage.items[0]).toMatchObject({ match_score: null, wdl_hit: null, exact_hit: null });
+  });
+
+  it("[Slice 4.1] 当页唯一球队经 teams.findByIds 一次批量加载", async () => {
+    const repo = await setup();
+    const teams = repo.teams;
+    const findByIdSpy = vi.spyOn(teams, "findById");
+    const findByIdsSpy = vi.fn(teams.findByIds!);
+    teams.findByIds = findByIdsSpy;
+    const repoProxy = new Proxy(repo, {
+      get(target, prop, receiver) {
+        if (prop === "teams") return teams;
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const service = new PredictionHistoryQueryService(repoProxy, "prediction-query-secret");
+
+    const result = await service.listMyPredictions(USER_ID, {
+      league_id: "premier_league",
+      season_id: null,
+      limit: 10,
+      cursor: null,
+    });
+
+    expect(findByIdsSpy).toHaveBeenCalledTimes(1);
+    expect(findByIdsSpy).toHaveBeenCalledWith([HOME_TEAM_ID, AWAY_TEAM_ID]);
+    expect(findByIdSpy).not.toHaveBeenCalled();
+    expect(result.items[0]?.home_team).toEqual({ team_id: HOME_TEAM_ID, name: "Arsenal FC" });
+    expect(result.items[0]?.away_team).toEqual({ team_id: AWAY_TEAM_ID, name: "Chelsea FC" });
   });
 });

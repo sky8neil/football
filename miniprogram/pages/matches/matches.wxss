@@ -98,11 +98,11 @@ page { background: var(--surface-canvas); color: var(--text-primary); font-famil
 .state.live { background: var(--color-state-live-soft); color: var(--color-state-live); }
 .state.done,.state.closed { background: var(--color-state-done-soft); color: var(--text-secondary); }
 .faceoff { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); padding-left: var(--space-3); }
-.team { width: 34%; display: flex; align-items: center; gap: var(--space-3); min-width: 0; }   /* ✂︎ 34% 是对阵两侧的配比，属布局约束 */
+.team { flex: 1; display: flex; align-items: center; gap: var(--space-3); min-width: 0; }   /* ✂︎ 两侧弹性平分，比分方块居中不动 */
 .team.away { flex-direction: row-reverse; text-align: right; }
 .crest { width: var(--crest-size); height: var(--crest-size); flex: 0 0 auto; }
 .team-copy { min-width: 0; display: flex; flex-direction: column; gap: var(--space-1); }
-.team-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--font-24); font-weight: var(--weight-semibold); }
+.team-name { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; word-break: break-word; line-height: 1.25; font-size: var(--font-24); font-weight: var(--weight-semibold); }
 .team-role { color: var(--text-muted); font-size: var(--font-18); }
 /* 比分方块（vs 框）：**实色**，明确区别于雾白卡面 —— 不参与玻璃化。
    一旦给它加半透明白底就会和卡面糊在一起（2026-09-26 修过一次），
@@ -127,7 +127,7 @@ page { background: var(--surface-canvas); color: var(--text-primary); font-famil
 .stepper-group { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: var(--space-3); }
 .stepper-team { display: flex; align-items: center; gap: var(--space-2); max-width: 100%; }
 .stepper-team image { width: var(--stepper-team-logo-size); height: var(--stepper-team-logo-size); }
-.stepper-team text { max-width: 75px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--font-20); }
+.stepper-team text { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; max-width: 110px; overflow: hidden; word-break: break-word; line-height: 1.25; font-size: var(--font-20); }
 .stepper { display: flex; align-items: center; gap: var(--space-4); }
 .stepper button { width: var(--stepper-button-size); height: var(--stepper-button-size); padding: 0; border-radius: var(--radius-xs); background: var(--color-brand-soft); color: var(--color-brand-primary-pressed); font-size: var(--font-36); line-height: 27px; }   /* ✂︎ line-height 27px 是微信 button 垂直居中的经验值（56−2） */
 .stepper text { width: var(--stepper-value-width); text-align: center; font-family: var(--font-family-number); font-size: var(--font-36); font-weight: var(--weight-heavy); }

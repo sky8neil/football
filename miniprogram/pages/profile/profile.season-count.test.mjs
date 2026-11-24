@@ -21,7 +21,7 @@ function memberGroup(index, role = "member") {
   };
 }
 
-function loadPage({ profile, season, groups, listMyGroupsImpl } = {}) {
+function loadPage({ profile, season, groups, listMyGroupsImpl, createGroupImpl } = {}) {
   let definition;
   const getMyProfile = vi.fn(async () => ({
     statusCode: 200,
@@ -62,10 +62,10 @@ function loadPage({ profile, season, groups, listMyGroupsImpl } = {}) {
     statusCode: 200,
     data: { items: groups ?? [] },
   })));
-  const createGroup = vi.fn(async () => ({
+  const createGroup = vi.fn(createGroupImpl || (async () => ({
     statusCode: 201,
     data: { group_id: "created-group" },
-  }));
+  })));
   const navigateTo = vi.fn();
   const copy = loadCopy();
   runInNewContext(readFileSync(new URL("./profile.js", import.meta.url), "utf8"), {
@@ -78,6 +78,7 @@ function loadPage({ profile, season, groups, listMyGroupsImpl } = {}) {
       if (name.includes("services/predictions.js")) {
         return { listMyPredictions: vi.fn(async () => ({ statusCode: 200, data: { items: [] } })) };
       }
+      if (name.includes("services/auth.js")) return { getLoginGeneration: () => 0 };
       if (name.includes("logo-registry")) return { PLACEHOLDER: "placeholder.png", getTeamLogo: () => "logo.png" };
       if (name.includes("level-presentation")) {
         return { buildLevelView: () => ({ state: "rated", title: "", detail: "", progressPercent: 0, showProgress: false }) };
@@ -224,5 +225,63 @@ describe("profile season report card and owned group count", () => {
     await page.onCreateGroupTap();
     expect(createGroup).not.toHaveBeenCalled();
     expect(navigateTo).not.toHaveBeenCalled();
+  });
+
+  it("ignores stale loadPage responses when a newer loadPage finishes first", async () => {
+    let resolveFirst;
+    let calls = 0;
+    const { page } = loadPage({
+      listMyGroupsImpl: () => {
+        calls += 1;
+        if (calls === 1) {
+          return new Promise((resolve) => {
+            resolveFirst = () => resolve({
+              statusCode: 200,
+              data: { items: [memberGroup(99, "owner")] },
+            });
+          });
+        }
+        return Promise.resolve({
+          statusCode: 200,
+          data: { items: [memberGroup(1, "member")] },
+        });
+      },
+    });
+    const first = page.loadPage();
+    const second = page.loadPage();
+    await second;
+    expect(page.data.state).toBe("ready");
+    expect(page.data.groups.map((g) => g.group_id)).toEqual(["g1"]);
+    resolveFirst();
+    await first;
+    expect(page.data.groups.map((g) => g.group_id)).toEqual(["g1"]);
+  });
+
+  it("transitions to error state if loadPage rejects instead of staying stuck loading", async () => {
+    const { page } = loadPage({
+      listMyGroupsImpl: async () => {
+        throw new Error("network down");
+      },
+    });
+    await page.loadPage();
+    expect(page.data.state).toBe("error");
+    expect(page.data.errorMessage).toBe("暂时无法读取你的等级数据，请稍后重试");
+  });
+
+  it("blocks repeated group creation taps and restores the button after a rejection", async () => {
+    const createGroupImpl = vi.fn(() => Promise.reject(new Error("network")));
+    const { page } = loadPage({ createGroupImpl });
+    await page.loadPage();
+    expect(page.data.state).toBe("ready");
+
+    page.setData({ groupCreating: true });
+    await page.onCreateGroupTap();
+    expect(createGroupImpl).not.toHaveBeenCalled();
+
+    page.setData({ groupCreating: false });
+    await page.onCreateGroupTap();
+    expect(createGroupImpl).toHaveBeenCalledOnce();
+    expect(page.data.groupCreating).toBe(false);
+    expect(page.data.errorMessage).toBe("操作失败，请重试");
   });
 });
