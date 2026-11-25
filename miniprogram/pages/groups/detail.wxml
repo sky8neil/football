@@ -4,6 +4,13 @@
     <view wx:if="{{subtitle}}" class="page-subtitle">{{subtitle}}</view>
   </view>
   <view wx:if="{{state === 'loading'}}" class="loading"></view>
+  <view wx:elif="{{state === 'unauthorized'}}" class="error">
+    <view>{{errorMessage}}</view>
+    <button bindtap="onLoginTap">去登录</button>
+  </view>
+  <view wx:elif="{{state === 'userDeleted'}}" class="error">
+    <view>{{errorMessage}}</view>
+  </view>
   <view wx:elif="{{state === 'error'}}" class="error">
     <view>{{errorMessage}}</view>
     <button bindtap="onRetry">{{retryText}}</button>

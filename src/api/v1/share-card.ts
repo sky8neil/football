@@ -1,5 +1,5 @@
 import { assertUnknownFields } from "./validation.js";
-import { conflictError } from "../../domain/errors.js";
+import { conflictError, validationError } from "../../domain/errors.js";
 import {
   validateShareCardQueryValues,
   type ShareCardData,
@@ -12,6 +12,7 @@ import {
 } from "./rate-limit.js";
 
 const SHARE_CARD_QUERY_FIELDS = new Set(["league_id", "season_id", "round_id"]);
+const PUBLIC_SHARE_CARD_QUERY_FIELDS = new Set(["league_id", "season_id", "round_id", "share_token"]);
 
 export interface ShareCardSuccessResponse {
   status: 200;
@@ -31,6 +32,7 @@ export interface GetShareCardMeInput {
 
 export interface GetShareCardForUserInput {
   user_id: string;
+  authenticated_user_id?: string | null;
   query: Record<string, unknown>;
   server_now: Date;
   request_id: string;
@@ -39,6 +41,26 @@ export interface GetShareCardForUserInput {
 export function validateShareCardQuery(query: Record<string, unknown>): ShareCardQuery {
   assertUnknownFields(query, SHARE_CARD_QUERY_FIELDS);
   return validateShareCardQueryValues(query);
+}
+
+export function validatePublicShareCardQuery(
+  query: Record<string, unknown>,
+): ShareCardQuery & { share_token: string | null } {
+  assertUnknownFields(query, PUBLIC_SHARE_CARD_QUERY_FIELDS);
+  let shareToken: string | null = null;
+  if (Object.prototype.hasOwnProperty.call(query, "share_token") && query.share_token !== undefined) {
+    if (typeof query.share_token !== "string") {
+      throw validationError("share_token 必须为字符串", { field: "share_token" });
+    }
+    const trimmed = query.share_token.trim();
+    shareToken = trimmed.length > 0 ? trimmed : null;
+  }
+  const { league_id, season_id, round_id } = validateShareCardQueryValues({
+    league_id: query.league_id,
+    season_id: query.season_id,
+    round_id: query.round_id,
+  });
+  return { league_id, season_id, round_id, share_token: shareToken };
 }
 
 export async function getShareCardMe(
@@ -69,8 +91,12 @@ export async function getShareCardForUser(
   service: ShareCardQueryService,
   input: GetShareCardForUserInput,
 ): Promise<ShareCardSuccessResponse> {
-  const query = validateShareCardQuery(input.query);
-  const data = await service.getShareCard(input.user_id, query, input.server_now);
+  const { share_token, ...query } = validatePublicShareCardQuery(input.query);
+  const data = await service.getPublicShareCard(input.user_id, query, {
+    shareToken: share_token,
+    viewerUserId: input.authenticated_user_id ?? null,
+    serverNow: input.server_now,
+  });
   return {
     status: 200,
     body: {

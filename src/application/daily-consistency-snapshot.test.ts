@@ -818,6 +818,154 @@ describe("RepositoryDailyConsistencySnapshotSource", () => {
     )).toEqual([]);
   });
 
+  it("[A-S4-06] 第二年起按引用加载老用户比赛，继续核对 career", async () => {
+    const repo = new InMemoryRepository();
+    const oldAnchor = new Date("2026-08-08T06:00:00.000Z");
+    const oldMatchId = "old-career-match";
+    const oldPredictionId = "old-career-prediction";
+    const oldSettlementId = "old-career-settlement";
+    await repo.users.insert(makeUser({
+      career_points: 12,
+      career_valid_predictions: 1,
+      career_wdl_hits: 1,
+      career_exact_hits: 1,
+      career_last_scoring_match_at: oldAnchor,
+    }));
+    await repo.matches.insert(makeMatch({
+      match_id: oldMatchId,
+      canonical_match_id: oldMatchId,
+      season_id: "2026_2027",
+      kickoff_at: oldAnchor,
+      period_anchor_at: oldAnchor,
+      prediction_deadline_at: new Date(oldAnchor.getTime() - 600_000),
+      prediction_closed_at: new Date(oldAnchor.getTime() - 600_000),
+    }));
+    await repo.predictions.insert({
+      ...makePrediction(),
+      prediction_id: oldPredictionId,
+      match_id: oldMatchId,
+      canonical_match_id: oldMatchId,
+      idempotency_key: "idempotency-old-career",
+      match_score: 12,
+      wdl_hit: true,
+      exact_hit: true,
+      applied_result_version: 1,
+    });
+    await repo.matchResults.insert({
+      ...makeResult(),
+      match_id: oldMatchId,
+    });
+    await repo.settlements.insert(makeSettlement({
+      settlement_id: oldSettlementId,
+      match_id: oldMatchId,
+    }));
+    await repo.settlementItems.insert(makeItem({
+      settlement_id: oldSettlementId,
+      prediction_id: oldPredictionId,
+      new_score: 12,
+      score_delta: 12,
+      new_exact_hit: true,
+      applied_at: oldAnchor,
+    }));
+
+    const source = new RepositoryDailyConsistencySnapshotSource(repo);
+    const snapshot = await source.load(new Date("2028-02-15T12:00:00.000Z"), null);
+    const career = snapshot.career.find((entry) => entry.user_id === USER_ID);
+    expect(career?.expected).toMatchObject({
+      career_points: 12,
+      career_valid_predictions: 1,
+      career_wdl_hits: 1,
+      career_exact_hits: 1,
+      career_last_scoring_match_at: oldAnchor,
+    });
+
+    const currentUser = await repo.users.findById(USER_ID);
+    await repo.users.update({ ...currentUser!, career_points: 0 });
+    const drifted = await source.load(new Date("2028-02-15T12:00:00.000Z"), null);
+    expect(checkDailyConsistency(drifted).differences).toContainEqual(
+      expect.objectContaining({
+        scope: "career",
+        key: USER_ID,
+        fields: ["career_points"],
+      }),
+    );
+  });
+
+  it("[CR-06] failed 修正单的已 applied item 仍参与每日一致性积分与统计聚合，并跳过该周 global_rank", async () => {
+    const repo = await setup({
+      result_version: 2,
+      settled_result_version: 1,
+      settlement_status: SettlementStatus.Failed,
+      regular_home_score: 1,
+      regular_away_score: 0,
+    });
+    await repo.matchResults.insert({
+      ...makeResult(),
+      result_version: 2,
+      regular_home_score: 1,
+      regular_away_score: 0,
+      source: "admin",
+      admin_id: "admin-1",
+      reason: "赛果修正",
+    });
+    // v1(2-1 -> exact=12) 已结算后，v2 修正为 1-0(命中胜负=3, delta=-9) 且中途 failed
+    const user = await repo.users.findById(USER_ID);
+    await repo.users.update({
+      ...user!,
+      career_points: 3,
+      career_valid_predictions: 1,
+      career_wdl_hits: 1,
+      career_exact_hits: 0,
+      career_last_scoring_match_at: new Date("2026-08-08T06:00:00.000Z"),
+    });
+    await repo.userSeasonStats.update(makeSeasonStats({
+      points: 3,
+      valid_predictions: 1,
+      wdl_hits: 1,
+      exact_hits: 0,
+    }));
+    await repo.rankings.update({
+      ...makeRanking(),
+      period_score: 3,
+      wdl_hits: 1,
+      exact_hits: 0,
+      last_scoring_match_at: new Date("2026-08-08T06:00:00.000Z"),
+      global_rank: 99,
+    });
+    await repo.settlements.insert(makeSettlement({
+      settlement_id: "failed-correction",
+      result_version: 2,
+      is_correction: true,
+      status: SettlementDocStatus.Failed,
+      phase: SettlementPhase.ApplyItems,
+      settled_at: null,
+    }));
+    await repo.settlementItems.insert(makeItem({
+      settlement_id: "failed-correction",
+      old_score: 12,
+      new_score: 3,
+      score_delta: -9,
+      old_wdl_hit: true,
+      new_wdl_hit: true,
+      old_exact_hit: true,
+      new_exact_hit: false,
+      valid_prediction_delta: 0,
+      source_result_version: 2,
+      status: "applied",
+    }));
+
+    const snapshot = await new RepositoryDailyConsistencySnapshotSource(repo).load(NOW, null);
+    const result = checkDailyConsistency(snapshot);
+    expect(result.differences).toEqual([]);
+    expect(snapshot.active_settlements).toContainEqual(
+      expect.objectContaining({
+        match_id: MATCH_ID,
+        user_ids: [],
+        periods: [{ period_type: PeriodType.Week, period_key: "2026-W32" }],
+      }),
+    );
+  });
+
   it("[Slice 5.2] 不再全量调用 settlementItems.findByStatus，且非活跃旧赛季历史不误报差异", async () => {
     const repo = await setup();
     const user = await repo.users.findById(USER_ID);
@@ -855,6 +1003,8 @@ describe("RepositoryDailyConsistencySnapshotSource", () => {
       period_anchor_at: oldAnchor,
       prediction_deadline_at: new Date(oldAnchor.getTime() - 600_000),
       prediction_closed_at: new Date(oldAnchor.getTime() - 600_000),
+      regular_home_score: 1,
+      regular_away_score: 0,
     }));
     await repo.predictions.insert({
       ...makePrediction(),
@@ -869,6 +1019,8 @@ describe("RepositoryDailyConsistencySnapshotSource", () => {
     await repo.matchResults.insert({
       ...makeResult(),
       match_id: oldMatchId,
+      regular_home_score: 1,
+      regular_away_score: 0,
     });
     await repo.settlements.insert(makeSettlement({
       settlement_id: oldSettlementId,
@@ -1153,7 +1305,7 @@ describe("RepositoryDailyConsistencySnapshotSource", () => {
     });
 
     await loadDailyConsistencySnapshot(repoProxy, NOW, null);
-    expect(findByMatchIdsSpy).toHaveBeenCalledTimes(1);
+    expect(findByMatchIdsSpy).not.toHaveBeenCalled();
     expect(findByMatchSpy).not.toHaveBeenCalled();
     expect(findByUserIdsHistSpy).toHaveBeenCalledTimes(1);
     expect(findByUserHistSpy).not.toHaveBeenCalled();

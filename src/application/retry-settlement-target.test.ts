@@ -89,6 +89,72 @@ describe("selectFailedSettlementTarget", () => {
     ).toBe(failedLatest);
   });
 
+  it("等待期跳版本直结后从首个 settlement 版本校验并重试 failed 修正", () => {
+    const skippedInitial = makeSettlement({
+      settlement_id: "00000000-0000-4000-8000-000000000030",
+      result_version: 2,
+      status: SettlementDocStatus.Settled,
+      phase: SettlementPhase.Done,
+      is_correction: false,
+      settled_at: NOW,
+    });
+    const failedCorrection = makeSettlement({
+      settlement_id: "00000000-0000-4000-8000-000000000031",
+      result_version: 3,
+      is_correction: true,
+    });
+
+    expect(
+      selectFailedSettlementTarget(
+        makeMatch({
+          result_version: 3,
+          settled_result_version: 2,
+          settlement_status: SettlementStatus.Correcting,
+        }),
+        [failedCorrection],
+        [skippedInitial, failedCorrection],
+      ),
+    ).toBe(failedCorrection);
+  });
+
+  it("首个 settlement 版本之后到已结算版本之间仍要求连续", () => {
+    const skippedInitial = makeSettlement({
+      settlement_id: "00000000-0000-4000-8000-000000000032",
+      result_version: 2,
+      status: SettlementDocStatus.Settled,
+      phase: SettlementPhase.Done,
+      is_correction: false,
+      settled_at: NOW,
+    });
+    const laterSettled = makeSettlement({
+      settlement_id: "00000000-0000-4000-8000-000000000034",
+      result_version: 4,
+      status: SettlementDocStatus.Settled,
+      phase: SettlementPhase.Done,
+      is_correction: true,
+      settled_at: NOW,
+    });
+    const failedCorrection = makeSettlement({
+      settlement_id: "00000000-0000-4000-8000-000000000035",
+      result_version: 5,
+      is_correction: true,
+    });
+
+    expect(
+      captureError(() =>
+        selectFailedSettlementTarget(
+          makeMatch({
+            result_version: 5,
+            settled_result_version: 4,
+            settlement_status: SettlementStatus.Correcting,
+          }),
+          [failedCorrection],
+          [skippedInitial, laterSettled, failedCorrection],
+        ),
+      ),
+    ).toMatchObject({ code: "INTERNAL_ERROR" });
+  });
+
   it("已存在的 settlement 版本出现空洞时 fail closed", () => {
     const failed = makeSettlement({
       settlement_id: "00000000-0000-4000-8000-000000000012",

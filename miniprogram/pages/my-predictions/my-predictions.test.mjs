@@ -67,6 +67,7 @@ function instantiate(config) {
 
 function installWxStub() {
   const navs = [];
+  const storage = new Map();
   setGlobal("wx", {
     navigateTo(options) {
       navs.push(["navigateTo", options && options.url]);
@@ -74,8 +75,17 @@ function installWxStub() {
     switchTab(options) {
       navs.push(["switchTab", options && options.url]);
     },
+    getStorageSync(key) {
+      return storage.get(key);
+    },
+    setStorageSync(key, value) {
+      storage.set(key, value);
+    },
+    removeStorageSync(key) {
+      storage.delete(key);
+    },
   });
-  return { navs };
+  return { navs, storage };
 }
 
 function loadUtil(relativePath, requireShim) {
@@ -833,5 +843,77 @@ describe("my-predictions league/season filters", () => {
     expect(page.data.filterError).toBe("");
     expect(page.data.state).toBe("list");
     expect(listLeagueSeasons).toHaveBeenCalledTimes(3);
+  });
+
+  it("[A-S2-03] renders abandoned matches accurately as 不计分 when settlement_status is voided vs 等待/腰斩 when waiting", async () => {
+    const listMyPredictions = vi.fn(async () => ({
+      statusCode: 200,
+      data: {
+        items: [
+          prediction({
+            prediction_id: "voided-abandoned",
+            match_status: "abandoned",
+            settlement_status: "voided",
+            regular_home_score: 1,
+            regular_away_score: 0,
+            match_score: null,
+            wdl_hit: null,
+            exact_hit: null,
+          }),
+          prediction({
+            prediction_id: "pending-abandoned",
+            match_status: "abandoned",
+            settlement_status: "waiting",
+            regular_home_score: null,
+            regular_away_score: null,
+            match_score: null,
+            wdl_hit: null,
+            exact_hit: null,
+          }),
+        ],
+        page: { has_more: false, next_cursor: null },
+      },
+    }));
+    const { page } = loadPage({ listMyPredictions });
+    await page.loadFirstPage();
+    expect(page.data.items[0].pointsText).toBe("不计分");
+    expect(page.data.items[0].resultText).toBe("比赛腰斩 · 不计分");
+    expect(page.data.items[0].actualText).toBe("—");
+    expect(page.data.items[1].pointsText).toBe("待结算");
+    expect(page.data.items[1].resultText).toBe("比赛腰斩");
+  });
+
+  it("[A-S2-06] silently refreshes on subsequent onShow when my_predictions_dirty is set, preserving list on transient error", async () => {
+    const listMyPredictions = vi.fn()
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        data: { items: [prediction({ prediction_id: "p1" })], page: { has_more: false, next_cursor: null } },
+      })
+      .mockRejectedValueOnce(new Error("transient network glitch"))
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        data: {
+          items: [prediction({ prediction_id: "p2" }), prediction({ prediction_id: "p1" })],
+          page: { has_more: false, next_cursor: null },
+        },
+      });
+    const { page, storage } = loadPage({ listMyPredictions });
+    await page.onLoad();
+    storage.set("my_predictions_dirty", true);
+    await page.onShow();
+    expect(listMyPredictions).toHaveBeenCalledTimes(1);
+    expect(storage.has("my_predictions_dirty")).toBe(false);
+
+    storage.set("my_predictions_dirty", true);
+    await page.onShow();
+    expect(listMyPredictions).toHaveBeenCalledTimes(2);
+    expect(page.data.state).toBe("list");
+    expect(page.data.items.map((i) => i.prediction_id)).toEqual(["p1"]);
+
+    storage.set("my_predictions_dirty", true);
+    await page.onShow();
+    expect(listMyPredictions).toHaveBeenCalledTimes(3);
+    expect(page.data.state).toBe("list");
+    expect(page.data.items.map((i) => i.prediction_id)).toEqual(["p2", "p1"]);
   });
 });

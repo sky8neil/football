@@ -1,5 +1,5 @@
 import { SCHEMA_VERSION, SyncJobStatus, SyncJobType } from "../domain/enums.js";
-import { SUPPORTED_LEAGUES, type ProviderLeagueRefs } from "../domain/config.js";
+import { FIXED_CONFIG_V1, SUPPORTED_LEAGUES, type ProviderLeagueRefs } from "../domain/config.js";
 import { newUuid } from "../domain/ids.js";
 import type { ProviderReconcileTodo, ProviderSnapshot, SyncLog } from "../domain/types.js";
 import type { AppRepository } from "../infrastructure/repositories.js";
@@ -8,10 +8,15 @@ import type { ApiFootballFixture } from "../provider/types.js";
 import type { ProviderSourceId } from "../provider/sources.js";
 import { normalizeFixture } from "../provider/fixture-mapper.js";
 import { ensureCrossSourceMatchMapping } from "./provider-cross-source.js";
+import { resolveEffectiveMatch } from "./match-identity.js";
+import { startJobLockRenewal, type JobLockRenewalOptions } from "./provider-sync-job.js";
 import { persistAnomalyInTransaction } from "./anomaly-persistence.js";
 import { AnomalyType } from "../domain/enums.js";
 import { ProviderBudgetDeniedError } from "../provider/budget.js";
 import { ProviderError, ProviderQuotaExceededError } from "../provider/http.js";
+
+const DAY_MS = 24 * 60 * 60_000;
+const RECONCILE_LOOKBACK_DAYS = 3;
 
 export interface ProviderReconcileClient {
   getFixturesFromSource(sourceId: ProviderSourceId, query: ApiFootballFixturesQuery): Promise<readonly ApiFootballFixture[]>;
@@ -26,12 +31,15 @@ export class ProviderReconcileService {
     private readonly repo: AppRepository,
     private readonly client: ProviderReconcileClient,
     private readonly providerLeagueRefs?: ProviderLeagueRefs,
+    private readonly lockOptions: { renewal?: JobLockRenewalOptions } = {},
   ) {}
 
   async run(serverNow: Date): Promise<ProviderReconcileOutcome> {
     const ownerId = newUuid();
     const lockKey = "sync:provider_reconcile";
-    const lockUntil = new Date(serverNow.getTime() + 10 * 60_000);
+    const leaseMs = this.lockOptions.renewal?.leaseMs ?? FIXED_CONFIG_V1.JOB_LEASE_MINUTES * 60_000;
+    const nowClock = this.lockOptions.renewal?.now ?? (() => Math.max(Date.now(), serverNow.getTime()));
+    const lockUntil = new Date(nowClock() + leaseMs);
     if (!await this.repo.jobLocks.acquire(lockKey, ownerId, lockUntil)) return { kind: "skipped", reason: "lock_held" };
     const syncLogs = this.repo.syncLogs;
     const log: SyncLog = {
@@ -49,43 +57,59 @@ export class ProviderReconcileService {
       last_error_message: null,
       created_at: serverNow,
     };
+    const lockRenewal = startJobLockRenewal(this.repo, lockKey, ownerId, {
+      ...this.lockOptions.renewal,
+      leaseMs,
+      now: nowClock,
+    });
     try {
+      await lockRenewal.assertHeld();
       await syncLogs?.insert(log);
-      const outcome = await this.reconcile(serverNow);
+      const outcome = await this.reconcile(serverNow, lockRenewal.assertHeld);
+      await lockRenewal.assertHeld();
       await syncLogs?.update({ ...log, status: SyncJobStatus.Success, finished_at: serverNow, items_read: outcome.items_read, items_failed: outcome.conflicts });
       return outcome;
     } catch (error) {
-      await syncLogs?.update({
-        ...log,
-        status: SyncJobStatus.Failed,
-        finished_at: serverNow,
-        last_error_code: "PROVIDER_RECONCILE_FAILED",
-        last_error_message: error instanceof Error ? error.message : "provider reconcile failed",
-      });
+      const stillHeld = await lockRenewal.assertHeld().then(() => true, () => false);
+      if (stillHeld) {
+        await syncLogs?.update({
+          ...log,
+          status: SyncJobStatus.Failed,
+          finished_at: serverNow,
+          last_error_code: "PROVIDER_RECONCILE_FAILED",
+          last_error_message: error instanceof Error ? error.message : "provider reconcile failed",
+        });
+      }
       throw error;
     } finally {
+      lockRenewal.stop();
       await this.repo.jobLocks.release(lockKey, ownerId);
     }
   }
 
-  private async reconcile(serverNow: Date): Promise<Extract<ProviderReconcileOutcome, { kind: "completed" }>> {
+  private async reconcile(
+    serverNow: Date,
+    assertHeld: () => Promise<void>,
+  ): Promise<Extract<ProviderReconcileOutcome, { kind: "completed" }>> {
     const todoRepo = this.repo.providerReconcileTodos;
     if (!todoRepo) throw new Error("provider reconcile todo repository unavailable");
-    const yesterdayAt = new Date(serverNow.getTime() - 24 * 60 * 60_000);
-    const yesterday = yesterdayAt.toISOString().slice(0, 10);
     let itemsRead = 0;
     let conflicts = 0;
     let skipped = 0;
-    for (const match of await this.repo.matches.findFinishedSettledOnDay(yesterday)) {
-      if (SUPPORTED_LEAGUES.some((league) => league.league_id === match.league_id)) {
-        const sourceId = match.league_id === "chinese_super_league" ? "sp" : "of";
-        await todoRepo.upsert({
-          todo_id: newUuid(), match_id: match.match_id, canonical_match_id: match.canonical_match_id,
-          league_id: match.league_id, season_id: match.season_id, source_id: sourceId,
-          target_result_version: match.result_version, kickoff_at: match.kickoff_at, status: "pending", attempts: 0,
-          last_error_code: null, last_attempt_at: null, completed_at: null, created_at: serverNow, updated_at: serverNow,
-          schema_version: SCHEMA_VERSION,
-        });
+    for (let daysAgo = 1; daysAgo <= RECONCILE_LOOKBACK_DAYS; daysAgo += 1) {
+      await assertHeld();
+      const day = new Date(serverNow.getTime() - daysAgo * DAY_MS).toISOString().slice(0, 10);
+      for (const match of await this.repo.matches.findFinishedSettledOnDay(day)) {
+        if (SUPPORTED_LEAGUES.some((league) => league.league_id === match.league_id)) {
+          const sourceId = match.league_id === "chinese_super_league" ? "sp" : "of";
+          await todoRepo.upsert({
+            todo_id: newUuid(), match_id: match.match_id, canonical_match_id: match.canonical_match_id,
+            league_id: match.league_id, season_id: match.season_id, source_id: sourceId,
+            target_result_version: match.result_version, kickoff_at: match.kickoff_at, status: "pending", attempts: 0,
+            last_error_code: null, last_attempt_at: null, completed_at: null, created_at: serverNow, updated_at: serverNow,
+            schema_version: SCHEMA_VERSION,
+          });
+        }
       }
     }
     const todos: ProviderReconcileTodo[] = [];
@@ -102,6 +126,7 @@ export class ProviderReconcileService {
       groups.set(key, group);
     }
     for (const group of groups.values()) {
+      await assertHeld();
       const first = group[0]!;
       const league = SUPPORTED_LEAGUES.find((row) => row.league_id === first.league_id);
       if (!league) {
@@ -146,7 +171,7 @@ export class ProviderReconcileService {
         if (!mapping.match_id) { mappingFailed = true; continue; }
         const matchedTodos = [...remaining.values()].filter((todo) => todo.match_id === mapping.match_id);
         if (matchedTodos.length === 0) continue;
-        const match = await this.repo.matches.findById(mapping.match_id);
+        const match = await resolveEffectiveMatch(this.repo, mapping.match_id);
         if (!match) continue;
         itemsRead += 1;
         if (match.regular_home_score === normalized.fixture.fulltime.home && match.regular_away_score === normalized.fixture.fulltime.away) {

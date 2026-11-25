@@ -10,7 +10,7 @@
       <view class="code-cells">
         <view wx:for="{{inviteCells}}" wx:key="index" class="code-cell {{item.active ? 'active' : ''}}">{{item.value}}</view>
       </view>
-      <input class="code-input" type="text" maxlength="8" value="{{inviteCode}}" bindinput="onInviteInput" />
+      <input class="code-input" type="text" maxlength="12" value="{{inviteCode}}" bindinput="onInviteInput" />
     </view>
     <view class="remaining">{{remainingText}}</view>
     <view wx:if="{{errorMessage}}" class="inline-error">{{errorMessage}}</view>

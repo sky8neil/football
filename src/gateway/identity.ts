@@ -36,14 +36,14 @@ export async function resolveRequestTrustedOpenid(
     return input.trusted_openid;
   }
   if (input.sessions !== undefined) {
-    if (typeof input.authorization !== "string" || input.authorization.trim().length === 0) {
-      return null;
+    if (typeof input.authorization === "string" && input.authorization.trim().length > 0) {
+      return resolveBearerOpenid({
+        authorization: input.authorization,
+        sessions: input.sessions,
+        now: input.now,
+      });
     }
-    return resolveBearerOpenid({
-      authorization: input.authorization,
-      sessions: input.sessions,
-      now: input.now,
-    });
+    return resolveTrustedOpenid(input.config);
   }
   return resolveTrustedOpenid(input.config);
 }

@@ -222,4 +222,54 @@ describe("ProviderReconcileService", () => {
 
     expect(getFixturesFromSource).not.toHaveBeenCalled();
   });
+
+  it("回溯最近 3 天未建档已完赛场次、解析旧 M_old 副源映射，并按期续租分布式锁 (A-S3-04, A-S3-10)", async () => {
+    vi.useFakeTimers({ now: NOW });
+    try {
+      const repo = new InMemoryRepository();
+      // 3 天前（2026-08-06）应入账，4 天前（2026-08-05）超过 3 天窗口不入账
+      const threeDaysAgo = makeMatch("three-days-ago", {
+        kickoff_at: new Date("2026-08-06T10:00:00.000Z"),
+        finish_detected_at: new Date("2026-08-06T12:00:00.000Z"),
+      });
+      const fourDaysAgo = makeMatch("four-days-ago", {
+        kickoff_at: new Date("2026-08-05T10:00:00.000Z"),
+        finish_detected_at: new Date("2026-08-05T12:00:00.000Z"),
+      });
+      await repo.matches.insert(threeDaysAgo);
+      await repo.matches.insert(fourDaysAgo);
+
+      // M_old 被 M_new 取代，openfoot 映射仍指 M_old -> reconcile 应解析到 M_new 完成对账
+      const oldMatch = makeMatch("old-for-reconcile", {
+        kickoff_at: new Date("2026-08-08T10:00:00.000Z"),
+        finish_detected_at: new Date("2026-08-08T12:00:00.000Z"),
+      });
+      const newMatch = makeMatch("new-for-reconcile", {
+        kickoff_at: new Date("2026-08-08T10:00:00.000Z"),
+        finish_detected_at: new Date("2026-08-08T12:00:00.000Z"),
+      });
+      await repo.matches.insert(newMatch);
+      await repo.matches.insert(oldMatch);
+      await repo.matches.update({ ...oldMatch, canonical_match_id: newMatch.match_id, superseded_by: newMatch.match_id });
+      await mapFixture(repo, oldMatch, "of-mapped-to-old");
+
+      const jobLocks = repo.jobLocks;
+      const renewSpy = vi.spyOn(jobLocks, "renew");
+      Object.defineProperty(repo, "jobLocks", { get: () => jobLocks });
+      const getFixturesFromSource = vi.fn(async (_source: string, query: { dateFrom?: string }) => {
+        if (query.dateFrom === "2026-08-08") {
+          await vi.advanceTimersByTimeAsync(5 * 60_000);
+          return [fixture("of-mapped-to-old", newMatch)];
+        }
+        return [];
+      });
+      const outcome = await new ProviderReconcileService(repo, { getFixturesFromSource }).run(NOW);
+      expect(outcome).toMatchObject({ kind: "completed", items_read: 1, conflicts: 0 });
+      expect(renewSpy).toHaveBeenCalled();
+      expect((await repo.providerReconcileTodos.findPending(10)).map((todo) => todo.match_id))
+        .toEqual(["three-days-ago"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

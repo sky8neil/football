@@ -1,13 +1,23 @@
-import { SCHEMA_VERSION } from "../domain/enums.js";
-import { newUuid } from "../domain/ids.js";
+import { AnomalyStatus, AnomalyType, SCHEMA_VERSION } from "../domain/enums.js";
+import { deterministicUuid, newUuid } from "../domain/ids.js";
 import type { Provider } from "../domain/enums.js";
-import type { MatchProviderMapping } from "../domain/types.js";
+import type { Anomaly, MatchProviderMapping } from "../domain/types.js";
 import { activeLeagueSeason, findSupportedLeagueByProviderId, type ProviderLeagueRefs } from "../domain/config.js";
 import type { AppRepository } from "../infrastructure/repositories.js";
 import type { NormalizedFixture } from "../provider/fixture-mapper.js";
+import { persistAnomalyInTransaction } from "./anomaly-persistence.js";
+import { resolveEffectiveMatch } from "./match-identity.js";
 
 const CROSS_SOURCE_PROVIDERS = new Set<Provider>(["5dollar", "openfoot", "sportapi"]);
 const warnedMissingTeamMappings = new Set<string>();
+
+export function missingTeamMappingAnomalyMatchId(provider: Provider, providerTeamId: string): string {
+  return deterministicUuid(`team_mapping_missing:${provider}:${providerTeamId}`);
+}
+
+export function missingTeamMappingAnomalyKey(provider: Provider, providerTeamId: string): string {
+  return `${missingTeamMappingAnomalyMatchId(provider, providerTeamId)}:${AnomalyType.ProviderDataInvalid}`;
+}
 
 /**
  * 交叉核对时用于对齐本地比赛与 provider fixture 的 kickoff 容忍度（毫秒）。
@@ -41,7 +51,13 @@ export async function ensureCrossSourceMatchMapping(
   const teams = repo.teamProviderMappings;
   if (!mappings || !teams || fixture.kickoffAt === null) return { match_id: null, reason: "unlinked" };
   const external = await mappings.findByProviderAndExternalId(provider, fixture.providerMatchId);
-  if (external) return { match_id: external.match_id, reason: "mapped" };
+  if (external) {
+    if (typeof repo.matches?.findById === "function") {
+      const effective = await resolveEffectiveMatch(repo, external.match_id);
+      return effective ? { match_id: effective.match_id, reason: "mapped" } : { match_id: null, reason: "unlinked" };
+    }
+    return { match_id: external.match_id, reason: "mapped" };
+  }
   const supportedLeague = findSupportedLeagueByProviderId(fixture.leagueProviderId, provider, providerLeagueRefs);
   if (!supportedLeague) return { match_id: null, reason: "unlinked" };
   const [home, away] = await Promise.all([
@@ -49,8 +65,14 @@ export async function ensureCrossSourceMatchMapping(
     teams.findByProviderAndExternalId(provider, fixture.awayTeamProviderId),
   ]);
   if (!home || !away) {
-    if (!home) warnMissingTeamMapping(provider, fixture, "home");
-    if (!away) warnMissingTeamMapping(provider, fixture, "away");
+    if (!home) {
+      warnMissingTeamMapping(provider, fixture, "home");
+      await persistMissingTeamMappingAnomaly(repo, provider, supportedLeague.league_id, fixture, "home", now);
+    }
+    if (!away) {
+      warnMissingTeamMapping(provider, fixture, "away");
+      await persistMissingTeamMappingAnomaly(repo, provider, supportedLeague.league_id, fixture, "away", now);
+    }
     await recordUnlinked(repo, provider, fixture, now, "team_mapping_missing");
     return { match_id: null, reason: "unlinked" };
   }
@@ -95,6 +117,83 @@ function warnMissingTeamMapping(provider: Provider, fixture: NormalizedFixture, 
     side,
     provider_match_id: fixture.providerMatchId,
     season: fixture.season,
+  });
+}
+
+async function persistMissingTeamMappingAnomaly(
+  repo: AppRepository,
+  provider: Provider,
+  leagueId: string,
+  fixture: NormalizedFixture,
+  side: "home" | "away",
+  now: Date,
+): Promise<void> {
+  if (repo.anomalies === undefined) return;
+  const providerTeamId = side === "home" ? fixture.homeTeamProviderId : fixture.awayTeamProviderId;
+  const providerName = side === "home" ? fixture.homeTeamName ?? null : fixture.awayTeamName ?? null;
+  const syntheticMatchId = missingTeamMappingAnomalyMatchId(provider, providerTeamId);
+  const anomalyKey = missingTeamMappingAnomalyKey(provider, providerTeamId);
+  const details: Record<string, unknown> = {
+    entity_type: "team",
+    reason: "team_mapping_missing",
+    provider,
+    provider_team_id: providerTeamId,
+    league_id: leagueId,
+    source_league_id: fixture.leagueProviderId,
+    provider_name: providerName,
+    side,
+    provider_match_id: fixture.providerMatchId,
+    season: fixture.season,
+  };
+  const existing = await repo.anomalies.findByKey(anomalyKey);
+  if (
+    existing !== null &&
+    existing.status === AnomalyStatus.Open &&
+    existing.last_seen_at.getTime() === now.getTime()
+  ) {
+    return;
+  }
+  if (typeof repo.withTransaction === "function") {
+    await repo.withTransaction((tx) =>
+      persistAnomalyInTransaction(
+        tx,
+        syntheticMatchId,
+        AnomalyType.ProviderDataInvalid,
+        { open: true, blocking: false },
+        details,
+        now,
+      ),
+    );
+    return;
+  }
+  if (existing === null) {
+    const created: Anomaly = {
+      schema_version: SCHEMA_VERSION,
+      anomaly_id: newUuid(),
+      anomaly_key: anomalyKey,
+      match_id: syntheticMatchId,
+      type: AnomalyType.ProviderDataInvalid,
+      blocking: false,
+      status: AnomalyStatus.Open,
+      first_seen_at: now,
+      last_seen_at: now,
+      occurrence_count: 1,
+      details,
+      resolved_at: null,
+      resolution: null,
+    };
+    await repo.anomalies.insert(created);
+    return;
+  }
+  await repo.anomalies.update({
+    ...existing,
+    blocking: false,
+    status: AnomalyStatus.Open,
+    last_seen_at: now,
+    occurrence_count: existing.occurrence_count + 1,
+    details,
+    resolved_at: null,
+    resolution: null,
   });
 }
 

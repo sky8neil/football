@@ -271,10 +271,15 @@ async function insertSnapshotOrThrowInternal(
   }
 }
 
+export interface WriteBoardSnapshotOptions {
+  onExisting?: "return" | "reject";
+}
+
 export async function writeBoardSnapshotInTransaction(
   tx: BoardSnapshotUnitOfWork,
   board: RankingBoard,
   snapshotAt: Date,
+  options: WriteBoardSnapshotOptions = {},
 ): Promise<BoardSnapshot[]> {
   assertSnapshotBoard(board);
   assertValidServerNow(snapshotAt);
@@ -283,6 +288,13 @@ export async function writeBoardSnapshotInTransaction(
   }
   const existing = await tx.boardSnapshots.findByBoardAndSnapshotAt(board, snapshotAt);
   if (existing.length > 0) {
+    if (options.onExisting === "reject") {
+      throw conflictError(
+        "BOARD_SNAPSHOT_ALREADY_EXISTS",
+        "相同 snapshot_at 的榜单快照已存在，拒绝重复重建",
+        { board, snapshot_at: snapshotAt.toISOString() },
+      );
+    }
     return existing
       .filter((snapshot) => snapshot.snapshot_kind !== "head")
       .sort((a, b) => a.rank - b.rank);
@@ -347,7 +359,7 @@ export class BoardSnapshotService {
     const acquired = await this.repo.jobLocks.acquire(
       lockKey,
       ownerId,
-      new Date(serverNow.getTime() + SNAPSHOT_LEASE_MILLISECONDS),
+      new Date(Math.max(serverNow.getTime(), Date.now()) + SNAPSHOT_LEASE_MILLISECONDS),
     );
     if (!acquired) {
       throw conflictError("SETTLEMENT_ALREADY_RUNNING", "目标榜单快照任务锁被占用", {
@@ -371,7 +383,7 @@ export class BoardSnapshotService {
     const acquired = await this.repo.jobLocks.acquire(
       lockKey,
       ownerId,
-      new Date(serverNow.getTime() + SNAPSHOT_LEASE_MILLISECONDS),
+      new Date(Math.max(serverNow.getTime(), Date.now()) + SNAPSHOT_LEASE_MILLISECONDS),
     );
     if (!acquired) {
       throw conflictError("SETTLEMENT_ALREADY_RUNNING", "赛季终榜任务锁被占用", { lock_key: lockKey });

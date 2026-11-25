@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { Provider } from "../domain/enums.js";
+import { AdminAnomaliesService } from "./admin-anomalies.js";
+import { AdminRole, AdminStatus, AnomalyStatus, AnomalyType, Provider, SCHEMA_VERSION } from "../domain/enums.js";
+import { newUuid } from "../domain/ids.js";
 import type { Match } from "../domain/types.js";
-import type { AppRepository } from "../infrastructure/repositories.js";
+import { InMemoryRepository, type AppRepository } from "../infrastructure/repositories.js";
 import { loadProviderSources } from "../provider/sources.js";
-import { ensureCrossSourceMatchMapping } from "./provider-cross-source.js";
+import { ensureCrossSourceMatchMapping, missingTeamMappingAnomalyKey } from "./provider-cross-source.js";
 import { decideProviderResultAdoption } from "./provider-result-adoption.js";
 
 const NOW = new Date("2026-10-12T12:00:00.000Z");
@@ -324,5 +326,98 @@ describe("ensureCrossSourceMatchMapping", () => {
       { provider: "5dollar", status: "finished", score: { home: 1, away: 1 }, raw_status: "FT", observed_at: NOW },
     ], NOW, NOW);
     expect(conflicted).toEqual({ kind: "anomaly", reason: "score_conflict" });
+  });
+
+  it("resolves existing secondary mapping through superseded_by chain to the latest effective match (A-S3-04)", async () => {
+    const oldMatch = makeMatch({ match_id: MATCH_ID, superseded_by: "match-mid" });
+    const midMatch = makeMatch({ match_id: "match-mid", superseded_by: "match-new", canonical_match_id: MATCH_ID });
+    const newMatch = makeMatch({ match_id: "match-new", superseded_by: null, canonical_match_id: MATCH_ID });
+    const matchesById = new Map([oldMatch, midMatch, newMatch].map((m) => [m.match_id, m]));
+    const { repo } = makeRepo({ existingMapping: { match_id: MATCH_ID } });
+    (repo.matches as unknown as { findById: (id: string) => Promise<Match | null> }).findById =
+      async (id) => matchesById.get(id) ?? null;
+
+    await expect(ensureCrossSourceMatchMapping(repo, fixture(), NOW)).resolves.toEqual({
+      match_id: "match-new",
+      reason: "mapped",
+    });
+  });
+
+  it("[A-S7-01] persists deduplicated non-blocking anomaly when secondary team mapping is missing and passes AdminAnomaliesService checks", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const repo = new InMemoryRepository();
+    await repo.admins.insert({
+      schema_version: SCHEMA_VERSION,
+      admin_id: newUuid(),
+      openid: "admin-openid",
+      role: AdminRole.Admin,
+      status: AdminStatus.Active,
+      created_at: NOW,
+      updated_at: NOW,
+    });
+    await repo.teamProviderMappings.insert({
+      schema_version: SCHEMA_VERSION,
+      team_id: AWAY_ID,
+      provider: Provider.OpenFoot,
+      provider_team_id: "of-known-away",
+      created_at: NOW,
+      updated_at: NOW,
+    });
+
+    const input1 = fixture({
+      provider: "openfoot" as const,
+      leagueProviderId: "comp_premier_league_eng",
+      providerMatchId: "of-match-1",
+      homeTeamProviderId: "of-promoted-home",
+      homeTeamName: "Promoted FC",
+      awayTeamProviderId: "of-known-away",
+      awayTeamName: "Known Away",
+    });
+    const input2 = fixture({
+      provider: "openfoot" as const,
+      leagueProviderId: "comp_premier_league_eng",
+      providerMatchId: "of-match-2",
+      homeTeamProviderId: "of-promoted-home",
+      homeTeamName: "Promoted FC",
+      awayTeamProviderId: "of-known-away",
+      awayTeamName: "Known Away",
+    });
+
+    await expect(ensureCrossSourceMatchMapping(repo, input1, NOW)).resolves.toEqual({ match_id: null, reason: "unlinked" });
+    // Same tick same missing team -> deduplicated (still 1 row, occurrence_count=1)
+    await expect(ensureCrossSourceMatchMapping(repo, input2, NOW)).resolves.toEqual({ match_id: null, reason: "unlinked" });
+    // Later tick same missing team -> updates existing row rather than inserting duplicates
+    const later = new Date(NOW.getTime() + 60_000);
+    await expect(ensureCrossSourceMatchMapping(repo, input2, later)).resolves.toEqual({ match_id: null, reason: "unlinked" });
+
+    const anomalyKey = missingTeamMappingAnomalyKey(Provider.OpenFoot, "of-promoted-home");
+    const saved = await repo.anomalies.findByKey(anomalyKey);
+    expect(saved).toMatchObject({
+      anomaly_key: anomalyKey,
+      type: AnomalyType.ProviderDataInvalid,
+      blocking: false,
+      status: AnomalyStatus.Open,
+      occurrence_count: 2,
+      first_seen_at: NOW,
+      last_seen_at: later,
+      details: expect.objectContaining({
+        entity_type: "team",
+        reason: "team_mapping_missing",
+        provider: Provider.OpenFoot,
+        provider_team_id: "of-promoted-home",
+        league_id: "premier_league",
+        provider_name: "Promoted FC",
+      }),
+    });
+
+    const listed = await new AdminAnomaliesService(repo, "test-secret").list("admin-openid", {
+      status: AnomalyStatus.Open,
+      blocking: false,
+      limit: 20,
+      cursor: null,
+    });
+    expect(listed.items).toHaveLength(1);
+    expect(listed.items[0]?.anomaly_key).toBe(anomalyKey);
+    warn.mockRestore();
   });
 });

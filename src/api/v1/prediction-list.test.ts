@@ -21,8 +21,8 @@ const ITEM: PredictionHistoryItem = {
   round_id: "01",
   home_team_id: "00000000-0000-4000-8000-000000000011",
   away_team_id: "00000000-0000-4000-8000-000000000012",
-  home_team: { team_id: "00000000-0000-4000-8000-000000000011", name: "Arsenal FC" },
-  away_team: { team_id: "00000000-0000-4000-8000-000000000012", name: "Chelsea FC" },
+  home_team: { team_id: "00000000-0000-4000-8000-000000000011", name: "Arsenal FC", name_zh: null, logo_url: null },
+  away_team: { team_id: "00000000-0000-4000-8000-000000000012", name: "Chelsea FC", name_zh: null, logo_url: null },
   kickoff_at: "2026-08-08T14:00:00.000Z",
   pred_home_score: 2,
   pred_away_score: 1,
@@ -30,6 +30,7 @@ const ITEM: PredictionHistoryItem = {
   submitted_at: "2026-08-08T12:00:00.000Z",
   scoring_rule_version: "scoring_v1",
   match_status: "finished",
+  settlement_status: "settled",
   regular_home_score: 2,
   regular_away_score: 1,
   match_score: 12,
@@ -254,8 +255,8 @@ describe("GET /v1/predictions/me", () => {
             prediction_id: "00000000-0000-4000-8000-000000000022",
             season_id: "2025_2026",
             match_id: "00000000-0000-4000-8000-000000000012",
-            home_team: { team_id: HOME_TEAM_ID, name: "Arsenal FC" },
-            away_team: { team_id: AWAY_TEAM_ID, name: "Chelsea FC" },
+            home_team: { team_id: HOME_TEAM_ID, name: "Arsenal FC", name_zh: null, logo_url: null },
+            away_team: { team_id: AWAY_TEAM_ID, name: "Chelsea FC", name_zh: null, logo_url: null },
           })],
         },
       },
@@ -305,11 +306,16 @@ describe("GET /v1/predictions/me", () => {
     })).rejects.toMatchObject({ code: "UNAUTHORIZED" });
   });
 
-  it("handler 只输出冻结 item 字段，不泄漏 application 内部字段", async () => {
-    const itemWithInternalField = {
+  it("handler 只输出冻结 item 字段，不泄漏 application 内部字段并透传 name_zh/logo_url", async () => {
+    const enrichedItem: PredictionHistoryItem = {
       ...ITEM,
+      home_team: { ...ITEM.home_team, name_zh: "阿森纳", logo_url: "https://cdn.example.com/arsenal.png" },
+    };
+    const itemWithInternalField = {
+      ...enrichedItem,
       internal_only: "must-not-be-public",
-    } as PredictionHistoryItem;
+      home_team: { ...enrichedItem.home_team, secret_team_field: "leak" },
+    } as unknown as PredictionHistoryItem;
 
     const response = await getMyPredictions({
       listMyPredictions: async () => ({
@@ -324,8 +330,9 @@ describe("GET /v1/predictions/me", () => {
       request_id: "request-predictions-list-contract-1",
     });
 
-    expect(response.body.data.items).toEqual([ITEM]);
+    expect(response.body.data.items).toEqual([enrichedItem]);
     expect(response.body.data.items[0]).not.toHaveProperty("internal_only");
+    expect(response.body.data.items[0]?.home_team).not.toHaveProperty("secret_team_field");
   });
 
   it("limits authenticated history reads to 120 requests per minute", async () => {
@@ -357,7 +364,7 @@ describe("GET /v1/predictions/me", () => {
       /    PredictionHistoryData:[\s\S]*?required: \[items, page\]/,
     );
     expect(specification).toMatch(
-      /    PredictionHistoryItem:[\s\S]*?required: \[prediction_id, match_id, league_id, season_id, round_id, home_team_id, away_team_id, home_team, away_team, kickoff_at, pred_home_score, pred_away_score, derived_result, submitted_at, scoring_rule_version, match_status, regular_home_score, regular_away_score, match_score, wdl_hit, exact_hit\]/,
+      /    PredictionHistoryItem:[\s\S]*?required: \[prediction_id, match_id, league_id, season_id, round_id, home_team_id, away_team_id, home_team, away_team, kickoff_at, pred_home_score, pred_away_score, derived_result, submitted_at, scoring_rule_version, match_status, settlement_status, regular_home_score, regular_away_score, match_score, wdl_hit, exact_hit\]/,
     );
     expect(specification).toMatch(
       /    PredictionHistoryItem:[\s\S]*?home_team:\n          \$ref: '#\/components\/schemas\/MatchTeam'[\s\S]*?away_team:\n          \$ref: '#\/components\/schemas\/MatchTeam'/,

@@ -3,7 +3,7 @@ import { FIXED_CONFIG_V1 } from "../domain/config.js";
 import { GroupMemberStatus, GroupStatus, UserStatus } from "../domain/enums.js";
 import type { Group, GroupMember, User } from "../domain/types.js";
 import { defaultLevelState } from "../domain/types.js";
-import { InMemoryRepository, UniqueConstraintError } from "../infrastructure/repositories.js";
+import { InMemoryRepository, UniqueConstraintError, type UnitOfWork } from "../infrastructure/repositories.js";
 import { GroupsService, MyGroupsCursorCodec } from "./groups.js";
 
 const NOW = new Date("2026-08-09T12:00:00.000Z");
@@ -139,7 +139,10 @@ describe("GroupsService", () => {
       await repo.groupMembers.insert(makeMember(other.group_id, id(1)));
       await repo.groupMembers.insert(makeMember(other.group_id, id(5)));
     }
-    await expect(service.joinGroup(id(1), alreadyMember.invite_code, NOW)).rejects.toMatchObject({ code: "GROUP_ALREADY_MEMBER" });
+    await expect(service.joinGroup(id(1), alreadyMember.invite_code, NOW)).rejects.toMatchObject({
+      code: "GROUP_ALREADY_MEMBER",
+      details: { group_id: alreadyMember.group_id },
+    });
 
     const full = makeGroup(id(3), 3, "EFGHJKLM");
     await seedUser(repo, id(3));
@@ -170,6 +173,19 @@ describe("GroupsService", () => {
     await expect(service.dissolveGroup(id(3), group.group_id, NOW)).rejects.toMatchObject({ code: "FORBIDDEN" });
     await service.dissolveGroup(id(1), group.group_id, NOW);
     expect((await repo.groups.findById(group.group_id))?.status).toBe("dissolved");
+  });
+
+  it("reports an owner's leave on a dissolved group as not a member", async () => {
+    const repo = new InMemoryRepository();
+    await seedUser(repo, id(1));
+    const group = await seedOwnedGroup(repo, id(1), 1, codeAt(21));
+    const service = new GroupsService(repo, { cursorSecret: CURSOR_SECRET });
+
+    await service.dissolveGroup(id(1), group.group_id, NOW);
+
+    await expect(service.leaveGroup(id(1), group.group_id, NOW)).rejects.toMatchObject({
+      code: "GROUP_NOT_MEMBER",
+    });
   });
 
   it("lists only active memberships and only exposes a group to its active members", async () => {
@@ -298,6 +314,27 @@ describe("GroupsService", () => {
     expect(exact.next_cursor).toBeNull();
   });
 
+  it("orders same-timestamp memberships by code point so cursors do not skip groups", async () => {
+    const repo = new InMemoryRepository();
+    await seedUser(repo, id(1));
+    await seedUser(repo, id(2));
+    await seedUser(repo, id(3));
+    const upperId = "00000000-0000-4000-8000-00000000000A";
+    const lowerId = "00000000-0000-4000-8000-00000000000a";
+    await repo.groups.insert({ ...makeGroup(id(2), 1, codeAt(22)), group_id: upperId });
+    await repo.groups.insert({ ...makeGroup(id(3), 2, codeAt(23)), group_id: lowerId });
+    await repo.groupMembers.insert(makeMember(upperId, id(1)));
+    await repo.groupMembers.insert(makeMember(lowerId, id(1)));
+    const service = new GroupsService(repo, { cursorSecret: CURSOR_SECRET });
+
+    const first = await service.listMyGroups(id(1), { limit: 1, cursor: null });
+    expect(first.items.map((item) => item.group_id)).toEqual([upperId]);
+    expect(first.next_cursor).not.toBeNull();
+    const second = await service.listMyGroups(id(1), { limit: 1, cursor: first.next_cursor });
+    expect(second.items.map((item) => item.group_id)).toEqual([lowerId]);
+    expect(second.has_more).toBe(false);
+  });
+
   it("rejects malformed, tampered, and out-of-range pagination inputs", async () => {
     const repo = new InMemoryRepository();
     await seedUser(repo, id(1));
@@ -330,6 +367,25 @@ describe("GroupsService", () => {
     expect(await repo.groupMembers.findByGroup(created.group_id)).toHaveLength(1);
   });
 
+  it("bounds invite-code collision retries instead of looping forever", async () => {
+    const repo = new InMemoryRepository();
+    await seedUser(repo, id(1));
+    await seedOwnedGroup(repo, id(2), 1, "NPQRSTUV");
+    let attempts = 0;
+    const service = new GroupsService(repo, {
+      cursorSecret: CURSOR_SECRET,
+      inviteCodeFactory: () => {
+        attempts += 1;
+        return "NPQRSTUV";
+      },
+    });
+
+    await expect(service.createGroup(id(1), NOW)).rejects.toMatchObject({ code: "INTERNAL_ERROR" });
+    expect(attempts).toBe(10);
+    expect(await repo.groups.findByOwner(id(1))).toEqual([]);
+    expect(await repo.groupMembers.findByUser(id(1))).toEqual([]);
+  });
+
   it("repository transaction rollback restores both group indexes and membership reads", async () => {
     const repo = new InMemoryRepository();
     const group = makeGroup(id(1), 7, "QRSTUVWX");
@@ -348,5 +404,392 @@ describe("GroupsService", () => {
     const group = makeGroup(id(1), 8, "23456789");
     await repo.groups.insert(group);
     await expect(repo.groups.insert({ ...group, group_id: id(2) })).rejects.toBeInstanceOf(UniqueConstraintError);
+  });
+});
+
+interface GroupTxProbe {
+  staleInvite?: (group: Group) => Group;
+  staleGroup?: (group: Group) => Group;
+  insertMember?: (member: GroupMember) => void;
+}
+
+function watchGroupTx(tx: UnitOfWork, events: string[], probe: GroupTxProbe): UnitOfWork {
+  return new Proxy(tx, {
+    get(target, prop, receiver) {
+      if (prop === "users") {
+        const users = target.users;
+        return {
+          ...users,
+          findByIdForUpdate: async (userId: string) => {
+            events.push(`user:${userId}`);
+            if (users.findByIdForUpdate === undefined) throw new Error("users.findByIdForUpdate missing");
+            return users.findByIdForUpdate(userId);
+          },
+        };
+      }
+      if (prop === "groups") {
+        const groups = target.groups;
+        if (groups === undefined) return undefined;
+        return {
+          ...groups,
+          findById: async (groupId: string) => {
+            const group = await groups.findById(groupId);
+            return group === null || probe.staleGroup === undefined ? group : probe.staleGroup(group);
+          },
+          findByInviteCode: async (code: string) => {
+            const group = await groups.findByInviteCode(code);
+            return group === null || probe.staleInvite === undefined ? group : probe.staleInvite(group);
+          },
+          findByOwner: async (ownerId: string) => {
+            events.push(`owner:${ownerId}`);
+            return groups.findByOwner(ownerId);
+          },
+          findByIdForUpdate: async (groupId: string) => {
+            events.push(`group:${groupId}`);
+            if (groups.findByIdForUpdate === undefined) throw new Error("groups.findByIdForUpdate missing");
+            return groups.findByIdForUpdate(groupId);
+          },
+          patchFields: async (groupId: string, fields: Partial<Group>) => {
+            events.push(`patch:${groupId}:${Object.keys(fields).sort().join("+")}`);
+            if (groups.patchFields === undefined) throw new Error("groups.patchFields missing");
+            return groups.patchFields(groupId, fields);
+          },
+          update: async (group: Group) => {
+            events.push(`update:${group.group_id}`);
+            return groups.update(group);
+          },
+        };
+      }
+      if (prop === "groupMembers") {
+        const members = target.groupMembers;
+        if (members === undefined) return undefined;
+        return {
+          ...members,
+          findByUser: async (userId: string) => {
+            events.push(`members:${userId}`);
+            return members.findByUser(userId);
+          },
+          insert: async (member: GroupMember) => {
+            probe.insertMember?.(member);
+            return members.insert(member);
+          },
+        };
+      }
+      const value = Reflect.get(target, prop, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
+function probeTransactions(repo: InMemoryRepository, probe: GroupTxProbe = {}): string[] {
+  const events: string[] = [];
+  const original = repo.withTransaction.bind(repo);
+  repo.withTransaction = ((fn) => original((tx) => fn(watchGroupTx(tx, events, probe)))) as typeof repo.withTransaction;
+  return events;
+}
+
+function expectUserThenGroup(events: string[], userId: string, groupId: string): void {
+  const userAt = events.indexOf(`user:${userId}`);
+  const groupAt = events.indexOf(`group:${groupId}`);
+  expect(userAt).toBeGreaterThanOrEqual(0);
+  expect(groupAt).toBeGreaterThan(userAt);
+}
+
+describe("GroupsService row locks A-S5-01/07", () => {
+  it("rejects a deleted user on create and join after locking the user", async () => {
+    const repo = new InMemoryRepository();
+    const deletedId = id(10);
+    const ownerId = id(11);
+    await repo.users.insert(makeUser(deletedId, "", UserStatus.Deleted));
+    await seedUser(repo, ownerId, "Owner");
+    const group = await seedOwnedGroup(repo, ownerId, 1, codeAt(31));
+    const events = probeTransactions(repo);
+    const service = new GroupsService(repo, {
+      cursorSecret: CURSOR_SECRET,
+      inviteCodeFactory: () => codeAt(32),
+    });
+
+    await expect(service.createGroup(deletedId, NOW)).rejects.toMatchObject({
+      code: "USER_DELETED",
+    });
+    await expect(service.joinGroup(deletedId, group.invite_code, NOW)).rejects.toMatchObject({
+      code: "USER_DELETED",
+    });
+
+    expect(events.filter((event) => event === `user:${deletedId}`)).toHaveLength(2);
+    expect(events).not.toContain(`group:${group.group_id}`);
+    expect(events.some((event) => event.startsWith("patch:") || event.startsWith("update:")))
+      .toBe(false);
+    expect(await repo.groups.findByOwner(deletedId)).toEqual([]);
+    expect(await repo.groupMembers.findByUser(deletedId)).toEqual([]);
+    expect(await repo.groups.findById(group.group_id)).toMatchObject({
+      status: GroupStatus.Active,
+      member_count: 1,
+    });
+  });
+
+  it("locks the user before owned and joined limit checks when creating", async () => {
+    const repo = new InMemoryRepository();
+    await seedUser(repo, id(1));
+    const events = probeTransactions(repo);
+    const service = new GroupsService(repo, { cursorSecret: CURSOR_SECRET, inviteCodeFactory: () => codeAt(1) });
+
+    await service.createGroup(id(1), NOW);
+
+    const userAt = events.indexOf(`user:${id(1)}`);
+    expect(userAt).toBeGreaterThanOrEqual(0);
+    expect(events.indexOf(`owner:${id(1)}`)).toBeGreaterThan(userAt);
+    expect(events.indexOf(`members:${id(1)}`)).toBeGreaterThan(userAt);
+    expect(events.some((event) => event.startsWith("update:"))).toBe(false);
+  });
+
+  it("locks user then group and patches membership counts without replacing the group document", async () => {
+    const repo = new InMemoryRepository();
+    await seedUser(repo, id(1));
+    await seedUser(repo, id(2));
+    const group = await seedOwnedGroup(repo, id(1), 1, codeAt(2));
+    const events = probeTransactions(repo);
+    const service = new GroupsService(repo, { cursorSecret: CURSOR_SECRET });
+
+    await service.joinGroup(id(2), group.invite_code, NOW);
+    await service.leaveGroup(id(2), group.group_id, NOW);
+    await service.joinGroup(id(2), group.invite_code, NOW);
+
+    expectUserThenGroup(events, id(2), group.group_id);
+    expect(events.filter((event) => event.startsWith(`patch:${group.group_id}:`))).toEqual([
+      `patch:${group.group_id}:member_count+updated_at`,
+      `patch:${group.group_id}:member_count+updated_at`,
+      `patch:${group.group_id}:member_count+updated_at`,
+    ]);
+    expect(events.some((event) => event.startsWith("update:"))).toBe(false);
+    expect(await repo.groups.findById(group.group_id)).toMatchObject({
+      status: GroupStatus.Active,
+      member_count: 2,
+      invite_code: group.invite_code,
+      owner_user_id: id(1),
+      updated_at: NOW,
+    });
+    expect(await repo.groupMembers.findByGroupAndUser(group.group_id, id(2))).toMatchObject({
+      status: GroupMemberStatus.Active,
+    });
+  });
+
+  it("locks user then group and patches dissolved status without restoring stale fields", async () => {
+    const repo = new InMemoryRepository();
+    await seedUser(repo, id(1));
+    await seedUser(repo, id(2));
+    const group = await seedOwnedGroup(repo, id(1), 1, codeAt(3));
+    await repo.groupMembers.insert(makeMember(group.group_id, id(2)));
+    await repo.groups.update({ ...group, member_count: 2 });
+    const events = probeTransactions(repo);
+    const service = new GroupsService(repo, { cursorSecret: CURSOR_SECRET });
+
+    await service.dissolveGroup(id(1), group.group_id, NOW);
+
+    expectUserThenGroup(events, id(1), group.group_id);
+    expect(events).toContain(`patch:${group.group_id}:member_count+status+updated_at`);
+    expect(events.some((event) => event.startsWith("update:"))).toBe(false);
+    expect(await repo.groups.findById(group.group_id)).toMatchObject({
+      status: GroupStatus.Dissolved,
+      member_count: 0,
+      invite_code: group.invite_code,
+      updated_at: NOW,
+    });
+  });
+
+  it("rejects a join that only fits a stale pre-lock member_count", async () => {
+    const repo = new InMemoryRepository();
+    await seedUser(repo, id(1));
+    await seedUser(repo, id(2));
+    const group = await seedOwnedGroup(repo, id(1), 1, codeAt(4));
+    await repo.groups.update({ ...group, member_count: FIXED_CONFIG_V1.GROUP_MAX_MEMBERS });
+    const events = probeTransactions(repo, {
+      staleInvite: (locked) => ({ ...locked, member_count: FIXED_CONFIG_V1.GROUP_MAX_MEMBERS - 1 }),
+    });
+    const service = new GroupsService(repo, { cursorSecret: CURSOR_SECRET });
+
+    await expect(service.joinGroup(id(2), group.invite_code, NOW)).rejects.toMatchObject({
+      code: "GROUP_MEMBER_LIMIT_REACHED",
+    });
+
+    expectUserThenGroup(events, id(2), group.group_id);
+    expect(events.some((event) => event.startsWith("patch:") || event.startsWith("update:"))).toBe(false);
+    expect(await repo.groupMembers.findByGroupAndUser(group.group_id, id(2))).toBeNull();
+    expect(await repo.groups.findById(group.group_id)).toMatchObject({
+      status: GroupStatus.Active,
+      member_count: FIXED_CONFIG_V1.GROUP_MAX_MEMBERS,
+    });
+  });
+
+  it("does not revive a dissolved group when the pre-lock invite read was still active", async () => {
+    const repo = new InMemoryRepository();
+    await seedUser(repo, id(1));
+    await seedUser(repo, id(2));
+    const group = await seedOwnedGroup(repo, id(1), 1, codeAt(5));
+    await repo.groups.update({ ...group, status: GroupStatus.Dissolved, member_count: 0 });
+    const events = probeTransactions(repo, {
+      staleInvite: (locked) => ({ ...locked, status: GroupStatus.Active, member_count: 2 }),
+    });
+    const service = new GroupsService(repo, { cursorSecret: CURSOR_SECRET });
+
+    await expect(service.joinGroup(id(2), group.invite_code, NOW)).rejects.toMatchObject({
+      code: "GROUP_DISSOLVED",
+    });
+
+    expectUserThenGroup(events, id(2), group.group_id);
+    expect(events.some((event) => event.startsWith("patch:") || event.startsWith("update:"))).toBe(false);
+    expect(await repo.groupMembers.findByGroupAndUser(group.group_id, id(2))).toBeNull();
+    expect(await repo.groups.findById(group.group_id)).toMatchObject({
+      status: GroupStatus.Dissolved,
+      member_count: 0,
+      invite_code: group.invite_code,
+    });
+  });
+
+  it("does not revive a dissolved group from a stale unlocked leave read", async () => {
+    const repo = new InMemoryRepository();
+    await seedUser(repo, id(1));
+    await seedUser(repo, id(2));
+    const group = await seedOwnedGroup(repo, id(1), 1, codeAt(6));
+    await repo.groupMembers.insert(makeMember(group.group_id, id(2)));
+    await repo.groups.update({ ...group, status: GroupStatus.Dissolved, member_count: 0 });
+    const events = probeTransactions(repo, {
+      staleGroup: (locked) => ({ ...locked, status: GroupStatus.Active, member_count: 2 }),
+    });
+    const service = new GroupsService(repo, { cursorSecret: CURSOR_SECRET });
+
+    await expect(service.leaveGroup(id(2), group.group_id, NOW)).rejects.toMatchObject({
+      code: "GROUP_NOT_MEMBER",
+    });
+
+    expectUserThenGroup(events, id(2), group.group_id);
+    expect(events.some((event) => event.startsWith("patch:") || event.startsWith("update:"))).toBe(false);
+    expect(await repo.groups.findById(group.group_id)).toMatchObject({
+      status: GroupStatus.Dissolved,
+      member_count: 0,
+    });
+  });
+
+  it("maps uk_group_user to GROUP_ALREADY_MEMBER with details.group_id and rolls back the count", async () => {
+    const repo = new InMemoryRepository();
+    await seedUser(repo, id(1));
+    await seedUser(repo, id(2));
+    const group = await seedOwnedGroup(repo, id(1), 1, codeAt(7));
+    const events = probeTransactions(repo, {
+      insertMember: (member) => {
+        throw new UniqueConstraintError("group_members", "uk_group_user", {
+          group_id: member.group_id,
+          user_id: member.user_id,
+        });
+      },
+    });
+    const service = new GroupsService(repo, { cursorSecret: CURSOR_SECRET });
+
+    await expect(service.joinGroup(id(2), group.invite_code, NOW)).rejects.toMatchObject({
+      code: "GROUP_ALREADY_MEMBER",
+      details: { group_id: group.group_id },
+    });
+
+    expect(events.some((event) => event.startsWith("patch:") || event.startsWith("update:"))).toBe(false);
+    expect(await repo.groupMembers.findByGroupAndUser(group.group_id, id(2))).toBeNull();
+    expect((await repo.groups.findById(group.group_id))?.member_count).toBe(1);
+  });
+
+  it("does not map a different unique constraint to GROUP_ALREADY_MEMBER", async () => {
+    const repo = new InMemoryRepository();
+    await seedUser(repo, id(1));
+    await seedUser(repo, id(2));
+    const group = await seedOwnedGroup(repo, id(1), 1, codeAt(8));
+    probeTransactions(repo, {
+      insertMember: () => {
+        throw new UniqueConstraintError("groups", "uk_invite_code", { invite_code: group.invite_code });
+      },
+    });
+    const service = new GroupsService(repo, { cursorSecret: CURSOR_SECRET });
+
+    await expect(service.joinGroup(id(2), group.invite_code, NOW)).rejects.toMatchObject({
+      collection: "groups",
+      indexName: "uk_invite_code",
+    });
+    expect((await repo.groups.findById(group.group_id))?.member_count).toBe(1);
+  });
+
+  it("serializes one user's concurrent creates and joins at the owned and joined caps", async () => {
+    const repo = new InMemoryRepository();
+    await seedUser(repo, id(1));
+    await seedUser(repo, id(2));
+    for (let n = 1; n <= 4; n += 1) await seedOwnedGroup(repo, id(1), n, codeAt(20 + n));
+    let nextCode = 40;
+    const service = new GroupsService(repo, {
+      cursorSecret: CURSOR_SECRET,
+      inviteCodeFactory: () => codeAt(nextCode++),
+    });
+
+    const created = await Promise.allSettled([service.createGroup(id(1), NOW), service.createGroup(id(1), NOW)]);
+    expect(created.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(created.filter((result) => result.status === "rejected").map((result) => result.reason)).toEqual([
+      expect.objectContaining({ code: "GROUP_OWNED_LIMIT_REACHED" }),
+    ]);
+    expect((await repo.groups.findByOwner(id(1))).filter((group) => group.status === GroupStatus.Active)).toHaveLength(5);
+
+    for (let n = 1; n <= 14; n += 1) {
+      const extra = makeGroup(id(2), 200 + n, codeAt(60 + n));
+      await repo.groups.insert(extra);
+      await repo.groupMembers.insert(makeMember(extra.group_id, id(1)));
+    }
+    const openA = makeGroup(id(2), 90, codeAt(90));
+    const openB = makeGroup(id(2), 91, codeAt(91));
+    await repo.groups.insert(openA);
+    await repo.groups.insert(openB);
+    await repo.groupMembers.insert(makeMember(openA.group_id, id(2)));
+    await repo.groupMembers.insert(makeMember(openB.group_id, id(2)));
+
+    const joined = await Promise.allSettled([
+      service.joinGroup(id(1), openA.invite_code, NOW),
+      service.joinGroup(id(1), openB.invite_code, NOW),
+    ]);
+    expect(joined.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(joined.filter((result) => result.status === "rejected").map((result) => result.reason)).toEqual([
+      expect.objectContaining({ code: "GROUP_JOIN_LIMIT_REACHED" }),
+    ]);
+  });
+
+  it("keeps a full group at the member cap and reports duplicate joins with group_id", async () => {
+    const repo = new InMemoryRepository();
+    await seedUser(repo, id(1));
+    await seedUser(repo, id(2));
+    await seedUser(repo, id(3));
+    const group = await seedOwnedGroup(repo, id(1), 1, codeAt(9));
+    await repo.groups.update({ ...group, member_count: FIXED_CONFIG_V1.GROUP_MAX_MEMBERS - 1 });
+    const service = new GroupsService(repo, { cursorSecret: CURSOR_SECRET });
+
+    const raced = await Promise.allSettled([
+      service.joinGroup(id(2), group.invite_code, NOW),
+      service.joinGroup(id(3), group.invite_code, NOW),
+    ]);
+    expect(raced.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(raced.filter((result) => result.status === "rejected").map((result) => result.reason)).toEqual([
+      expect.objectContaining({ code: "GROUP_MEMBER_LIMIT_REACHED" }),
+    ]);
+    expect((await repo.groups.findById(group.group_id))?.member_count).toBe(FIXED_CONFIG_V1.GROUP_MAX_MEMBERS);
+
+    const second = await seedOwnedGroup(repo, id(1), 30, codeAt(30));
+    await service.joinGroup(id(2), second.invite_code, NOW);
+    const duplicate = await Promise.allSettled([
+      service.joinGroup(id(2), second.invite_code, NOW),
+      service.joinGroup(id(2), second.invite_code, NOW),
+    ]);
+    const rejected = duplicate.filter((result): result is PromiseRejectedResult => result.status === "rejected");
+    expect(duplicate.filter((result) => result.status === "fulfilled")).toHaveLength(0);
+    expect(rejected).toHaveLength(2);
+    expect(rejected[0]?.reason).toMatchObject({
+      code: "GROUP_ALREADY_MEMBER",
+      details: { group_id: second.group_id },
+    });
+    expect(rejected[1]?.reason).toMatchObject({
+      code: "GROUP_ALREADY_MEMBER",
+      details: { group_id: second.group_id },
+    });
+    expect((await repo.groups.findById(second.group_id))?.member_count).toBe(2);
   });
 });

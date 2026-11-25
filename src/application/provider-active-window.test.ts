@@ -86,4 +86,13 @@ describe("activeWindow", () => {
     expect(activeWindow([stale], now, SyncJobType.PostFinishVerify)).toEqual([]);
     expect(activeWindow([stale, boundary, superseded], now, SyncJobType.StaleRecovery)).toEqual([stale]);
   });
+
+  it("includeOverdueDailyFallback 覆盖 00:00 单分钟限制以支持持久化补跑 (A-S3-09)", () => {
+    const offMidnight = new Date("2026-10-12T00:03:00.000Z");
+    const overdue = match(new Date(offMidnight.getTime() - 30 * 60 * 60_000), MatchStatus.Finished);
+    overdue.finish_detected_at = new Date(offMidnight.getTime() - 28 * 60 * 60_000);
+    expect(activeWindow([overdue], offMidnight, SyncJobType.PostFinishVerify)).toEqual([]);
+    expect(activeWindow([overdue], offMidnight, SyncJobType.PostFinishVerify, { includeOverdueDailyFallback: true })).toEqual([overdue]);
+    expect(activeWindow([overdue], offMidnight, SyncJobType.PostFinishVerify, { includeOverdueDailyFallback: false })).toEqual([]);
+  });
 });

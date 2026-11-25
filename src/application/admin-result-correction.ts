@@ -1,6 +1,8 @@
 import {
   AdminAuditAction,
   ADMIN_AUDIT_ENTITY_TYPE_BY_ACTION,
+  AnomalyStatus,
+  AnomalyType,
   ResultSource,
   SCHEMA_VERSION,
   SettlementStatus,
@@ -29,10 +31,27 @@ export interface AdminResultCorrectionOutcome {
   match: Match;
   result: MatchResult;
   audit_log: AdminAuditLog;
+  resolved_anomaly_ids?: string[];
 }
 
 /** 第 48.3 节冻结的管理员审计 action。 */
 export const ADMIN_RESULT_CORRECTION_AUDIT_ACTION = AdminAuditAction.ResultCorrection;
+
+/**
+ * 赛果修正同事务内自动解除的赛果/状态类阻塞及冲突异常白名单（A-S8-03）。
+ * 队伍变更（TEAM_CHANGE_AFTER_PREDICTION）与开球时间变更（KICKOFF_CHANGE_AFTER_ANCHOR）
+ * 属于比赛身份/盘口完整性异常，不在此白名单内，需由管理员单独核查解除。
+ */
+export const RESULT_CORRECTION_AUTO_RESOLVE_ANOMALY_TYPES: ReadonlySet<AnomalyType> = new Set([
+  AnomalyType.FinishedNoScore,
+  AnomalyType.InvalidFinalScore,
+  AnomalyType.LiveTooLong,
+  AnomalyType.ProviderStateConflict,
+  AnomalyType.UnexpectedProviderStatus,
+  AnomalyType.AdminProviderResultConflict,
+  AnomalyType.ProviderResultConflict,
+  AnomalyType.ProviderResultPending,
+]);
 
 function assertInput(input: AdminResultCorrectionInput): void {
   if (
@@ -47,7 +66,7 @@ function assertInput(input: AdminResultCorrectionInput): void {
     input.regular_away_score < FIXED_CONFIG_V1.FINAL_SCORE_MIN ||
     input.regular_away_score > FIXED_CONFIG_V1.FINAL_SCORE_MAX ||
     typeof input.reason !== "string" ||
-    input.reason.length < 1 ||
+    input.reason.trim().length < 1 ||
     input.reason.length > 500
   ) {
     throw validationError("管理员赛果修正请求参数无效");
@@ -103,6 +122,17 @@ function nextSettlementStatus(match: Match): SettlementStatus {
   });
 }
 
+function requireMatchPatchPorts(matches: AppRepository["matches"]): {
+  findByIdForUpdate: (matchId: string) => Promise<Match | null>;
+  patchFields: (matchId: string, fields: Partial<Match>) => Promise<void>;
+} {
+  const { findByIdForUpdate, patchFields } = matches;
+  if (findByIdForUpdate === undefined || patchFields === undefined) {
+    throw internalError("matches 行锁与局部更新端口未配置");
+  }
+  return { findByIdForUpdate, patchFields };
+}
+
 function auditValue(next: {
   result_version: number;
   regular_home_score: number | null;
@@ -142,7 +172,8 @@ export class AdminResultCorrectionService implements AdminWriteAuthorizer {
 
     return this.repo.withTransaction(async (tx) => {
       const admin = await this.authorization.requireActiveAdmin(tx, trustedOpenid);
-      const match = await tx.matches.findById(matchId);
+      const { findByIdForUpdate, patchFields } = requireMatchPatchPorts(tx.matches);
+      const match = await findByIdForUpdate(matchId);
       if (match === null) {
         throw notFoundError("MATCH");
       }
@@ -190,31 +221,55 @@ export class AdminResultCorrectionService implements AdminWriteAuthorizer {
         settlementStatus,
         serverNow,
       );
-      const transitionedMatch = await tx.matches.findById(match.match_id);
-      if (transitionedMatch === null) {
-        throw internalError("管理员赛果修正状态转移后比赛不存在");
-      }
-
-      const updatedMatch: Match = {
-        ...transitionedMatch,
+      const persistedMatch: Match = {
+        ...match,
         regular_home_score: input.regular_home_score,
         regular_away_score: input.regular_away_score,
         result_version: result.result_version,
         result_source: ResultSource.Admin,
+        settlement_status: settlementStatus,
         updated_at: serverNow,
       };
-      await tx.matches.update(updatedMatch);
-      const persistedMatch: Match = {
-        ...updatedMatch,
-        settlement_status: settlementStatus,
-      };
+      assertMatchResultVersionInvariants(persistedMatch);
+      await patchFields(match.match_id, {
+        regular_home_score: persistedMatch.regular_home_score,
+        regular_away_score: persistedMatch.regular_away_score,
+        result_version: persistedMatch.result_version,
+        result_source: persistedMatch.result_source,
+        updated_at: serverNow,
+      });
 
       if (tx.adminAuditLogs === undefined) {
         throw internalError("admin_audit_logs repository port 未配置");
       }
+      const auditId = newUuid();
+      const resolvedAnomalyIds: string[] = [];
+      if (tx.anomalies !== undefined) {
+        const openAnomalies = tx.anomalies.findOpenByMatch !== undefined
+          ? await tx.anomalies.findOpenByMatch(match.match_id)
+          : await tx.anomalies.findOpenBlockingByMatch(match.match_id);
+        const resolution = `admin_result_correction:${auditId}`;
+        for (const anomaly of openAnomalies) {
+          if (!RESULT_CORRECTION_AUTO_RESOLVE_ANOMALY_TYPES.has(anomaly.type)) {
+            continue;
+          }
+          await tx.anomalies.update({
+            ...anomaly,
+            status: AnomalyStatus.Resolved,
+            resolved_at: serverNow,
+            resolution,
+          });
+          resolvedAnomalyIds.push(anomaly.anomaly_id);
+        }
+      }
+
+      const newValue = auditValue(persistedMatch);
+      if (resolvedAnomalyIds.length > 0) {
+        newValue.resolved_anomaly_ids = resolvedAnomalyIds;
+      }
       const auditLog: AdminAuditLog = {
         schema_version: SCHEMA_VERSION,
-        audit_id: newUuid(),
+        audit_id: auditId,
         admin_id: admin.admin_id,
         action: ADMIN_RESULT_CORRECTION_AUDIT_ACTION,
         entity_type: ADMIN_AUDIT_ENTITY_TYPE_BY_ACTION[ADMIN_RESULT_CORRECTION_AUDIT_ACTION],
@@ -226,7 +281,7 @@ export class AdminResultCorrectionService implements AdminWriteAuthorizer {
           result_source: match.result_source,
           settlement_status: match.settlement_status,
         }),
-        new_value: auditValue(persistedMatch),
+        new_value: newValue,
         reason: input.reason,
         created_at: serverNow,
       };
@@ -237,6 +292,7 @@ export class AdminResultCorrectionService implements AdminWriteAuthorizer {
         match: persistedMatch,
         result,
         audit_log: auditLog,
+        ...(resolvedAnomalyIds.length > 0 ? { resolved_anomaly_ids: resolvedAnomalyIds } : {}),
       };
     });
   }

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AdminRole, AdminStatus, MatchStatus, Result, SettlementStatus } from "../domain/enums.js";
 import type { Admin, Match, Prediction, User, UserSeasonStats } from "../domain/types.js";
 import { InMemoryRepository } from "../infrastructure/repositories.js";
@@ -292,5 +292,31 @@ describe("AdminRebuildUserStatsService", () => {
       new AdminRebuildUserStatsService(repo).rebuild("unknown-openid", USER_ID, NOW),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
     await repo.jobLocks.release(lockKey, "existing-owner");
+  });
+
+  it("[Slice 3] 落后墙钟的 serverNow 时 maintenance lock 租约仍晚于 Date.now()", async () => {
+    const repo = new InMemoryRepository();
+    await seedAdminAndUser(repo);
+    const lockKey = userStatsRebuildLockKey(USER_ID);
+    const jobLocks = repo.jobLocks;
+    const acquireSpy = vi.spyOn(jobLocks, "acquire");
+    const repoProxy = new Proxy(repo, {
+      get(target, prop, receiver) {
+        if (prop === "jobLocks") return jobLocks;
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const staleNow = new Date(Date.now() - 15 * 60 * 1000);
+    const wallClockBefore = Date.now();
+
+    await new AdminRebuildUserStatsService(repoProxy).rebuild(
+      "admin-openid",
+      USER_ID,
+      staleNow,
+    );
+
+    const leaseUntil = acquireSpy.mock.calls.find(([key]) => key === lockKey)?.[2] as Date;
+    expect(leaseUntil.getTime()).toBeGreaterThan(wallClockBefore);
+    expect(leaseUntil.getTime()).toBeGreaterThan(Date.now());
   });
 });

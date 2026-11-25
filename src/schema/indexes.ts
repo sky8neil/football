@@ -362,6 +362,24 @@ export const QUERY_INDEXES: readonly IndexDef[] = [
     unique: false,
   },
   {
+    collection: "admin_audit_logs",
+    name: "ix_audit_created",
+    fields: ["created_at:desc", "audit_id:desc"],
+    unique: false,
+  },
+  {
+    collection: "admin_audit_logs",
+    name: "ix_audit_action_created",
+    fields: ["action", "created_at:desc", "audit_id:desc"],
+    unique: false,
+  },
+  {
+    collection: "team_provider_mappings",
+    name: "ix_team_provider_mappings_team",
+    fields: ["team_id"],
+    unique: false,
+  },
+  {
     collection: "anomalies",
     name: "ix_anomalies_status_blocking",
     fields: ["status", "blocking", "last_seen_at:desc"],

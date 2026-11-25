@@ -75,6 +75,71 @@ async function invokeAdminWrite(kind: AdminWrite, code: AdminErrorCode): Promise
   }
 }
 
+function unreachable(): never {
+  throw new Error("service must not be called when query validation fails");
+}
+
+async function invokeAdminWriteWithUnknownQuery(kind: AdminWrite): Promise<unknown> {
+  const authorizeAdmin = async (_openid: string): Promise<void> => undefined;
+  const query = { unexpected: "1" };
+  switch (kind) {
+    case "result-correction":
+      return postAdminResultCorrection(
+        { authorizeAdmin, correct: async () => unreachable() },
+        {
+          trusted_openid: "trusted-admin",
+          match_id: MATCH_ID,
+          query,
+          body: {
+            expected_result_version: 1,
+            regular_home_score: 1,
+            regular_away_score: 0,
+            reason: "管理员合同复核",
+          },
+          server_now: NOW,
+          request_id: "admin-query-result-correction",
+        },
+      );
+    case "retry-settlement":
+      return postAdminRetrySettlement(
+        { authorizeAdmin, retry: async () => unreachable() },
+        {
+          trusted_openid: "trusted-admin",
+          match_id: MATCH_ID,
+          query,
+          server_now: NOW,
+          request_id: "admin-query-retry-settlement",
+        },
+      );
+    case "rebuild-user":
+      return postAdminRebuildUserStats(
+        { authorizeAdmin, rebuild: async () => unreachable() },
+        {
+          trusted_openid: "trusted-admin",
+          user_id: USER_ID,
+          query,
+          server_now: NOW,
+          request_id: "admin-query-rebuild-user",
+        },
+      );
+    case "rebuild-rankings":
+      return postAdminRebuildRankings(
+        { authorizeAdmin, rebuild: async () => unreachable() },
+        {
+          trusted_openid: "trusted-admin",
+          query,
+          body: {
+            board: "week",
+            period_key: "2026-W32",
+            reason: "管理员合同复核",
+          },
+          server_now: NOW,
+          request_id: "admin-query-rebuild-rankings",
+        },
+      );
+  }
+}
+
 describe("admin write error contract", () => {
   const adminWrites = [
     "result-correction",
@@ -98,6 +163,15 @@ describe("admin write error contract", () => {
       const response = mapErrorToHttp(error, `request-${kind}`);
       expect(response.status).toBe(403);
       expect(response.body.code).toBe("FORBIDDEN");
+    }
+  });
+
+  it("rejects unknown query fields for all four admin writes without calling the service", async () => {
+    for (const kind of adminWrites) {
+      const error = await invokeAdminWriteWithUnknownQuery(kind).catch((caught: unknown) => caught);
+      const response = mapErrorToHttp(error, `request-${kind}`);
+      expect(response.status).toBe(422);
+      expect(response.body.code).toBe("VALIDATION_ERROR");
     }
   });
 });

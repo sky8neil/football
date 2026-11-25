@@ -1,8 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { AdminRole, AdminStatus } from "../domain/enums.js";
 import type { Admin } from "../domain/types.js";
+import type { AdminRepository } from "../infrastructure/repositories.js";
 import { InMemoryRepository } from "../infrastructure/repositories.js";
-import { applyAdminGrant, planAdminGrant } from "./admin-grant.js";
+import {
+  ADMIN_GRANT_AUDIT_ACTION,
+  applyAdminGrant,
+  planAdminGrant,
+  type AdminGrantStore,
+} from "./admin-grant.js";
 
 const NOW = new Date("2026-08-09T12:00:00.000Z");
 const LATER = new Date("2026-08-10T12:00:00.000Z");
@@ -44,6 +50,101 @@ describe("admin grant provision", () => {
       created_at: NOW,
       updated_at: NOW,
     });
+  });
+
+  it("writes a persistent grant audit record with the admin write", async () => {
+    const repo = new InMemoryRepository();
+    const applied = await applyAdminGrant(repo, {
+      openid: OPENID,
+      now: NOW,
+      reason: "ops provision",
+    });
+    const adminId = applied.admin_id;
+    expect(adminId).not.toBeNull();
+
+    const logs = await repo.adminAuditLogs.findByEntity("admin", adminId as string);
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toMatchObject({
+      admin_id: adminId,
+      action: ADMIN_GRANT_AUDIT_ACTION,
+      entity_type: "admin",
+      entity_id: adminId,
+      old_value: null,
+      new_value: {
+        openid: OPENID,
+        status: AdminStatus.Active,
+        role: AdminRole.Admin,
+      },
+      reason: "ops provision",
+      created_at: NOW,
+    });
+  });
+
+  it("records old and new status when revoking an existing admin", async () => {
+    const repo = new InMemoryRepository();
+    const existing = makeAdmin();
+    await repo.admins.insert(existing);
+
+    const applied = await applyAdminGrant(repo, {
+      openid: OPENID,
+      now: LATER,
+      status: AdminStatus.Disabled,
+      reason: "ops revoke",
+    });
+
+    const logs = await repo.adminAuditLogs.findByEntity("admin", existing.admin_id);
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toMatchObject({
+      action: ADMIN_GRANT_AUDIT_ACTION,
+      entity_type: "admin",
+      entity_id: existing.admin_id,
+      old_value: {
+        openid: OPENID,
+        status: AdminStatus.Active,
+        role: AdminRole.Admin,
+      },
+      new_value: {
+        openid: OPENID,
+        status: AdminStatus.Disabled,
+        role: AdminRole.Admin,
+      },
+      reason: "ops revoke",
+    });
+    await expect(repo.admins.findByOpenid(OPENID)).resolves.toMatchObject({
+      status: AdminStatus.Disabled,
+      updated_at: LATER,
+    });
+    expect(applied.admin_id).toBe(existing.admin_id);
+  });
+
+  it("rolls back the admin write when the audit insert fails", async () => {
+    const repo = new InMemoryRepository();
+    const store: AdminGrantStore = {
+      admins: repo.admins,
+      withTransaction: (fn) =>
+        repo.withTransaction((tx) =>
+          fn({
+            admins: tx.admins as AdminRepository,
+            adminAuditLogs: {
+              findByEntity: async () => [],
+              insert: async () => {
+                throw new Error("audit unavailable");
+              },
+            },
+          }),
+        ),
+    };
+
+    await expect(applyAdminGrant(store, { openid: OPENID, now: NOW }))
+      .rejects.toThrow("audit unavailable");
+    await expect(repo.admins.findByOpenid(OPENID)).resolves.toBeNull();
+  });
+
+  it("rejects a blank grant reason before writing", async () => {
+    const repo = new InMemoryRepository();
+    await expect(applyAdminGrant(repo, { openid: OPENID, now: NOW, reason: "   " }))
+      .rejects.toThrow("admin grant reason must be 1..500 characters");
+    await expect(repo.admins.findByOpenid(OPENID)).resolves.toBeNull();
   });
 
   it("is idempotent: a second apply does not rewrite an identical admin", async () => {

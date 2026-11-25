@@ -409,6 +409,21 @@ export function activeLeagueSeason(league: SupportedLeague, now: Date): LeagueSe
   };
 }
 
+/** 下一赛季的 season_id；无法解析联赛赛季形态时返回 null。 */
+export function nextLeagueSeasonId(league: SupportedLeague, now: Date): string | null {
+  const seasonId = activeLeagueSeason(league, now).season_id;
+  const startYear = seasonStartYear(seasonId);
+  if (startYear === null) return null;
+
+  if (/^\d{4}_\d{4}$/.test(seasonId)) {
+    return `${startYear + 1}_${startYear + 2}`;
+  }
+  if (/^\d{4}$/.test(seasonId)) {
+    return String(startYear + 1);
+  }
+  return null;
+}
+
 /** 上一赛季的 season_id；无法解析联赛赛季形态时返回 null。 */
 export function previousLeagueSeasonId(league: SupportedLeague, now: Date): string | null {
   const seasonId = activeLeagueSeason(league, now).season_id;

@@ -3,7 +3,9 @@ import {
   LevelScope,
   PeriodType,
   RankingBoard,
+  SettlementDocStatus,
   SettlementItemStatus,
+  SettlementStatus,
 } from "../domain/enums.js";
 import { internalError } from "../domain/errors.js";
 import {
@@ -11,6 +13,7 @@ import {
   replayLevel,
   type LevelPredictionFact,
 } from "../domain/levels.js";
+import { isDeletedForPeriod } from "../domain/ranking.js";
 import {
   calculatePeriodKey,
   levelProtectionEndAsOf,
@@ -23,6 +26,7 @@ import type {
   BoardSnapshot,
   Match,
   RankingEntry,
+  SettlementDoc,
   SettlementItem,
   User,
   UserSeasonStats,
@@ -67,6 +71,42 @@ function requirePorts(tx: UnitOfWork): asserts tx is DailyConsistencyUnitOfWork 
   ) {
     throw internalError("daily consistency 缺少聚合、快照或 level_history repository ports");
   }
+}
+
+const CONSISTENCY_SETTLEMENT_BATCH_SIZE = 100;
+const CONSISTENCY_FACT_BATCH_SIZE = 200;
+
+function chunk<T>(items: readonly T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks;
+}
+
+function chunkSettlementItemsByPrediction(
+  items: readonly SettlementItem[],
+  size: number,
+): SettlementItem[][] {
+  const byPrediction = new Map<string, SettlementItem[]>();
+  for (const item of items) {
+    const group = byPrediction.get(item.prediction_id) ?? [];
+    group.push(item);
+    byPrediction.set(item.prediction_id, group);
+  }
+  const batches: SettlementItem[][] = [];
+  let current: SettlementItem[] = [];
+  for (const group of byPrediction.values()) {
+    if (current.length > 0 && current.length + group.length > size) {
+      batches.push(current);
+      current = [];
+    }
+    current.push(...group);
+  }
+  if (current.length > 0) {
+    batches.push(current);
+  }
+  return batches;
 }
 
 function historyBestLevel(
@@ -536,6 +576,7 @@ function addPeriodFact(
 
 function buildExpectedRankings(
   facts: readonly AppliedSettlementFact[],
+  users: readonly User[],
 ): Map<string, RebuiltRankingEntry> {
   const groups = new Map<string, PeriodGroup>();
   for (const fact of facts) {
@@ -544,10 +585,17 @@ function buildExpectedRankings(
 
   const expected = new Map<string, RebuiltRankingEntry>();
   for (const group of groups.values()) {
+    const weekEndAt = periodEndAt(PeriodType.Week, group.period_key);
+    const deletedUserIds = new Set(
+      users
+        .filter((user) => isDeletedForPeriod(user, weekEndAt))
+        .map((user) => user.user_id),
+    );
     for (const entry of rebuildPeriodRankings(
       group.items,
       group.periodByPrediction,
       group.anchorByPrediction,
+      deletedUserIds,
     )) {
       expected.set(
         rankingIdentity(entry.period_type, entry.period_key, entry.user_id),
@@ -561,6 +609,7 @@ function buildExpectedRankings(
 function activeSettlementScopes(
   matches: readonly Match[],
   predictions: readonly { user_id: string; match_id: string; canonical_match_id?: string }[],
+  failedRankMatches: readonly Match[] = [],
 ): DailyConsistencyInput["active_settlements"] {
   const usersByCanonicalMatch = new Map<string, Set<string>>();
   for (const prediction of predictions) {
@@ -570,9 +619,8 @@ function activeSettlementScopes(
     usersByCanonicalMatch.set(canonicalId, users);
   }
 
-  return matches
+  const activeScopes = matches
     .filter((match) => activeSettlement(match))
-    .sort((a, b) => a.match_id.localeCompare(b.match_id))
     .map((match) => {
       const anchor = match.period_anchor_at ?? match.kickoff_at;
       const canonicalId = match.canonical_match_id ?? match.match_id;
@@ -586,6 +634,25 @@ function activeSettlementScopes(
         }],
       };
     });
+
+  const activeIds = new Set(activeScopes.map((scope) => scope.match_id));
+  const failedRankScopes = failedRankMatches
+    .filter((match) => !activeIds.has(match.match_id))
+    .map((match) => {
+      const anchor = match.period_anchor_at ?? match.kickoff_at;
+      return {
+        match_id: match.match_id,
+        // failed 赛果尚未完成最终 global_rank 重排，仅跳过该周 global_rank 比对，继续校验已 applied item 积分与统计。
+        user_ids: [] as string[],
+        season_id: levelSeasonOf(anchor),
+        periods: [{
+          period_type: PeriodType.Week,
+          period_key: calculatePeriodKey(PeriodType.Week, anchor),
+        }],
+      };
+    });
+
+  return [...activeScopes, ...failedRankScopes].sort((a, b) => a.match_id.localeCompare(b.match_id));
 }
 
 async function loadActiveSettlementScopes(
@@ -593,6 +660,7 @@ async function loadActiveSettlementScopes(
   matches: readonly Match[],
 ): Promise<DailyConsistencyInput["active_settlements"]> {
   const activeMatches = matches.filter((match) => activeSettlement(match));
+  const failedRankMatches = matches.filter((match) => match.settlement_status === SettlementStatus.Failed);
   const canonicalIds = activeMatches.map((match) => match.canonical_match_id ?? match.match_id);
   const predictions: Array<{ user_id: string; match_id: string; canonical_match_id?: string }> =
     canonicalIds.length === 0
@@ -600,7 +668,7 @@ async function loadActiveSettlementScopes(
       : tx.predictions.findByCanonicalMatchIds !== undefined
         ? await tx.predictions.findByCanonicalMatchIds(canonicalIds)
         : (await Promise.all([...new Set(canonicalIds)].map((id) => tx.predictions.findByCanonicalMatch(id)))).flat();
-  return activeSettlementScopes(activeMatches, predictions);
+  return activeSettlementScopes(activeMatches, predictions, failedRankMatches);
 }
 
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
@@ -670,23 +738,49 @@ export async function loadDailyConsistencySnapshot(
   }
   const matches = [...matchesById.values()];
   assertHealthy?.();
-  const matchIds = matches.map((match) => match.match_id);
-  const settlements = tx.settlements.findByMatchIds !== undefined
-    ? await tx.settlements.findByMatchIds(matchIds)
-    : (await Promise.all(matchIds.map((matchId) => tx.settlements.findByMatch(matchId)))).flat();
-  assertHealthy?.();
-  const settlementIds = settlements.map((settlement) => settlement.settlement_id);
-  const appliedItems = tx.settlementItems.findBySettlementIdsAndStatus !== undefined
-    ? await tx.settlementItems.findBySettlementIdsAndStatus(settlementIds, SettlementItemStatus.Applied)
-    : (await Promise.all(
-        settlementIds.map((settlementId) =>
-          tx.settlementItems.findBySettlementAndStatus(settlementId, SettlementItemStatus.Applied),
-        ),
-      )).flat();
-  assertHealthy?.();
-  const facts = await loadAppliedSettlementFacts(tx, appliedItems, {
-    skipActiveSettlement: true,
-  });
+  const settlementsById = new Map<string, SettlementDoc>();
+  for (const status of [SettlementDocStatus.Settled, SettlementDocStatus.Failed]) {
+    for (const settlement of await tx.settlements.findByStatus(status)) {
+      settlementsById.set(settlement.settlement_id, settlement);
+    }
+    assertHealthy?.();
+  }
+  const appliedItems: SettlementItem[] = [];
+  for (const settlementIdBatch of chunk(
+    [...settlementsById.keys()],
+    CONSISTENCY_SETTLEMENT_BATCH_SIZE,
+  )) {
+    if (tx.settlementItems.findBySettlementIdsAndStatus !== undefined) {
+      appliedItems.push(
+        ...(await tx.settlementItems.findBySettlementIdsAndStatus(
+          settlementIdBatch,
+          SettlementItemStatus.Applied,
+        )),
+      );
+    } else {
+      for (const settlementId of settlementIdBatch) {
+        appliedItems.push(
+          ...(await tx.settlementItems.findBySettlementAndStatus(
+            settlementId,
+            SettlementItemStatus.Applied,
+          )),
+        );
+      }
+    }
+    assertHealthy?.();
+  }
+  const facts: AppliedSettlementFact[] = [];
+  for (const factBatch of chunkSettlementItemsByPrediction(
+    appliedItems,
+    CONSISTENCY_FACT_BATCH_SIZE,
+  )) {
+    facts.push(
+      ...(await loadAppliedSettlementFacts(tx, factBatch, {
+        skipActiveSettlement: true,
+      })),
+    );
+    assertHealthy?.();
+  }
   assertHealthy?.();
   const knownUsers = new Set(users.map((user) => user.user_id));
   for (const fact of facts) {
@@ -741,36 +835,23 @@ export async function loadDailyConsistencySnapshot(
   }
   assertHealthy?.();
 
-  const career = users
-    .filter((user) => {
-      const statsRows = seasonStatsByUser.get(user.user_id) ?? [];
-      if (statsRows.some((stats) => !isVerifiableLevelSeason(stats.level_season_id) && stats.valid_predictions > 0)) {
-        return false;
-      }
-      const userFacts = factsByUser.get(user.user_id) ?? [];
-      return userFacts.every((fact) => {
-        if (fact.match.period_anchor_at === null) {
-          throw invalidLedger(`applied match 缺少 period_anchor_at（match_id=${fact.match.match_id}）`);
-        }
-        return isVerifiableLevelSeason(levelSeasonOf(fact.match.period_anchor_at));
-      });
-    })
-    .map((user, index) => {
-      if (index > 0 && index % 200 === 0) assertHealthy?.();
-      const history = histories.get(user.user_id) ?? [];
-      return {
-        user_id: user.user_id,
-        actual: careerValues(user),
-        expected: expectedCareerValues(
-          factsByUser.get(user.user_id) ?? [],
-          history,
-          user.career_best_level,
-          user.career_level,
-          user.career_level_state,
-          firstEvalAsOf,
-        ),
-      };
-    });
+  // 老用户比赛已按 settlement 引用分批加载，career 可在第二年起继续全量核对。
+  const career = users.map((user, index) => {
+    if (index > 0 && index % 200 === 0) assertHealthy?.();
+    const history = histories.get(user.user_id) ?? [];
+    return {
+      user_id: user.user_id,
+      actual: careerValues(user),
+      expected: expectedCareerValues(
+        factsByUser.get(user.user_id) ?? [],
+        history,
+        user.career_best_level,
+        user.career_level,
+        user.career_level_state,
+        firstEvalAsOf,
+      ),
+    };
+  });
 
   const seasonStats = [] as DailyConsistencyInput["season_stats"];
   for (let userIndex = 0; userIndex < users.length; userIndex += 1) {
@@ -830,7 +911,7 @@ export async function loadDailyConsistencySnapshot(
     }
     return isVerifiableWeek(calculatePeriodKey(PeriodType.Week, fact.match.period_anchor_at));
   });
-  const expectedRankings = buildExpectedRankings(verifiableRankingFacts);
+  const expectedRankings = buildExpectedRankings(verifiableRankingFacts, users);
   const minWeekPeriodKey = calculatePeriodKey(
     PeriodType.Week,
     new Date(completeCoverageStartMs),

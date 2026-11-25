@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { SyncJobType, Provider } from "../domain/enums.js";
-import { InMemoryProviderUsageStore, ProviderBudget } from "./budget.js";
-import { InMemoryProviderKeyStateStore, KeyPool } from "./key-pool.js";
+import { InMemoryProviderUsageStore, ProviderBudget, ProviderBudgetDeferredError } from "./budget.js";
+import { InMemoryProviderKeyStateStore, KeyPool, keyFingerprint } from "./key-pool.js";
 import { InMemoryProviderLeagueStateStore } from "./league-state.js";
 import { ProviderRegistry } from "./registry.js";
 import { planRequests } from "./strategy.js";
@@ -220,5 +220,94 @@ describe("ProviderRegistry request selection and diagnostics", () => {
     expect(fetchCount).toBe(1);
     expect(premier.map((fixture) => fixture.fixture.id)).toEqual([1]);
     expect(laLiga.map((fixture) => fixture.fixture.id)).toEqual([2]);
+  });
+
+  it("persists cross-midnight 429 cooldown across oneshot restarts, auto-resets rotated keys via fingerprint, and cools WAF 403 (A-S3-07)", async () => {
+    const keyStore = new InMemoryProviderKeyStateStore();
+    const bsdSource = source("bsd", [{ league_id: "chinese_super_league" }], [
+      { key_id: "bsd#1", api_key: "bsd-secret-v1", env_name: "FOOTBALL_PROVIDER_KEY_BSD", max_per_minute: 10 },
+    ]);
+    const t0 = new Date("2026-10-12T23:50:00.000Z");
+    let firstProcessCalls = 0;
+    const reg1 = new ProviderRegistry({
+      config: config(bsdSource),
+      keyStateStore: keyStore,
+      budget: new ProviderBudget([bsdSource], new InMemoryProviderUsageStore()),
+      fetchImpl: async () => {
+        firstProcessCalls += 1;
+        return new Response(JSON.stringify({ code: "taster_exhausted" }), {
+          status: 429,
+          headers: { "content-type": "application/json" },
+        });
+      },
+      minimumGapMs: 0,
+    });
+    await expect(reg1.asClient().getFixtures({
+      leagueId: "169", season: "2026", dateFrom: "2026-10-12", dateTo: "2026-10-12",
+      jobType: SyncJobType.FutureSchedule, serverNow: t0,
+    })).rejects.toMatchObject({ providerCode: "taster_exhausted" });
+    expect(firstProcessCalls).toBe(1);
+
+    // Simulated new oneshot process: empty in-memory budget, shared persistent keyStateStore.
+    let secondProcessCalls = 0;
+    const reg2 = new ProviderRegistry({
+      config: config(bsdSource),
+      keyStateStore: keyStore,
+      budget: new ProviderBudget([bsdSource], new InMemoryProviderUsageStore()),
+      fetchImpl: async () => {
+        secondProcessCalls += 1;
+        return new Response(JSON.stringify({ results: [], next: null }), { status: 200 });
+      },
+      minimumGapMs: 0,
+    });
+    const beforeMidnight = new Date("2026-10-12T23:55:00.000Z");
+    const deferred = await reg2.asClient().getFixtures({
+      leagueId: "169", season: "2026", dateFrom: "2026-10-12", dateTo: "2026-10-12",
+      jobType: SyncJobType.FutureSchedule, serverNow: beforeMidnight,
+    }).catch((err: unknown) => err);
+    expect(deferred).toBeInstanceOf(ProviderBudgetDeferredError);
+    expect((deferred as ProviderBudgetDeferredError).retry_at).toEqual(new Date("2026-10-13T00:00:00.000Z"));
+    expect(secondProcessCalls).toBe(0);
+
+    // Rotating the env key resets invalid/cooldown state automatically; raw key is never persisted.
+    const saved = await keyStore.get("bsd#1");
+    expect(saved?.key_fingerprint).toBe(keyFingerprint("bsd-secret-v1"));
+    expect(JSON.stringify(saved)).not.toContain("bsd-secret-v1");
+    const rotatedPool = new KeyPool(source("bsd", [{ league_id: "chinese_super_league" }], [
+      { key_id: "bsd#1", api_key: "bsd-secret-v2", env_name: "FOOTBALL_PROVIDER_KEY_BSD", max_per_minute: 10 },
+    ]), keyStore);
+    await expect(rotatedPool.candidates(beforeMidnight)).resolves.toEqual(["bsd#1"]);
+
+    // WAF 403/1010 and HTML interstitial trigger temporary exponential cooldown instead of permanent invalid.
+    const wafStore = new InMemoryProviderKeyStateStore();
+    const wafPool = new KeyPool(source("sp", [{ league_id: "chinese_super_league" }], [
+      { key_id: "sp#1", api_key: "sp-secret", env_name: "FOOTBALL_PROVIDER_KEY_SP", max_per_minute: 10 },
+    ]), wafStore);
+    await wafPool.markFailure("sp#1", 403, "waf_403", t0, null);
+    expect((await wafStore.get("sp#1"))?.status).toBe("cooldown");
+    await expect(wafPool.candidates(new Date(t0.getTime() + 14 * 60_000))).resolves.toEqual([]);
+    await expect(wafPool.candidates(new Date(t0.getTime() + 15 * 60_000))).resolves.toEqual(["sp#1"]);
+    // Real auth 401 still invalidates permanently until key rotation.
+    await wafPool.markFailure("sp#1", 401, "401", t0, null);
+    expect((await wafStore.get("sp#1"))?.status).toBe("invalid");
+  });
+
+  it("[CR-20] escalates exponential backoff for any WAF 403 code matched by isWaf403Failure", async () => {
+    const wafStore = new InMemoryProviderKeyStateStore();
+    const wafPool = new KeyPool(source("sp", [{ league_id: "chinese_super_league" }], [
+      { key_id: "sp#1", api_key: "sp-secret", env_name: "FOOTBALL_PROVIDER_KEY_SP", max_per_minute: 10 },
+    ]), wafStore);
+    const t0 = new Date("2026-10-12T10:00:00.000Z");
+
+    await wafPool.markFailure("sp#1", 403, "cloudflare_1020", t0, null);
+    const first = await wafStore.get("sp#1");
+    expect(first?.network_errors).toBe(1);
+    expect(first?.cooldown_until).toEqual(new Date(t0.getTime() + 15 * 60_000));
+
+    const t1 = new Date(t0.getTime() + 16 * 60_000);
+    await wafPool.markFailure("sp#1", 403, "cloudflare_1020", t1, null);
+    const second = await wafStore.get("sp#1");
+    expect(second?.network_errors).toBe(2);
+    expect(second?.cooldown_until).toEqual(new Date(t1.getTime() + 30 * 60_000));
   });
 });

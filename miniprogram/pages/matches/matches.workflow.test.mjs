@@ -892,15 +892,18 @@ describe("matches page gateway workflows", () => {
         setData(patch) { Object.assign(this.data, patch); },
       });
       await page.onLoad();
-      expect(page.data.dates[0].key).toBe("2026-06-30");
+      expect(page.data.dates).toHaveLength(23);
+      expect(page.data.dates[11]).toEqual({ key: "2026-06-30", label: "今天", day: "30" });
       expect(page.data.selectedDate).toBe("2026-06-30");
+      expect(page.data.dateScrollIntoView).toBe("date-2026-06-30");
       expect(page.data.levelSeasonLabel).toBe("2025—2026 赛季");
 
       page.onShow();
       vi.setSystemTime(new Date("2026-06-30T16:01:00.000Z")); // Beijing 2026-07-01 00:01
       await page.onShow();
-      expect(page.data.dates[0].key).toBe("2026-07-01");
+      expect(page.data.dates[11]).toEqual({ key: "2026-07-01", label: "今天", day: "01" });
       expect(page.data.selectedDate).toBe("2026-07-01");
+      expect(page.data.dateScrollIntoView).toBe("date-2026-07-01");
       expect(page.data.levelSeasonLabel).toBe("2026—2027 赛季");
     } finally {
       vi.useRealTimers();
@@ -1031,7 +1034,6 @@ describe("matches page gateway workflows", () => {
 
     expect(storage.get("pending_ranking_target")).toEqual({
       board: "season",
-      levelSeasonId: "2026_2027",
     });
     expect(switchTab).toHaveBeenCalledWith({ url: "/pages/rankings/rankings" });
   });
@@ -1039,5 +1041,147 @@ describe("matches page gateway workflows", () => {
   it("does not render a stale submit error on a submitted card", () => {
     const template = readFileSync(MATCHES_WXML, "utf8");
     expect(template).toContain("item.uiState !== 'submitted_locked' && item.submitError");
+    expect(template).toContain('scroll-into-view="{{dateScrollIntoView}}"');
+    expect(template).toContain('id="date-{{item.key}}"');
+    expect(template).toContain('wx:if="{{errorMessage}}" class="more-error"');
+  });
+
+  it("[A-S2-01] enters error state instead of stalling in loading when listMatches rejects", async () => {
+    const { page } = loadPage({
+      listMatches: vi.fn(async () => {
+        throw new Error("timeout");
+      }),
+    });
+    page.setData({ selectedLeague: "premier_league", selectedDate: "2026-09-01" });
+
+    await page.loadFirstPage();
+
+    expect(page.data.state).toBe("error");
+    expect(page.data.errorMessage).toBe("timeout");
+    expect(page.data.loadingMore).toBe(false);
+  });
+
+  it("[A-S2-01] resets editing state on submit rejection and clears cached idempotency key on 409 IDEMPOTENCY_KEY_REUSED", async () => {
+    let seq = 0;
+    const keys = [];
+    const submitPrediction = vi.fn(({ idempotencyKey }) => {
+      keys.push(idempotencyKey);
+      if (seq++ === 0) return Promise.reject(new Error("network drop"));
+      if (seq === 2) return Promise.resolve({ statusCode: 409, code: "IDEMPOTENCY_KEY_REUSED", message: "幂等键冲突" });
+      return Promise.resolve({ statusCode: 201 });
+    });
+    const pageConfig = {};
+    let uuidSeq = 0;
+    const storage = new Map();
+    Object.defineProperty(globalThis, "Page", { value: (config) => Object.assign(pageConfig, config), configurable: true });
+    Object.defineProperty(globalThis, "wx", {
+      value: {
+        getStorageSync: (k) => storage.get(k),
+        setStorageSync: (k, v) => storage.set(k, v),
+        removeStorageSync: (k) => storage.delete(k),
+        switchTab: vi.fn(),
+        stopPullDownRefresh: vi.fn(),
+      },
+      configurable: true,
+    });
+    loadCommonJs(MATCHES_JS, (id) => {
+      if (id === "../../services/auth.js") return { getLoginGeneration: () => 0 };
+      if (id === "../../utils/logo-registry.js") return { getTeamLogo: () => "team.png", getLeagueLogo: () => "league.png" };
+      if (id === "../../utils/team-presentation.js") return { presentTeam: () => ({ nameZh: "Team", logo: "team.png", missing: false }) };
+      if (id === "../../utils/nickname.js") return { resolveNickname: () => "球友", truncateNickname: (v) => v };
+      if (id === "../../services/matches.js") return { listMatches: vi.fn(async () => listResult([predictedMatch("match-1", 2, 1)])) };
+      if (id === "../../services/leagues.js") return { getLeagueStatus: vi.fn(async () => ({ statusCode: 200, data: { items: [] } })) };
+      if (id === "../../utils/matches-default-league.js") return loadCommonJs(LEAGUE_UTIL, () => { throw new Error("unexpected"); });
+      if (id === "../../services/predictions.js") return { createUuidV4: () => `uuid-${++uuidSeq}`, submitPrediction, getMyLeagueSummary: vi.fn() };
+      if (id === "../../utils/crowd-copy.js") return { COPY: { homeLink: "" } };
+      if (id === "../../utils/ui-layout.js") return { headerHeight: () => 88 };
+      if (id === "../../utils/match-presentation.js") return { formatRound: () => "" };
+      if (id === "../../utils/match-card-state.js") return loadCommonJs(join(HERE, "..", "..", "utils", "match-card-state.js"), () => { throw new Error("unexpected"); });
+      if (id === "../../utils/rankings-view-model.js") return { currentSeasonId: () => "2026_2027" };
+      if (id === "../../utils/level-season.js") return loadCommonJs(join(HERE, "..", "..", "utils", "level-season.js"), () => { throw new Error("unexpected"); });
+      throw new Error(`Unexpected require: ${id}`);
+    });
+    const page = Object.assign({}, pageConfig, {
+      data: JSON.parse(JSON.stringify(pageConfig.data)),
+      setData(patch) { Object.assign(this.data, patch); },
+    });
+    const key = "premier_league:2026-09-01:match-1";
+    page.setData({
+      selectedLeague: "premier_league",
+      selectedDate: "2026-09-01",
+      state: "list",
+      items: [page.decorateItem(match("match-1"))],
+    });
+    page.drafts[key] = { home: 2, away: 1 };
+    page.uiStates[key] = "editing";
+
+    await page.onSubmitTap({ currentTarget: { dataset: { matchId: "match-1" } } });
+    expect(page.uiStates[key]).toBe("editing");
+    expect(page.data.submitErrors[key]).toBe("network drop");
+    expect(page.idempotencyKeys[key]).toBe("uuid-1");
+
+    await page.onSubmitTap({ currentTarget: { dataset: { matchId: "match-1" } } });
+    expect(page.uiStates[key]).toBe("editing");
+    expect(page.data.submitErrors[key]).toBe("幂等键冲突");
+    expect(page.idempotencyKeys[key]).toBeUndefined();
+    expect(page.lastPayloads[key]).toBeUndefined();
+
+    await page.onSubmitTap({ currentTarget: { dataset: { matchId: "match-1" } } });
+    expect(keys).toEqual(["uuid-1", "uuid-1", "uuid-2"]);
+    expect(page.uiStates[key]).toBe("submitted_locked");
+    expect(storage.get("my_predictions_dirty")).toBe(true);
+  });
+
+  it("[A-S2-01 + A-S2-06] keeps list visible and ✓ submitted card during silent refresh, tolerating refresh errors", async () => {
+    const listMatches = vi.fn()
+      .mockRejectedValueOnce(new Error("temporary refresh failure"))
+      .mockResolvedValueOnce(listResult([predictedMatch("match-1", 2, 1)]));
+    const { page, storage } = loadPage({ listMatches });
+    const key = "premier_league:2026-09-01:match-1";
+    page.setData({
+      selectedLeague: "premier_league",
+      selectedDate: "2026-09-01",
+      state: "list",
+      items: [page.decorateItem(match("match-1")), page.decorateItem(match("match-2"))],
+    });
+    page.drafts[key] = { home: 2, away: 1 };
+    page.uiStates[key] = "editing";
+
+    await page.onSubmitTap({ currentTarget: { dataset: { matchId: "match-1" } } });
+
+    expect(page.data.state).toBe("list");
+    expect(page.data.items).toHaveLength(2);
+    expect(page.data.items[0].uiState).toBe("submitted_locked");
+    expect(page.data.items[0].editorVisible).toBe(true);
+    expect(storage.get("my_predictions_dirty")).toBe(true);
+
+    page.uiStates[key] = "editing";
+    page.drafts[key] = { home: 2, away: 1 };
+    await page.onSubmitTap({ currentTarget: { dataset: { matchId: "match-1" } } });
+    expect(page.data.state).toBe("list");
+    expect(page.data.items[0].uiState).toBe("submitted_locked");
+    expect(page.data.items[0].editorVisible).toBe(true);
+    expect(page.data.items[0].predText).toBe("已提交 2 : 1 · 不可修改");
+  });
+
+  it("[A-S2-01] surfaces pagination errors cleanly on onMore without clearing loaded items", async () => {
+    const listMatches = vi.fn().mockRejectedValueOnce(new Error("page boom"));
+    const { page } = loadPage({ listMatches });
+    page.setData({
+      selectedLeague: "premier_league",
+      selectedDate: "2026-09-01",
+      state: "list",
+      items: [page.decorateItem(match("match-1"))],
+      hasMore: true,
+      nextCursor: "cursor-2",
+    });
+
+    await page.onMore();
+
+    expect(page.data.state).toBe("list");
+    expect(page.data.items).toHaveLength(1);
+    expect(page.data.loadingMore).toBe(false);
+    expect(page.data.hasMore).toBe(true);
+    expect(page.data.errorMessage).toBe("page boom");
   });
 });

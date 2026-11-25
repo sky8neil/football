@@ -14,7 +14,7 @@ import type { Match, ProviderSnapshot } from "../domain/types.js";
 import type { AppRepository, UnitOfWork } from "../infrastructure/repositories.js";
 import { ProviderDataError } from "../provider/http.js";
 import type { NormalizedFixture as ProviderFixture } from "../provider/fixture-mapper.js";
-import { filterByTeamPair } from "./match-identity.js";
+import { filterByTeamPair, roundIdMatches } from "./match-identity.js";
 
 const warnedMatchIdentities = new Set<string>();
 
@@ -200,6 +200,11 @@ export class ProviderScheduleSyncService {
         this.providerLeagueRefs,
         seasonId,
       );
+      const findMatchForUpdate = tx.matches.findByIdForUpdate;
+      const patchMatchFields = tx.matches.patchFields;
+      if (findMatchForUpdate === undefined || patchMatchFields === undefined) {
+        throw internalError("Provider 赛程发现缺少 matches 行锁与局部更新端口");
+      }
       const cacheKey = `${match.league_id}:${match.season_id}`;
       const seasonMatches = this.seasonMatches.get(cacheKey) ??
         await tx.matches.findByLeagueSeason(match.league_id, match.season_id);
@@ -208,20 +213,43 @@ export class ProviderScheduleSyncService {
         seasonId: match.season_id,
         homeTeamId: match.home_team_id,
         awayTeamId: match.away_team_id,
-      });
-      const candidates = (await Promise.all(cachedCandidates.map((item) => tx.matches.findById(item.match_id))))
-        .filter((item): item is Match => item !== null && item.superseded_by == null &&
+        roundId: match.round_id,
+      }).sort((a, b) => a.match_id.localeCompare(b.match_id));
+      const lockedCandidates = [];
+      for (const item of cachedCandidates) {
+        const locked = await findMatchForUpdate(item.match_id);
+        if (locked !== null) lockedCandidates.push(locked);
+      }
+      const candidates = lockedCandidates
+        .filter((item): item is Match => item.superseded_by == null &&
           item.league_id === match.league_id && item.season_id === match.season_id &&
-          item.home_team_id === match.home_team_id && item.away_team_id === match.away_team_id);
+          item.home_team_id === match.home_team_id && item.away_team_id === match.away_team_id &&
+          roundIdMatches(item.round_id, match.round_id));
       const candidate = candidates[0];
+      const liveOrAnchored = candidate !== undefined && (
+        candidate.match_status === MatchStatus.Live ||
+        candidate.period_anchor_at !== null
+      );
       const terminal = candidate !== undefined && (
         candidate.match_status === MatchStatus.Finished ||
         candidate.match_status === MatchStatus.Cancelled ||
         candidate.match_status === MatchStatus.Abandoned
       );
-      const merge = candidates.length === 1 && candidate !== undefined && !terminal;
-      if (merge) match.canonical_match_id = candidate.canonical_match_id;
-      if (candidates.length > 1 || (candidates.length === 1 && terminal)) {
+      const merge = candidates.length === 1 && candidate !== undefined && !terminal && !liveOrAnchored;
+      let inheritedClosedAt: Date | null = null;
+      if (merge) {
+        match.canonical_match_id = candidate.canonical_match_id;
+        const deadlinePassed = candidate.prediction_deadline_at !== null &&
+          serverNow.getTime() >= candidate.prediction_deadline_at.getTime();
+        inheritedClosedAt = candidate.prediction_closed_at ??
+          (deadlinePassed ? candidate.prediction_deadline_at : null);
+        if (inheritedClosedAt !== null) {
+          // 已封盘/已过截止期的改期必须继承原关闭状态，禁止重开预测窗口。
+          match.prediction_closed_at = inheritedClosedAt;
+          match.prediction_deadline_at = candidate.prediction_deadline_at;
+        }
+      }
+      if (candidates.length > 1 || (candidates.length === 1 && (terminal || liveOrAnchored))) {
         const provider = fixture.provider ?? Provider.ApiFootball;
         const key = `${provider}:${fixture.providerMatchId}`;
         if (!warnedMatchIdentities.has(key)) {
@@ -235,17 +263,37 @@ export class ProviderScheduleSyncService {
             home_team_id: match.home_team_id,
             away_team_id: match.away_team_id,
             candidate_match_ids: candidates.map((item) => item.match_id),
-            reason: candidates.length > 1 ? "ambiguous_candidates" : "terminal_candidate",
+            reason: candidates.length > 1
+              ? "ambiguous_candidates"
+              : liveOrAnchored
+                ? "live_or_anchored_candidate"
+                : "terminal_candidate",
           });
         }
       }
       await tx.matches.insert(match);
       if (merge) {
+        const lockedIds = new Set(lockedCandidates.map((item) => item.match_id));
         const incoming = await tx.matches.findByLeagueSeason(match.league_id, match.season_id);
-        for (const previous of incoming.filter((item) => item.superseded_by === candidate.match_id)) {
-          await tx.matches.update({ ...previous, superseded_by: match.match_id, updated_at: serverNow });
+        const previousIds = incoming
+          .filter((item) => item.superseded_by === candidate.match_id && item.match_id !== candidate.match_id)
+          .map((item) => item.match_id)
+          .sort((a, b) => a.localeCompare(b));
+        for (const previousId of previousIds) {
+          const lockedPrev = lockedIds.has(previousId)
+            ? lockedCandidates.find((item) => item.match_id === previousId) ?? null
+            : await findMatchForUpdate(previousId);
+          if (lockedPrev !== null && lockedPrev.superseded_by === candidate.match_id) {
+            await patchMatchFields(previousId, { superseded_by: match.match_id, updated_at: serverNow });
+          }
         }
-        await tx.matches.update({ ...candidate, superseded_by: match.match_id, updated_at: serverNow });
+        await patchMatchFields(candidate.match_id, {
+          ...(candidate.prediction_closed_at === null && inheritedClosedAt !== null
+            ? { prediction_closed_at: inheritedClosedAt }
+            : {}),
+          superseded_by: match.match_id,
+          updated_at: serverNow,
+        });
       }
       await tx.matchProviderMappings.insert({
         schema_version: SCHEMA_VERSION,

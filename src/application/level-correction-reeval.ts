@@ -51,6 +51,27 @@ function levelLeaseDeadline(anchor: Date): Date {
   return new Date(Math.max(anchor.getTime(), Date.now()) + LEVEL_JOB_LEASE_MILLISECONDS);
 }
 
+export type LevelCorrectionReevalDeferredReason =
+  | "user_lock_held"
+  | "weekly_eval_incomplete"
+  | "settlement_already_running"
+  | "lock_lost"
+  | "unknown";
+
+const DEFERRED_REASON_PRIORITY: readonly LevelCorrectionReevalDeferredReason[] = [
+  "lock_lost",
+  "unknown",
+  "weekly_eval_incomplete",
+  "settlement_already_running",
+  "user_lock_held",
+];
+
+function primaryDeferredReason(
+  reasons: ReadonlySet<LevelCorrectionReevalDeferredReason>,
+): LevelCorrectionReevalDeferredReason | undefined {
+  return DEFERRED_REASON_PRIORITY.find((reason) => reasons.has(reason));
+}
+
 export interface LevelCorrectionReevalOutcome {
   kind: "completed" | "skipped" | "deferred";
   settlement_id: string;
@@ -58,6 +79,27 @@ export interface LevelCorrectionReevalOutcome {
   evaluated_count: number;
   changed_count: number;
   skipped_count: number;
+  deferred_reason?: LevelCorrectionReevalDeferredReason;
+  deferred_reasons?: LevelCorrectionReevalDeferredReason[];
+  deferred_user_ids?: string[];
+}
+
+export interface LevelCorrectionReevalCompensationOutcome {
+  kind: "completed" | "skipped" | "deferred";
+  scanned_count: number;
+  completed_count: number;
+  pending_count: number;
+  deferred_reason?: LevelCorrectionReevalDeferredReason;
+  deferred_reasons?: LevelCorrectionReevalDeferredReason[];
+  deferred_user_ids?: string[];
+}
+
+interface LevelScopeEvalOutcome {
+  evaluated: boolean;
+  changed: boolean;
+  skipped: boolean;
+  deferred: boolean;
+  deferredReason?: LevelCorrectionReevalDeferredReason;
 }
 
 function currentWeeklyCycleAsOf(asOf: Date): Date {
@@ -177,6 +219,29 @@ function requireHistoryPort(tx: UnitOfWork): asserts tx is UnitOfWork & {
   }
 }
 
+function requireUserRowLock(tx: UnitOfWork) {
+  const findByIdForUpdate = tx.users.findByIdForUpdate;
+  const patchFields = tx.users.patchFields;
+  if (findByIdForUpdate === undefined || patchFields === undefined) {
+    throw internalError("level correction reeval 缺少 users 行锁或局部更新");
+  }
+  return { findByIdForUpdate, patchFields };
+}
+
+function requireSeasonRowLock(tx: UnitOfWork) {
+  const stats = tx.userSeasonStats;
+  if (
+    stats?.findByUserAndSeasonForUpdate === undefined ||
+    stats.patchFields === undefined
+  ) {
+    throw internalError("level correction reeval 缺少 user_season_stats 行锁或局部更新");
+  }
+  return {
+    findByUserAndSeasonForUpdate: stats.findByUserAndSeasonForUpdate,
+    patchFields: stats.patchFields,
+  };
+}
+
 async function factsForUser(tx: UnitOfWork, userId: string, asOf: Date) {
   const items = await tx.settlementItems.findAppliedByUserBefore(userId, asOf);
   return buildReplayFacts(await loadAppliedSettlementFacts(tx, items)).facts;
@@ -200,6 +265,7 @@ export class LevelCorrectionReevalService {
     serverNow: Date,
     completedWeeklyAsOf: Date | null,
     onStep?: () => Promise<void>,
+    blockedUsers?: ReadonlyMap<string, LevelCorrectionReevalDeferredReason>,
   ): Promise<LevelCorrectionReevalOutcome> {
     assertValidServerNow(serverNow);
     const ownerId = newUuid();
@@ -223,6 +289,17 @@ export class LevelCorrectionReevalService {
     let skippedCount = 0;
     let deferred = false;
     let asOf: Date | null = null;
+    let globalDeferredReason: LevelCorrectionReevalDeferredReason | undefined;
+    const deferredUsers = new Map<string, LevelCorrectionReevalDeferredReason>();
+    const deferredReasons = new Set<LevelCorrectionReevalDeferredReason>();
+    const recordDeferredUser = (
+      userId: string,
+      reason: LevelCorrectionReevalDeferredReason,
+    ): void => {
+      deferred = true;
+      if (!deferredUsers.has(userId)) deferredUsers.set(userId, reason);
+      deferredReasons.add(reason);
+    };
     try {
       const settlement = await this.repo.settlements.findById(settlementId);
       if (
@@ -242,10 +319,10 @@ export class LevelCorrectionReevalService {
       asOf = settlement.settled_at;
       // 紧随 finalize 之后以单一时钟快照调用时，确保 effectiveNow >= settled_at。
       const effectiveNow = new Date(Math.max(serverNow.getTime(), asOf.getTime()));
-      const items = (await this.repo.settlementItems.findBySettlementAndStatus(
+      const items = await this.repo.settlementItems.findBySettlementAndStatus(
         settlementId,
         SettlementItemStatus.Applied,
-      )).filter((item) => item.score_delta !== 0);
+      );
       const users = [...new Set(items.map((item) => item.user_id))];
       const match = await this.repo.matches.findById(settlement.match_id);
       const cycleAsOf = currentWeeklyCycleAsOf(asOf);
@@ -257,40 +334,49 @@ export class LevelCorrectionReevalService {
       let processedUsers = 0;
       let lastRenewWallMs = Date.now();
       for (const userId of users) {
-        const career = await this.evaluateCareer(
-          userId,
-          settlementId,
-          asOf,
-          effectiveNow,
-          weeklyTaskIncomplete,
-        );
-        evaluatedCount += career.evaluated ? 1 : 0;
-        changedCount += career.changed ? 1 : 0;
-        skippedCount += career.skipped ? 1 : 0;
-        deferred ||= career.deferred;
-
-        if (
-          match?.period_anchor_at !== null && match?.period_anchor_at !== undefined &&
-          levelSeasonOf(match.period_anchor_at) === levelSeasonOf(asOf) &&
-          this.repo.userSeasonStats !== undefined
-        ) {
-          const season = await this.repo.userSeasonStats.findByUserAndSeason(
+        const blockedReason = blockedUsers?.get(userId);
+        if (blockedReason !== undefined) {
+          skippedCount += 1;
+          recordDeferredUser(userId, blockedReason);
+        } else {
+          const career = await this.evaluateCareer(
             userId,
-            levelSeasonOf(asOf),
+            settlementId,
+            asOf,
+            effectiveNow,
+            weeklyTaskIncomplete,
           );
-          if (season !== null && season.is_level_frozen !== true) {
-            const outcome = await this.evaluateSeason(
+          evaluatedCount += career.evaluated ? 1 : 0;
+          changedCount += career.changed ? 1 : 0;
+          skippedCount += career.skipped ? 1 : 0;
+          if (career.deferred) {
+            recordDeferredUser(userId, career.deferredReason ?? "unknown");
+          }
+
+          if (
+            match?.period_anchor_at !== null && match?.period_anchor_at !== undefined &&
+            this.repo.userSeasonStats !== undefined
+          ) {
+            const season = await this.repo.userSeasonStats.findByUserAndSeason(
               userId,
-              season,
-              settlementId,
-              asOf,
-              effectiveNow,
-              weeklyTaskIncomplete,
+              levelSeasonOf(match.period_anchor_at),
             );
-            evaluatedCount += outcome.evaluated ? 1 : 0;
-            changedCount += outcome.changed ? 1 : 0;
-            skippedCount += outcome.skipped ? 1 : 0;
-            deferred ||= outcome.deferred;
+            if (season !== null && season.is_level_frozen !== true) {
+              const outcome = await this.evaluateSeason(
+                userId,
+                season,
+                settlementId,
+                asOf,
+                effectiveNow,
+                weeklyTaskIncomplete,
+              );
+              evaluatedCount += outcome.evaluated ? 1 : 0;
+              changedCount += outcome.changed ? 1 : 0;
+              skippedCount += outcome.skipped ? 1 : 0;
+              if (outcome.deferred) {
+                recordDeferredUser(userId, outcome.deferredReason ?? "unknown");
+              }
+            }
           }
         }
 
@@ -308,6 +394,8 @@ export class LevelCorrectionReevalService {
           lastRenewWallMs = Date.now();
           if (!renewed) {
             deferred = true;
+            globalDeferredReason = "lock_lost";
+            deferredReasons.add(globalDeferredReason);
             break;
           }
           await onStep?.();
@@ -324,6 +412,11 @@ export class LevelCorrectionReevalService {
           ),
         });
       }
+      if (deferred && deferredReasons.size === 0) {
+        deferredReasons.add("unknown");
+      }
+      const deferredReason = primaryDeferredReason(deferredReasons) ??
+        globalDeferredReason;
       return {
         kind: deferred ? "deferred" : "completed",
         settlement_id: settlementId,
@@ -331,6 +424,13 @@ export class LevelCorrectionReevalService {
         evaluated_count: evaluatedCount,
         changed_count: changedCount,
         skipped_count: skippedCount,
+        ...(deferred
+          ? {
+              deferred_reason: deferredReason ?? "unknown",
+              deferred_reasons: [...deferredReasons],
+              deferred_user_ids: [...deferredUsers.keys()],
+            }
+          : {}),
       };
     } finally {
       await this.repo.jobLocks.release(LEVEL_CORRECTION_REEVAL_LOCK_KEY, ownerId);
@@ -351,6 +451,77 @@ export class LevelCorrectionReevalService {
     onStep?: () => Promise<void>,
   ): Promise<void> {
     await this.runPendingInWindow(afterAsOf, serverNow, "after", onStep);
+  }
+
+  async runPendingCompensation(
+    serverNow: Date,
+    completedWeeklyAsOf: Date | null = null,
+    onStep?: () => Promise<void>,
+  ): Promise<LevelCorrectionReevalCompensationOutcome> {
+    assertValidServerNow(serverNow);
+    if (this.repo.settlements.findSettledCorrectionsPendingReeval === undefined) {
+      throw internalError("settlements repository 缺少 findSettledCorrectionsPendingReeval");
+    }
+    const settlements = (await this.repo.settlements.findSettledCorrectionsPendingReeval())
+      .filter((settlement) =>
+        settlement.phase === SettlementPhase.Done &&
+        settlement.settled_at !== null &&
+        settlement.settled_at.getTime() <= serverNow.getTime(),
+      )
+      .sort((left, right) => left.settled_at!.getTime() - right.settled_at!.getTime());
+    let completedCount = 0;
+    const blockedUsers = new Map<string, LevelCorrectionReevalDeferredReason>();
+    const deferredReasons = new Set<LevelCorrectionReevalDeferredReason>();
+    for (const settlement of settlements) {
+      await onStep?.();
+      const outcome = await this.runForSettlementInternal(
+        settlement.settlement_id,
+        serverNow,
+        completedWeeklyAsOf,
+        onStep,
+        blockedUsers,
+      );
+      if (outcome.kind === "completed") {
+        completedCount += 1;
+        continue;
+      }
+      if (outcome.kind === "skipped") {
+        return {
+          kind: "skipped",
+          scanned_count: settlements.length,
+          completed_count: completedCount,
+          pending_count: settlements.length - completedCount,
+        };
+      }
+      const outcomeReasons = outcome.deferred_reasons ??
+        [outcome.deferred_reason ?? "unknown"];
+      const outcomeReason = outcome.deferred_reason ?? outcomeReasons[0] ?? "unknown";
+      for (const reason of outcomeReasons) deferredReasons.add(reason);
+      for (const userId of outcome.deferred_user_ids ?? []) {
+        if (!blockedUsers.has(userId)) blockedUsers.set(userId, outcomeReason);
+      }
+      if (
+        outcomeReasons.includes("lock_lost") ||
+        outcomeReasons.includes("unknown")
+      ) {
+        // 无法可靠区分其余单据是否可安全续跑：保留 pending，等下一轮从最早一单重试。
+        break;
+      }
+    }
+    const kind = completedCount === settlements.length ? "completed" : "deferred";
+    return {
+      kind,
+      scanned_count: settlements.length,
+      completed_count: completedCount,
+      pending_count: settlements.length - completedCount,
+      ...(kind === "deferred"
+        ? {
+            deferred_reason: primaryDeferredReason(deferredReasons) ?? "unknown",
+            deferred_reasons: [...deferredReasons],
+            deferred_user_ids: [...blockedUsers.keys()],
+          }
+        : {}),
+    };
   }
 
   private async runPendingInWindow(
@@ -392,7 +563,7 @@ export class LevelCorrectionReevalService {
     asOf: Date,
     changedAt: Date,
     weeklyTaskIncomplete: boolean,
-  ): Promise<{ evaluated: boolean; changed: boolean; skipped: boolean; deferred: boolean }> {
+  ): Promise<LevelScopeEvalOutcome> {
     const lockKey = levelScopeLockKey(userId, LevelScope.Career, null);
     const ownerId = newUuid();
     if (!(await this.repo.jobLocks.acquire(
@@ -400,11 +571,18 @@ export class LevelCorrectionReevalService {
       ownerId,
       levelLeaseDeadline(changedAt),
     ))) {
-      return { evaluated: false, changed: false, skipped: true, deferred: true };
+      return {
+        evaluated: false,
+        changed: false,
+        skipped: true,
+        deferred: true,
+        deferredReason: "user_lock_held",
+      };
     }
     try {
       return await this.repo.withTransaction(async (tx) => {
-        const user = await tx.users.findById(userId);
+        const userLock = requireUserRowLock(tx);
+        const user = await userLock.findByIdForUpdate(userId);
         if (user === null || user.status !== UserStatus.Active) {
           return { evaluated: false, changed: false, skipped: true, deferred: false };
         }
@@ -422,7 +600,13 @@ export class LevelCorrectionReevalService {
           weeklyTaskIncomplete && user.career_valid_predictions >= 1,
         );
         if (selected.deferred) {
-          return { evaluated: false, changed: false, skipped: true, deferred: true };
+          return {
+            evaluated: false,
+            changed: false,
+            skipped: true,
+            deferred: true,
+            deferredReason: "weekly_eval_incomplete",
+          };
         }
         if (selected.stale) {
           return { evaluated: false, changed: false, skipped: true, deferred: false };
@@ -454,8 +638,7 @@ export class LevelCorrectionReevalService {
           changed || bestLevel !== user.career_best_level ||
           !sameLevelState(previous, nextState)
         ) {
-          await tx.users.update({
-            ...user,
+          await userLock.patchFields(userId, {
             career_level: result.level,
             career_best_level: bestLevel,
             career_level_state: nextState,
@@ -466,7 +649,13 @@ export class LevelCorrectionReevalService {
       });
     } catch (error) {
       if (isSettlementAlreadyRunning(error)) {
-        return { evaluated: false, changed: false, skipped: true, deferred: true };
+        return {
+          evaluated: false,
+          changed: false,
+          skipped: true,
+          deferred: true,
+          deferredReason: "settlement_already_running",
+        };
       }
       throw error;
     } finally {
@@ -481,7 +670,7 @@ export class LevelCorrectionReevalService {
     asOf: Date,
     changedAt: Date,
     weeklyTaskIncomplete: boolean,
-  ): Promise<{ evaluated: boolean; changed: boolean; skipped: boolean; deferred: boolean }> {
+  ): Promise<LevelScopeEvalOutcome> {
     const lockKey = levelScopeLockKey(userId, LevelScope.Season, stats.level_season_id);
     const ownerId = newUuid();
     if (!(await this.repo.jobLocks.acquire(
@@ -489,22 +678,30 @@ export class LevelCorrectionReevalService {
       ownerId,
       levelLeaseDeadline(changedAt),
     ))) {
-      return { evaluated: false, changed: false, skipped: true, deferred: true };
+      return {
+        evaluated: false,
+        changed: false,
+        skipped: true,
+        deferred: true,
+        deferredReason: "user_lock_held",
+      };
     }
     try {
       return await this.repo.withTransaction(async (tx) => {
         if (tx.userSeasonStats === undefined) {
           throw internalError("level correction reeval 缺少 season stats repository");
         }
-        const user = await tx.users.findById(userId);
-        const currentStats = await tx.userSeasonStats.findByUserAndSeason(
+        const userLock = requireUserRowLock(tx);
+        const seasonLock = requireSeasonRowLock(tx);
+        const user = await userLock.findByIdForUpdate(userId);
+        if (user === null || user.status !== UserStatus.Active) {
+          return { evaluated: false, changed: false, skipped: true, deferred: false };
+        }
+        const currentStats = await seasonLock.findByUserAndSeasonForUpdate(
           userId,
           stats.level_season_id,
         );
-        if (
-          user === null || user.status !== UserStatus.Active || currentStats === null ||
-          currentStats.is_level_frozen === true
-        ) {
+        if (currentStats === null || currentStats.is_level_frozen === true) {
           return { evaluated: false, changed: false, skipped: true, deferred: false };
         }
         const previous = currentStats.level_state ?? defaultLevelState();
@@ -522,7 +719,13 @@ export class LevelCorrectionReevalService {
           weeklyTaskIncomplete && eligibleSeasonStats(currentStats, cycleAsOf),
         );
         if (selected.deferred) {
-          return { evaluated: false, changed: false, skipped: true, deferred: true };
+          return {
+            evaluated: false,
+            changed: false,
+            skipped: true,
+            deferred: true,
+            deferredReason: "weekly_eval_incomplete",
+          };
         }
         if (selected.stale) {
           return { evaluated: false, changed: false, skipped: true, deferred: false };
@@ -555,8 +758,7 @@ export class LevelCorrectionReevalService {
           changed || bestLevel !== currentStats.best_level ||
           !sameLevelState(previous, nextState)
         ) {
-          await tx.userSeasonStats.update({
-            ...currentStats,
+          await seasonLock.patchFields(userId, currentStats.level_season_id, {
             level: result.level,
             best_level: bestLevel,
             level_state: nextState,
@@ -567,7 +769,13 @@ export class LevelCorrectionReevalService {
       });
     } catch (error) {
       if (isSettlementAlreadyRunning(error)) {
-        return { evaluated: false, changed: false, skipped: true, deferred: true };
+        return {
+          evaluated: false,
+          changed: false,
+          skipped: true,
+          deferred: true,
+          deferredReason: "settlement_already_running",
+        };
       }
       throw error;
     } finally {

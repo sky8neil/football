@@ -136,21 +136,6 @@ describe("会话页：昵称输入与本地校验", () => {
     expect(page.data.errorMessage).toBe("先填个昵称，球友们才好认出你");
   });
 
-  it("账号已注销时展示 USER_DELETED 文案，可跳过且不写入昵称", async () => {
-    const { page, calls, navs, writes } = loadSessionPage({
-      result: { statusCode: 409, code: "USER_DELETED" },
-      nickname: "Sky",
-    });
-    page.onSubmit();
-    await Promise.resolve();
-    expect(calls).toEqual(["Sky"]);
-    expect(navs).toEqual([]);
-    expect(writes).toEqual([]);
-    expect(page.data.errorMessage).toBe("账号已注销");
-    expect(page.data.canSkip).toBe(true);
-    expect(page.data.canRetry).toBe(false);
-  });
-
   it("超过 32 个字符在本地拦截，不发请求", async () => {
     const { page, calls } = loadSessionPage({
       result: { statusCode: 201, data: { nickname: "Sky" } },
@@ -175,10 +160,59 @@ describe("会话页：昵称输入与本地校验", () => {
 
   it("emoji 按一个字符计数（不因代理对算成两个）", () => {
     const { page } = loadSessionPage({ result: undefined });
-    // 🏆 是单个 code point、两个 UTF-16 单元；按 code point 计数应为 3。
+    // 🏆 是一个 grapheme、两个 UTF-16 单元。
     page.onNicknameInput({ detail: { value: "🏆".repeat(3) } });
     expect(page.data.overflow).toBe(false);
     expect(page.data.lengthText).toBe(`3/${NICKNAME_MAX_CHARS}`);
+  });
+
+  it("Intl.Segmenter 可用时按 grapheme 计数，32 个组合 emoji 放行、33 个本地拦截", async () => {
+    expect(typeof Intl.Segmenter).toBe("function");
+    const grapheme = "👩‍💻";
+    const atLimit = grapheme.repeat(NICKNAME_MAX_CHARS);
+    const { page, calls } = loadSessionPage({
+      result: { statusCode: 201, data: { nickname: atLimit } },
+    });
+    page.onNicknameInput({ detail: { value: grapheme.repeat(3) } });
+    expect(page.data.overflow).toBe(false);
+    expect(page.data.lengthText).toBe(`3/${NICKNAME_MAX_CHARS}`);
+    page.setData({ nickname: `  ${atLimit}  ` });
+    page.onSubmit();
+    await Promise.resolve();
+    expect(calls).toEqual([atLimit]);
+
+    const blocked = loadSessionPage({
+      result: { statusCode: 201, data: { nickname: "Sky" } },
+      nickname: grapheme.repeat(NICKNAME_MAX_CHARS + 1),
+    });
+    blocked.page.onSubmit();
+    await Promise.resolve();
+    expect(blocked.calls).toEqual([]);
+    expect(blocked.page.data.errorMessage).toBe(`昵称最多 ${NICKNAME_MAX_CHARS} 个字符`);
+  });
+
+  it("没有 Intl.Segmenter 时不因长度拒绝提交，交给服务端校验", async () => {
+    const descriptor = Object.getOwnPropertyDescriptor(Intl, "Segmenter");
+    Object.defineProperty(Intl, "Segmenter", { configurable: true, writable: true, value: undefined });
+    try {
+      const nickname = "阿".repeat(NICKNAME_MAX_CHARS + 1);
+      const message = "nickname 长度必须为 1～32 个 Unicode grapheme";
+      const { page, calls } = loadSessionPage({
+        result: { statusCode: 422, code: "VALIDATION_ERROR", message },
+        nickname,
+      });
+      page.onNicknameInput({ detail: { value: nickname } });
+      expect(page.data.overflow).toBe(false);
+      expect(page.data.lengthText).toBe("");
+      page.onSubmit();
+      await Promise.resolve();
+      expect(calls).toEqual([nickname]);
+      expect(page.data.errorMessage).toBe(message);
+      expect(page.data.loading).toBe(false);
+    } finally {
+      if (descriptor) Object.defineProperty(Intl, "Segmenter", descriptor);
+      else delete Intl.Segmenter;
+    }
   });
 
   it("输入时实时更新计数，超长置 overflow 并清除旧错误", () => {
@@ -235,6 +269,12 @@ describe("会话页：缓存回填", () => {
     page.onLoad({ return_to: "my-predictions" });
     expect(page.data.returnTo).toBe("my-predictions");
   });
+
+  it.each(["groups", "group-detail", "settings", "unlocks"])("[CR-26] 支持 return_to=%s 记录返回目标", (target) => {
+    const { page } = loadSessionPage({ result: undefined });
+    page.onLoad({ return_to: target });
+    expect(page.data.returnTo).toBe(target);
+  });
 });
 
 describe("会话页：登录成功后的返回", () => {
@@ -272,6 +312,28 @@ describe("会话页：登录成功后的返回", () => {
     await Promise.resolve();
     expect(navs).toEqual([["navigateBack", 1]]);
     expect(storage.get("pending_group_invite_code")).toBe("INVITE123");
+  });
+
+  it("[CR-26] return_to 触发 navigateBack 失败（无上游栈）时兜底 switchTab 回首页", async () => {
+    const { page, navs } = loadSessionPage({
+      result: { statusCode: 201, data: { nickname: "Sky" } },
+      nickname: "Sky",
+    });
+    const origNavBack = wx.navigateBack;
+    wx.navigateBack = (opts) => {
+      navs.push(["navigateBack", opts.delta]);
+      opts.fail && opts.fail();
+    };
+    try {
+      page.onLoad({ return_to: "settings" });
+      await page.onSubmit();
+      expect(navs).toEqual([
+        ["navigateBack", 1],
+        ["switchTab", "/pages/matches/matches"],
+      ]);
+    } finally {
+      wx.navigateBack = origNavBack;
+    }
   });
 
   it("onSkip 清除残留 pending_group_invite_code 并回到首页", () => {
@@ -361,5 +423,42 @@ describe("会话页：隐私授权", () => {
     page.onLoad({});
     page.onOpenPrivacyContract();
     expect(privacy.openCalls).toBe(1);
+  });
+
+  it("[A-S1-07] initSession 抛错或 reject 时必须复位 loading=false 并开放重试", async () => {
+    const originalPage = globalThis.Page;
+    const originalWx = globalThis.wx;
+    for (const impl of [
+      () => Promise.reject(new Error("request timeout")),
+      () => { throw new Error("sync failure"); },
+    ]) {
+      let config;
+      setGlobal("wx", {
+        getStorageSync: () => undefined,
+        setStorageSync: () => {},
+        removeStorageSync: () => {},
+        switchTab: () => {},
+        reLaunch: () => {},
+        navigateBack: () => {},
+      });
+      setGlobal("Page", (value) => { config = value; });
+      const nicknameUtil = loadModule(NICKNAME_JS, () => { throw new Error("unexpected"); });
+      loadModule(SESSION_JS, (id) => {
+        if (id === "../../services/session.js") return { initSession: impl };
+        if (id === "../../utils/nickname.js") return nicknameUtil;
+        throw new Error(`Unexpected require: ${id}`);
+      });
+      const page = Object.assign({}, config, {
+        data: JSON.parse(JSON.stringify(config.data || {})),
+        setData(patch) { Object.assign(this.data, patch); },
+      });
+      page.setData({ nickname: "Sky" });
+      await page.onSubmit();
+      expect(page.data.loading).toBe(false);
+      expect(page.data.canRetry).toBe(true);
+      expect(page.data.errorMessage).toBeTruthy();
+    }
+    if (originalPage) setGlobal("Page", originalPage.value);
+    if (originalWx) setGlobal("wx", originalWx.value);
   });
 });

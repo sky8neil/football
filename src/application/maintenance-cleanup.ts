@@ -82,7 +82,7 @@ const SNAPSHOT_BOARDS: readonly RankingBoard[] = [
 
 /**
  * 定期数据清理服务（Slice 5.4）：只清理过期会话、短期用量桶、历史运行日志与超量非终榜快照，
- * 绝不删除终榜（is_final=true）或任何核心业务账本（users/predictions/matches/settlements 等）。
+ * 绝不删除终榜（is_final=true）、关键观测/错误快照（provider_snapshots）或核心业务账本（users/predictions/matches/settlements 等）。
  */
 export class MaintenanceCleanupService {
   private readonly batchSize: number;
@@ -163,15 +163,8 @@ export class MaintenanceCleanupService {
       );
       syncLogsDeleted = logs.deleted;
       truncated = truncated || logs.truncated;
-      const snapshots = await this.cleanupCollectionBefore(
-        db,
-        namespace,
-        "provider_snapshots",
-        "created_at",
-        subtractDays(serverNow, MAINTENANCE_CLEANUP_DEFAULTS.providerSnapshotsRetentionDays),
-      );
-      providerSnapshotsDeleted = snapshots.deleted;
-      truncated = truncated || snapshots.truncated;
+      // provider_snapshots 承载关键发现/改期/状态变化/赛果观测与错误审计证据，禁止按时间整表自动清理。
+      providerSnapshotsDeleted = 0;
       const boards = await this.cleanupBoardSnapshots(db, namespace);
       boardSnapshotsDeleted = boards.deleted;
       truncated = truncated || boards.truncated;

@@ -13,10 +13,10 @@
  * month 或未知 board → validationError（K85 domain 侧预备）。
  */
 import { FIXED_CONFIG_V1 } from "./config.js";
-import { RankingBoard } from "./enums.js";
+import { RankingBoard, UserStatus } from "./enums.js";
 import { validationError } from "./errors.js";
 import { compareStrengthIndex } from "./levels.js";
-import type { UserSeasonStats } from "./types.js";
+import type { User, UserSeasonStats } from "./types.js";
 
 export interface RankingComparable {
   period_score: number;
@@ -117,6 +117,18 @@ function compareLastScoring(
 
 function compareUserId(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/**
+ * 周榜注销口径（A-S4-04 / A-S5-04）：周期结束前已注销（含 deleted_at 缺失）
+ * 的用户保留账本累加值，但不得占用 global_rank；周期结束后才注销的用户仍属于
+ * 该历史周期的有效参赛者。
+ */
+export function isDeletedForPeriod(user: User, periodEndAt: Date): boolean {
+  return (
+    user.status === UserStatus.Deleted &&
+    (user.deleted_at === null || user.deleted_at.getTime() < periodEndAt.getTime())
+  );
 }
 
 /** 入榜最低场次（19.1）：valid_predictions >= WEEK_BOARD_MIN_VALID（=1）。 */

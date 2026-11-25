@@ -1,4 +1,5 @@
 import { AnomalyStatus } from "../../domain/enums.js";
+import { conflictError } from "../../domain/errors.js";
 import type { Anomaly } from "../../domain/types.js";
 import {
   AdminAnomaliesService,
@@ -64,6 +65,17 @@ export function validateAdminAnomaliesQuery(
   return validateAdminAnomaliesQueryValues(query);
 }
 
+async function preflightAdminAnomalies(
+  service: Pick<AdminAnomaliesService, "authorizeAdmin">,
+  value: string | null | undefined,
+): Promise<string> {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw conflictError("UNAUTHORIZED", "需要可信管理员身份");
+  }
+  await service.authorizeAdmin(value);
+  return value;
+}
+
 function mapAnomaly(anomaly: Anomaly): AdminAnomalyResponse {
   return {
     anomaly_id: anomaly.anomaly_id,
@@ -87,17 +99,16 @@ export async function getAdminAnomalies(
   input: GetAdminAnomaliesInput,
 ): Promise<GetAdminAnomaliesSuccessResponse> {
   const query = validateAdminAnomaliesQuery(input.query);
-  if (typeof input.trusted_openid === "string" && input.trusted_openid.length > 0) {
-    await (input.rate_limiter ?? defaultApiRateLimiter).check(
-      "admin_apis",
-      input.trusted_openid,
-      input.server_now,
-    );
-  }
+  const trustedOpenid = await preflightAdminAnomalies(service, input.trusted_openid);
+  await (input.rate_limiter ?? defaultApiRateLimiter).check(
+    "admin_apis",
+    trustedOpenid,
+    input.server_now,
+  );
   const hasQueryValue = (field: string): boolean =>
     Object.prototype.hasOwnProperty.call(input.query, field) &&
     input.query[field] !== undefined;
-  const result = await service.list(input.trusted_openid, {
+  const result = await service.list(trustedOpenid, {
     ...query,
     status_explicit: hasQueryValue("status"),
     blocking_explicit: hasQueryValue("blocking"),

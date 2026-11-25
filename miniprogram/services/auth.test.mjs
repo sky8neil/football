@@ -89,11 +89,15 @@ function loadStack({
     if (id === "./api.js") return api;
     throw new Error(`Unexpected require: ${id}`);
   });
+  const leagues = loadCommonJs(join(HERE, "leagues.js"), (id) => {
+    if (id === "./api.js") return api;
+    throw new Error(`Unexpected require: ${id}`);
+  });
   const predictions = loadCommonJs(join(HERE, "predictions.js"), (id) => {
     if (id === "./api.js") return api;
     throw new Error(`Unexpected require: ${id}`);
   });
-  return { api, auth, session, matches, predictions, wxRequest, callFunction, wxLogin, store };
+  return { api, auth, session, matches, leagues, predictions, wxRequest, callFunction, wxLogin, store };
 }
 
 function succeedHttp(wxRequest, handler) {
@@ -232,7 +236,7 @@ describe("HTTP self-hosted login and session cache", () => {
     });
   });
 
-  it("re-logs in when a restored session expires before a later business request", async () => {
+  it("re-logs in when a restored session expires before a later required-auth request", async () => {
     const { auth, matches, wxRequest, wxLogin, store } = loadStack({
       stored: { [AUTH_SESSION_STORAGE_KEY]: { access_token: "cached-token", expires_at: FUTURE } },
     });
@@ -240,26 +244,49 @@ describe("HTTP self-hosted login and session cache", () => {
       if (url.endsWith("/v1/auth/wechat")) {
         return { statusCode: 200, data: { data: { access_token: "fresh-token", token_type: "Bearer", expires_at: FUTURE }, request_id: "auth-exp" } };
       }
-      if (url.endsWith("/v1/matches")) {
-        return { statusCode: 200, data: { data: { items: [{ match_id: "m1" }] }, request_id: "matches-exp" } };
+      if (url.endsWith("/v1/matches/m1/crowd")) {
+        return { statusCode: 200, data: { data: { status: "insufficient" }, request_id: "crowd-exp" } };
       }
       throw new Error(url);
     });
     await auth.restoreAuth();
     expect(wxLogin).not.toHaveBeenCalled();
     store.set(AUTH_SESSION_STORAGE_KEY, { access_token: "cached-token", expires_at: PAST });
-    await expect(matches.listMatches()).resolves.toMatchObject({ statusCode: 200, data: { items: [{ match_id: "m1" }] } });
+    await expect(matches.getMatchCrowd("m1")).resolves.toMatchObject({ statusCode: 200, data: { status: "insufficient" } });
     expect(wxLogin).toHaveBeenCalledTimes(1);
     expect(wxRequest.mock.calls.map((call) => call[0].url)).toEqual([
       "https://api.example.com/v1/auth/wechat",
-      "https://api.example.com/v1/matches",
+      "https://api.example.com/v1/matches/m1/crowd",
     ]);
     expect(wxRequest.mock.calls[0][0].header.Authorization).toBeUndefined();
     expect(wxRequest.mock.calls[1][0].header).toEqual({ Authorization: "Bearer fresh-token" });
     expect(store.get(AUTH_SESSION_STORAGE_KEY)).toEqual({ access_token: "fresh-token", expires_at: FUTURE });
   });
 
-  it("waits for in-flight launch restore before sending a business request", async () => {
+  it("[A-S1-06] skips wx.login and drops expired token for optional public read services while keeping crowd auth required", async () => {
+    const { matches, leagues, wxRequest, wxLogin } = loadStack({
+      stored: { [AUTH_SESSION_STORAGE_KEY]: { access_token: "expired-token", expires_at: PAST } },
+    });
+    succeedHttp(wxRequest, (url) => {
+      if (url.endsWith("/v1/matches")) {
+        return { statusCode: 200, data: { data: { items: [] }, request_id: "pub-list" } };
+      }
+      if (url.endsWith("/v1/matches/m1")) {
+        return { statusCode: 200, data: { data: { match_id: "m1" }, request_id: "pub-detail" } };
+      }
+      if (url.endsWith("/v1/leagues/status")) {
+        return { statusCode: 200, data: { data: { items: [] }, request_id: "pub-status" } };
+      }
+      throw new Error(url);
+    });
+    await expect(matches.listMatches()).resolves.toMatchObject({ statusCode: 200, data: { items: [] } });
+    await expect(matches.getMatchDetail("m1")).resolves.toMatchObject({ statusCode: 200, data: { match_id: "m1" } });
+    await expect(leagues.getLeagueStatus()).resolves.toMatchObject({ statusCode: 200, data: { items: [] } });
+    expect(wxLogin).not.toHaveBeenCalled();
+    expect(wxRequest.mock.calls.every((call) => call[0].header.Authorization === undefined)).toBe(true);
+  });
+
+  it("waits for in-flight launch restore before sending a required-auth request", async () => {
     let finishLogin;
     const { auth, matches, wxRequest, wxLogin } = loadStack({
       stored: { [AUTH_SESSION_STORAGE_KEY]: { access_token: "expired-token", expires_at: PAST } },
@@ -273,14 +300,14 @@ describe("HTTP self-hosted login and session cache", () => {
         });
         return;
       }
-      if (url.endsWith("/v1/matches")) {
-        options.success({ statusCode: 200, data: { data: { items: [{ match_id: "m1" }] }, request_id: "matches-wait" } });
+      if (url.endsWith("/v1/matches/m1/crowd")) {
+        options.success({ statusCode: 200, data: { data: { status: "insufficient" }, request_id: "crowd-wait" } });
         return;
       }
       throw new Error(url);
     });
     const restore = auth.restoreAuth();
-    const pendingMatches = matches.listMatches();
+    const pendingCrowd = matches.getMatchCrowd("m1");
     await Promise.resolve();
     expect(wxLogin).toHaveBeenCalledTimes(1);
     expect(wxRequest).toHaveBeenCalledTimes(1);
@@ -288,15 +315,15 @@ describe("HTTP self-hosted login and session cache", () => {
     expect(wxRequest.mock.calls[0][0].header.Authorization).toBeUndefined();
     finishLogin();
     await expect(restore).resolves.toMatchObject({ statusCode: 200, data: { access_token: "fresh-token" } });
-    await expect(pendingMatches).resolves.toMatchObject({ statusCode: 200, data: { items: [{ match_id: "m1" }] } });
+    await expect(pendingCrowd).resolves.toMatchObject({ statusCode: 200, data: { status: "insufficient" } });
     expect(wxRequest.mock.calls.map((call) => call[0].url)).toEqual([
       "https://api.example.com/v1/auth/wechat",
-      "https://api.example.com/v1/matches",
+      "https://api.example.com/v1/matches/m1/crowd",
     ]);
     expect(wxRequest.mock.calls[1][0].header).toEqual({ Authorization: "Bearer fresh-token" });
   });
 
-  it("returns auth failure without sending the business request when expired session re-login fails", async () => {
+  it("returns auth failure without sending the required-auth request when expired session re-login fails", async () => {
     const { matches, wxRequest, wxLogin } = loadStack({
       stored: { [AUTH_SESSION_STORAGE_KEY]: { access_token: "expired-token", expires_at: PAST } },
     });
@@ -306,18 +333,18 @@ describe("HTTP self-hosted login and session cache", () => {
       }
       throw new Error(url);
     });
-    await expect(matches.listMatches()).resolves.toMatchObject({ statusCode: 401, code: "UNAUTHORIZED" });
+    await expect(matches.getMatchCrowd("m1")).resolves.toMatchObject({ statusCode: 401, code: "UNAUTHORIZED" });
     expect(wxLogin).toHaveBeenCalledTimes(1);
     expect(wxRequest).toHaveBeenCalledTimes(1);
     expect(wxRequest.mock.calls[0][0].url).toBe("https://api.example.com/v1/auth/wechat");
   });
 
-  it("does not auto-login a business request after logout", async () => {
+  it("does not auto-login a required-auth request after logout", async () => {
     const { auth, matches, wxRequest, wxLogin, store } = loadStack({
       stored: { [AUTH_SESSION_STORAGE_KEY]: { access_token: "cached-token", expires_at: FUTURE } },
     });
     succeedHttp(wxRequest, (url) => {
-      if (url.endsWith("/v1/matches")) {
+      if (url.endsWith("/v1/matches/m1/crowd")) {
         return { statusCode: 401, data: { code: "UNAUTHORIZED", message: "需要重新登录" } };
       }
       throw new Error(url);
@@ -325,30 +352,30 @@ describe("HTTP self-hosted login and session cache", () => {
     await auth.restoreAuth();
     auth.clearAuth();
     expect(store.has(AUTH_SESSION_STORAGE_KEY)).toBe(false);
-    await expect(matches.listMatches()).resolves.toMatchObject({ statusCode: 401, code: "UNAUTHORIZED" });
+    await expect(matches.getMatchCrowd("m1")).resolves.toMatchObject({ statusCode: 401, code: "UNAUTHORIZED" });
     expect(wxLogin).not.toHaveBeenCalled();
     expect(wxRequest).toHaveBeenCalledTimes(1);
     expect(wxRequest.mock.calls[0][0].header.Authorization).toBeUndefined();
   });
 
-  it("does not wx.login, retry, or restore session when an in-flight request gets 401 after logout", async () => {
+  it("does not wx.login, retry, or restore session when an in-flight required-auth request gets 401 after logout", async () => {
     const { auth, matches, wxRequest, wxLogin, store } = loadStack({
       stored: { [AUTH_SESSION_STORAGE_KEY]: { access_token: "cached-token", expires_at: FUTURE } },
     });
     let pendingOptions;
     wxRequest.mockImplementation((options) => {
       const url = String(options.url || "");
-      if (url.endsWith("/v1/matches")) {
+      if (url.endsWith("/v1/matches/m1/crowd")) {
         pendingOptions = options;
         return;
       }
       throw new Error(url);
     });
     await auth.restoreAuth();
-    const pending = matches.listMatches();
+    const pending = matches.getMatchCrowd("m1");
     await Promise.resolve();
     expect(pendingOptions).toMatchObject({
-      url: "https://api.example.com/v1/matches",
+      url: "https://api.example.com/v1/matches/m1/crowd",
       header: { Authorization: "Bearer cached-token" },
     });
     auth.clearAuth();
@@ -365,25 +392,25 @@ describe("HTTP self-hosted login and session cache", () => {
       stored: { [AUTH_SESSION_STORAGE_KEY]: { access_token: "stale-token", expires_at: FUTURE } },
     });
     const loginQueue = [];
-    let matchCalls = 0;
+    let crowdCalls = 0;
     wxRequest.mockImplementation((options) => {
       const url = String(options.url || "");
       if (url.endsWith("/v1/auth/wechat")) {
         loginQueue.push(options);
         return;
       }
-      if (url.endsWith("/v1/matches")) {
-        matchCalls += 1;
+      if (url.endsWith("/v1/matches/m1/crowd")) {
+        crowdCalls += 1;
         options.success({ statusCode: 401, data: { code: "UNAUTHORIZED", message: "需要重新登录" } });
         return;
       }
       throw new Error(url);
     });
-    const pending = matches.listMatches();
+    const pending = matches.getMatchCrowd("m1");
     await waitFor(() => loginQueue.length === 1);
     expect(wxLogin).toHaveBeenCalledTimes(1);
     expect(wxRequest.mock.calls.map((call) => call[0].url)).toEqual([
-      "https://api.example.com/v1/matches",
+      "https://api.example.com/v1/matches/m1/crowd",
       "https://api.example.com/v1/auth/wechat",
     ]);
     auth.clearAuth();
@@ -394,9 +421,9 @@ describe("HTTP self-hosted login and session cache", () => {
     });
     await expect(pending).resolves.toMatchObject({ statusCode: 401, code: "UNAUTHORIZED" });
     expect(store.has(AUTH_SESSION_STORAGE_KEY)).toBe(false);
-    expect(matchCalls).toBe(1);
+    expect(crowdCalls).toBe(1);
     expect(wxRequest.mock.calls.map((call) => call[0].url)).toEqual([
-      "https://api.example.com/v1/matches",
+      "https://api.example.com/v1/matches/m1/crowd",
       "https://api.example.com/v1/auth/wechat",
     ]);
     const ensured = auth.ensureAuth();
@@ -427,17 +454,17 @@ describe("HTTP self-hosted login and session cache", () => {
         });
         return;
       }
-      if (url.endsWith("/v1/matches")) {
+      if (url.endsWith("/v1/matches/m1/crowd")) {
         options.success({ statusCode: 401, data: { code: "UNAUTHORIZED", message: "需要重新登录" } });
         return;
       }
       throw new Error(url);
     });
-    const pending = matches.listMatches();
+    const pending = matches.getMatchCrowd("m1");
     await waitFor(() => typeof finishWxLogin === "function");
     expect(wxLogin).toHaveBeenCalledTimes(1);
     expect(wxRequest.mock.calls.map((call) => call[0].url)).toEqual([
-      "https://api.example.com/v1/matches",
+      "https://api.example.com/v1/matches/m1/crowd",
     ]);
     auth.clearAuth();
     expect(store.has(AUTH_SESSION_STORAGE_KEY)).toBe(false);
@@ -445,7 +472,7 @@ describe("HTTP self-hosted login and session cache", () => {
     await expect(pending).resolves.toMatchObject({ statusCode: 401, code: "UNAUTHORIZED" });
     expect(store.has(AUTH_SESSION_STORAGE_KEY)).toBe(false);
     expect(wxRequest.mock.calls.map((call) => call[0].url)).toEqual([
-      "https://api.example.com/v1/matches",
+      "https://api.example.com/v1/matches/m1/crowd",
     ]);
   });
 
@@ -479,7 +506,7 @@ describe("HTTP self-hosted login and session cache", () => {
         }
         throw new Error("session A late login must not call /v1/auth/wechat");
       }
-      if (url.endsWith("/v1/matches")) {
+      if (url.endsWith("/v1/matches/m1/crowd")) {
         if (token === "Bearer session-a-token") {
           options.success({ statusCode: 401, data: { code: "UNAUTHORIZED", message: "需要重新登录", request_id: "a-401" } });
           return;
@@ -499,9 +526,9 @@ describe("HTTP self-hosted login and session cache", () => {
       }
       throw new Error(url);
     });
-    const pendingA = matches.listMatches();
+    const pendingA = matches.getMatchCrowd("m1");
     await waitFor(() => wxLogins.length === 1);
-    expect(wxRequest.mock.calls.map((call) => call[0].url)).toEqual(["https://api.example.com/v1/matches"]);
+    expect(wxRequest.mock.calls.map((call) => call[0].url)).toEqual(["https://api.example.com/v1/matches/m1/crowd"]);
     auth.clearAuth();
     const pendingEnsure = auth.ensureAuth();
     await waitFor(() => wxLogins.length === 2);
@@ -523,7 +550,7 @@ describe("HTTP self-hosted login and session cache", () => {
     expect(authLogins).toBe(2);
     expect(store.get(AUTH_SESSION_STORAGE_KEY)).toEqual({ access_token: "session-b-fresh", expires_at: FUTURE });
     expect(wxRequest.mock.calls.map((call) => [call[0].url, call[0].header && call[0].header.Authorization])).toEqual([
-      ["https://api.example.com/v1/matches", "Bearer session-a-token"],
+      ["https://api.example.com/v1/matches/m1/crowd", "Bearer session-a-token"],
       ["https://api.example.com/v1/auth/wechat", undefined],
       ["https://api.example.com/v1/predictions/me", "Bearer session-b-token"],
       ["https://api.example.com/v1/auth/wechat", undefined],
@@ -549,13 +576,13 @@ describe("HTTP self-hosted login and session cache", () => {
         loginQueue.push(options);
         return;
       }
-      if (url.endsWith("/v1/matches")) {
+      if (url.endsWith("/v1/matches/m1/crowd")) {
         options.success({ statusCode: 401, data: { code: "UNAUTHORIZED", message: "需要重新登录", request_id: "orig-401" } });
         return;
       }
       throw new Error(url);
     });
-    const pending = matches.listMatches();
+    const pending = matches.getMatchCrowd("m1");
     await waitFor(() => loginQueue.length === 1);
     expect(wxLogin).toHaveBeenCalledTimes(1);
     loginQueue[0].success({
@@ -569,7 +596,7 @@ describe("HTTP self-hosted login and session cache", () => {
     });
     expect(store.has(AUTH_SESSION_STORAGE_KEY)).toBe(false);
     expect(wxRequest.mock.calls.map((call) => call[0].url)).toEqual([
-      "https://api.example.com/v1/matches",
+      "https://api.example.com/v1/matches/m1/crowd",
       "https://api.example.com/v1/auth/wechat",
     ]);
   });
@@ -585,13 +612,13 @@ describe("HTTP self-hosted login and session cache", () => {
         loginQueue.push(options);
         return;
       }
-      if (url.endsWith("/v1/matches")) {
+      if (url.endsWith("/v1/matches/m1/crowd")) {
         options.success({ statusCode: 401, data: { code: "UNAUTHORIZED", message: "需要重新登录" } });
         return;
       }
       throw new Error(url);
     });
-    const pendingMatches = matches.listMatches();
+    const pendingCrowd = matches.getMatchCrowd("m1");
     await waitFor(() => loginQueue.length === 1);
     expect(loginQueue).toHaveLength(1);
     auth.clearAuth();
@@ -609,7 +636,7 @@ describe("HTTP self-hosted login and session cache", () => {
       statusCode: 200,
       data: { data: { access_token: "late-token", token_type: "Bearer", expires_at: FUTURE }, request_id: "auth-late-old" },
     });
-    await expect(pendingMatches).resolves.toMatchObject({ statusCode: 401, code: "UNAUTHORIZED" });
+    await expect(pendingCrowd).resolves.toMatchObject({ statusCode: 401, code: "UNAUTHORIZED" });
     expect(store.get(AUTH_SESSION_STORAGE_KEY)).toEqual({ access_token: "new-token", expires_at: FUTURE });
   });
 
@@ -730,7 +757,7 @@ describe("HTTP self-hosted login and session cache", () => {
     ]);
   });
 
-  it("returns the real login error and does not replay when 401 recovery fails", async () => {
+  it("returns the real login error and does not replay when 401 recovery fails for a required-auth request", async () => {
     const { matches, wxRequest, wxLogin } = loadStack({
       stored: { [AUTH_SESSION_STORAGE_KEY]: { access_token: "stale-token", expires_at: FUTURE } },
     });
@@ -738,15 +765,15 @@ describe("HTTP self-hosted login and session cache", () => {
       if (url.endsWith("/v1/auth/wechat")) {
         return { statusCode: 401, data: { code: "UNAUTHORIZED", message: "需要重新登录" } };
       }
-      if (url.endsWith("/v1/matches")) {
+      if (url.endsWith("/v1/matches/m1/crowd")) {
         return { statusCode: 401, data: { code: "UNAUTHORIZED", message: "需要重新登录", request_id: "biz-401" } };
       }
       throw new Error(url);
     });
-    await expect(matches.listMatches()).resolves.toMatchObject({ statusCode: 401, code: "UNAUTHORIZED" });
+    await expect(matches.getMatchCrowd("m1")).resolves.toMatchObject({ statusCode: 401, code: "UNAUTHORIZED" });
     expect(wxLogin).toHaveBeenCalledTimes(1);
     expect(wxRequest.mock.calls.map((call) => call[0].url)).toEqual([
-      "https://api.example.com/v1/matches",
+      "https://api.example.com/v1/matches/m1/crowd",
       "https://api.example.com/v1/auth/wechat",
     ]);
   });

@@ -193,10 +193,26 @@ async function readProviderErrorCode(response: Response): Promise<string | null>
   }
   try {
     const bodyText = await response.clone().text();
-    return /1010/.test(bodyText) ? "1010" : null;
-  } catch {
+    if (/1010/.test(bodyText)) return "1010";
+    if (response.status === 403 && isWafBlocked403(response.headers, bodyText)) {
+      return "waf_403";
+    }
     return null;
+  } catch {
+    return response.status === 403 && isWafBlocked403(response.headers, "") ? "waf_403" : null;
   }
+}
+
+function isWafBlocked403(headers: Headers, bodyText: string): boolean {
+  const contentType = headers.get("content-type")?.toLowerCase() ?? "";
+  const cfRay = headers.get("cf-ray");
+  const server = headers.get("server")?.toLowerCase() ?? "";
+  if (cfRay !== null || server.includes("cloudflare") || contentType.includes("text/html")) {
+    return true;
+  }
+  return /(<html|<!doctype\s+html|cloudflare|attention required|just a moment|cf-chl|waf|access denied|error code:\s*\d+)/i.test(
+    bodyText,
+  );
 }
 
 /**

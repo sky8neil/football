@@ -106,9 +106,55 @@ describe("deploy-preflight main（需要 dist）", () => {
         FOOTBALL_ENVIRONMENT: "prod",
         FOOTBALL_SYNC_PROFILE: "prod",
         FOOTBALL_LEVEL_FIRST_EVAL_AS_OF: "2026-08-03T02:00:00.000Z",
+        FOOTBALL_RANKING_FIRST_PERIOD_KEY: "2026-W31",
       },
       (line) => chunks.push(line),
     );
     expect(code).toBe(0);
+  });
+
+  it.skipIf(!DIST_READY)("FOOTBALL_ENVIRONMENT=prod 缺少或非法 FOOTBALL_RANKING_FIRST_PERIOD_KEY 时阻断 preflight", async () => {
+    const validLevel = {
+      FOOTBALL_ENVIRONMENT: "prod",
+      FOOTBALL_SYNC_PROFILE: "prod",
+      FOOTBALL_LEVEL_FIRST_EVAL_AS_OF: "2026-08-03T02:00:00.000Z",
+    };
+    await expect(main(["--target=vps", "--json"], validLevel, () => {})).rejects.toThrow(
+      /FOOTBALL_RANKING_FIRST_PERIOD_KEY is required when FOOTBALL_ENVIRONMENT=prod/,
+    );
+    await expect(
+      main(
+        ["--target=vps", "--json"],
+        { ...validLevel, FOOTBALL_RANKING_FIRST_PERIOD_KEY: "   " },
+        () => {},
+      ),
+    ).rejects.toThrow(/FOOTBALL_RANKING_FIRST_PERIOD_KEY is required when FOOTBALL_ENVIRONMENT=prod/);
+    await expect(
+      main(
+        ["--target=vps", "--json"],
+        { ...validLevel, FOOTBALL_RANKING_FIRST_PERIOD_KEY: "2026-W99" },
+        () => {},
+      ),
+    ).rejects.toThrow(/FOOTBALL_RANKING_FIRST_PERIOD_KEY must be a valid ISO week number/);
+    const code = await main(
+      ["--target=vps", "--json"],
+      { ...validLevel, FOOTBALL_RANKING_FIRST_PERIOD_KEY: "2026-W47" },
+      () => {},
+    );
+    expect(code).toBe(0);
+  });
+
+  it.skipIf(!DIST_READY)("[CR-14] 非 prod 环境显式配置非法 FOOTBALL_RANKING_FIRST_PERIOD_KEY 时同样阻断 preflight", async () => {
+    await expect(
+      main(
+        ["--target=vps", "--json"],
+        {
+          FOOTBALL_ENVIRONMENT: "dev",
+          FOOTBALL_SYNC_PROFILE: "test",
+          FOOTBALL_RANKING_FIRST_PERIOD_KEY: "2026-W99",
+        },
+        () => {},
+      ),
+    ).rejects.toThrow(/FOOTBALL_RANKING_FIRST_PERIOD_KEY must be a valid ISO week number/);
   });
 });

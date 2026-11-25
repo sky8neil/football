@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import type { UnitOfWork } from "../infrastructure/repositories.js";
+import { rankingPeriodLockKey } from "./settlement-item-application-service.js";
 import {
   AdminRole,
   AdminStatus,
@@ -438,7 +440,7 @@ describe("AdminRebuildRankingsService", () => {
       .resolves.toEqual([]);
   });
 
-  it("使用目标周期 maintenance lock，且 reason 不能为空", async () => {
+  it("使用目标周期 maintenance lock，且 reason 不能为空白", async () => {
     const repo = new InMemoryRepository();
     await seedAdmin(repo);
     const lockKey = periodRankingsRebuildLockKey(PeriodType.Week, "2026-W32");
@@ -456,18 +458,44 @@ describe("AdminRebuildRankingsService", () => {
         "一致性修复",
         NOW,
       ),
-    ).rejects.toMatchObject({ code: "SETTLEMENT_ALREADY_RUNNING" });
+    ).rejects.toMatchObject({ code: "RANKING_REBUILD_ALREADY_RUNNING" });
     await repo.jobLocks.release(lockKey, "existing-owner");
+
+    for (const reason of ["", "   ", "\n\t"]) {
+      await expect(
+        new AdminRebuildRankingsService(repo).rebuild(
+          "admin-openid",
+          PeriodType.Week,
+          "2026-W32",
+          reason,
+          NOW,
+        ),
+      ).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+    }
+  });
+
+  it("ranking 周期锁被占用时返回 RANKING_REBUILD_ALREADY_RUNNING 且不写审计", async () => {
+    const repo = new InMemoryRepository();
+    await seedAdmin(repo);
+    const lockKey = rankingPeriodLockKey(PeriodType.Week, "2026-W32");
+    await repo.jobLocks.acquire(
+      lockKey,
+      "existing-owner",
+      new Date(Date.now() + 60 * 60 * 1000),
+    );
 
     await expect(
       new AdminRebuildRankingsService(repo).rebuild(
         "admin-openid",
         PeriodType.Week,
         "2026-W32",
-        "",
+        "一致性修复",
         NOW,
       ),
-    ).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+    ).rejects.toMatchObject({ code: "RANKING_REBUILD_ALREADY_RUNNING" });
+    await expect(repo.adminAuditLogs.findByEntity("ranking_period", "week-2026-W32"))
+      .resolves.toEqual([]);
+    await repo.jobLocks.release(lockKey, "existing-owner");
   });
 
   it("career snapshot rebuild 使用 board 审计标识并全量生成快照", async () => {
@@ -573,5 +601,173 @@ describe("AdminRebuildRankingsService", () => {
       NOW,
     )).rejects.toMatchObject({ code: "SETTLEMENT_ALREADY_RUNNING" });
     await expect(repo.boardSnapshots.findLatestByBoard(RankingBoard.Career)).resolves.toEqual([]);
+  });
+
+  it("A-S5-03 week 重建的 ranking 周期锁在 withTransaction 之前已持有，结束后释放", async () => {
+    const repo = new InMemoryRepository();
+    await seedAdmin(repo);
+    const rankingLockKey = rankingPeriodLockKey(PeriodType.Week, "2026-W32");
+    let lockHeldAtTransactionStart = false;
+    const repoProxy = new Proxy(repo, {
+      get(target, prop, receiver) {
+        if (prop === "withTransaction") {
+          return (fn: (tx: UnitOfWork) => Promise<unknown>) =>
+            target.withTransaction(async (tx) => {
+              lockHeldAtTransactionStart = await target.jobLocks.isHeld(rankingLockKey, NOW);
+              return fn(tx);
+            });
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+
+    await new AdminRebuildRankingsService(repoProxy).rebuild(
+      "admin-openid",
+      RankingBoard.Week,
+      "2026-W32",
+      "一致性修复",
+      NOW,
+    );
+
+    expect(lockHeldAtTransactionStart).toBe(true);
+    await expect(repo.jobLocks.isHeld(rankingLockKey, NOW)).resolves.toBe(false);
+    await expect(repo.adminAuditLogs.findByEntity("ranking_period", "week-2026-W32"))
+      .resolves.toHaveLength(1);
+  });
+
+  it("A-S5-03 事务中止后 tx.jobLocks.release 的 25P02 不掩盖原始错误且不写审计", async () => {
+    const repo = new InMemoryRepository();
+    await seedAdmin(repo);
+    const originalBoom = new Error("rank original boom");
+    const aborted = Object.assign(new Error("current transaction is aborted"), { code: "25P02" });
+    const repoProxy = new Proxy(repo, {
+      get(target, prop, receiver) {
+        if (prop === "withTransaction") {
+          return (fn: (tx: UnitOfWork) => Promise<unknown>) =>
+            target.withTransaction((tx) => {
+              const failingTx = new Proxy(tx, {
+                get(txTarget, txProp, txReceiver) {
+                  if (txProp === "users") {
+                    const users = Reflect.get(txTarget, txProp, txReceiver) as UnitOfWork["users"];
+                    return {
+                      ...users,
+                      findAll: async () => {
+                        throw originalBoom;
+                      },
+                    };
+                  }
+                  if (txProp === "jobLocks") {
+                    const locks = Reflect.get(txTarget, txProp, txReceiver) as NonNullable<UnitOfWork["jobLocks"]>;
+                    return {
+                      ...locks,
+                      release: async () => {
+                        throw aborted;
+                      },
+                    };
+                  }
+                  return Reflect.get(txTarget, txProp, txReceiver);
+                },
+              });
+              return fn(failingTx);
+            });
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+
+    await expect(
+      new AdminRebuildRankingsService(repoProxy).rebuild(
+        "admin-openid",
+        RankingBoard.Week,
+        "2026-W32",
+        "一致性修复",
+        NOW,
+      ),
+    ).rejects.toBe(originalBoom);
+    await expect(repo.adminAuditLogs.findByEntity("ranking_period", "week-2026-W32"))
+      .resolves.toEqual([]);
+  });
+
+  it("A-S5-03 ranking 锁在事务外释放失败时不掩盖原始错误", async () => {
+    const repo = new InMemoryRepository();
+    await seedAdmin(repo);
+    const originalBoom = new Error("rank original boom");
+    const repoProxy = new Proxy(repo, {
+      get(target, prop, receiver) {
+        if (prop === "jobLocks") {
+          const locks = target.jobLocks;
+          return {
+            ...locks,
+            release: async (lockKey: string, ownerId: string) => {
+              if (lockKey.startsWith("ranking:")) throw new Error("release boom");
+              return locks.release(lockKey, ownerId);
+            },
+          };
+        }
+        if (prop === "withTransaction") {
+          return (fn: (tx: UnitOfWork) => Promise<unknown>) =>
+            target.withTransaction((tx) => {
+              const failingTx = new Proxy(tx, {
+                get(txTarget, txProp, txReceiver) {
+                  if (txProp === "users") {
+                    const users = Reflect.get(txTarget, txProp, txReceiver) as UnitOfWork["users"];
+                    return {
+                      ...users,
+                      findAll: async () => {
+                        throw originalBoom;
+                      },
+                    };
+                  }
+                  return Reflect.get(txTarget, txProp, txReceiver);
+                },
+              });
+              return fn(failingTx);
+            });
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+
+    await expect(
+      new AdminRebuildRankingsService(repoProxy).rebuild(
+        "admin-openid",
+        RankingBoard.Week,
+        "2026-W32",
+        "一致性修复",
+        NOW,
+      ),
+    ).rejects.toBe(originalBoom);
+  });
+
+  it("[Slice 3] 落后墙钟的 serverNow 时外层与 ranking 周期锁租约仍晚于 Date.now()", async () => {
+    const repo = new InMemoryRepository();
+    await seedAdmin(repo);
+    const jobLocks = repo.jobLocks;
+    const acquireSpy = vi.spyOn(jobLocks, "acquire");
+    const repoProxy = new Proxy(repo, {
+      get(target, prop, receiver) {
+        if (prop === "jobLocks") return jobLocks;
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const staleNow = new Date(Date.now() - 15 * 60 * 1000);
+    const wallClockBefore = Date.now();
+
+    await new AdminRebuildRankingsService(repoProxy).rebuild(
+      "admin-openid",
+      RankingBoard.Week,
+      "2026-W32",
+      "一致性修复",
+      staleNow,
+    );
+
+    for (const key of [
+      periodRankingsRebuildLockKey(PeriodType.Week, "2026-W32"),
+      rankingPeriodLockKey(PeriodType.Week, "2026-W32"),
+    ]) {
+      const leaseUntil = acquireSpy.mock.calls.find(([lockKey]) => lockKey === key)?.[2] as Date;
+      expect(leaseUntil.getTime()).toBeGreaterThan(wallClockBefore);
+      expect(leaseUntil.getTime()).toBeGreaterThan(Date.now());
+    }
   });
 });

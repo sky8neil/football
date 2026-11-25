@@ -47,6 +47,27 @@ function resolveHistoryTeam(teamObj, teamId) {
   return teamObj && teamObj.team_id ? teamObj : historyTeam(teamId);
 }
 
+const MY_PREDICTIONS_DIRTY_KEY = "my_predictions_dirty";
+
+function hasPredictionsDirty() {
+  try {
+    if (typeof wx === "undefined" || typeof wx.getStorageSync !== "function") return false;
+    return Boolean(wx.getStorageSync(MY_PREDICTIONS_DIRTY_KEY));
+  } catch (_error) {
+    return false;
+  }
+}
+
+function clearPredictionsDirty() {
+  try {
+    if (typeof wx !== "undefined" && typeof wx.removeStorageSync === "function") {
+      wx.removeStorageSync(MY_PREDICTIONS_DIRTY_KEY);
+    }
+  } catch (_error) {
+    /* ignore storage cleanup failure */
+  }
+}
+
 function presentItem(item) {
   const leagueId = item.league_id;
   const homePresented = presentTeam(resolveHistoryTeam(item.home_team, item.home_team_id), leagueId);
@@ -56,7 +77,7 @@ function presentItem(item) {
   const cancelled = item.match_status === "cancelled" || item.settlement_status === "voided";
   const points = cancelled ? "不计分" : item.match_score === null ? "待结算" : `+${item.match_score}`;
   const resultText = cancelled
-    ? "比赛取消 · 不计分"
+    ? (item.match_status === "abandoned" ? "比赛腰斩 · 不计分" : "比赛取消 · 不计分")
     : item.exact_hit === true
       ? "精确命中"
       : item.wdl_hit === true
@@ -115,6 +136,7 @@ Page({
   onLoad() {
     this.loginGeneration = currentLoginGeneration();
     this.hasShown = false;
+    clearPredictionsDirty();
     this.loadFilters();
     this.loadFirstPage();
   },
@@ -124,11 +146,51 @@ Page({
     if (generation !== this.loginGeneration || this.data.state === "unauthorized") {
       this.loginGeneration = generation;
       this.hasShown = true;
+      clearPredictionsDirty();
       this.resetFilters();
       this.loadFirstPage();
       return;
     }
+    const dirty = hasPredictionsDirty();
+    if (this.hasShown && dirty) {
+      clearPredictionsDirty();
+      this.hasShown = true;
+      return this.silentRefreshFirstPage();
+    }
+    if (dirty) {
+      clearPredictionsDirty();
+    }
     this.hasShown = true;
+  },
+
+  silentRefreshFirstPage() {
+    const serial = ++this.requestSerial;
+    return listMyPredictions({
+      leagueId: this.data.selectedLeagueId || undefined,
+      seasonId: this.data.selectedSeasonId || undefined,
+      limit: 20,
+    })
+      .then((result) => {
+        if (serial !== this.requestSerial) return;
+        if (
+          result &&
+          (result.statusCode === 200
+            || (result.statusCode === 401 && result.code === "UNAUTHORIZED")
+            || (result.statusCode === 409 && result.code === "USER_DELETED")
+            || (result.statusCode === 404 && result.code === "USER_NOT_FOUND"))
+        ) {
+          return this.applyListResult(result, true, serial);
+        }
+        if (this.data.state !== "list" && this.data.state !== "empty") {
+          return this.applyListResult(result || { statusCode: 0, code: "NETWORK_ERROR" }, true, serial);
+        }
+      })
+      .catch(() => {
+        if (serial !== this.requestSerial) return;
+        if (this.data.state !== "list" && this.data.state !== "empty") {
+          return this.applyListResult({ statusCode: 0, code: "NETWORK_ERROR" }, true, serial);
+        }
+      });
   },
 
   resetFilters() {

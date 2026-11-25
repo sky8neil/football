@@ -141,6 +141,9 @@ describe("groups services", () => {
     await service.leaveGroup("group-1");
     await service.dissolveGroup("group-1");
     await service.getGroup("group-1");
+    await service.leaveGroup("group/1?a=b");
+    await service.dissolveGroup("group/1?a=b");
+    await service.getGroup("group/1?a=b");
     expect(invalid.statusCode).toBe(422);
     expect(calls).toEqual([
       { method: "GET", path: "/v1/groups/me", query: { limit: 20, cursor: "next" } },
@@ -149,6 +152,9 @@ describe("groups services", () => {
       { method: "POST", path: "/v1/groups/group-1/leave" },
       { method: "DELETE", path: "/v1/groups/group-1" },
       { method: "GET", path: "/v1/groups/group-1" },
+      { method: "POST", path: "/v1/groups/group%2F1%3Fa%3Db/leave" },
+      { method: "DELETE", path: "/v1/groups/group%2F1%3Fa%3Db" },
+      { method: "GET", path: "/v1/groups/group%2F1%3Fa%3Db" },
     ]);
   });
 });
@@ -256,7 +262,7 @@ describe("group pages", () => {
     expect(page.data.canConfirm).toBe(true);
   });
 
-  it("keeps an invite code across login and returns to the confirmation page", async () => {
+  it("keeps an invite code across login, resets loading, and returns to the confirmation page", async () => {
     const wxStub = installWx();
     const { config } = loadPage("join", {
       joinGroup: vi.fn(async () => ({ statusCode: 401, code: "UNAUTHORIZED" })),
@@ -265,8 +271,35 @@ describe("group pages", () => {
     page.onLoad({ code: "ABCDEFGH" });
     page.onConfirm();
     await flush();
+    expect(page.data.loading).toBe(false);
     expect(wxStub.storage.get("pending_group_invite_code")).toBe("ABCDEFGH");
     expect(wxStub.navs).toEqual([["redirectTo", "/pages/session/session"]]);
+  });
+
+  it("strips spaces, uppercases, truncates to 8 chars, and flags invalid 8-char codes immediately", () => {
+    installWx();
+    const wxml = readFileSync(join(HERE, "join.wxml"), "utf8");
+    expect(wxml).toContain('maxlength="12"');
+    const { config } = loadPage("join");
+    const page = instantiate(config);
+    page.onLoad({ code: "  ab23 cd45 " });
+    expect(page.data.inviteCode).toBe("AB23CD45");
+    expect(page.data.canConfirm).toBe(true);
+    expect(page.data.errorMessage).toBe("");
+
+    page.onInviteInput({ detail: { value: " ab23 cd45 extra " } });
+    expect(page.data.inviteCode).toBe("AB23CD45");
+    expect(page.data.canConfirm).toBe(true);
+    expect(page.data.errorMessage).toBe("");
+
+    page.onInviteInput({ detail: { value: "ab23 cd0o" } });
+    expect(page.data.inviteCode).toBe("AB23CD0O");
+    expect(page.data.remainingDigits).toBe(0);
+    expect(page.data.canConfirm).toBe(false);
+    expect(page.data.errorMessage).toBe("邀请码缺失或格式不正确");
+
+    page.onInviteInput({ detail: { value: "AB23CD0" } });
+    expect(page.data.errorMessage).toBe("");
   });
 
   it("returns to the pending invite after session initialization", async () => {
@@ -295,23 +328,42 @@ describe("group pages", () => {
     ]]);
   });
 
-  it("refreshes /groups/me after a successful join before entering the group board", async () => {
+  it("enters the group board directly after a successful join without redundant listMyGroups", async () => {
     const wxStub = installWx();
-    const groups = [{ group_id: "group-1" }];
     const { config, services } = loadPage("join", {
-      listMyGroups: vi.fn(async () => ({ statusCode: 200, data: { items: groups } })),
+      listMyGroups: vi.fn(async () => ({ statusCode: 200, data: { items: [{ group_id: "group-1" }] } })),
     });
     const page = instantiate(config);
     page.onLoad({ code: "ABCDEFGH" });
     page.onConfirm();
     await flush();
-    await flush();
-    expect(services.listMyGroups).toHaveBeenCalledWith({ limit: 20 });
+    expect(services.listMyGroups).not.toHaveBeenCalled();
+    expect(page.data.loading).toBe(false);
     expect(wxStub.storage.get("pending_ranking_group_id")).toBe("group-1");
     expect(wxStub.navs).toEqual([["switchTab", "/pages/rankings/rankings"]]);
   });
 
-  it("resolves GROUP_ALREADY_MEMBER by reading member group details", async () => {
+  it("jumps directly via result.details.group_id on GROUP_ALREADY_MEMBER without calling listMyGroups or getGroup", async () => {
+    const wxStub = installWx();
+    const { config, services } = loadPage("join", {
+      joinGroup: vi.fn(async () => ({
+        statusCode: 409,
+        code: "GROUP_ALREADY_MEMBER",
+        details: { group_id: "group-direct" },
+      })),
+    });
+    const page = instantiate(config);
+    page.onLoad({ code: "ABCDEFGH" });
+    page.onConfirm();
+    await flush();
+    expect(services.listMyGroups).not.toHaveBeenCalled();
+    expect(services.getGroup).not.toHaveBeenCalled();
+    expect(page.data.loading).toBe(false);
+    expect(wxStub.storage.get("pending_ranking_group_id")).toBe("group-direct");
+    expect(wxStub.navs).toEqual([["switchTab", "/pages/rankings/rankings"]]);
+  });
+
+  it("resolves GROUP_ALREADY_MEMBER without details.group_id by reading member group details once", async () => {
     const wxStub = installWx();
     const { config, services } = loadPage("join", {
       joinGroup: vi.fn(async () => ({ statusCode: 409, code: "GROUP_ALREADY_MEMBER" })),
@@ -323,7 +375,7 @@ describe("group pages", () => {
     page.onConfirm();
     await flush();
     await flush();
-    await flush();
+    expect(services.listMyGroups).toHaveBeenCalledTimes(1);
     expect(services.getGroup).toHaveBeenCalledWith("group-existing");
     expect(wxStub.navs).toEqual([["switchTab", "/pages/rankings/rankings"]]);
   });
@@ -434,7 +486,11 @@ describe("join error recovery", () => {
     const listMyGroups = vi.fn()
       .mockResolvedValueOnce({ statusCode: 500, message: "读取群信息失败" })
       .mockResolvedValueOnce({ statusCode: 200, data: { items: [{ group_id: "group-1" }] } });
-    const { config, services } = loadPage("join", { listMyGroups });
+    const { config, services } = loadPage("join", {
+      joinGroup: vi.fn(async () => ({ statusCode: 409, code: "GROUP_ALREADY_MEMBER" })),
+      listMyGroups,
+      getGroup: vi.fn(async () => ({ statusCode: 200, data: { group_id: "group-1", invite_code: "ABCDEFGH" } })),
+    });
     const page = instantiate(config);
     page.onLoad({ code: "ABCDEFGH" });
     page.onConfirm();
@@ -447,6 +503,7 @@ describe("join error recovery", () => {
 
     page.onRetry();
     await flush();
+    await flush();
 
     expect(services.joinGroup).toHaveBeenCalledTimes(1);
     expect(listMyGroups).toHaveBeenCalledTimes(2);
@@ -457,6 +514,7 @@ describe("join error recovery", () => {
   it("returns to the invite form from 重新输入 without joining again", async () => {
     installWx();
     const { config, services } = loadPage("join", {
+      joinGroup: vi.fn(async () => ({ statusCode: 409, code: "GROUP_ALREADY_MEMBER" })),
       listMyGroups: vi.fn(async () => ({ statusCode: 500, message: "读取群信息失败" })),
     });
     const page = instantiate(config);
@@ -480,7 +538,6 @@ describe("join error recovery", () => {
     const wxStub = installWx();
     const listMyGroups = vi.fn()
       .mockResolvedValueOnce({ statusCode: 500, message: "读取群信息失败" })
-      .mockResolvedValueOnce({ statusCode: 200, data: { items: [{ group_id: "group-existing" }] } })
       .mockResolvedValueOnce({ statusCode: 200, data: { items: [{ group_id: "group-existing" }] } });
     const { config, services } = loadPage("join", {
       joinGroup: vi.fn(async () => ({ statusCode: 409, code: "GROUP_ALREADY_MEMBER" })),
@@ -499,7 +556,6 @@ describe("join error recovery", () => {
     page.onRetry();
     await flush();
     await flush();
-    await flush();
 
     expect(services.joinGroup).toHaveBeenCalledTimes(1);
     expect(services.getGroup).toHaveBeenCalledWith("group-existing");
@@ -511,7 +567,11 @@ describe("join error recovery", () => {
     const listMyGroups = vi.fn()
       .mockRejectedValueOnce(new Error("network"))
       .mockResolvedValueOnce({ statusCode: 200, data: { items: [{ group_id: "group-1" }] } });
-    const { config, services } = loadPage("join", { listMyGroups });
+    const { config, services } = loadPage("join", {
+      joinGroup: vi.fn(async () => ({ statusCode: 409, code: "GROUP_ALREADY_MEMBER" })),
+      listMyGroups,
+      getGroup: vi.fn(async () => ({ statusCode: 200, data: { group_id: "group-1", invite_code: "ABCDEFGH" } })),
+    });
     const page = instantiate(config);
     page.onLoad({ code: "ABCDEFGH" });
     page.onConfirm();
@@ -524,6 +584,7 @@ describe("join error recovery", () => {
 
     page.onRetry();
     await flush();
+    await flush();
 
     expect(services.joinGroup).toHaveBeenCalledTimes(1);
     expect(wxStub.navs).toEqual([["switchTab", "/pages/rankings/rankings"]]);
@@ -533,7 +594,11 @@ describe("join error recovery", () => {
     const wxStub = installWx();
     const firstList = deferred();
     const listMyGroups = vi.fn(() => firstList.promise);
-    const { config, services } = loadPage("join", { listMyGroups });
+    const { config, services } = loadPage("join", {
+      joinGroup: vi.fn(async () => ({ statusCode: 409, code: "GROUP_ALREADY_MEMBER" })),
+      listMyGroups,
+      getGroup: vi.fn(async () => ({ statusCode: 200, data: { group_id: "group-1", invite_code: "ABCDEFGH" } })),
+    });
     const page = instantiate(config);
     page.onLoad({ code: "ABCDEFGH" });
     page.onConfirm();
@@ -564,7 +629,11 @@ describe("join error recovery", () => {
     const listMyGroups = vi.fn()
       .mockResolvedValueOnce({ statusCode: 500, message: "读取群信息失败" })
       .mockImplementationOnce(() => pending.promise);
-    const { config, services } = loadPage("join", { listMyGroups });
+    const { config, services } = loadPage("join", {
+      joinGroup: vi.fn(async () => ({ statusCode: 409, code: "GROUP_ALREADY_MEMBER" })),
+      listMyGroups,
+      getGroup: vi.fn(async () => ({ statusCode: 200, data: { group_id: "group-1", invite_code: "ABCDEFGH" } })),
+    });
     const page = instantiate(config);
     page.onLoad({ code: "ABCDEFGH" });
     page.onConfirm();
@@ -578,6 +647,59 @@ describe("join error recovery", () => {
 
     expect(services.joinGroup).toHaveBeenCalledTimes(1);
     expect(listMyGroups).toHaveBeenCalledTimes(2);
+  });
+
+  it("hides create button when 20 groups are joined even with 0 owned groups", async () => {
+    installWx();
+    const items = Array.from({ length: 20 }, (_, index) => ({
+      group_id: "group-" + index,
+      role: "member",
+      member_count: 2,
+    }));
+    const { config } = loadPage("groups", {
+      listMyGroups: vi.fn(async () => ({ statusCode: 200, data: { items } })),
+    });
+    const page = instantiate(config);
+    await page.onShow();
+    expect(page.data.ownedCount).toBe(0);
+    expect(page.data.canJoin).toBe(false);
+    expect(page.data.canCreate).toBe(false);
+  });
+
+  it("handles 401/409 and loginGeneration changes on groups page", async () => {
+    const wxStub = installWx();
+    const wxml = readFileSync(join(HERE, "groups.wxml"), "utf8");
+    expect(wxml).toContain("state === 'unauthorized'");
+    expect(wxml).toContain('bindtap="onLoginTap"');
+    expect(wxml).toContain("state === 'userDeleted'");
+
+    let generation = 0;
+    const listMyGroups = vi.fn()
+      .mockResolvedValueOnce({ statusCode: 401, code: "UNAUTHORIZED", message: "请先登录" })
+      .mockResolvedValueOnce({ statusCode: 409, code: "USER_DELETED", message: "账号已注销" })
+      .mockResolvedValueOnce({ statusCode: 200, data: { items: [{ group_id: "g-new", role: "member", member_count: 2 }] } });
+
+    const COPY = loadCommonJs(COPY_PATH, () => { throw new Error("COPY has no dependencies"); });
+    const config = capturePage(join(HERE, "groups.js"), {
+      "../../services/groups.js": { listMyGroups, createGroup: vi.fn() },
+      "../../utils/rankings-copy.js": COPY,
+      "../../services/auth.js": { getLoginGeneration: () => generation },
+    });
+    const page = instantiate(config);
+
+    await page.onShow();
+    expect(page.data.state).toBe("unauthorized");
+    page.onLoginTap();
+    expect(wxStub.navs).toContainEqual(["navigateTo", "/pages/session/session?return_to=groups"]);
+
+    await page.onShow();
+    expect(page.data.state).toBe("userDeleted");
+    expect(page.data.errorMessage).toBe("账号已注销");
+
+    generation = 1;
+    await page.onShow();
+    expect(page.data.state).toBe("ready");
+    expect(page.data.groups.map((item) => item.group_id)).toEqual(["g-new"]);
   });
 });
 

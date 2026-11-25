@@ -181,8 +181,8 @@ describe("PredictionHistoryQueryService.listMyPredictions", () => {
     expect(first.items).toEqual([expect.objectContaining({
       prediction_id: "00000000-0000-4000-8000-000000000021",
       match_id: "00000000-0000-4000-8000-000000000011",
-      home_team: { team_id: HOME_TEAM_ID, name: "Arsenal FC" },
-      away_team: { team_id: AWAY_TEAM_ID, name: "Chelsea FC" },
+      home_team: { team_id: HOME_TEAM_ID, name: "Arsenal FC", name_zh: null, logo_url: null },
+      away_team: { team_id: AWAY_TEAM_ID, name: "Chelsea FC", name_zh: null, logo_url: null },
       match_status: "scheduled",
       regular_home_score: null,
       regular_away_score: null,
@@ -452,6 +452,31 @@ describe("PredictionHistoryQueryService.listMyPredictions", () => {
     expect(findByIdSpy).not.toHaveBeenCalled();
   });
 
+  it("populates home_team and away_team name_zh/logo_url when set on Team (Q-PLAN-2)", async () => {
+    const repo = await setup();
+    const home = (await repo.teams.findById(HOME_TEAM_ID))!;
+    await repo.teams.update!({ ...home, name_zh: "阿森纳", logo_url: "/assets/logos/arsenal.png" });
+    const service = new PredictionHistoryQueryService(repo, "prediction-list-secret");
+    const res = await service.listMyPredictions(USER_ID, {
+      league_id: "premier_league",
+      season_id: "2026_2027",
+      limit: 10,
+      cursor: null,
+    });
+    expect(res.items[0]?.home_team).toEqual({
+      team_id: HOME_TEAM_ID,
+      name: "Arsenal FC",
+      name_zh: "阿森纳",
+      logo_url: "/assets/logos/arsenal.png",
+    });
+    expect(res.items[0]?.away_team).toEqual({
+      team_id: AWAY_TEAM_ID,
+      name: "Chelsea FC",
+      name_zh: null,
+      logo_url: null,
+    });
+  });
+
   it("[Slice 4.1] batch-resolves home_team/away_team via teams.findByIds without N+1 findById", async () => {
     const repo = await setup();
     const teams = repo.teams;
@@ -477,8 +502,8 @@ describe("PredictionHistoryQueryService.listMyPredictions", () => {
     expect(findByIdsSpy).toHaveBeenCalledWith([HOME_TEAM_ID, AWAY_TEAM_ID]);
     expect(findByIdSpy).not.toHaveBeenCalled();
     for (const item of res.items) {
-      expect(item.home_team).toEqual({ team_id: HOME_TEAM_ID, name: "Arsenal FC" });
-      expect(item.away_team).toEqual({ team_id: AWAY_TEAM_ID, name: "Chelsea FC" });
+      expect(item.home_team).toEqual({ team_id: HOME_TEAM_ID, name: "Arsenal FC", name_zh: null, logo_url: null });
+      expect(item.away_team).toEqual({ team_id: AWAY_TEAM_ID, name: "Chelsea FC", name_zh: null, logo_url: null });
     }
   });
 });

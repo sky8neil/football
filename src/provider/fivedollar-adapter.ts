@@ -169,12 +169,22 @@ export class FiveDollarAdapter implements ProviderAdapter {
     league: ProviderAdapterLeague,
     options?: ProviderAdapterCallOptions,
   ): Promise<ApiFootballFixture[]> {
+    const MAX_PAGES = 100;
     const output: ApiFootballFixture[] = [];
+    const visitedCursors = new Set<string>();
     let page = 1;
     let hasMore = true;
     while (hasMore) {
+      if (visitedCursors.size >= MAX_PAGES) {
+        throw new ProviderDataError("DIAG_PROVIDER_PAGINATION source_id=5d reason=max_pages");
+      }
+      const cursorKey = String(page);
+      if (visitedCursors.has(cursorKey)) {
+        throw new ProviderDataError("DIAG_PROVIDER_PAGINATION source_id=5d reason=cursor_loop");
+      }
+      visitedCursors.add(cursorKey);
       await options?.beforeRequest?.();
-      const body = await this.http.getJson(fixturePath(path), { ...query, page: String(page), per_page: "100" });
+      const body = await this.http.getJson(fixturePath(path), { ...query, page: cursorKey, per_page: "100" });
       const parsed = parseData(body);
       output.push(...parsed.rows.map((row) => mapFixture(row, league, this.providerLeagueRefs, options?.serverNow)));
       hasMore = parsed.hasMore;

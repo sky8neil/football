@@ -3,6 +3,7 @@ import { QUERY_INDEXES, UNIQUE_INDEXES } from "../schema/indexes.js";
 import { cloudBaseCollectionName } from "./cloudbase-db.js";
 
 export const AUTH_SESSIONS_TABLE = "auth_sessions" as const;
+export const ADMIN_LOGIN_CONSUMED_JTIS_TABLE = "admin_login_consumed_jtis" as const;
 export const JSONB_UTC_TIMESTAMPTZ_FUNCTION = "jsonb_utc_timestamptz" as const;
 
 const IDENT = /^[A-Za-z_][A-Za-z0-9_-]*$/;
@@ -84,6 +85,11 @@ export interface PostgresSchemaPlan {
     sql: string;
     indexes: PostgresIndexPlan[];
   };
+  adminLoginConsumedJtis: {
+    table: string;
+    sql: string;
+    indexes: PostgresIndexPlan[];
+  };
 }
 
 function collectionTableSql(schema: string, table: string): string {
@@ -159,6 +165,16 @@ export function buildPostgresSchemaPlan(namespace: string, schema: string): Post
       sql: `CREATE INDEX IF NOT EXISTS ${quoteIdent("ix_auth_sessions_openid")} ON ${qualifiedTable(schema, authTable)} (openid)`,
     },
   ];
+  const jtiTable = ADMIN_LOGIN_CONSUMED_JTIS_TABLE;
+  const jtiIndexes: PostgresIndexPlan[] = [
+    {
+      logical: ADMIN_LOGIN_CONSUMED_JTIS_TABLE,
+      table: jtiTable,
+      name: "ix_admin_login_consumed_jtis_expires_at",
+      unique: false,
+      sql: `CREATE INDEX IF NOT EXISTS ${quoteIdent("ix_admin_login_consumed_jtis_expires_at")} ON ${qualifiedTable(schema, jtiTable)} (expires_at)`,
+    },
+  ];
   return {
     schema,
     namespace,
@@ -175,6 +191,11 @@ export function buildPostgresSchemaPlan(namespace: string, schema: string): Post
       sql: `CREATE TABLE IF NOT EXISTS ${qualifiedTable(schema, authTable)} (token text PRIMARY KEY, openid text NOT NULL, expires_at timestamptz NOT NULL)`,
       indexes: authIndexes,
     },
+    adminLoginConsumedJtis: {
+      table: jtiTable,
+      sql: `CREATE TABLE IF NOT EXISTS ${qualifiedTable(schema, jtiTable)} (jti text PRIMARY KEY, expires_at timestamptz NOT NULL)`,
+      indexes: jtiIndexes,
+    },
   };
 }
 
@@ -184,8 +205,10 @@ export function postgresSchemaStatements(plan: PostgresSchemaPlan): string[] {
     ...plan.functions.map((item) => item.sql),
     ...plan.tables.map((item) => item.sql),
     plan.authSessions.sql,
+    plan.adminLoginConsumedJtis.sql,
     ...plan.indexes.map((item) => item.sql),
     ...plan.authSessions.indexes.map((item) => item.sql),
+    ...plan.adminLoginConsumedJtis.indexes.map((item) => item.sql),
   ];
 }
 
@@ -197,13 +220,16 @@ export interface PostgresQueryResult {
   rowCount?: number | null;
 }
 
-export type PostgresQueryFn = (sql: string, params?: unknown[]) => Promise<PostgresQueryResult>;
+export type PostgresQueryFn = ((sql: string, params?: unknown[]) => Promise<PostgresQueryResult>) & {
+  withSession?: <T>(fn: (query: PostgresQueryFn) => Promise<T>) => Promise<T>;
+};
 
 export interface PostgresSchemaInspection {
   schemaExists: boolean;
   tables: string[];
   indexes: string[];
   functions: string[];
+  indexDefs?: Readonly<Record<string, string>>;
 }
 
 export interface PostgresSchemaObjects {
@@ -213,6 +239,12 @@ export interface PostgresSchemaObjects {
   functions: string[];
 }
 
+export interface PostgresIndexDrift {
+  name: string;
+  expected: string;
+  actual: string;
+}
+
 export interface PostgresSchemaDiff {
   schema: string;
   namespace: string;
@@ -220,13 +252,22 @@ export interface PostgresSchemaDiff {
   expected: PostgresSchemaObjects;
   existing: PostgresSchemaObjects;
   pending: PostgresSchemaObjects;
+  driftedIndexes: PostgresIndexDrift[];
 }
 
 export function expectedPostgresSchemaObjects(plan: PostgresSchemaPlan): PostgresSchemaObjects {
   return {
     schema: true,
-    tables: [...plan.tables.map((item) => item.table), plan.authSessions.table],
-    indexes: [...plan.indexes.map((item) => item.name), ...plan.authSessions.indexes.map((item) => item.name)],
+    tables: [
+      ...plan.tables.map((item) => item.table),
+      plan.authSessions.table,
+      plan.adminLoginConsumedJtis.table,
+    ],
+    indexes: [
+      ...plan.indexes.map((item) => item.name),
+      ...plan.authSessions.indexes.map((item) => item.name),
+      ...plan.adminLoginConsumedJtis.indexes.map((item) => item.name),
+    ],
     functions: plan.functions.map((item) => item.name),
   };
 }
@@ -234,6 +275,121 @@ export function expectedPostgresSchemaObjects(plan: PostgresSchemaPlan): Postgre
 function subtract(expected: string[], existing: string[]): string[] {
   const have = new Set(existing);
   return expected.filter((item) => !have.has(item));
+}
+
+const POSTGRES_SCHEMA_ADVISORY_LOCK_NS = "football_postgres_schema";
+
+function matchingParen(sql: string, open: number): number {
+  let depth = 0;
+  let i = open;
+  while (i < sql.length) {
+    const ch = sql[i];
+    if (ch === "'") {
+      i += 1;
+      while (i < sql.length) {
+        if (sql[i] === "'" && sql[i + 1] === "'") {
+          i += 2;
+          continue;
+        }
+        if (sql[i] === "'") {
+          i += 1;
+          break;
+        }
+        i += 1;
+      }
+      continue;
+    }
+    if (ch === "(") depth += 1;
+    else if (ch === ")") {
+      depth -= 1;
+      if (depth === 0) return i;
+    }
+    i += 1;
+  }
+  return -1;
+}
+
+function isFunctionCall(expr: string): boolean {
+  const match = /^[a-z_][a-z0-9_]*\s*\(/i.exec(expr);
+  if (match === null) return false;
+  return matchingParen(expr, match[0].length - 1) === expr.length - 1;
+}
+
+function stripFunctionCallWrappers(sql: string): string {
+  let current = sql;
+  let previous = "";
+  while (current !== previous) {
+    previous = current;
+    let next = "";
+    let i = 0;
+    while (i < current.length) {
+      if (current[i] === "(") {
+        const close = matchingParen(current, i);
+        const inner = close === -1 ? "" : current.slice(i + 1, close).trim();
+        if (close !== -1 && isFunctionCall(inner)) {
+          next += inner;
+          i = close + 1;
+          continue;
+        }
+      }
+      next += current[i];
+      i += 1;
+    }
+    current = next;
+  }
+  return current;
+}
+
+export function normalizePostgresIndexDef(sql: string, schema?: string): string {
+  let normalized = sql.trim().toLowerCase().replace(/"/g, "");
+  normalized = normalized.replace(/\s+/g, " ");
+  normalized = normalized.replace(/\bif\s+not\s+exists\b/g, "");
+  normalized = normalized.replace(/\busing\s+btree\b/g, "");
+  normalized = normalized.replace(/::text\b/g, "");
+  // PG B-tree defaults: DESC -> NULLS FIRST, ASC/default -> NULLS LAST.
+  // Only strip defaults so drifted non-default NULLS FIRST/LAST ordering remains visible.
+  normalized = normalized.replace(/\bdesc\s+nulls\s+first\b/g, "desc");
+  normalized = normalized.replace(/\basc\s+nulls\s+last\b/g, "");
+  normalized = normalized.replace(/(?<!\bdesc )\bnulls\s+last\b/g, "");
+  normalized = normalized.replace(/\basc\b/g, "");
+  if (schema !== undefined && schema.length > 0) {
+    normalized = normalized.replaceAll(`${schema.toLowerCase()}.`, "");
+  }
+  normalized = stripFunctionCallWrappers(normalized);
+  normalized = normalized.replace(/\s+/g, " ").trim();
+  normalized = normalized.replace(/\s+\)/g, ")");
+  normalized = normalized.replace(/\s*,\s*/g, ", ");
+  return normalized;
+}
+
+function indexDefinitionDrifted(schema: string, expectedSql: string, actualDef: string | undefined): boolean {
+  if (actualDef === undefined || actualDef.length === 0) return false;
+  return normalizePostgresIndexDef(actualDef, schema) !== normalizePostgresIndexDef(expectedSql, schema);
+}
+
+function plannedIndexes(plan: PostgresSchemaPlan): PostgresIndexPlan[] {
+  return [...plan.indexes, ...plan.authSessions.indexes, ...plan.adminLoginConsumedJtis.indexes];
+}
+
+function driftedPostgresIndexes(
+  plan: PostgresSchemaPlan,
+  inspection: PostgresSchemaInspection | null,
+): PostgresIndexDrift[] {
+  if (inspection?.indexDefs === undefined) return [];
+  const present = new Set(inspection.indexes);
+  const drifts: PostgresIndexDrift[] = [];
+  for (const index of plannedIndexes(plan)) {
+    if (!present.has(index.name)) continue;
+    const actual = inspection.indexDefs[index.name];
+    if (actual === undefined || actual.length === 0) continue;
+    if (!indexDefinitionDrifted(plan.schema, index.sql, actual)) continue;
+    drifts.push({
+      name: index.name,
+      expected: normalizePostgresIndexDef(index.sql, plan.schema),
+      actual: normalizePostgresIndexDef(actual, plan.schema),
+    });
+  }
+  return drifts;
 }
 
 function emptySchemaObjects(schema: boolean): PostgresSchemaObjects {
@@ -266,6 +422,7 @@ export function diffPostgresSchema(
       indexes: subtract(expected.indexes, existing.indexes),
       functions: subtract(expected.functions, existing.functions),
     },
+    driftedIndexes: driftedPostgresIndexes(plan, inspection),
   };
 }
 
@@ -281,8 +438,12 @@ export function pendingPostgresSchemaStatements(plan: PostgresSchemaPlan, diff: 
     if (diff.pending.tables.includes(table.table)) statements.push(table.sql);
   }
   if (diff.pending.tables.includes(plan.authSessions.table)) statements.push(plan.authSessions.sql);
-  for (const index of [...plan.indexes, ...plan.authSessions.indexes]) {
-    if (diff.pending.indexes.includes(index.name)) statements.push(index.sql);
+  if (diff.pending.tables.includes(plan.adminLoginConsumedJtis.table)) {
+    statements.push(plan.adminLoginConsumedJtis.sql);
+  }
+  for (const index of plannedIndexes(plan)) {
+    if (!diff.pending.indexes.includes(index.name)) continue;
+    statements.push(index.sql);
   }
   return statements;
 }
@@ -303,19 +464,50 @@ export async function inspectPostgresSchema(
     [plan.schema],
   );
   const indexRows = await query(
-    "SELECT indexname FROM pg_catalog.pg_indexes WHERE schemaname = $1",
+    "SELECT indexname, indexdef FROM pg_catalog.pg_indexes WHERE schemaname = $1",
     [plan.schema],
   );
   const functionRows = await query(
     "SELECT p.proname FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = $1",
     [plan.schema],
   );
+  const indexDefs: Record<string, string> = {};
+  for (const row of indexRows.rows) {
+    if (typeof row.indexdef === "string" && row.indexdef.length > 0) {
+      indexDefs[String(row.indexname)] = row.indexdef;
+    }
+  }
   return {
     schemaExists: true,
     tables: tableRows.rows.map((row) => String(row.tablename)),
     indexes: indexRows.rows.map((row) => String(row.indexname)),
     functions: functionRows.rows.map((row) => String(row.proname)),
+    indexDefs,
   };
+}
+
+function postgresSchemaApplyStatements(plan: PostgresSchemaPlan): string[] {
+  return [
+    `CREATE SCHEMA IF NOT EXISTS ${quoteIdent(plan.schema)}`,
+    ...plan.functions.map((fn) => fn.sql),
+    ...plan.tables.map((table) => table.sql),
+    plan.authSessions.sql,
+    plan.adminLoginConsumedJtis.sql,
+    ...plannedIndexes(plan).map((index) => index.sql),
+  ];
+}
+
+function postgresSchemaApplyScript(plan: PostgresSchemaPlan): string {
+  const lockKey = `${plan.schema}:${plan.namespace}`;
+  const statements = postgresSchemaApplyStatements(plan);
+  return [
+    "DO $football_schema_apply$",
+    "BEGIN",
+    `  PERFORM pg_advisory_xact_lock(hashtext(${literal(POSTGRES_SCHEMA_ADVISORY_LOCK_NS)}), hashtext(${literal(lockKey)}));`,
+    ...statements.map((statement) => `  EXECUTE ${literal(statement)};`),
+    "END",
+    "$football_schema_apply$",
+  ].join("\n");
 }
 
 export interface PostgresApplyReport {
@@ -323,6 +515,7 @@ export interface PostgresApplyReport {
   expected: { tables: string[]; indexes: string[]; functions: string[] };
   existing: { tables: string[]; indexes: string[]; functions: string[] };
   created: { schema: boolean; tables: string[]; indexes: string[]; functions: string[] };
+  driftedIndexes: PostgresIndexDrift[];
 }
 
 export async function applyPostgresSchema(
@@ -330,37 +523,54 @@ export async function applyPostgresSchema(
   plan: PostgresSchemaPlan,
 ): Promise<PostgresApplyReport> {
   const expected = expectedPostgresSchemaObjects(plan);
-  const before = await inspectPostgresSchema(query, plan);
+  let before: PostgresSchemaInspection;
+  let after: PostgresSchemaInspection;
+  if (typeof query.withSession === "function") {
+    const lockKey = `${plan.schema}:${plan.namespace}`;
+    const statements = postgresSchemaApplyStatements(plan);
+    const snapshot = await query.withSession(async (sessionQuery) => {
+      await sessionQuery("BEGIN");
+      try {
+        await sessionQuery(
+          `SELECT pg_advisory_xact_lock(hashtext(${literal(POSTGRES_SCHEMA_ADVISORY_LOCK_NS)}), hashtext(${literal(lockKey)}))`,
+        );
+        const lockedBefore = await inspectPostgresSchema(sessionQuery, plan);
+        for (const statement of statements) {
+          await sessionQuery(statement);
+        }
+        const lockedAfter = await inspectPostgresSchema(sessionQuery, plan);
+        await sessionQuery("COMMIT");
+        return { before: lockedBefore, after: lockedAfter };
+      } catch (err) {
+        await sessionQuery("ROLLBACK").catch(() => undefined);
+        throw err;
+      }
+    });
+    before = snapshot.before;
+    after = snapshot.after;
+  } else {
+    before = await inspectPostgresSchema(query, plan);
+    await query(postgresSchemaApplyScript(plan));
+    after = await inspectPostgresSchema(query, plan);
+  }
   const created = { schema: false, tables: [] as string[], indexes: [] as string[], functions: [] as string[] };
-  if (!before.schemaExists) {
-    await query(`CREATE SCHEMA IF NOT EXISTS ${quoteIdent(plan.schema)}`);
-    created.schema = true;
+  if (!before.schemaExists && after.schemaExists) created.schema = true;
+  for (const name of expected.functions) {
+    if (!before.functions.includes(name) && after.functions.includes(name)) created.functions.push(name);
   }
-  for (const fn of plan.functions) {
-    if (!before.functions.includes(fn.name)) created.functions.push(fn.name);
-    await query(fn.sql);
+  for (const name of expected.tables) {
+    if (!before.tables.includes(name) && after.tables.includes(name)) created.tables.push(name);
   }
-  for (const table of plan.tables) {
-    if (!before.tables.includes(table.table)) {
-      await query(table.sql);
-      created.tables.push(table.table);
-    }
+  for (const index of plannedIndexes(plan)) {
+    if (before.indexes.includes(index.name) || !after.indexes.includes(index.name)) continue;
+    if (indexDefinitionDrifted(plan.schema, index.sql, after.indexDefs?.[index.name])) continue;
+    created.indexes.push(index.name);
   }
-  if (!before.tables.includes(plan.authSessions.table)) {
-    await query(plan.authSessions.sql);
-    created.tables.push(plan.authSessions.table);
-  }
-  for (const index of [...plan.indexes, ...plan.authSessions.indexes]) {
-    if (!before.indexes.includes(index.name)) {
-      await query(index.sql);
-      created.indexes.push(index.name);
-    }
-  }
-  const after = await inspectPostgresSchema(query, plan);
   return {
     schema: plan.schema,
     expected: { tables: expected.tables, indexes: expected.indexes, functions: expected.functions },
     existing: { tables: after.tables, indexes: after.indexes, functions: after.functions },
     created,
+    driftedIndexes: driftedPostgresIndexes(plan, after),
   };
 }

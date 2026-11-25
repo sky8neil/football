@@ -230,6 +230,18 @@ describe("FetchProviderHttpClient", () => {
     expect(err).toMatchObject({ status: 403, code: "PROVIDER_HTTP_403" });
   });
 
+  it("Cloudflare WAF 403 HTML/cf-ray 识别为 waf_403 (A-S3-07)", async () => {
+    const { fetchImpl } = createRecordingFetch(
+      () => new Response("<html><title>Attention Required! | Cloudflare</title></html>", {
+        status: 403,
+        headers: { "content-type": "text/html", "cf-ray": "99abc-LAX", server: "cloudflare" },
+      }),
+    );
+    const err = await createClient(fetchImpl).getJson("fixtures", {}).catch((caught: unknown) => caught);
+    expect(err).toBeInstanceOf(ProviderHttpError);
+    expect(err).toMatchObject({ status: 403, providerCode: "waf_403" });
+  });
+
   it("超时 AbortError → 普通 Error（非 ProviderError/DomainError）且带 cause", async () => {
     const abort = new DOMException("The operation was aborted", "AbortError");
     const { fetchImpl } = createRecordingFetch(() => {

@@ -159,8 +159,8 @@ print(f"  背景图层数量       {n} {'✅' if n == 1 else '❌'}")
 if n != 1:
     fails.append("page-bg 图层数量异常")
 
-# 日期条（2026-09-26 决策）：移除日历入口、日期条铺满整行、开放 今天 … 今天+10（共 11 个）。
-# 本节防回退：日历入口不许加回来，日期项尺寸不许被压缩，开放天数不许被改回 5。
+# 日期条（Q-PLAN-4 决策）：移除日历入口、日期条铺满整行、开放 今天-11 … 今天+11（共 23 个），默认选中并定位到今天。
+# 本节防回退：日历入口不许加回来，日期项尺寸不许被压缩，开放天数须为 23。
 dates_wrap_rule = re.search(r"\.dates-wrap \{([^}]*)\}", wxss_all)
 dates_rule = re.search(r"\.dates \{([^}]*)\}", wxss_all)
 date_rule = re.search(r"\.date \{([^}]*)\}", wxss_all)
@@ -174,15 +174,17 @@ if "onCalendarTap" in js:
 span = re.search(r"DATE_SPAN_DAYS\s*=\s*(\d+)", js)
 if not span:
     strip_problems.append("matches.js 缺少 DATE_SPAN_DAYS 常量")
-elif span.group(1) != "11":
-    strip_problems.append(f"DATE_SPAN_DAYS={span.group(1)}，应为 11（今天 + 10 天）")
+elif span.group(1) != "23":
+    strip_problems.append(f"DATE_SPAN_DAYS={span.group(1)}，应为 23（今天 - 11 天 到 今天 + 11 天）")
+if 'scroll-into-view="{{dateScrollIntoView}}"' not in wxml or 'id="date-{{item.key}}"' not in wxml:
+    strip_problems.append("WXML 日期条缺少 scroll-into-view 自动聚焦到今天")
 if not dates_rule or "width: 100%" not in dates_rule.group(1):
     strip_problems.append(".dates 未铺满整行（应为 width: 100%）")
 if not date_rule or "width: 112rpx" not in date_rule.group(1):
     strip_problems.append(".date 尺寸被改动（应保持 112rpx）")
 if dates_wrap_rule and "flex" in dates_wrap_rule.group(1):
     strip_problems.append(".dates-wrap 仍是 flex（日历按钮已移除，不再需要）")
-print(f"  日期条铺满整行     {'✅ 无日历入口 + 开放 11 天 + 尺寸未压缩' if not strip_problems else '❌ ' + '；'.join(strip_problems)}")
+print(f"  日期条铺满整行     {'✅ 无日历入口 + 开放前后 11 天（23 天）+ 尺寸未压缩' if not strip_problems else '❌ ' + '；'.join(strip_problems)}")
 if strip_problems:
     fails.append("日期条: " + "；".join(strip_problems))
 

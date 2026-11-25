@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AdminRole, AdminStatus, AnomalyStatus, AnomalyType } from "../../domain/enums.js";
 import type { Admin, Anomaly } from "../../domain/types.js";
 import { DomainError } from "../../domain/errors.js";
@@ -366,6 +366,53 @@ describe("admin anomalies API", () => {
     await expect(getAdminAnomalies(service, input)).rejects.toMatchObject({
       code: "RATE_LIMITED",
     });
+  });
+
+  it("先鉴权再限流，非管理员与空身份不消耗 admin_apis 配额", async () => {
+    const repo = new InMemoryRepository();
+    await repo.admins.insert(makeAdmin());
+    const service = new AdminAnomaliesService(repo, CURSOR_SECRET);
+    const check = vi.fn(async () => undefined);
+    const denied = {
+      trusted_openid: "plain-user-openid",
+      query: {},
+      server_now: NOW,
+      request_id: "request-anomalies-auth-order",
+      rate_limiter: { check },
+    };
+
+    for (let attempt = 0; attempt < 61; attempt += 1) {
+      await expect(getAdminAnomalies(service, denied)).rejects.toMatchObject({
+        code: "FORBIDDEN",
+      });
+    }
+    await expect(getAdminAnomalies(service, {
+      ...denied,
+      trusted_openid: "   ",
+      request_id: "request-anomalies-blank-openid",
+    })).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+    await expect(getAdminAnomalies(service, {
+      ...denied,
+      trusted_openid: null,
+      request_id: "request-anomalies-missing-openid",
+    })).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+    expect(check).not.toHaveBeenCalled();
+
+    await expect(getAdminAnomalies(service, {
+      ...denied,
+      query: { extra: "x" },
+      request_id: "request-anomalies-invalid-query",
+    })).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+    expect(check).not.toHaveBeenCalled();
+
+    const allowed = vi.fn(async () => undefined);
+    await expect(getAdminAnomalies(service, {
+      ...denied,
+      trusted_openid: "trusted-admin-openid",
+      rate_limiter: { check: allowed },
+      request_id: "request-anomalies-admin-after-deny",
+    })).resolves.toMatchObject({ status: 200 });
+    expect(allowed).toHaveBeenCalledWith("admin_apis", "trusted-admin-openid", NOW);
   });
 
   it("声明 admin anomalies 的冻结 OpenAPI contract", async () => {

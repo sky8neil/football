@@ -292,3 +292,15 @@ button::after { border:0; }
 .scope-opt view text { display:block;margin-top:1px;font-size:11px;font-weight:400;color:var(--ui-secondary); }
 .scope-opt.checked { border-color:var(--ui-selected);background:#eef8ea;color:var(--ui-positive); }
 .sheet-label { margin:8px 2px 0;font-size:11px;color:var(--ui-muted); }
+.guest-placeholder { position:relative;min-height:260px;margin-top:12px; }
+.guest-bars { display:flex;flex-direction:column;gap:10px;filter:blur(3px);opacity:0.75;pointer-events:none; }
+.guest-bar { display:flex;align-items:center;gap:10px;padding:14px 12px; }
+.guest-bar-avatar { width:34px;height:34px;border-radius:50%;background:rgba(22,48,36,0.12);flex:none; }
+.guest-bar-lines { flex:1;display:flex;flex-direction:column;gap:6px; }
+.guest-bar-line { height:10px;border-radius:6px;background:rgba(22,48,36,0.12); }
+.guest-bar-line.short { width:42%; }
+.guest-bar-line.long { width:68%; }
+.guest-bar-score { width:44px;height:16px;border-radius:6px;background:rgba(22,48,36,0.12);flex:none; }
+.guest-overlay { position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;text-align:center;padding:24px 16px; }
+.guest-message { font-size:14px;font-weight:700;color:var(--text-primary); }
+.guest-login { display:inline-flex;align-items:center;justify-content:center;min-height:40px;padding:0 24px;border-radius:10px;background:var(--cta-background);color:var(--text-on-brand);font-size:14px;font-weight:700; }

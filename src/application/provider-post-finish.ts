@@ -2,6 +2,10 @@ import { MatchStatus, SettlementStatus, SyncJobType } from "../domain/enums.js";
 import { internalError } from "../domain/errors.js";
 import type { Match } from "../domain/types.js";
 import type { ProviderLeagueRefs } from "../domain/config.js";
+import {
+  POST_FINISH_DAILY_FALLBACK_STATE_ID,
+  type SchedulerStateStore,
+} from "../infrastructure/cloudbase-scheduler-state.js";
 import type { AppRepository } from "../infrastructure/repositories.js";
 import {
   type PostFinishVerifyFixtureClient,
@@ -74,6 +78,7 @@ export class ProviderPostFinishVerifyService {
     retryOptions: ProviderFixtureSyncRetryOptions = {},
     lockOptions: ProviderFixtureSyncLockOptions = {},
     private readonly providerLeagueRefs?: ProviderLeagueRefs,
+    private readonly schedulerState?: Pick<SchedulerStateStore, "getPeriodicJobCycle" | "upsertPeriodicJobCycle">,
   ) {
     this.fixtureJob = new ProviderFixtureSyncJobService(
       repo,
@@ -84,12 +89,24 @@ export class ProviderPostFinishVerifyService {
   }
 
   async run(serverNow: Date): Promise<ProviderPostFinishVerifyOutcome> {
+    let includeOverdueDailyFallback: boolean | undefined;
+    if (this.schedulerState !== undefined) {
+      const cycle = await this.schedulerState.getPeriodicJobCycle(POST_FINISH_DAILY_FALLBACK_STATE_ID);
+      const currentDay = serverNow.toISOString().slice(0, 10);
+      const completedDay = cycle?.completed_cycle_at.toISOString().slice(0, 10);
+      includeOverdueDailyFallback = completedDay !== currentDay;
+    }
+    const overdueStatus = { allOverdueLeaguesSucceeded: true };
     const load: ProviderFixtureBatchLoader = (loadNow) => {
       return loadPostFinishBatches(
         this.repo,
         this.client,
         loadNow,
         this.providerLeagueRefs,
+        {
+          ...(includeOverdueDailyFallback === undefined ? {} : { includeOverdueDailyFallback }),
+          overdueStatus,
+        },
       );
     };
     const fixtures = await this.fixtureJob.run(
@@ -102,6 +119,13 @@ export class ProviderPostFinishVerifyService {
     }
     if (fixtures.kind === "deferred") {
       return { kind: "deferred", fixtures };
+    }
+    if (this.schedulerState !== undefined && includeOverdueDailyFallback && overdueStatus.allOverdueLeaguesSucceeded) {
+      await this.schedulerState.upsertPeriodicJobCycle({
+        job_type: POST_FINISH_DAILY_FALLBACK_STATE_ID,
+        completed_cycle_at: serverNow,
+        updated_at: serverNow,
+      });
     }
     return {
       kind: "completed",

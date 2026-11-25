@@ -71,4 +71,12 @@ export class CloudBaseUserRepository implements UserRepository {
   update(user: User): Promise<void> {
     return this.users.update(user);
   }
+
+  findByIdForUpdate(userId: string): Promise<User | null> {
+    return this.users.findByIdForUpdate!(userId);
+  }
+
+  patchFields(userId: string, fields: Partial<User>): Promise<void> {
+    return this.users.patchFields!(userId, fields);
+  }
 }

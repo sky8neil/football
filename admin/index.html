@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>赛事预言家 · 运维管理台</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div id="app" class="app-shell">
+    <header class="topbar">
+      <div class="topbar-brand">
+        <span class="brand-badge">ADMIN</span>
+        <div>
+          <h1>赛事预言家 · 运维管理台</h1>
+          <p class="subtitle">异常解除 · 赛果修正 · 结算重跑 · 升班马维护 · 审计账本</p>
+        </div>
+      </div>
+      <div id="session-bar" class="session-bar hidden">
+        <span id="session-admin-info" class="session-meta"></span>
+        <button id="logout-btn" type="button" class="btn btn-secondary">退出登录</button>
+      </div>
+    </header>
+
+    <div id="global-toast" class="toast hidden" role="status" aria-live="polite"></div>
+
+    <main id="login-view" class="panel login-panel">
+      <h2>管理员登录</h2>
+      <p class="hint">
+        Web 管理端不走微信小程序 <code>wx.login</code>，仅限 <code>admins</code> 表中的活跃管理员通过服务端签发的短期登录令牌或受控口令登录。
+      </p>
+
+      <div class="auth-tabs" role="tablist">
+        <button type="button" class="tab-btn active" data-auth-mode="token">登录令牌（推荐）</button>
+        <button type="button" class="tab-btn" data-auth-mode="passcode">OpenID + 口令</button>
+      </div>
+
+      <form id="token-login-form" class="form-stack">
+        <label>
+          <span>一次性登录令牌（通过 <code>npm run vps:admin -- --issue-login --openid &lt;openid&gt;</code> 生成）</span>
+          <textarea id="login-token-input" rows="3" placeholder="粘贴 adm1.xxx.xxx 登录令牌" required></textarea>
+        </label>
+        <button type="submit" class="btn btn-primary">验证令牌并登录</button>
+      </form>
+
+      <form id="passcode-login-form" class="form-stack hidden">
+        <label>
+          <span>管理员 OpenID</span>
+          <input id="login-openid-input" type="text" placeholder="wx-admin-openid" autocomplete="username">
+        </label>
+        <label>
+          <span>管理员口令（需服务端配置 <code>FOOTBALL_ADMIN_WEB_PASSCODE</code>）</span>
+          <input id="login-passcode-input" type="password" placeholder="输入管理员口令" autocomplete="current-password">
+        </label>
+        <button type="submit" class="btn btn-primary">口令登录</button>
+      </form>
+
+      <p id="login-error" class="error-box hidden"></p>
+    </main>
+
+    <main id="dashboard-view" class="hidden">
+      <nav class="nav-tabs" aria-label="管理模块">
+        <button type="button" class="nav-tab active" data-tab="anomalies">异常监控与解除</button>
+        <button type="button" class="nav-tab" data-tab="settlement">赛果修正与重试结算</button>
+        <button type="button" class="nav-tab" data-tab="teams">升班马资料与映射</button>
+        <button type="button" class="nav-tab" data-tab="rebuild">统计与榜单重建</button>
+        <button type="button" class="nav-tab" data-tab="audit">只读审计日志</button>
+      </nav>
+
+      <!-- Tab 1: Anomalies -->
+      <section id="tab-anomalies" class="panel tab-panel">
+        <div class="panel-header">
+          <h2>同步与结算异常</h2>
+          <div class="toolbar">
+            <label class="inline-field">
+              <span>状态</span>
+              <select id="anomaly-status-filter">
+                <option value="">全部</option>
+                <option value="open" selected>open</option>
+                <option value="resolved">resolved</option>
+              </select>
+            </label>
+            <label class="inline-field">
+              <span>阻塞</span>
+              <select id="anomaly-blocking-filter">
+                <option value="">全部</option>
+                <option value="true">仅阻塞 (true)</option>
+                <option value="false">非阻塞 (false)</option>
+              </select>
+            </label>
+            <label class="inline-field">
+              <span>每页</span>
+              <select id="anomaly-limit-filter">
+                <option value="20" selected>20</option>
+                <option value="50">50</option>
+                <option value="100">100</option>
+              </select>
+            </label>
+            <button id="anomaly-refresh-btn" type="button" class="btn btn-primary">查询</button>
+          </div>
+        </div>
+
+        <div id="resolve-anomaly-card" class="subcard hidden">
+          <h3>手动解除异常</h3>
+          <form id="resolve-anomaly-form" class="form-grid">
+            <label>
+              <span>异常 ID</span>
+              <input id="resolve-anomaly-id" type="text" readonly>
+            </label>
+            <label>
+              <span>类型 / 比赛 ID</span>
+              <input id="resolve-anomaly-meta" type="text" readonly>
+            </label>
+            <label class="full-width">
+              <span>解除原因（必填，写入审计日志）</span>
+              <input id="resolve-anomaly-reason" type="text" maxlength="500" required placeholder="例如：已核实官方比赛状态并人工确认">
+            </label>
+            <div class="actions-row full-width">
+              <button type="submit" class="btn btn-danger">确认解除异常</button>
+              <button id="resolve-anomaly-cancel" type="button" class="btn btn-secondary">取消</button>
+            </div>
+          </form>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>状态 / 阻塞</th>
+                <th>类型</th>
+                <th>match_id / anomaly_id</th>
+                <th>最近发现</th>
+                <th>次数</th>
+                <th>解决说明</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="anomalies-tbody"></tbody>
+          </table>
+        </div>
+        <div class="pager-bar">
+          <button id="anomaly-prev-btn" type="button" class="btn btn-secondary" disabled>上一页</button>
+          <button id="anomaly-next-btn" type="button" class="btn btn-secondary" disabled>下一页</button>
+        </div>
+      </section>
+
+      <!-- Tab 2: Result Correction & Retry Settlement -->
+      <section id="tab-settlement" class="panel tab-panel hidden">
+        <div class="two-col">
+          <div class="subcard">
+            <h2>管理员修正正式赛果</h2>
+            <p class="hint">
+              仅支持 <code>finished</code> 比赛；提交时会自动同事务解除该场次的赛果类阻塞异常并写入审计日志。
+            </p>
+            <form id="result-correction-form" class="form-stack">
+              <label>
+                <span>比赛 ID (UUID)</span>
+                <div class="input-with-btn">
+                  <input id="rc-match-id" type="text" required placeholder="00000000-0000-4000-8000-000000000000">
+                  <button id="rc-load-match-btn" type="button" class="btn btn-secondary">读取比赛</button>
+                </div>
+              </label>
+              <div id="rc-match-preview" class="info-box hidden"></div>
+              <div class="form-grid">
+                <label>
+                  <span>预期版本 expected_result_version</span>
+                  <input id="rc-expected-version" type="number" min="0" step="1" required value="0">
+                </label>
+                <label>
+                  <span>主队常规时间进球</span>
+                  <input id="rc-home-score" type="number" min="0" max="99" step="1" required>
+                </label>
+                <label>
+                  <span>客队常规时间进球</span>
+                  <input id="rc-away-score" type="number" min="0" max="99" step="1" required>
+                </label>
+              </div>
+              <label>
+                <span>修正原因（必填，1..500 字）</span>
+                <input id="rc-reason" type="text" maxlength="500" required placeholder="例如：官方赛后改判或补录缺失常规比分">
+              </label>
+              <button type="submit" class="btn btn-primary">提交赛果修正</button>
+            </form>
+            <pre id="rc-result-box" class="result-box hidden"></pre>
+          </div>
+
+          <div class="subcard">
+            <h2>重试失败结算</h2>
+            <p class="hint">
+              用于重启卡住/失败的 <code>failed</code> 或僵死 <code>running</code> 结算单；若存在未解除的阻塞异常，需先修正赛果或手动解除异常。
+            </p>
+            <form id="retry-settlement-form" class="form-stack">
+              <label>
+                <span>比赛 ID (UUID)</span>
+                <input id="retry-match-id" type="text" required placeholder="00000000-0000-4000-8000-000000000000">
+              </label>
+              <button type="submit" class="btn btn-primary">重试结算</button>
+            </form>
+            <pre id="retry-result-box" class="result-box hidden"></pre>
+          </div>
+        </div>
+      </section>
+
+      <!-- Tab 3: Teams & Provider Mappings -->
+      <section id="tab-teams" class="panel tab-panel hidden">
+        <div class="panel-header">
+          <h2>升班马资料与外部数据源映射维护</h2>
+          <div class="toolbar">
+            <label class="inline-field">
+              <span>联赛</span>
+              <select id="teams-league-filter">
+                <option value="">全部联赛</option>
+              </select>
+            </label>
+            <label class="inline-field">
+              <span>关键词</span>
+              <input id="teams-search-input" type="text" placeholder="队名 / 中文名 / 外部 ID">
+            </label>
+            <label class="checkbox-field">
+              <input id="teams-missing-only" type="checkbox">
+              <span>仅看缺资料/缺映射</span>
+            </label>
+            <button id="teams-refresh-btn" type="button" class="btn btn-primary">搜索</button>
+          </div>
+        </div>
+
+        <div id="team-editor-card" class="subcard hidden">
+          <div class="panel-header">
+            <h3 id="team-editor-title">编辑球队</h3>
+            <button id="team-editor-close" type="button" class="btn btn-secondary">收起</button>
+          </div>
+          <div class="two-col">
+            <form id="team-profile-form" class="form-stack">
+              <h4>维护中文名与队徽 URL</h4>
+              <input id="team-edit-id" type="hidden">
+              <label>
+                <span>中文名称 (name_zh，留空表示清空)</span>
+                <input id="team-edit-name-zh" type="text" maxlength="80" placeholder="例如：伊普斯维奇">
+              </label>
+              <label>
+                <span>队徽 URL (logo_url，需 https:// 或 / 开头)</span>
+                <input id="team-edit-logo-url" type="text" maxlength="500" placeholder="https://cdn.example.com/crest.png">
+              </label>
+              <label>
+                <span>变更原因（必填）</span>
+                <input id="team-edit-reason" type="text" maxlength="500" required placeholder="例如：新赛季升班马补充中文名与队徽">
+              </label>
+              <button type="submit" class="btn btn-primary">保存球队资料</button>
+            </form>
+
+            <form id="team-mapping-form" class="form-stack">
+              <h4>新增 / 覆盖数据源映射</h4>
+              <label>
+                <span>数据源 provider</span>
+                <select id="team-map-provider"></select>
+              </label>
+              <label>
+                <span>外部源队名 / 队 ID (provider_team_id)</span>
+                <input id="team-map-external-id" type="text" maxlength="128" required placeholder="例如：349 或 Ipswich Town">
+              </label>
+              <label class="checkbox-field">
+                <input id="team-map-overwrite" type="checkbox">
+                <span>若该外部标识已绑定其他球队，允许覆盖绑定 (overwrite)</span>
+              </label>
+              <label>
+                <span>映射原因（必填）</span>
+                <input id="team-map-reason" type="text" maxlength="500" required placeholder="例如：补齐 openfoot 副源升班马队名映射">
+              </label>
+              <button type="submit" class="btn btn-primary">保存映射</button>
+            </form>
+          </div>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>联赛</th>
+                <th>英文名 / team_id</th>
+                <th>中文名</th>
+                <th>队徽 URL</th>
+                <th>数据源映射</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="teams-tbody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Tab 4: Rebuilds -->
+      <section id="tab-rebuild" class="panel tab-panel hidden">
+        <div class="two-col">
+          <div class="subcard">
+            <h2>重建用户统计与等级</h2>
+            <p class="hint">从 <code>settlement_items</code> 重放指定用户的生涯与赛季积分、命中及等级缓存。</p>
+            <form id="rebuild-user-form" class="form-stack">
+              <label>
+                <span>用户 ID (UUID)</span>
+                <input id="rebuild-user-id" type="text" required placeholder="00000000-0000-4000-8000-000000000000">
+              </label>
+              <button type="submit" class="btn btn-primary">重建用户统计</button>
+            </form>
+            <pre id="rebuild-user-result" class="result-box hidden"></pre>
+          </div>
+
+          <div class="subcard">
+            <h2>重建排行榜</h2>
+            <p class="hint">周榜 (<code>week</code>) 必填 ISO 周编号（如 <code>2026-W32</code>）；其余榜单禁止传 <code>period_key</code>。</p>
+            <form id="rebuild-rankings-form" class="form-stack">
+              <label>
+                <span>榜单类型 (board)</span>
+                <select id="rebuild-board">
+                  <option value="week">week（周榜）</option>
+                  <option value="career">career（生涯总榜）</option>
+                  <option value="strength">strength（实力榜）</option>
+                  <option value="season">season（赛季榜）</option>
+                </select>
+              </label>
+              <label id="rebuild-period-row">
+                <span>周期 (period_key)</span>
+                <input id="rebuild-period-key" type="text" placeholder="2026-W32" required>
+              </label>
+              <label>
+                <span>重建原因（必填）</span>
+                <input id="rebuild-rankings-reason" type="text" maxlength="500" required placeholder="例如：批量赛果修正后重算本周排行榜">
+              </label>
+              <button type="submit" class="btn btn-primary">触发榜单重建</button>
+            </form>
+            <pre id="rebuild-rankings-result" class="result-box hidden"></pre>
+          </div>
+        </div>
+      </section>
+
+      <!-- Tab 5: Read-only Audit Logs -->
+      <section id="tab-audit" class="panel tab-panel hidden">
+        <div class="panel-header">
+          <h2>只读审计日志</h2>
+          <div class="toolbar">
+            <label class="inline-field">
+              <span>动作 action</span>
+              <select id="audit-action-filter">
+                <option value="">全部</option>
+              </select>
+            </label>
+            <label class="inline-field">
+              <span>对象类型 target_type</span>
+              <select id="audit-target-type-filter">
+                <option value="">全部</option>
+              </select>
+            </label>
+            <label class="inline-field">
+              <span>对象 ID target_id</span>
+              <input id="audit-target-id-filter" type="text" placeholder="UUID 或 week-2026-W32">
+            </label>
+            <label class="inline-field">
+              <span>每页</span>
+              <select id="audit-limit-filter">
+                <option value="20" selected>20</option>
+                <option value="50">50</option>
+                <option value="100">100</option>
+              </select>
+            </label>
+            <button id="audit-refresh-btn" type="button" class="btn btn-primary">查询</button>
+          </div>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>时间</th>
+                <th>动作</th>
+                <th>目标</th>
+                <th>管理员 ID</th>
+                <th>原因</th>
+                <th>变更前后</th>
+              </tr>
+            </thead>
+            <tbody id="audit-tbody"></tbody>
+          </table>
+        </div>
+        <div class="pager-bar">
+          <button id="audit-prev-btn" type="button" class="btn btn-secondary" disabled>上一页</button>
+          <button id="audit-next-btn" type="button" class="btn btn-secondary" disabled>下一页</button>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

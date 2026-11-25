@@ -125,6 +125,8 @@ function shareCardData(overrides = {}) {
     level_season_id: "2026_2027",
     generated_at: "2026-11-15T15:00:00.000Z",
     pending_predictions: 0,
+    share_token: "share-token-v1-default",
+    matches: [],
     ...overrides,
   };
 }
@@ -154,6 +156,18 @@ function loadPage({ getMyShareCard, getShareCardForUser, listLeagueSeasons, stor
   const matchPresentation = loadUtil("match-presentation.js", () => {
     throw new Error("match-presentation has no dependencies");
   });
+  const teamRegistry = loadUtil("team-registry.js", () => {
+    throw new Error("team-registry has no dependencies");
+  });
+  const logoRegistry = loadUtil("logo-registry.js", (id) => {
+    if (id === "./team-registry.js") return teamRegistry;
+    throw new Error(`Unexpected require: ${id}`);
+  });
+  const teamPresentation = loadUtil("team-presentation.js", (id) => {
+    if (id === "./team-registry.js") return teamRegistry;
+    if (id === "./logo-registry.js") return logoRegistry;
+    throw new Error(`Unexpected require: ${id}`);
+  });
   const authStorage = loadUtil("auth-storage.js", () => {
     throw new Error("auth-storage has no dependencies");
   });
@@ -164,6 +178,9 @@ function loadPage({ getMyShareCard, getShareCardForUser, listLeagueSeasons, stor
     }
     if (id === "../../services/league-seasons.js") return { listLeagueSeasons: listLeagueSeasonsFn };
     if (id === "../../utils/match-presentation.js") return matchPresentation;
+    if (id === "../../utils/team-presentation.js") return teamPresentation;
+    if (id === "../../utils/team-registry.js") return teamRegistry;
+    if (id === "../../utils/logo-registry.js") return logoRegistry;
     if (id === "../../utils/auth-storage.js") return authStorage;
     throw new Error(`Unexpected require: ${id}`);
   });
@@ -220,40 +237,79 @@ describe("share-card page", () => {
     expect(page.data.card.displayName).toBe("Sky");
   });
 
-  it("keeps pendingCount when pending_predictions is greater than 0", async () => {
-    const getMyShareCard = vi.fn(async () => ({
-      statusCode: 200,
-      data: shareCardData({ pending_predictions: 3, round_predictions: 5 }),
-    }));
+  it("switches summary and title by settledCount > 3 vs <= 3 and removes pendingCount copy", async () => {
+    const wxml = readFileSync(join(HERE, "share-card.wxml"), "utf8");
+    expect(wxml).toContain("/assets/images/baseline-pitch.webp");
+    expect(wxml).not.toContain("home-pitch-bg.webp");
+    expect(wxml).not.toContain("pendingCount");
+    expect(wxml).not.toContain("没有结算");
+
+    const getMyShareCard = vi.fn()
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        data: shareCardData({ round_predictions: 3, round_score: 12 }),
+      })
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        data: shareCardData({ round_predictions: 4, round_score: 15 }),
+      });
     const { page } = loadPage({ getMyShareCard });
+
     await page.onLoad({ ...QUERY });
     expect(page.data.state).toBe("card");
-    expect(page.data.card.pendingCount).toBe(3);
-    expect(page.data.card.settledCount).toBe(5);
+    expect(page.data.card.settledCount).toBe(3);
+    expect(page.data.card.showFullSummary).toBe(false);
+    expect(page.data.card.cardTitle).toContain("晒预测");
+    expect(page.data.card).not.toHaveProperty("pendingCount");
+    expect(page.onShareAppMessage().title).toContain("晒预测");
+    expect(page.onShareTimeline().title).toContain("晒预测");
+
+    await page.onLoad({ ...QUERY });
+    expect(page.data.card.settledCount).toBe(4);
+    expect(page.data.card.showFullSummary).toBe(true);
+    expect(page.data.card.cardTitle).toContain("战绩");
+    expect(page.onShareAppMessage().title).toContain("战绩");
+    expect(page.onShareAppMessage().title).toContain("已结算 4 场");
   });
 
-  it("share path keeps the original sharer and season/round in receiver mode", async () => {
+  it("share path and onShareTimeline keep sharer, season/round, and share_token in receiver mode", async () => {
     const getShareCardForUser = vi.fn(async () => ({
       statusCode: 200,
       data: shareCardData({
         user_id: SHARER_ID,
         display_name: "Sharer",
-        pending_predictions: 2,
         round_predictions: 6,
+        share_token: "signed_tok_6",
       }),
     }));
     const { page, getMyShareCard } = loadPage({ getShareCardForUser });
-    await page.onLoad({ user_id: SHARER_ID, ...QUERY });
+    await page.onLoad({ user_id: SHARER_ID, ...QUERY, share_token: "signed_tok_6" });
     expect(getMyShareCard).toHaveBeenCalledTimes(0);
+    expect(getShareCardForUser).toHaveBeenCalledWith(SHARER_ID, {
+      leagueId: "premier_league",
+      seasonId: "2026_2027",
+      roundId: "12",
+      shareToken: "signed_tok_6",
+    });
+
     const share = page.onShareAppMessage();
     expect(share.path).toContain(`user_id=${SHARER_ID}`);
     expect(share.path).toContain("league_id=premier_league");
     expect(share.path).toContain("season_id=2026_2027");
     expect(share.path).toContain("round_id=12");
+    expect(share.path).toContain("share_token=signed_tok_6");
     expect(share.path).toMatch(/^\/pages\/share-card\/share-card\?/);
     expect(share.title).toContain("Sharer");
     expect(share.title).toContain("已结算 6 场");
     expect(share.title).not.toMatch(/未结算/);
+
+    const timeline = page.onShareTimeline();
+    expect(timeline.title).toBe(share.title);
+    expect(timeline.query).toContain(`user_id=${SHARER_ID}`);
+    expect(timeline.query).toContain("league_id=premier_league");
+    expect(timeline.query).toContain("season_id=2026_2027");
+    expect(timeline.query).toContain("round_id=12");
+    expect(timeline.query).toContain("share_token=signed_tok_6");
   });
 
   it("maps 404 ROUND to roundNotFound and clears the card", async () => {
@@ -580,5 +636,187 @@ describe("share-card page", () => {
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+
+  it("[Q-PLAN-3 / D-S6-01] renders round matches using presentTeam and navigates with prefill only for open scheduled matches", async () => {
+    const getShareCardForUser = vi.fn(async () => ({
+      statusCode: 200,
+      data: shareCardData({
+        user_id: SHARER_ID,
+        display_name: "大神",
+        favorite_team_id: "f490a3bf-b29f-42ce-a5bc-3cb67ad2baee",
+        round_predictions: 2,
+        round_score: 12,
+        share_token: "tok-copy-bet",
+        matches: [
+          {
+            match_id: "match-open",
+            home_team: { team_id: "t-new", name: "Promoted FC", name_zh: "升班马联", logo_url: "https://cdn.example.com/p.png" },
+            away_team: { team_id: "e575463d-244b-461b-9b17-dd49f90adb4c", name: "Chelsea FC", name_zh: "切尔西", logo_url: null },
+            kickoff_at: "2026-11-16T19:00:00.000Z",
+            match_status: "scheduled",
+            settlement_status: "not_ready",
+            is_prediction_closed: false,
+            pred_home_score: 2,
+            pred_away_score: 1,
+            regular_home_score: null,
+            regular_away_score: null,
+            match_score: null,
+            wdl_hit: null,
+            exact_hit: null,
+          },
+          {
+            match_id: "match-live",
+            home_team: { team_id: "f490a3bf-b29f-42ce-a5bc-3cb67ad2baee", name: "Arsenal FC", name_zh: "阿森纳", logo_url: null },
+            away_team: { team_id: "9f2d9c9d-585a-4f7f-9805-59b65775d267", name: "Liverpool FC", name_zh: "利物浦", logo_url: null },
+            kickoff_at: "2026-11-15T19:00:00.000Z",
+            match_status: "live",
+            settlement_status: "not_ready",
+            is_prediction_closed: true,
+            pred_home_score: 1,
+            pred_away_score: 1,
+            regular_home_score: 1,
+            regular_away_score: 0,
+            match_score: null,
+            wdl_hit: null,
+            exact_hit: null,
+          },
+          {
+            match_id: "match-settled",
+            home_team: { team_id: "f490a3bf-b29f-42ce-a5bc-3cb67ad2baee", name: "Arsenal FC", name_zh: "阿森纳", logo_url: null },
+            away_team: { team_id: "e575463d-244b-461b-9b17-dd49f90adb4c", name: "Chelsea FC", name_zh: "切尔西", logo_url: null },
+            kickoff_at: "2026-11-14T19:00:00.000Z",
+            match_status: "finished",
+            settlement_status: "settled",
+            is_prediction_closed: true,
+            pred_home_score: 3,
+            pred_away_score: 0,
+            regular_home_score: 3,
+            regular_away_score: 0,
+            match_score: 12,
+            wdl_hit: true,
+            exact_hit: true,
+          },
+          {
+            match_id: "match-cancelled",
+            home_team: { team_id: "f490a3bf-b29f-42ce-a5bc-3cb67ad2baee", name: "Arsenal FC", name_zh: "阿森纳", logo_url: null },
+            away_team: { team_id: "e575463d-244b-461b-9b17-dd49f90adb4c", name: "Chelsea FC", name_zh: "切尔西", logo_url: null },
+            kickoff_at: "2026-11-14T15:00:00.000Z",
+            match_status: "cancelled",
+            settlement_status: "voided",
+            is_prediction_closed: true,
+            pred_home_score: 0,
+            pred_away_score: 0,
+            regular_home_score: null,
+            regular_away_score: null,
+            match_score: null,
+            wdl_hit: null,
+            exact_hit: null,
+          },
+        ],
+      }),
+    }));
+    const { page, navs } = loadPage({ getShareCardForUser });
+
+    await page.onLoad({ user_id: SHARER_ID, ...QUERY, share_token: "tok-copy-bet" });
+    expect(page.data.card.favoriteTeamText).toBe("阿森纳");
+    expect(page.data.card.hasFavoriteTeam).toBe(true);
+    expect(page.data.card.matches).toHaveLength(4);
+
+    const [openItem, liveItem, settledItem, cancelledItem] = page.data.card.matches;
+    expect(openItem).toMatchObject({
+      matchId: "match-open",
+      homeNameZh: "升班马联",
+      homeLogo: "https://cdn.example.com/p.png",
+      awayNameZh: "切尔西",
+      canFollow: true,
+      predictionText: "2 : 1",
+    });
+    expect(openItem.statusText).toContain("未开赛");
+    expect(liveItem).toMatchObject({ canFollow: false });
+    expect(liveItem.statusText).toContain("进行中");
+    expect(settledItem).toMatchObject({ canFollow: false, pointsText: "+12" });
+    expect(settledItem.statusText).toContain("精确命中");
+    expect(cancelledItem).toMatchObject({ canFollow: false, actualText: "—", pointsText: "不计分" });
+    expect(cancelledItem.statusText).toContain("取消");
+
+    page.onFollowTap({
+      currentTarget: {
+        dataset: {
+          matchId: "match-open",
+          prefillHome: openItem.predHomeScore,
+          prefillAway: openItem.predAwayScore,
+        },
+      },
+    });
+    expect(navs.at(-1)).toEqual([
+      "navigateTo",
+      "/pages/match-detail/match-detail?match_id=match-open&prefill_home=2&prefill_away=1",
+    ]);
+
+    page.onMatchTap({
+      currentTarget: {
+        dataset: {
+          matchId: "match-settled",
+          canFollow: false,
+          prefillHome: settledItem.predHomeScore,
+          prefillAway: settledItem.predAwayScore,
+        },
+      },
+    });
+    expect(navs.at(-1)).toEqual([
+      "navigateTo",
+      "/pages/match-detail/match-detail?match_id=match-settled",
+    ]);
+  });
+
+  it("[D-S1-03] renders masked deleted-user card cleanly when GET /v1/share-card/{user_id} returns 200", async () => {
+    const getShareCardForUser = vi.fn(async () => ({
+      statusCode: 200,
+      data: shareCardData({
+        user_id: SHARER_ID,
+        display_name: "已注销用户",
+        favorite_team_id: null,
+        share_token: null,
+        round_predictions: 1,
+        matches: [],
+      }),
+    }));
+    const { page } = loadPage({ getShareCardForUser });
+
+    await page.onLoad({ user_id: SHARER_ID, ...QUERY });
+    expect(page.data.state).toBe("card");
+    expect(page.data.card.displayName).toBe("已注销用户");
+    expect(page.data.card.isDeleted).toBe(true);
+    expect(page.data.card.hasFavoriteTeam).toBe(false);
+    expect(page.onShareAppMessage().path).not.toContain("share_token=");
+  });
+
+  it("[A-S6-08] maps 429 RATE_LIMITED to rateLimited without retry button and disables onRetry", async () => {
+    const wxml = readFileSync(join(HERE, "share-card.wxml"), "utf8");
+    expect(wxml).toContain("errorKind === 'network' || errorKind === 'failed'");
+
+    const getShareCardForUser = vi.fn(async () => ({
+      statusCode: 429,
+      code: "RATE_LIMITED",
+      message: "请求过于频繁，请稍后再试",
+    }));
+    const { page } = loadPage({ getShareCardForUser });
+
+    await page.onLoad({ user_id: SHARER_ID, ...QUERY });
+    expect(page.data.state).toBe("error");
+    expect(page.data.errorKind).toBe("rateLimited");
+    expect(page.data.errorKind === "network" || page.data.errorKind === "failed").toBe(false);
+
+    await page.onRetry();
+    expect(getShareCardForUser).toHaveBeenCalledTimes(1);
+  });
+
+  it("[A-S6-04] onShareTimeline returns empty query before card is ready", async () => {
+    const { page } = loadPage();
+    await page.onLoad({});
+    const timeline = page.onShareTimeline();
+    expect(timeline.query).toBe("");
+    expect(timeline.query).not.toContain("user_id=");
   });
 });

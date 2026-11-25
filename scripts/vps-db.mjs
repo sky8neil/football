@@ -18,6 +18,57 @@ function required(value, message) {
   return value.trim();
 }
 
+const SQL_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_-]*$/;
+
+function assertSqlIdentifier(value, key) {
+  if (!SQL_IDENTIFIER.test(value)) throw new Error(`${key} must be a valid SQL identifier`);
+}
+
+function assertPostgresDatabaseUrl(databaseUrl) {
+  let protocol = "";
+  try {
+    protocol = new URL(databaseUrl).protocol;
+  } catch {
+    throw new Error("FOOTBALL_DATABASE_URL must use the postgres or postgresql protocol");
+  }
+  if (protocol !== "postgres:" && protocol !== "postgresql:") {
+    throw new Error("FOOTBALL_DATABASE_URL must use the postgres or postgresql protocol");
+  }
+}
+
+function assertNoEnvironmentMarker(value, key, marker, environment) {
+  if (value.toLowerCase().includes(marker)) {
+    throw new Error(`${key} must not contain ${marker} when FOOTBALL_ENVIRONMENT=${environment}`);
+  }
+}
+
+function assertVpsDbEnvironmentIsolation(environment, schema, namespace) {
+  if (environment === undefined || environment === "") return;
+  if (environment !== "dev" && environment !== "test" && environment !== "prod") {
+    throw new Error("FOOTBALL_ENVIRONMENT must be one of: dev, test, prod");
+  }
+  const fields = [
+    ["FOOTBALL_DATABASE_SCHEMA", schema],
+    ["FOOTBALL_RESOURCE_NAMESPACE", namespace],
+  ];
+  const forbiddenByEnv = {
+    prod: ["dev", "test"],
+    dev: ["test", "prod"],
+    test: ["dev", "prod"],
+  };
+  for (const [key, value] of fields) {
+    for (const marker of forbiddenByEnv[environment]) {
+      assertNoEnvironmentMarker(value, key, marker, environment);
+    }
+  }
+}
+
+function isProductionDbTarget(environment, schema, namespace) {
+  if (environment === "prod") return true;
+  const folded = `${schema}\n${namespace}`.toLowerCase();
+  return folded.includes("prod");
+}
+
 async function loadSchema() {
   const distPath = join(ROOT, "dist", "infrastructure", "postgres-schema.js");
   if (!existsSync(distPath)) {
@@ -64,6 +115,7 @@ function printDiff(diff, plan, pendingStatements) {
       indexes: diff.pending.indexes,
       functions: diff.pending.functions,
     },
+    driftedIndexes: diff.driftedIndexes,
     counts: {
       expected_tables: diff.expected.tables.length,
       expected_indexes: diff.expected.indexes.length,
@@ -72,6 +124,7 @@ function printDiff(diff, plan, pendingStatements) {
       existing_indexes: diff.existing.indexes.length,
       existing_functions: diff.existing.functions.length,
       pending: pendingCount,
+      drifted_indexes: diff.driftedIndexes.length,
     },
   }, null, 2));
   const sql = pendingStatements(plan, diff);
@@ -85,6 +138,7 @@ function printDiff(diff, plan, pendingStatements) {
 
 export async function main(args = process.argv.slice(2), env = process.env) {
   const apply = hasFlag(args, "--apply");
+  const allowProd = hasFlag(args, "--allow-prod");
   if (apply && (hasFlag(args, "--plan") || hasFlag(args, "--dry-run"))) {
     throw new Error("Use either --plan/--dry-run or --apply, not both");
   }
@@ -96,6 +150,15 @@ export async function main(args = process.argv.slice(2), env = process.env) {
     argValue(args, "--schema") ?? env.FOOTBALL_DATABASE_SCHEMA,
     "Provide --schema or FOOTBALL_DATABASE_SCHEMA",
   );
+  assertSqlIdentifier(schema, "FOOTBALL_DATABASE_SCHEMA");
+  assertSqlIdentifier(namespace, "FOOTBALL_RESOURCE_NAMESPACE");
+  assertVpsDbEnvironmentIsolation(env.FOOTBALL_ENVIRONMENT, schema, namespace);
+  if (apply && isProductionDbTarget(env.FOOTBALL_ENVIRONMENT, schema, namespace) && !allowProd) {
+    throw new Error("Refusing to --apply a production database target without --allow-prod");
+  }
+  const url = argValue(args, "--database-url") ?? env.FOOTBALL_DATABASE_URL;
+  const trimmedUrl = typeof url === "string" ? url.trim() : "";
+  if (trimmedUrl.length > 0) assertPostgresDatabaseUrl(trimmedUrl);
   const {
     applyPostgresSchema,
     buildPostgresSchemaPlan,
@@ -104,11 +167,10 @@ export async function main(args = process.argv.slice(2), env = process.env) {
     pendingPostgresSchemaStatements,
   } = await loadSchema();
   const plan = buildPostgresSchemaPlan(namespace, schema);
-  const url = argValue(args, "--database-url") ?? env.FOOTBALL_DATABASE_URL;
   if (!apply) {
     let inspection = null;
-    if (typeof url === "string" && url.trim().length > 0) {
-      const client = await loadClient(url.trim());
+    if (trimmedUrl.length > 0) {
+      const client = await loadClient(trimmedUrl);
       try {
         inspection = await inspectPostgresSchema(async (sql, params) => client.query(sql, params), plan);
       } finally {
@@ -118,10 +180,14 @@ export async function main(args = process.argv.slice(2), env = process.env) {
     printDiff(diffPostgresSchema(plan, inspection), plan, pendingPostgresSchemaStatements);
     return;
   }
-  const applyUrl = required(url, "FOOTBALL_DATABASE_URL or --database-url is required for --apply");
+  const applyUrl = required(trimmedUrl, "FOOTBALL_DATABASE_URL or --database-url is required for --apply");
   const client = await loadClient(applyUrl);
   try {
-    const report = await applyPostgresSchema(async (sql, params) => client.query(sql, params), plan);
+    const queryFn = Object.assign(
+      async (sql, params) => client.query(sql, params),
+      { withSession: async (fn) => fn(async (sql, params) => client.query(sql, params)) },
+    );
+    const report = await applyPostgresSchema(queryFn, plan);
     console.log(JSON.stringify(report, null, 2));
   } finally {
     await client.end();

@@ -1,6 +1,19 @@
 const { getMyUnlocks } = require("../../services/unlocks.js");
 const { getMyProfile } = require("../../services/profile.js");
 
+let authService = null;
+try {
+  authService = require("../../services/auth.js");
+} catch (_error) {
+  authService = null;
+}
+
+function currentLoginGeneration() {
+  if (!authService || typeof authService.getLoginGeneration !== "function") return 0;
+  const value = authService.getLoginGeneration();
+  return Number.isFinite(value) ? value : 0;
+}
+
 const UNLOCK_LABELS = {
   profile_card_style_1: "资料卡样式 1",
   favorite_team_name_accent: "主队名配色",
@@ -97,17 +110,36 @@ Page({
     items: [],
   },
 
+  requestSerial: 0,
+  loginGeneration: null,
+
   onLoad() {
-    this.loadPage();
+    this.loginGeneration = currentLoginGeneration();
+    return this.loadPage();
+  },
+
+  onShow() {
+    const generation = currentLoginGeneration();
+    const generationChanged = this.loginGeneration !== null && generation !== this.loginGeneration;
+    this.loginGeneration = generation;
+    if (generationChanged || this.data.state === "unauthorized") {
+      return this.loadPage();
+    }
   },
 
   loadPage() {
+    const requestSerial = (this.requestSerial || 0) + 1;
+    this.requestSerial = requestSerial;
+    const generation = currentLoginGeneration();
+    this.loginGeneration = generation;
+    const isCurrent = () => this.requestSerial === requestSerial && currentLoginGeneration() === generation;
     this.setData({
       state: "loading",
       errorMessage: "",
       items: [],
     });
     return Promise.all([getMyUnlocks(), getMyProfile()]).then((results) => {
+      if (!isCurrent()) return;
       const unlocksResult = results[0];
       const profileResult = results[1];
       if (applyErrorState(this, unlocksResult)) {
@@ -127,15 +159,20 @@ Page({
         errorMessage: "",
       });
     }).catch(() => {
+      if (!isCurrent()) return;
       this.setData({ state: "error", errorMessage: "网络异常，请重试" });
     });
+  },
+
+  onLoginTap() {
+    wx.navigateTo({ url: "/pages/session/session?return_to=unlocks" });
   },
 
   onRetry() {
     if (this.data.state === "rateLimited") {
       return;
     }
-    this.loadPage();
+    return this.loadPage();
   },
 
   onGoPredict() {

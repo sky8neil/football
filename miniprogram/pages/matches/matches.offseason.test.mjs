@@ -15,11 +15,13 @@ const deferred = () => { let resolve; const promise = new Promise((done) => { re
 function createPage({ statuses = [status("chinese_super_league", "completed"), status("la_liga", "in_season")], getLeagueStatus, getMyLeagueSummary, listMatches } = {}) {
   let definition;
   const switchTab = vi.fn();
+  const navigateTo = vi.fn();
   const storage = new Map();
   Object.defineProperty(globalThis, "Page", { value: (value) => { definition = value; }, configurable: true });
   Object.defineProperty(globalThis, "wx", {
     value: {
       switchTab,
+      navigateTo,
       stopPullDownRefresh: vi.fn(),
       getStorageSync: (key) => storage.get(key),
       setStorageSync: (key, value) => { storage.set(key, value); },
@@ -74,7 +76,7 @@ function createPage({ statuses = [status("chinese_super_league", "completed"), s
   page.data.selectedDate = "2026-11-16";
   page.data.dates = module.exports.buildDates(new Date());
   page.data.leagues = ["chinese_super_league", "la_liga"].map((id) => ({ id }));
-  return { page, requests, switchTab, storage };
+  return { page, requests, switchTab, navigateTo, storage };
 }
 
 beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(new Date("2026-11-15T16:00:00Z")); });
@@ -106,7 +108,6 @@ describe("league status and personal summary", () => {
     expect(switchTab).toHaveBeenCalledWith({ url: "/pages/rankings/rankings" });
     expect(storage.get("pending_ranking_target")).toEqual({
       board: "season",
-      levelSeasonId: "2026_2027",
     });
     expect(template).toContain("查看 {{levelSeasonLabel}}榜 →");
     expect(template).toContain("查看赛季排行榜 →");
@@ -251,5 +252,36 @@ describe("league status and personal summary", () => {
     expect(page.data.state).toBe("no-match");
     expect(page.data.leagueStatusById.chinese_super_league.active_season_id).toBe("2027");
     expect(requests.getMyLeagueSummary).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["401 UNAUTHORIZED", { statusCode: 401, code: "UNAUTHORIZED" }],
+    ["409 USER_DELETED", { statusCode: 409, code: "USER_DELETED" }],
+  ])("[A-S7-06] renders guest prompt and login action instead of error when offseason summary returns %s", async (_label, errorResponse) => {
+    const { page, navigateTo } = createPage({
+      getMyLeagueSummary: vi.fn(async () => errorResponse),
+    });
+    await page.loadFirstPage();
+    expect(page.data.state).toBe("offseason");
+    expect(page.data.summaryState).toBe("guest");
+    expect(page.data.leagueSummary).toBeNull();
+    expect(template).toContain("登录后查看本赛季个人小结");
+    expect(template).toContain("去登录");
+    page.onSummaryLoginTap();
+    expect(navigateTo).toHaveBeenCalledWith({ url: "/pages/session/session" });
+  });
+
+  it("[A-S7-11] keeps needsDefaultLeague enabled when initial getLeagueStatus fails and applies default league on retry", async () => {
+    const getLeagueStatus = vi.fn()
+      .mockResolvedValueOnce({ statusCode: 503 })
+      .mockResolvedValueOnce(response({ items: [status("la_liga", "in_season", { has_live_match: true }), status("premier_league", "completed")] }));
+    const { page } = createPage({ getLeagueStatus });
+    await page.loadFirstPage(true);
+    expect(page.needsDefaultLeague).toBe(true);
+    expect(page.data.selectedLeague).toBe("chinese_super_league");
+
+    await page.onRetry();
+    expect(page.needsDefaultLeague).toBe(false);
+    expect(page.data.selectedLeague).toBe("la_liga");
   });
 });

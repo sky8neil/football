@@ -12,6 +12,10 @@ function groupJoinError(code, fallback) {
   return COPY.groupJoinErrors[code] || fallback || COPY.groupActionFailed;
 }
 
+function normalizeInviteCode(value) {
+  return String(value || "").replace(/\s+/g, "").toUpperCase().slice(0, 8);
+}
+
 Page({
   data: {
     state: "ready",
@@ -30,8 +34,8 @@ Page({
   },
 
   onLoad(options) {
-    const inviteCode = options && typeof options.code === "string" ? options.code : "";
-    this.requestId = 0;
+    const rawCode = options && typeof options.code === "string" ? options.code : "";
+    const inviteCode = normalizeInviteCode(rawCode);
     this.pendingRecovery = null;
     this.setInviteCode(inviteCode, inviteCode && !isValidInviteCode(inviteCode) ? COPY.groupInvalidInvite : "");
   },
@@ -56,7 +60,11 @@ Page({
   },
 
   onInviteInput(event) {
-    this.setInviteCode(String(event.detail.value || "").toUpperCase(), "");
+    const inviteCode = normalizeInviteCode(event && event.detail && event.detail.value);
+    const errorMessage = inviteCode.length === 8 && !isValidInviteCode(inviteCode)
+      ? COPY.groupInvalidInvite
+      : "";
+    this.setInviteCode(inviteCode, errorMessage);
   },
 
   setInviteCode(inviteCode, errorMessage) {
@@ -91,6 +99,7 @@ Page({
         return;
       }
       if (result.statusCode === 401 && result.code === "UNAUTHORIZED") {
+        this.setData({ loading: false, canConfirm: isValidInviteCode(inviteCode) });
         wx.setStorageSync("pending_group_invite_code", inviteCode);
         wx.redirectTo({ url: "/pages/session/session" });
         return;
@@ -124,6 +133,23 @@ Page({
   },
 
   openGroup(groupId) {
+    if (groupId) {
+      this.pendingRecovery = { type: "openGroup", groupId };
+      this.setData({ loading: false, canConfirm: isValidInviteCode(this.data.inviteCode) });
+      wx.setStorageSync("pending_ranking_group_id", groupId);
+      wx.switchTab({
+        url: "/pages/rankings/rankings",
+        fail: () => {
+          this.setData({
+            state: "error",
+            loading: false,
+            canConfirm: true,
+            errorMessage: COPY.groupLoadFailed,
+          });
+        },
+      });
+      return;
+    }
     const requestId = this.nextRequestId();
     listMyGroups({ limit: 20 }).then((result) => {
       if (!this.isCurrent(requestId)) return;
@@ -133,6 +159,7 @@ Page({
         this.failRecovery(requestId, result.message || COPY.groupLoadFailed);
         return;
       }
+      this.setData({ loading: false });
       wx.setStorageSync("pending_ranking_group_id", groupId);
       wx.switchTab({ url: "/pages/rankings/rankings" });
     }).catch((error) => {

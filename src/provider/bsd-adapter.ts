@@ -23,8 +23,15 @@ function eventIdentifier(value: unknown): string | number | undefined {
   return asIdentifier(value);
 }
 
-function nextEventsUrl(value: string): string {
-  const url = new URL(value, "https://sports.bzzoiro.com/api/v2/events/");
+const DEFAULT_BSD_BASE_URL = "https://sports.bzzoiro.com/api/v2";
+const MAX_PAGES = 100;
+
+function nextEventsUrl(value: string, baseUrl: string): string {
+  const base = new URL(baseUrl.endsWith("/") ? `${baseUrl}events/` : `${baseUrl}/events/`);
+  const url = new URL(value, base);
+  if (url.origin !== base.origin) {
+    throw new ProviderDataError("DIAG_PROVIDER_FORMAT source_id=bsd field=next");
+  }
   const path = url.pathname.replace(/\/+$/, "");
   if (!/(^|\/)events(?:\/\d+)?$/.test(path) || /(odds|bookmaker|bet|predict|market)/i.test(path)) {
     throw new ProviderDataError("DIAG_PROVIDER_FORMAT source_id=bsd field=next");
@@ -92,6 +99,7 @@ export class BsdAdapter implements ProviderAdapter {
   constructor(
     private readonly http: ProviderHttpClient,
     private readonly log?: (entry: Record<string, unknown>) => void,
+    private readonly baseUrl: string = DEFAULT_BSD_BASE_URL,
   ) {}
 
   async fetchSeasonFixtures(league: ProviderAdapterLeague, options?: ProviderAdapterCallOptions): Promise<readonly ApiFootballFixture[]> {
@@ -105,13 +113,26 @@ export class BsdAdapter implements ProviderAdapter {
     options?: ProviderAdapterCallOptions,
   ): Promise<readonly ApiFootballFixture[]> {
     const all: ApiFootballFixture[] = [];
+    const visitedCursors = new Set<string>();
     let offset = 0;
     let next: string | null = null;
+    let pageCount = 0;
     do {
+      if (pageCount >= MAX_PAGES) {
+        throw new ProviderDataError("DIAG_PROVIDER_PAGINATION source_id=bsd reason=max_pages");
+      }
+      const nextUrl = next === null ? null : nextEventsUrl(next, this.baseUrl);
+      if (nextUrl !== null) {
+        if (visitedCursors.has(nextUrl)) {
+          throw new ProviderDataError("DIAG_PROVIDER_PAGINATION source_id=bsd reason=cursor_loop");
+        }
+        visitedCursors.add(nextUrl);
+      }
+      pageCount += 1;
       await options?.beforeRequest?.();
       const response = asRecord(await this.http.getJson(
-        next === null ? "events/" : nextEventsUrl(next),
-        next ? {} : {
+        nextUrl === null ? "events/" : nextUrl,
+        nextUrl ? {} : {
           league_id: league.source_league_ref,
           date_from: dateFrom,
           date_to: dateTo,

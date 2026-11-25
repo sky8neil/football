@@ -439,7 +439,7 @@ describe("L. 等级 v2（规范 44-L / 17.5–17.9）", () => {
     expect(afterCorr.below_count).toBe(0);
   });
 
-  it("Q1 没有首次评估时返回未定级基线", () => {
+  it("Q1 没有首次评估时返回 initialState 基线", () => {
     const initial = baseState(3, 1, 5);
     const replayed = replayLevel({
       scope: LevelScope.Career,
@@ -452,8 +452,28 @@ describe("L. 等级 v2（规范 44-L / 17.5–17.9）", () => {
       initialState: initial,
     });
 
-    expect(replayed).toMatchObject({ level: 1, best_level: 1, below_count: 0 });
+    expect(replayed).toMatchObject(initial);
+    expect(replayed.week_base).toEqual(initial);
     expect(replayed.last_eval_as_of).toBeNull();
+  });
+
+  it("A-S5-11 事件回放从 initialState 起始而非硬编码 Lv1", () => {
+    const initial = baseState(4, 0, 5);
+    const replayed = replayLevel({
+      scope: LevelScope.Career,
+      facts: [],
+      firstEvalAsOf: MONDAY_W1,
+      untilAsOf: MONDAY_W1,
+      correctionSettledAts: [],
+      ruleVersion: RULE,
+      protectionEndAsOf: PROTECTED_UNTIL,
+      initialState: initial,
+    });
+
+    expect(replayed).toMatchObject(initial);
+    expect(replayed.week_base).toEqual(initial);
+    expect(replayed.week_base_as_of?.getTime()).toBe(MONDAY_W1.getTime());
+    expect(replayed.last_eval_as_of?.getTime()).toBe(MONDAY_W1.getTime());
   });
 
   it("applied_at >= as_of 的 item 不进窗口；取 as_of 前最大 source_result_version 的 new_score", () => {

@@ -5,6 +5,7 @@ import { applyAdminGrant, planAdminGrant } from "../application/admin-grant.js";
 import { createPostgresAppRepository } from "../gateway/repository-factory.js";
 import { createPostgresQueryFn } from "./postgres-document-db.js";
 import {
+  ADMIN_LOGIN_CONSUMED_JTIS_TABLE,
   AUTH_SESSIONS_TABLE,
   applyPostgresSchema,
   buildPostgresSchemaPlan,
@@ -41,9 +42,10 @@ describe.skipIf(!ENABLED)("VPS08 isolated postgres init", () => {
     const plan = buildPostgresSchemaPlan(NAMESPACE, SCHEMA);
     const first = await applyPostgresSchema(query, plan);
     expect(first.created.schema).toBe(true);
-    expect(first.created.tables).toHaveLength(COLLECTION_DEFINITIONS.length + 1);
+    expect(first.created.tables).toHaveLength(COLLECTION_DEFINITIONS.length + 2);
     expect(first.created.tables).toContain(AUTH_SESSIONS_TABLE);
-    expect(first.created.indexes).toHaveLength(UNIQUE_INDEXES.length + QUERY_INDEXES.length + 2);
+    expect(first.created.tables).toContain(ADMIN_LOGIN_CONSUMED_JTIS_TABLE);
+    expect(first.created.indexes).toHaveLength(UNIQUE_INDEXES.length + QUERY_INDEXES.length + 3);
 
     const extraTable = "vps08_keep_me";
     await pool.query(`CREATE TABLE ${quoteIdent(SCHEMA)}.${quoteIdent(extraTable)} (id int)`);

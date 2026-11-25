@@ -3,11 +3,13 @@ import { COLLECTION_DEFINITIONS } from "../schema/collections.js";
 import { QUERY_INDEXES, UNIQUE_INDEXES } from "../schema/indexes.js";
 import { cloudBaseCollectionName, COLLECTION_ALIASES } from "./cloudbase-db.js";
 import {
+  ADMIN_LOGIN_CONSUMED_JTIS_TABLE,
   AUTH_SESSIONS_TABLE,
   JSONB_UTC_TIMESTAMPTZ_FUNCTION,
   applyPostgresSchema,
   buildPostgresSchemaPlan,
   diffPostgresSchema,
+  normalizePostgresIndexDef,
   inspectPostgresSchema,
   pendingPostgresSchemaStatements,
   postgresDocumentFieldExpr,
@@ -38,11 +40,91 @@ function fakeCatalog() {
   const schemas = new Set<string>();
   const tables = new Map<string, Set<string>>();
   const indexes = new Map<string, Set<string>>();
+  const indexDefs = new Map<string, Map<string, string>>();
   const functions = new Map<string, Set<string>>();
   const sqlLog: string[] = [];
 
+  const applyStatement = (statement: string): void => {
+    const schemaMatch = statement.match(/^CREATE SCHEMA IF NOT EXISTS "([^"]+)"$/);
+    if (schemaMatch) {
+      schemas.add(schemaMatch[1]!);
+      tables.set(schemaMatch[1]!, tables.get(schemaMatch[1]!) ?? new Set());
+      indexes.set(schemaMatch[1]!, indexes.get(schemaMatch[1]!) ?? new Set());
+      indexDefs.set(schemaMatch[1]!, indexDefs.get(schemaMatch[1]!) ?? new Map());
+      functions.set(schemaMatch[1]!, functions.get(schemaMatch[1]!) ?? new Set());
+      return;
+    }
+    const tableMatch = statement.match(/^CREATE TABLE IF NOT EXISTS "([^"]+)"\."([^"]+)"/);
+    if (tableMatch) {
+      const schema = tableMatch[1]!;
+      schemas.add(schema);
+      const set = tables.get(schema) ?? new Set();
+      set.add(tableMatch[2]!);
+      tables.set(schema, set);
+      return;
+    }
+    const dropIndexMatch = statement.match(/^DROP INDEX IF EXISTS "([^"]+)"\."([^"]+)"$/);
+    if (dropIndexMatch) {
+      indexes.get(dropIndexMatch[1]!)?.delete(dropIndexMatch[2]!);
+      indexDefs.get(dropIndexMatch[1]!)?.delete(dropIndexMatch[2]!);
+      return;
+    }
+    const indexMatch = statement.match(/^CREATE (?:UNIQUE )?INDEX IF NOT EXISTS "([^"]+)" ON "([^"]+)"/);
+    if (indexMatch) {
+      const schema = indexMatch[2]!;
+      const set = indexes.get(schema) ?? new Set();
+      set.add(indexMatch[1]!);
+      indexes.set(schema, set);
+      const defs = indexDefs.get(schema) ?? new Map();
+      defs.set(indexMatch[1]!, statement);
+      indexDefs.set(schema, defs);
+      return;
+    }
+    const functionMatch = statement.match(/^CREATE OR REPLACE FUNCTION "([^"]+)"\."([^"]+)"/);
+    if (functionMatch) {
+      const schema = functionMatch[1]!;
+      const set = functions.get(schema) ?? new Set();
+      set.add(functionMatch[2]!);
+      functions.set(schema, set);
+      return;
+    }
+    throw new Error(`unexpected SQL: ${statement}`);
+  };
+
+  const unescapeSql = (value: string): string => value.replaceAll("''", "'");
+
+  const applyLockedScript = (sql: string): void => {
+    for (const match of sql.matchAll(/EXECUTE '((?:[^']|'')*)';/g)) {
+      const statement = unescapeSql(match[1]!);
+      if (statement.startsWith("CREATE SCHEMA IF NOT EXISTS")) {
+        const schema = statement.match(/^CREATE SCHEMA IF NOT EXISTS "([^"]+)"$/)?.[1];
+        if (schema !== undefined && !schemas.has(schema)) applyStatement(statement);
+        continue;
+      }
+      if (statement.startsWith("CREATE TABLE IF NOT EXISTS")) {
+        const tableMatch = statement.match(/^CREATE TABLE IF NOT EXISTS "([^"]+)"\."([^"]+)"/);
+        if (tableMatch !== null && !tables.get(tableMatch[1]!)?.has(tableMatch[2]!)) applyStatement(statement);
+        continue;
+      }
+      if (/^CREATE (?:UNIQUE )?INDEX IF NOT EXISTS /.test(statement)) {
+        const indexMatch = statement.match(/^CREATE (?:UNIQUE )?INDEX IF NOT EXISTS "([^"]+)" ON "([^"]+)"/);
+        if (indexMatch !== null && !indexes.get(indexMatch[2]!)?.has(indexMatch[1]!)) applyStatement(statement);
+        continue;
+      }
+      if (statement.startsWith("CREATE OR REPLACE FUNCTION")) {
+        applyStatement(statement);
+        continue;
+      }
+      throw new Error(`unexpected locked SQL: ${statement}`);
+    }
+  };
+
   const query: PostgresQueryFn = async (sql: string, params?: unknown[]): Promise<PostgresQueryResult> => {
     sqlLog.push(sql);
+    if (sql.includes("pg_advisory_xact_lock")) {
+      applyLockedScript(sql);
+      return { rows: [] };
+    }
     if (sql.includes("pg_proc")) {
       const schema = String(params?.[0]);
       return { rows: [...(functions.get(schema) ?? [])].map((proname) => ({ proname })) };
@@ -56,45 +138,23 @@ function fakeCatalog() {
     }
     if (sql.includes("pg_indexes")) {
       const schema = String(params?.[0]);
-      return { rows: [...(indexes.get(schema) ?? [])].map((indexname) => ({ indexname })) };
+      const defs = indexDefs.get(schema) ?? new Map();
+      return {
+        rows: [...(indexes.get(schema) ?? [])].map((indexname) => {
+          const indexdef = defs.get(indexname);
+          return indexdef === undefined ? { indexname } : { indexname, indexdef };
+        }),
+      };
     }
-    const schemaMatch = sql.match(/^CREATE SCHEMA IF NOT EXISTS "([^"]+)"$/);
-    if (schemaMatch) {
-      schemas.add(schemaMatch[1]!);
-      tables.set(schemaMatch[1]!, tables.get(schemaMatch[1]!) ?? new Set());
-      indexes.set(schemaMatch[1]!, indexes.get(schemaMatch[1]!) ?? new Set());
-      functions.set(schemaMatch[1]!, functions.get(schemaMatch[1]!) ?? new Set());
-      return { rows: [] };
+    try {
+      applyStatement(sql.trim());
+    } catch (error) {
+      throw new Error(`unexpected SQL: ${sql}`, { cause: error });
     }
-    const tableMatch = sql.match(/^CREATE TABLE IF NOT EXISTS "([^"]+)"\."([^"]+)"/);
-    if (tableMatch) {
-      const schema = tableMatch[1]!;
-      schemas.add(schema);
-      const set = tables.get(schema) ?? new Set();
-      set.add(tableMatch[2]!);
-      tables.set(schema, set);
-      return { rows: [] };
-    }
-    const indexMatch = sql.match(/^CREATE (?:UNIQUE )?INDEX IF NOT EXISTS "([^"]+)" ON "([^"]+)"/);
-    if (indexMatch) {
-      const schema = indexMatch[2]!;
-      const set = indexes.get(schema) ?? new Set();
-      set.add(indexMatch[1]!);
-      indexes.set(schema, set);
-      return { rows: [] };
-    }
-    const functionMatch = sql.match(/^CREATE OR REPLACE FUNCTION "([^"]+)"\."([^"]+)"/);
-    if (functionMatch) {
-      const schema = functionMatch[1]!;
-      const set = functions.get(schema) ?? new Set();
-      set.add(functionMatch[2]!);
-      functions.set(schema, set);
-      return { rows: [] };
-    }
-    throw new Error(`unexpected SQL: ${sql}`);
+    return { rows: [] };
   };
 
-  return { query, sqlLog, schemas, tables, indexes, functions };
+  return { query, sqlLog, schemas, tables, indexes, indexDefs, functions };
 }
 
 describe("postgres schema plan §6.1", () => {
@@ -190,6 +250,8 @@ describe("postgres schema plan §6.1", () => {
     expect(dateFields.length).toBeGreaterThan(0);
     expect(dateFields.map((item) => `${item.name}:${item.field}`).sort()).toEqual([
       "ix_anomalies_status_blocking:last_seen_at",
+      "ix_audit_action_created:created_at",
+      "ix_audit_created:created_at",
       "ix_audit_entity:created_at",
       "ix_board_snapshots_rank:snapshot_at",
       "ix_board_snapshots_season_final:snapshot_at",
@@ -246,7 +308,7 @@ describe("postgres schema plan §6.1", () => {
     );
   });
 
-  it("adds auth_sessions with lookup indexes", () => {
+  it("adds auth_sessions and admin_login_consumed_jtis with lookup indexes", () => {
     expect(plan.authSessions.table).toBe(AUTH_SESSIONS_TABLE);
     expect(plan.authSessions.sql).toBe(
       `CREATE TABLE IF NOT EXISTS "${SCHEMA}"."${AUTH_SESSIONS_TABLE}" (token text PRIMARY KEY, openid text NOT NULL, expires_at timestamptz NOT NULL)`,
@@ -254,6 +316,13 @@ describe("postgres schema plan §6.1", () => {
     expect(plan.authSessions.indexes.map((item) => item.name)).toEqual([
       "ix_auth_sessions_expires_at",
       "ix_auth_sessions_openid",
+    ]);
+    expect(plan.adminLoginConsumedJtis.table).toBe(ADMIN_LOGIN_CONSUMED_JTIS_TABLE);
+    expect(plan.adminLoginConsumedJtis.sql).toBe(
+      `CREATE TABLE IF NOT EXISTS "${SCHEMA}"."${ADMIN_LOGIN_CONSUMED_JTIS_TABLE}" (jti text PRIMARY KEY, expires_at timestamptz NOT NULL)`,
+    );
+    expect(plan.adminLoginConsumedJtis.indexes.map((item) => item.name)).toEqual([
+      "ix_admin_login_consumed_jtis_expires_at",
     ]);
   });
 
@@ -263,10 +332,35 @@ describe("postgres schema plan §6.1", () => {
     expect(statements[1]).toBe(plan.functions[0]?.sql);
     expect(statements).toContain(plan.tables[0]?.sql);
     expect(statements).toContain(plan.authSessions.sql);
-    expect(statements.at(-2)).toBe(plan.authSessions.indexes[0]?.sql);
-    expect(statements.at(-1)).toBe(plan.authSessions.indexes[1]?.sql);
+    expect(statements).toContain(plan.adminLoginConsumedJtis.sql);
+    expect(statements.at(-3)).toBe(plan.authSessions.indexes[0]?.sql);
+    expect(statements.at(-2)).toBe(plan.authSessions.indexes[1]?.sql);
+    expect(statements.at(-1)).toBe(plan.adminLoginConsumedJtis.indexes[0]?.sql);
     expect(quoteIdent("football_prod")).toBe('"football_prod"');
     expect(() => quoteIdent("football prod")).toThrow("invalid SQL identifier");
+  });
+
+  it("does not erase parentheses that distinguish index expressions", () => {
+    const summed = normalizePostgresIndexDef(
+      `CREATE INDEX ix_expr ON ${SCHEMA}.docs ((((document ->> 'a')::numeric + (document ->> 'b')::numeric) * (document ->> 'c')::numeric))`,
+      SCHEMA,
+    );
+    const multiplied = normalizePostgresIndexDef(
+      `CREATE INDEX ix_expr ON ${SCHEMA}.docs (((document ->> 'a')::numeric + ((document ->> 'b')::numeric * (document ->> 'c')::numeric)))`,
+      SCHEMA,
+    );
+    expect(summed).not.toBe(multiplied);
+    expect(
+      normalizePostgresIndexDef(
+        `CREATE INDEX ix_expr ON ${SCHEMA}.docs ((COALESCE((document ->> 'a'), (document ->> 'b'))))`,
+        SCHEMA,
+      ),
+    ).toBe(
+      normalizePostgresIndexDef(
+        `CREATE INDEX ix_expr ON ${SCHEMA}.docs (COALESCE((document ->> 'a'), (document ->> 'b')))`,
+        SCHEMA,
+      ),
+    );
   });
 
   it("inspect/apply report expected vs existing vs created without destroying extras", async () => {
@@ -276,10 +370,15 @@ describe("postgres schema plan §6.1", () => {
 
     const first = await applyPostgresSchema(fake.query, plan);
     expect(first.created.schema).toBe(true);
-    expect(first.created.tables).toEqual([...plan.tables.map((item) => item.table), AUTH_SESSIONS_TABLE]);
+    expect(first.created.tables).toEqual([
+      ...plan.tables.map((item) => item.table),
+      AUTH_SESSIONS_TABLE,
+      ADMIN_LOGIN_CONSUMED_JTIS_TABLE,
+    ]);
     expect(first.created.indexes).toEqual([
       ...plan.indexes.map((item) => item.name),
       ...plan.authSessions.indexes.map((item) => item.name),
+      ...plan.adminLoginConsumedJtis.indexes.map((item) => item.name),
     ]);
     expect(first.created.functions).toEqual([JSONB_UTC_TIMESTAMPTZ_FUNCTION]);
     expect(first.expected.tables).toEqual(first.created.tables);
@@ -293,14 +392,19 @@ describe("postgres schema plan §6.1", () => {
     expect(second.created).toEqual({ schema: false, tables: [], indexes: [], functions: [] });
     expect(second.existing.tables.sort()).toEqual([...second.expected.tables].sort());
     expect(second.existing.functions).toEqual([JSONB_UTC_TIMESTAMPTZ_FUNCTION]);
-    expect(fake.sqlLog.filter((sql) => sql.startsWith("CREATE OR REPLACE FUNCTION"))).toHaveLength(2);
+    expect(fake.sqlLog.filter((sql) => sql.includes("CREATE OR REPLACE FUNCTION"))).toHaveLength(2);
   });
 
   it("plan diff reports expected vs existing vs pending objects", async () => {
-    const expectedTables = [...plan.tables.map((item) => item.table), AUTH_SESSIONS_TABLE];
+    const expectedTables = [
+      ...plan.tables.map((item) => item.table),
+      AUTH_SESSIONS_TABLE,
+      ADMIN_LOGIN_CONSUMED_JTIS_TABLE,
+    ];
     const expectedIndexes = [
       ...plan.indexes.map((item) => item.name),
       ...plan.authSessions.indexes.map((item) => item.name),
+      ...plan.adminLoginConsumedJtis.indexes.map((item) => item.name),
     ];
     const expectedFunctions = [JSONB_UTC_TIMESTAMPTZ_FUNCTION];
     const uninspected = diffPostgresSchema(plan, null);
@@ -348,8 +452,16 @@ describe("postgres schema plan §6.1", () => {
 
   it("emits jsonb_utc_timestamptz in pending SQL when schema exists but the function is missing", () => {
     const dateIndex = plan.indexes.find((item) => item.sql.includes(JSONB_UTC_TIMESTAMPTZ_FUNCTION))!;
-    const tables = [...plan.tables.map((item) => item.table), AUTH_SESSIONS_TABLE];
-    const indexes = [...plan.indexes.map((item) => item.name), ...plan.authSessions.indexes.map((item) => item.name)];
+    const tables = [
+      ...plan.tables.map((item) => item.table),
+      AUTH_SESSIONS_TABLE,
+      ADMIN_LOGIN_CONSUMED_JTIS_TABLE,
+    ];
+    const indexes = [
+      ...plan.indexes.map((item) => item.name),
+      ...plan.authSessions.indexes.map((item) => item.name),
+      ...plan.adminLoginConsumedJtis.indexes.map((item) => item.name),
+    ];
     const missingFnOnly = diffPostgresSchema(plan, {
       schemaExists: true,
       tables,
@@ -377,5 +489,226 @@ describe("postgres schema plan §6.1", () => {
     expect(sql[0]).toBe(plan.functions[0]!.sql);
     expect(sql).toContain(dateIndex.sql);
     expect(sql.indexOf(plan.functions[0]!.sql)).toBeLessThan(sql.indexOf(dateIndex.sql));
+  });
+
+  it("keeps pg_advisory_xact_lock and DDL in one query so the transaction stays on one connection", async () => {
+    const fake = fakeCatalog();
+    let active = 0;
+    let maxActive = 0;
+    let tail = Promise.resolve();
+    const query: PostgresQueryFn = async (sql, params) => {
+      const run = async () => {
+        if (sql.includes("CREATE OR REPLACE FUNCTION") || sql.includes("CREATE TABLE IF NOT EXISTS")) {
+          active += 1;
+          maxActive = Math.max(maxActive, active);
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          active -= 1;
+        }
+        return fake.query(sql, params);
+      };
+      if (!sql.includes("pg_advisory_xact_lock")) return run();
+      const waitFor = tail;
+      let release = () => {};
+      tail = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      await waitFor;
+      try {
+        return await run();
+      } finally {
+        release();
+      }
+    };
+
+    await Promise.all([applyPostgresSchema(query, plan), applyPostgresSchema(query, plan)]);
+
+    expect(maxActive).toBe(1);
+    const scripts = fake.sqlLog.filter((sql) => sql.includes("pg_advisory_xact_lock"));
+    expect(scripts).toHaveLength(2);
+    for (const sql of scripts) {
+      const lockAt = sql.indexOf("pg_advisory_xact_lock");
+      const ddlAt = sql.indexOf("CREATE ");
+      expect(lockAt).toBeGreaterThanOrEqual(0);
+      expect(ddlAt).toBeGreaterThan(lockAt);
+      expect(sql).toContain("CREATE OR REPLACE FUNCTION");
+      expect(sql).toContain("CREATE SCHEMA IF NOT EXISTS");
+      expect(sql).toContain("CREATE TABLE IF NOT EXISTS");
+      expect(sql).toContain("CREATE INDEX IF NOT EXISTS");
+      expect(sql).toContain(`hashtext('football_postgres_schema')`);
+      expect(sql).toContain(`hashtext('${SCHEMA}:${NAMESPACE}')`);
+      expect(sql).not.toContain("DROP INDEX");
+      expect(sql).not.toContain("football_normalize_indexdef");
+      expect(sql).not.toMatch(/\bpg_advisory_lock\s*\(/);
+      expect(sql.indexOf("pg_advisory_xact_lock")).toBeLessThan(sql.indexOf("CREATE SCHEMA IF NOT EXISTS"));
+    }
+    expect(fake.sqlLog.some((sql) => sql === "BEGIN" || sql.startsWith("SELECT pg_advisory_xact_lock"))).toBe(false);
+  });
+
+  it("reports drifted index definitions and does not drop or recreate them", async () => {
+    const fake = fakeCatalog();
+    await applyPostgresSchema(fake.query, plan);
+    const index = plan.indexes.find((item) => item.name === "uk_openid")!;
+    const stale = `CREATE UNIQUE INDEX uk_openid ON ${SCHEMA}.${index.table} USING btree (((document ->> 'stale'::text)))`;
+    fake.indexDefs.get(SCHEMA)!.set(index.name, stale);
+
+    const drifted = diffPostgresSchema(plan, await inspectPostgresSchema(fake.query, plan));
+    expect(drifted.existing.indexes).toContain(index.name);
+    expect(drifted.pending.indexes).not.toContain(index.name);
+    expect(drifted.driftedIndexes).toEqual([
+      {
+        name: index.name,
+        expected: normalizePostgresIndexDef(index.sql, SCHEMA),
+        actual: normalizePostgresIndexDef(stale, SCHEMA),
+      },
+    ]);
+    expect(pendingPostgresSchemaStatements(plan, drifted)).toEqual([]);
+
+    const before = fake.sqlLog.length;
+    const reported = await applyPostgresSchema(fake.query, plan);
+    expect(reported.created.indexes).not.toContain(index.name);
+    expect(reported.driftedIndexes).toEqual(drifted.driftedIndexes);
+    const script = fake.sqlLog.slice(before).find((sql) => sql.includes("pg_advisory_xact_lock"));
+    expect(script).not.toContain("DROP INDEX");
+    expect(script).not.toContain("football_normalize_indexdef");
+    expect(script).toContain("CREATE UNIQUE INDEX IF NOT EXISTS");
+    expect(script!.indexOf("pg_advisory_xact_lock")).toBeLessThan(script!.indexOf("CREATE SCHEMA IF NOT EXISTS"));
+    expect(fake.indexDefs.get(SCHEMA)!.get(index.name)).toBe(stale);
+  });
+
+  it("does not report an index created with the wrong definition during the lock wait as fixed", async () => {
+    const fake = fakeCatalog();
+    await applyPostgresSchema(fake.query, plan);
+    const index = plan.indexes.find((item) => item.name === "uk_openid")!;
+    const stale = `CREATE UNIQUE INDEX uk_openid ON ${SCHEMA}.${index.table} USING btree (((document ->> 'stale'::text)))`;
+    fake.indexes.get(SCHEMA)!.delete(index.name);
+    fake.indexDefs.get(SCHEMA)!.delete(index.name);
+
+    const query: PostgresQueryFn = async (sql, params) => {
+      if (sql.includes("pg_advisory_xact_lock")) {
+        fake.indexes.get(SCHEMA)!.add(index.name);
+        fake.indexDefs.get(SCHEMA)!.set(index.name, stale);
+      }
+      return fake.query(sql, params);
+    };
+    const reported = await applyPostgresSchema(query, plan);
+    expect(reported.created.indexes).not.toContain(index.name);
+    expect(reported.driftedIndexes.map((item) => item.name)).toEqual([index.name]);
+    expect(reported.driftedIndexes[0]?.actual).toContain("stale");
+    expect(fake.indexDefs.get(SCHEMA)!.get(index.name)).toBe(stale);
+  });
+
+  it("treats a PostgreSQL indexdef as unchanged when it normalizes to the planned statement", async () => {
+    const fake = fakeCatalog();
+    await applyPostgresSchema(fake.query, plan);
+    const index = plan.indexes.find((item) => item.name === "uk_openid")!;
+    fake.indexDefs.get(SCHEMA)!.set(
+      index.name,
+      `CREATE UNIQUE INDEX uk_openid ON ${SCHEMA}.${index.table} USING btree (((document ->> 'openid'::text)))`,
+    );
+    const submitted = plan.indexes.find((item) => item.name === "ix_predictions_user_submitted")!;
+    const submittedTable = submitted.table;
+    fake.indexDefs.get(SCHEMA)!.set(
+      submitted.name,
+      `CREATE INDEX ${submitted.name} ON ${SCHEMA}.${submittedTable} USING btree (((document ->> 'user_id'::text)), ${SCHEMA}.${JSONB_UTC_TIMESTAMPTZ_FUNCTION}((document ->> 'submitted_at'::text)) DESC)`,
+    );
+    const auth = plan.authSessions.indexes[0]!;
+    fake.indexDefs.get(SCHEMA)!.set(
+      auth.name,
+      `CREATE INDEX ${auth.name} ON ${SCHEMA}.${auth.table} USING btree (expires_at)`,
+    );
+
+    const diff = diffPostgresSchema(plan, await inspectPostgresSchema(fake.query, plan));
+    expect(diff.pending.indexes).not.toContain(index.name);
+    expect(diff.pending.indexes).not.toContain(submitted.name);
+    expect(diff.pending.indexes).not.toContain(auth.name);
+    expect(diff.driftedIndexes).toEqual([]);
+
+    const openidDef = fake.indexDefs.get(SCHEMA)!.get(index.name);
+    const submittedDef = fake.indexDefs.get(SCHEMA)!.get(submitted.name);
+    const authDef = fake.indexDefs.get(SCHEMA)!.get(auth.name);
+    const again = await applyPostgresSchema(fake.query, plan);
+    expect(again.created.indexes).not.toContain(index.name);
+    expect(again.created.indexes).not.toContain(submitted.name);
+    expect(again.created.indexes).not.toContain(auth.name);
+    expect(fake.indexDefs.get(SCHEMA)!.get(index.name)).toBe(openidDef);
+    expect(fake.indexDefs.get(SCHEMA)!.get(submitted.name)).toBe(submittedDef);
+    expect(fake.indexDefs.get(SCHEMA)!.get(auth.name)).toBe(authDef);
+  });
+
+  it("[CR-02] preserves non-default NULLS FIRST/LAST ordering while normalizing PG defaults", () => {
+    const descPlanned = normalizePostgresIndexDef(
+      `CREATE INDEX ix_sort ON ${SCHEMA}.docs (((document ->> 'ts')) DESC)`,
+      SCHEMA,
+    );
+    const descNullsFirst = normalizePostgresIndexDef(
+      `CREATE INDEX ix_sort ON ${SCHEMA}.docs (((document ->> 'ts')) DESC NULLS FIRST)`,
+      SCHEMA,
+    );
+    const descNullsLast = normalizePostgresIndexDef(
+      `CREATE INDEX ix_sort ON ${SCHEMA}.docs (((document ->> 'ts')) DESC NULLS LAST)`,
+      SCHEMA,
+    );
+    expect(descNullsFirst).toBe(descPlanned);
+    expect(descNullsLast).not.toBe(descPlanned);
+    expect(descNullsLast).toContain("desc nulls last");
+
+    const ascPlanned = normalizePostgresIndexDef(
+      `CREATE INDEX ix_sort ON ${SCHEMA}.docs (((document ->> 'ts')))`,
+      SCHEMA,
+    );
+    const ascNullsLast = normalizePostgresIndexDef(
+      `CREATE INDEX ix_sort ON ${SCHEMA}.docs (((document ->> 'ts')) ASC NULLS LAST)`,
+      SCHEMA,
+    );
+    const implicitNullsLast = normalizePostgresIndexDef(
+      `CREATE INDEX ix_sort ON ${SCHEMA}.docs (((document ->> 'ts')) NULLS LAST)`,
+      SCHEMA,
+    );
+    const ascNullsFirst = normalizePostgresIndexDef(
+      `CREATE INDEX ix_sort ON ${SCHEMA}.docs (((document ->> 'ts')) ASC NULLS FIRST)`,
+      SCHEMA,
+    );
+    expect(ascNullsLast).toBe(ascPlanned);
+    expect(implicitNullsLast).toBe(ascPlanned);
+    expect(ascNullsFirst).not.toBe(ascPlanned);
+    expect(ascNullsFirst).toContain("nulls first");
+  });
+
+  it("[CR-13] attributes created objects only to the lock-winning applyPostgresSchema session", async () => {
+    const fake = fakeCatalog();
+    let lockChain = Promise.resolve();
+    const sessionQuery: PostgresQueryFn = Object.assign(
+      async (sql: string, params?: unknown[]) => {
+        if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") return { rows: [] };
+        return fake.query(sql, params);
+      },
+      {
+        withSession: async <T>(fn: (query: PostgresQueryFn) => Promise<T>): Promise<T> => {
+          const prev = lockChain;
+          let release = () => {};
+          lockChain = new Promise<void>((resolve) => {
+            release = resolve;
+          });
+          await prev;
+          try {
+            return await fn(sessionQuery);
+          } finally {
+            release();
+          }
+        },
+      },
+    );
+
+    const [first, second] = await Promise.all([
+      applyPostgresSchema(sessionQuery, plan),
+      applyPostgresSchema(sessionQuery, plan),
+    ]);
+    expect(first.created.schema).toBe(true);
+    expect(first.created.tables).toEqual([
+      ...plan.tables.map((t) => t.table),
+      AUTH_SESSIONS_TABLE,
+      ADMIN_LOGIN_CONSUMED_JTIS_TABLE,
+    ]);
+    expect(second.created).toEqual({ schema: false, tables: [], indexes: [], functions: [] });
   });
 });

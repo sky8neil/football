@@ -9,6 +9,7 @@ import {
 } from "../domain/enums.js";
 import { newUuid } from "../domain/ids.js";
 import type { Match, Team, TeamProviderMapping } from "../domain/types.js";
+import { InMemorySchedulerStateStore, POST_FINISH_DAILY_FALLBACK_STATE_ID } from "../infrastructure/cloudbase-scheduler-state.js";
 import { InMemoryRepository } from "../infrastructure/repositories.js";
 import { makeApiFixture } from "../provider/fixture-factory.js";
 import type { ApiFootballFixture } from "../provider/types.js";
@@ -365,6 +366,192 @@ describe("ProviderPostFinishVerifyService", () => {
       expect(getFixtures).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
+    }
+  });
+
+  it("主源先报 FT 时过滤/忽略副源滞后 LIVE 观测，不打开阻塞性 PROVIDER_STATE_CONFLICT (A-S3-01)", async () => {
+    const repo = new InMemoryRepository();
+    const matchId = newUuid();
+    await repo.matches.insert({
+      schema_version: 1,
+      match_id: matchId,
+      canonical_match_id: matchId,
+      superseded_by: null,
+      league_id: MVP_SEASON.league_id,
+      season_id: MVP_SEASON.season_id,
+      round_id: "01",
+      home_team_id: newUuid(),
+      away_team_id: newUuid(),
+      kickoff_at: KICKOFF_OVER_24_HOURS_AGO,
+      kickoff_confirmed: true,
+      prediction_deadline_at: new Date(KICKOFF_OVER_24_HOURS_AGO.getTime() - 10 * 60_000),
+      prediction_closed_at: KICKOFF_OVER_24_HOURS_AGO,
+      period_anchor_at: KICKOFF_OVER_24_HOURS_AGO,
+      match_status: MatchStatus.Live,
+      finish_detected_at: null,
+      settlement_status: SettlementStatus.Pending,
+      regular_home_score: null,
+      regular_away_score: null,
+      extra_home_score: null,
+      extra_away_score: null,
+      penalty_home_score: null,
+      penalty_away_score: null,
+      result_version: 0,
+      settled_result_version: 0,
+      result_source: null,
+      scoring_rule_version: "scoring_v1",
+      settled_at: null,
+      created_at: NOW,
+      updated_at: NOW,
+    });
+    await repo.matchProviderMappings.insert({
+      schema_version: 1, match_id: matchId, provider: Provider.FootballData,
+      provider_match_id: "1200060", created_at: NOW, updated_at: NOW,
+    });
+    await repo.matchProviderMappings.insert({
+      schema_version: 1, match_id: matchId, provider: Provider.FiveDollar,
+      provider_match_id: "1200061", created_at: NOW, updated_at: NOW,
+    });
+    const fdFt = makeApiFixture({
+      fixtureId: 1200060, statusShort: "FT", fulltimeHome: 2, fulltimeAway: 1,
+      date: KICKOFF_OVER_24_HOURS_AGO.toISOString(), timestamp: KICKOFF_OVER_24_HOURS_AGO.getTime() / 1000,
+    });
+    fdFt.provider = Provider.FootballData;
+    fdFt.league.id = "PL";
+    const fiveDLive = makeApiFixture({
+      fixtureId: 1200061, statusShort: "1H",
+      date: KICKOFF_OVER_24_HOURS_AGO.toISOString(), timestamp: KICKOFF_OVER_24_HOURS_AGO.getTime() / 1000,
+    });
+    fiveDLive.provider = Provider.FiveDollar;
+    fiveDLive.league.id = "4160026622";
+
+    const service = new ProviderPostFinishVerifyService(repo, {
+      getTeams: vi.fn(async () => []),
+      getFixtures: vi.fn(async () => [fdFt]),
+      getFixturesFromSource: vi.fn(async () => [fiveDLive]),
+      getResultComparisonSources: () => [{ sourceId: "5d", role: "secondary" }],
+    });
+    const outcome = await service.run(NOW);
+    expect(outcome).toMatchObject({ kind: "completed", fixtures: { items_failed: 0 } });
+    expect(await repo.matches.findById(matchId)).toMatchObject({
+      match_status: MatchStatus.Finished,
+      settlement_status: SettlementStatus.Waiting,
+      result_version: 1,
+      regular_home_score: 2,
+      regular_away_score: 1,
+    });
+    expect(await repo.anomalies.findOpenBlockingByMatch(matchId)).toEqual([]);
+  });
+
+  it("00:00 UTC 错过时由持久化状态在当日 00:03 UTC 补跑超 24h 每日兜底且同日不重复跑，defer 后次轮继续补跑 (A-S3-09)", async () => {
+    const repo = new InMemoryRepository();
+    const schedulerState = new InMemorySchedulerStateStore();
+    await seedMappedMatch(repo, "1200070");
+    const mapping = await repo.matchProviderMappings.findByProviderAndExternalId(Provider.FootballData, "1200070");
+    const match = (await repo.matches.findById(mapping!.match_id))!;
+    // seedMappedMatch 使用 KICKOFF_OVER_24_HOURS_AGO (2026-08-10T10:00Z)；以 2026-08-12 为超 24h 日
+    const missedTick = new Date("2026-08-12T00:03:00.000Z");
+    const laterSameDay = new Date("2026-08-12T00:06:00.000Z");
+    const nextUtcDay = new Date("2026-08-13T00:04:00.000Z");
+    const ft = makeApiFixture({
+      fixtureId: 1200070, statusShort: "FT", fulltimeHome: 2, fulltimeAway: 1,
+      date: match.kickoff_at.toISOString(), timestamp: match.kickoff_at.getTime() / 1000,
+    });
+    ft.provider = Provider.FootballData;
+    ft.league.id = "PL";
+
+    // 若首个补跑轮次发生网络 defer，则不能写入完成态；待下轮成功后再推进。
+    let shouldFail = true;
+    const getFixtures = vi.fn(async () => {
+      if (shouldFail) throw new Error("network blip");
+      return [ft];
+    });
+    const service = new ProviderPostFinishVerifyService(
+      repo,
+      { getTeams: vi.fn(async () => []), getFixtures },
+      { random: () => 0.5 },
+      {},
+      undefined,
+      schedulerState,
+    );
+
+    await expect(service.run(missedTick)).resolves.toMatchObject({ kind: "deferred" });
+    expect(await schedulerState.getPeriodicJobCycle(POST_FINISH_DAILY_FALLBACK_STATE_ID)).toBeNull();
+
+    shouldFail = false;
+    await expect(service.run(new Date("2026-08-12T00:05:00.000Z"))).resolves.toMatchObject({
+      kind: "completed",
+      fixtures: { items_read: 1, items_changed: 1 },
+    });
+    expect(getFixtures).toHaveBeenCalledTimes(2);
+    expect((await schedulerState.getPeriodicJobCycle(POST_FINISH_DAILY_FALLBACK_STATE_ID))?.completed_cycle_at.toISOString())
+      .toBe("2026-08-12T00:05:00.000Z");
+
+    // 同一 UTC 日内后续轮次不再重复扫描超 24h 比赛
+    await expect(service.run(laterSameDay)).resolves.toMatchObject({
+      kind: "completed",
+      fixtures: { items_read: 0 },
+    });
+    expect(getFixtures).toHaveBeenCalledTimes(2);
+
+    // 把 match 重设为 Waiting 模拟次日仍待结算：次日 00:04 UTC 应自动再次触发每日兜底
+    const updated = (await repo.matches.findById(match.match_id))!;
+    await repo.matches.update({ ...updated, settlement_status: SettlementStatus.Waiting });
+    await service.run(nextUtcDay);
+    expect(getFixtures).toHaveBeenCalledTimes(3);
+  });
+
+  it("[CR-22] 含超 24h 候选的任一联赛拉取失败时，不推进当日 POST_FINISH_DAILY_FALLBACK_STATE_ID", async () => {
+    const repo = new InMemoryRepository();
+    const schedulerState = new InMemorySchedulerStateStore();
+    await seedMappedMatch(repo, "1200080");
+    // 再插入一场西甲超 24h 待结算比赛
+    const laLiga = SUPPORTED_LEAGUES.find((l) => l.league_id === "la_liga")!;
+    const laHome = newUuid();
+    const laAway = newUuid();
+    for (const tid of [laHome, laAway]) {
+      await repo.teams.insert({
+        schema_version: 1, team_id: tid, league_id: laLiga.league_id, name: tid, name_zh: null,
+        logo_url: null, short_name: null, primary_color: null, secondary_color: null,
+        status: TeamStatus.Active, created_at: NOW, updated_at: NOW,
+      });
+    }
+    const laMatchId = newUuid();
+    await repo.matches.insert({
+      schema_version: 1, match_id: laMatchId, canonical_match_id: laMatchId, superseded_by: null,
+      league_id: laLiga.league_id, season_id: laLiga.season_id, round_id: "Regular Season - 1",
+      home_team_id: laHome, away_team_id: laAway, kickoff_at: KICKOFF_OVER_24_HOURS_AGO,
+      kickoff_confirmed: true, prediction_deadline_at: new Date(KICKOFF_OVER_24_HOURS_AGO.getTime() - 600_000),
+      prediction_closed_at: new Date(KICKOFF_OVER_24_HOURS_AGO.getTime() - 600_000),
+      period_anchor_at: KICKOFF_OVER_24_HOURS_AGO, match_status: MatchStatus.Finished,
+      settlement_status: SettlementStatus.Waiting, regular_home_score: null, regular_away_score: null,
+      extra_home_score: null, extra_away_score: null, penalty_home_score: null, penalty_away_score: null,
+      result_version: 0, settled_result_version: 0, result_source: null, scoring_rule_version: "scoring_v1",
+      finish_detected_at: KICKOFF_OVER_24_HOURS_AGO, settled_at: null, created_at: NOW, updated_at: NOW,
+    });
+
+    const missedTick = new Date("2026-08-12T00:03:00.000Z");
+    const getFixtures = vi.fn(async (query: { leagueId: string }) => {
+      if (query.leagueId === laLiga.api_football_league_id) {
+        throw new Error("la_liga timeout");
+      }
+      return [];
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const outcome = await new ProviderPostFinishVerifyService(
+        repo,
+        { getTeams: vi.fn(async () => []), getFixtures },
+        { random: () => 0.5 },
+        {},
+        undefined,
+        schedulerState,
+      ).run(missedTick);
+
+      expect(outcome).toMatchObject({ kind: "completed" });
+      expect(await schedulerState.getPeriodicJobCycle(POST_FINISH_DAILY_FALLBACK_STATE_ID)).toBeNull();
+    } finally {
+      warn.mockRestore();
     }
   });
 });

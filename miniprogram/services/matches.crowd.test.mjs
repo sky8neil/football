@@ -18,11 +18,29 @@ function loadService(request) {
 }
 
 describe("matches crowd service", () => {
-  it("requests the crowd endpoint and returns the request result unchanged", async () => {
+  it("requests the crowd endpoint without optional auth and returns the request result unchanged", async () => {
     const response = { statusCode: 401, code: "UNAUTHORIZED" };
     const request = vi.fn(async () => response);
     const service = loadService(request);
     await expect(service.getMatchCrowd("match-id")).resolves.toBe(response);
     expect(request).toHaveBeenCalledWith({ method: "GET", path: "/v1/matches/match-id/crowd" });
+  });
+
+  it("[A-S1-06] marks listMatches and getMatchDetail as auth optional", async () => {
+    const request = vi.fn(async () => ({ statusCode: 200, data: {} }));
+    const service = loadService(request);
+    await service.listMatches({ league_id: "premier_league", limit: 20 });
+    await service.getMatchDetail("match-id");
+    expect(request).toHaveBeenNthCalledWith(1, {
+      method: "GET",
+      path: "/v1/matches",
+      query: { league_id: "premier_league", limit: 20 },
+      auth: "optional",
+    });
+    expect(request).toHaveBeenNthCalledWith(2, {
+      method: "GET",
+      path: "/v1/matches/match-id",
+      auth: "optional",
+    });
   });
 });

@@ -92,7 +92,12 @@ export function encodeDocument(document: CloudBaseDocument): CloudBaseDocument {
 export function decodeDocument(collection: string, document: CloudBaseDocument): CloudBaseDocument {
   const logical = resolveLogicalCollection(collection);
   const paths = logical === undefined ? undefined : DATE_PATHS_BY_COLLECTION.get(logical);
-  if ((paths === undefined || paths.length === 0) && logical !== "matches" && logical !== "predictions") {
+  if (
+    (paths === undefined || paths.length === 0) &&
+    logical !== "matches" &&
+    logical !== "predictions" &&
+    logical !== "teams"
+  ) {
     return document;
   }
   const decoded = structuredClone(document) as CloudBaseDocument;
@@ -101,6 +106,9 @@ export function decodeDocument(collection: string, document: CloudBaseDocument):
     if (decoded.superseded_by === undefined) decoded.superseded_by = null;
   } else if (logical === "predictions" && decoded.canonical_match_id === undefined) {
     decoded.canonical_match_id = decoded.match_id;
+  } else if (logical === "teams") {
+    if (decoded.name_zh === undefined) decoded.name_zh = null;
+    if (decoded.logo_url === undefined) decoded.logo_url = null;
   }
   for (const path of paths ?? []) {
     const current = getAt(decoded, path);

@@ -44,4 +44,16 @@ describe("prediction week grouping", () => {
     expect(formatShanghaiKickoff("2026-10-06T16:05:00.000Z")).toBe("10月7日周三 00:05");
     expect(formatShanghaiKickoff("not-a-date")).toBe("");
   });
+
+  it("[A-S2-06] sorts week groups descending by ISO week even when late and early rounds are submitted out of order", () => {
+    const groups = groupPredictionsByWeek([
+      { prediction_id: "w40-first", kickoff_at: "2026-10-04T15:59:59.000Z" },
+      { prediction_id: "unknown-1", kickoff_at: null },
+      { prediction_id: "w42-later", kickoff_at: "2026-10-15T12:00:00.000Z" },
+      { prediction_id: "w40-second", kickoff_at: "2026-10-03T12:00:00.000Z" },
+      { prediction_id: "w41-middle", kickoff_at: "2026-10-05T12:00:00.000Z" },
+    ]);
+    expect(groups.map((g) => g.key)).toEqual(["2026-W42", "2026-W41", "2026-W40", "unknown"]);
+    expect(groups.map((g) => g.label)).toEqual(["2026 第42周", "2026 第41周", "2026 第40周", "比赛周次未知"]);
+  });
 });

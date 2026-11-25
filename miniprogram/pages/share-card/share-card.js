@@ -1,7 +1,10 @@
 const config = require("../../config.js");
 const { getMyShareCard, getShareCardForUser } = require("../../services/share-card.js");
 const { listLeagueSeasons } = require("../../services/league-seasons.js");
-const { formatRound } = require("../../utils/match-presentation.js");
+const { formatRound, formatKickoff } = require("../../utils/match-presentation.js");
+const { presentTeam } = require("../../utils/team-presentation.js");
+const { findTeam } = require("../../utils/team-registry.js");
+const { PLACEHOLDER } = require("../../utils/logo-registry.js");
 const { isAuthSessionActive, readAuthSession } = require("../../utils/auth-storage.js");
 
 const LEAGUE_NAMES = {
@@ -16,11 +19,59 @@ const LEAGUE_NAMES = {
 const LEAGUE_PLACEHOLDER = "选择联赛";
 const SEASON_PLACEHOLDER = "选择赛季";
 const ROUND_PLACEHOLDER = "选择轮次";
+const DELETED_DISPLAY_NAME = "已注销用户";
+const FULL_SUMMARY_SETTLED_THRESHOLD = 3;
 
 function readQueryValue(value) {
   if (value === null || value === undefined) return null;
   const text = String(value).trim();
   return text ? text : null;
+}
+
+function readStorage(key) {
+  if (typeof wx === "undefined" || typeof wx.getStorageSync !== "function") return "";
+  try {
+    return wx.getStorageSync(key) || "";
+  } catch (_error) {
+    return "";
+  }
+}
+
+function resolveFavoriteTeam(favoriteTeamId, isDeleted) {
+  if (isDeleted || !favoriteTeamId) {
+    return {
+      favoriteTeamId: null,
+      favoriteTeamText: "未设置",
+      favoriteTeamLogo: PLACEHOLDER,
+      hasFavoriteTeam: false,
+    };
+  }
+  const registered = findTeam(favoriteTeamId);
+  if (registered) {
+    const presented = presentTeam(
+      {
+        team_id: favoriteTeamId,
+        name: registered.source_name,
+        name_zh: registered.name_zh,
+        league_id: registered.league_id,
+      },
+      registered.league_id,
+    );
+    return {
+      favoriteTeamId,
+      favoriteTeamText: presented.nameZh || registered.name_zh || registered.source_name || "已选择球队",
+      favoriteTeamLogo: presented.logo || PLACEHOLDER,
+      hasFavoriteTeam: true,
+    };
+  }
+  const cachedName = readStorage("team_name:" + favoriteTeamId);
+  const cachedLogo = readStorage("team_logo:" + favoriteTeamId);
+  return {
+    favoriteTeamId,
+    favoriteTeamText: cachedName || "已选择球队",
+    favoriteTeamLogo: cachedLogo || PLACEHOLDER,
+    hasFavoriteTeam: true,
+  };
 }
 
 function normalizeRoundId(value) {
@@ -51,26 +102,139 @@ function formatGeneratedAt(iso) {
   return `${date.getUTCFullYear()}-${pad2(date.getUTCMonth() + 1)}-${pad2(date.getUTCDate())} ${pad2(date.getUTCHours())}:${pad2(date.getUTCMinutes())}`;
 }
 
+function presentMatchItem(item, leagueId) {
+  const row = item || {};
+  const homePresented = presentTeam(row.home_team, leagueId);
+  const awayPresented = presentTeam(row.away_team, leagueId);
+  const matchId = readQueryValue(row.match_id) || "";
+  const predHome = Number(row.pred_home_score);
+  const predAway = Number(row.pred_away_score);
+  const validPred =
+    Number.isInteger(predHome) &&
+    predHome >= 0 &&
+    predHome <= 20 &&
+    Number.isInteger(predAway) &&
+    predAway >= 0 &&
+    predAway <= 20;
+  const canFollow = Boolean(
+    matchId &&
+    validPred &&
+    row.match_status === "scheduled" &&
+    row.is_prediction_closed !== true,
+  );
+  const cancelled = row.match_status === "cancelled" || row.settlement_status === "voided";
+  const hasActualScore =
+    row.regular_home_score !== null &&
+    row.regular_home_score !== undefined &&
+    row.regular_away_score !== null &&
+    row.regular_away_score !== undefined;
+  const actualText = cancelled
+    ? "—"
+    : hasActualScore
+      ? `${row.regular_home_score} : ${row.regular_away_score}`
+      : "";
+  const settled =
+    !cancelled &&
+    row.settlement_status === "settled" &&
+    row.match_score !== null &&
+    row.match_score !== undefined;
+
+  let statusText = "待开赛";
+  let statusClass = "pending";
+  let pointsText = "";
+
+  if (canFollow) {
+    statusText = "未开赛 · 可跟单";
+    statusClass = "open";
+  } else if (row.match_status === "scheduled") {
+    statusText = "已截止 · 未开赛";
+    statusClass = "closed";
+    pointsText = "待结算";
+  } else if (row.match_status === "live") {
+    statusText = "进行中 · 未完赛";
+    statusClass = "live";
+    pointsText = "未完赛";
+  } else if (row.match_status === "postponed") {
+    statusText = "比赛延期 · 未完赛";
+    statusClass = "postponed";
+    pointsText = "未完赛";
+  } else if (row.match_status === "abandoned") {
+    statusText = "比赛腰斩 · 不计分";
+    statusClass = "voided";
+    pointsText = "不计分";
+  } else if (cancelled) {
+    statusText = "比赛取消 · 不计分";
+    statusClass = "voided";
+    pointsText = "不计分";
+  } else if (settled) {
+    if (row.exact_hit === true) {
+      statusText = "已结算 · 精确命中";
+      statusClass = "exact";
+    } else if (row.wdl_hit === true) {
+      statusText = "已结算 · 胜平负命中";
+      statusClass = "hit";
+    } else {
+      statusText = "已结算 · 未命中";
+      statusClass = "miss";
+    }
+    pointsText = `+${row.match_score}`;
+  } else {
+    statusText = "已完场 · 待结算";
+    statusClass = "pending";
+    pointsText = "待结算";
+  }
+
+  return {
+    matchId,
+    homeNameZh: homePresented.nameZh,
+    awayNameZh: awayPresented.nameZh,
+    homeLogo: homePresented.logo,
+    awayLogo: awayPresented.logo,
+    kickoffText: formatKickoff(row.kickoff_at),
+    predictionText: validPred ? `${predHome} : ${predAway}` : "—",
+    predHomeScore: validPred ? predHome : null,
+    predAwayScore: validPred ? predAway : null,
+    actualText,
+    statusText,
+    statusClass,
+    pointsText,
+    canFollow,
+    followText: "去预测 / 跟一单",
+    detailText: "查看详情",
+  };
+}
+
 function presentCard(data) {
   const payload = data || {};
+  const settledCount = Number(payload.round_predictions) || 0;
+  const showFullSummary = settledCount > FULL_SUMMARY_SETTLED_THRESHOLD;
+  const displayName = payload.display_name || "预言家";
+  const isDeleted = displayName === DELETED_DISPLAY_NAME;
+  const favoriteTeam = resolveFavoriteTeam(payload.favorite_team_id || null, isDeleted);
+  const rawMatches = Array.isArray(payload.matches) ? payload.matches : [];
   return {
-    displayName: payload.display_name,
+    displayName,
+    isDeleted,
+    ...favoriteTeam,
     leagueName: LEAGUE_NAMES[payload.league_id] || payload.league_id,
     leagueId: payload.league_id,
     seasonId: payload.season_id,
     roundId: payload.round_id,
     seasonLabel: payload.season_label,
     roundText: formatRound(payload.round_id),
-    settledCount: payload.round_predictions,
+    settledCount,
+    showFullSummary,
+    cardTitle: showFullSummary ? "本轮战绩" : "本轮晒预测",
     wdlHits: payload.round_wdl_hits,
     exactHits: payload.round_exact_hits,
     roundScore: payload.round_score,
     careerPoints: payload.career_points,
     seasonLevel: payload.season_level,
     levelSeasonText: String(payload.level_season_id || "").replace(/_/g, "/"),
-    pendingCount: payload.pending_predictions,
     generatedAtText: formatGeneratedAt(payload.generated_at),
     userId: payload.user_id,
+    shareToken: readQueryValue(payload.share_token),
+    matches: rawMatches.map((item) => presentMatchItem(item, payload.league_id)),
   };
 }
 
@@ -82,11 +246,34 @@ function compactRoundLabel(roundText, roundId) {
 function isShareableCard(card) {
   if (!card) return false;
   return Boolean(
-    readQueryValue(card.userId)
-    && readQueryValue(card.leagueId)
-    && readQueryValue(card.seasonId)
-    && readQueryValue(card.roundId)
+    readQueryValue(card.userId) &&
+    readQueryValue(card.leagueId) &&
+    readQueryValue(card.seasonId) &&
+    readQueryValue(card.roundId),
   );
+}
+
+function buildShareQuery(card) {
+  const parts = [
+    `user_id=${encodeURIComponent(card.userId)}`,
+    `league_id=${encodeURIComponent(card.leagueId)}`,
+    `season_id=${encodeURIComponent(card.seasonId)}`,
+    `round_id=${encodeURIComponent(card.roundId)}`,
+  ];
+  const shareToken = readQueryValue(card.shareToken);
+  if (shareToken) {
+    parts.push(`share_token=${encodeURIComponent(shareToken)}`);
+  }
+  return parts.join("&");
+}
+
+function buildShareTitle(card) {
+  const displayName = card.displayName || "预测分享卡";
+  const roundLabel = compactRoundLabel(card.roundText, card.roundId) || "第?轮";
+  if (card.showFullSummary) {
+    return `${displayName} ${roundLabel}战绩（已结算 ${card.settledCount} 场）`;
+  }
+  return `${displayName} ${roundLabel}晒预测`;
 }
 
 const SHARE_MENU_OPTIONS = { menus: ["shareAppMessage", "shareTimeline"] };
@@ -99,6 +286,7 @@ Page({
     state: "picker",
     mode: "preview",
     sharerId: null,
+    shareToken: null,
     card: null,
     errorKind: "",
     errorMessage: "",
@@ -128,11 +316,13 @@ Page({
     const leagueId = readQueryValue(options.league_id);
     const seasonId = readQueryValue(options.season_id);
     const roundId = normalizeRoundId(options.round_id);
+    const shareToken = readQueryValue(options.share_token);
     const mode = userId ? "receiver" : "preview";
     const hasAll = Boolean(leagueId && seasonId && roundId);
     this.setData({
       mode,
       sharerId: userId,
+      shareToken: userId ? shareToken : null,
       selectedLeagueId: leagueId,
       selectedSeasonId: seasonId,
       selectedRoundId: roundId,
@@ -156,6 +346,7 @@ Page({
     this.setData({
       mode: context.mode,
       sharerId: context.sharerId,
+      shareToken: context.shareToken || null,
       selectedLeagueId: context.leagueId,
       selectedSeasonId: context.seasonId,
       selectedRoundId: context.roundId,
@@ -253,6 +444,9 @@ Page({
       roundId: this.data.selectedRoundId,
     };
     if (this.data.mode === "receiver") {
+      if (this.data.shareToken) {
+        params.shareToken = this.data.shareToken;
+      }
       return getShareCardForUser(this.data.sharerId, params);
     }
     return getMyShareCard(params);
@@ -324,6 +518,9 @@ Page({
       return { errorKind: "network", errorMessage: "网络异常，请重试" };
     }
     const message = result && result.message ? String(result.message) : "";
+    if (statusCode === 429 || code === "RATE_LIMITED") {
+      return { errorKind: "rateLimited", errorMessage: message || "请求过于频繁，请稍后再试" };
+    }
     if (statusCode === 404 && (code === "ROUND" || code === "ROUND_NOT_FOUND" || /轮次/.test(message))) {
       return { errorKind: "roundNotFound", errorMessage: "这个轮次还没有接入，换个轮次看看" };
     }
@@ -453,21 +650,54 @@ Page({
     // tabBar 首页只能分享 /pages/matches/matches，不能写别的首页路径。
     if (this.data.state !== "card" || !isShareableCard(card)) {
       return {
-        title: "预测成绩单",
+        title: "预测分享卡",
         path: MATCHES_TAB_PATH,
       };
     }
-    const displayName = card.displayName || "预测成绩单";
-    const roundLabel = compactRoundLabel(card.roundText, card.roundId) || "第?轮";
-    const pendingCount = Number(card.pendingCount) || 0;
-    const settledCount = card.settledCount;
-    const title = pendingCount > 0
-      ? `${displayName} ${roundLabel}成绩（已结算 ${settledCount} 场）`
-      : `${displayName} ${roundLabel}成绩`;
     return {
-      title,
-      path: `/pages/share-card/share-card?user_id=${card.userId}&league_id=${card.leagueId}&season_id=${card.seasonId}&round_id=${card.roundId}`,
+      title: buildShareTitle(card),
+      path: `/pages/share-card/share-card?${buildShareQuery(card)}`,
     };
+  },
+
+  onShareTimeline() {
+    const card = this.data.card;
+    if (this.data.state !== "card" || !isShareableCard(card)) {
+      return {
+        title: "预测分享卡",
+        query: "",
+      };
+    }
+    return {
+      title: buildShareTitle(card),
+      query: buildShareQuery(card),
+    };
+  },
+
+  navigateToMatch(matchId, prefillHome, prefillAway) {
+    if (!matchId) return;
+    let url = `/pages/match-detail/match-detail?match_id=${encodeURIComponent(matchId)}`;
+    const hasHome = prefillHome !== null && prefillHome !== undefined && prefillHome !== "";
+    const hasAway = prefillAway !== null && prefillAway !== undefined && prefillAway !== "";
+    if (hasHome && hasAway) {
+      url += `&prefill_home=${encodeURIComponent(String(prefillHome))}&prefill_away=${encodeURIComponent(String(prefillAway))}`;
+    }
+    wx.navigateTo({ url });
+  },
+
+  onFollowTap(event) {
+    const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {};
+    this.navigateToMatch(dataset.matchId, dataset.prefillHome, dataset.prefillAway);
+  },
+
+  onMatchTap(event) {
+    const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {};
+    const canFollow = dataset.canFollow === true || dataset.canFollow === "true";
+    if (canFollow) {
+      this.navigateToMatch(dataset.matchId, dataset.prefillHome, dataset.prefillAway);
+      return;
+    }
+    this.navigateToMatch(dataset.matchId);
   },
 
   onBackToPredictions() {
@@ -489,6 +719,7 @@ Page({
     this.loginReturnContext = {
       mode: this.data.mode,
       sharerId: this.data.sharerId,
+      shareToken: this.data.shareToken,
       leagueId: this.data.selectedLeagueId,
       seasonId: this.data.selectedSeasonId,
       roundId: this.data.selectedRoundId,
@@ -498,6 +729,7 @@ Page({
   },
 
   onRetry() {
+    if (this.data.errorKind === "rateLimited") return;
     return this.loadCard();
   },
 
@@ -511,7 +743,7 @@ Page({
       roundIndex: 0,
       errorKind: "",
       errorMessage: "",
-      ...(resetReceiver ? { mode: "preview", sharerId: null } : {}),
+      ...(resetReceiver ? { mode: "preview", sharerId: null, shareToken: null } : {}),
     });
     this.syncShareMenu();
   },

@@ -1,4 +1,11 @@
-import { SCHEMA_VERSION, TeamStatus, UserStatus } from "../domain/enums.js";
+import {
+  AdminStatus,
+  GroupMemberStatus,
+  GroupStatus,
+  SCHEMA_VERSION,
+  TeamStatus,
+  UserStatus,
+} from "../domain/enums.js";
 import {
   conflictError,
   internalError,
@@ -6,7 +13,11 @@ import {
   validationError,
 } from "../domain/errors.js";
 import { isValidUuid } from "../domain/ids.js";
-import type { AppRepository, UnitOfWork } from "../infrastructure/repositories.js";
+import type {
+  AppRepository,
+  AuthSessionRevoker,
+  UnitOfWork,
+} from "../infrastructure/repositories.js";
 import { validateNickname } from "./session.js";
 import { ProfileQueryService, type MyProfileData } from "./profile.js";
 import { assertValidServerNow } from "./period-finalize.js";
@@ -19,6 +30,10 @@ export interface ProfilePatch {
 export interface DeleteProfileResult {
   user_id: string;
   deleted: true;
+}
+
+export interface ProfileMutationServiceOptions {
+  authSessions?: AuthSessionRevoker;
 }
 
 const PROFILE_PATCH_FIELDS = new Set(["nickname", "favorite_team_id"]);
@@ -69,9 +84,104 @@ function requireTeams(
   return tx.teams;
 }
 
+function requireUserRowLock(tx: UnitOfWork) {
+  const findByIdForUpdate = tx.users.findByIdForUpdate;
+  const patchFields = tx.users.patchFields;
+  if (findByIdForUpdate === undefined || patchFields === undefined) {
+    throw internalError("资料更新缺少 users 行锁或局部更新");
+  }
+  return { findByIdForUpdate, patchFields };
+}
+
+function requireSeasonRowLock(tx: UnitOfWork) {
+  const stats = tx.userSeasonStats;
+  if (
+    stats?.findByUserAndSeasonForUpdate === undefined ||
+    stats.patchFields === undefined
+  ) {
+    throw internalError("资料注销缺少 user_season_stats 行锁或局部更新");
+  }
+  return {
+    findByUserAndSeasonForUpdate: stats.findByUserAndSeasonForUpdate,
+    patchFields: stats.patchFields,
+  };
+}
+
+function requireGroupRepositories(tx: UnitOfWork) {
+  const groups = tx.groups;
+  const groupMembers = tx.groupMembers;
+  if (groups === undefined && groupMembers === undefined) return null;
+  if (
+    groups?.findByIdForUpdate === undefined ||
+    groups.patchFields === undefined ||
+    groupMembers === undefined
+  ) {
+    throw internalError("资料注销缺少 groups/group_members 仓储");
+  }
+  return {
+    groups: {
+      findByIdForUpdate: groups.findByIdForUpdate,
+      patchFields: groups.patchFields,
+    },
+    groupMembers,
+  };
+}
+
+/** 注销事务内退出全部 active 群成员关系；群主注销后群保留为 active。 */
+async function leaveAllGroups(
+  tx: UnitOfWork,
+  userId: string,
+  serverNow: Date,
+): Promise<void> {
+  const repos = requireGroupRepositories(tx);
+  if (repos === null) return;
+  const groupIds = (await repos.groupMembers.findByUser(userId))
+    .filter((member) => member.status === GroupMemberStatus.Active)
+    .map((member) => member.group_id)
+    .sort((left, right) => left.localeCompare(right));
+  for (const groupId of groupIds) {
+    const group = await repos.groups.findByIdForUpdate(groupId);
+    if (group === null) {
+      throw internalError(`active group_member 缺少 group（group_id=${groupId}）`);
+    }
+    const member = await repos.groupMembers.findByGroupAndUser(groupId, userId);
+    if (member === null || member.status !== GroupMemberStatus.Active) continue;
+    await repos.groupMembers.update({
+      ...member,
+      status: GroupMemberStatus.Left,
+      left_at: serverNow,
+      updated_at: serverNow,
+    });
+    if (group.status === GroupStatus.Active) {
+      await repos.groups.patchFields(group.group_id, {
+        member_count: Math.max(0, group.member_count - 1),
+        updated_at: serverNow,
+      });
+    }
+  }
+}
+
+async function disableAdminsByOpenid(
+  tx: UnitOfWork,
+  openid: string,
+  serverNow: Date,
+): Promise<void> {
+  if (tx.admins === undefined) return;
+  const admin = await tx.admins.findByOpenid(openid);
+  if (admin === null || admin.status !== AdminStatus.Active) return;
+  await tx.admins.update({
+    ...admin,
+    status: AdminStatus.Disabled,
+    updated_at: serverNow,
+  });
+}
+
 /** 用户资料写操作；注销只保留永久 user_id，并将身份改为不可登录墓碑值。 */
 export class ProfileMutationService {
-  constructor(private readonly repo: AppRepository) {}
+  constructor(
+    private readonly repo: AppRepository,
+    private readonly options: ProfileMutationServiceOptions = {},
+  ) {}
 
   async updateMyProfile(
     userId: string,
@@ -85,7 +195,8 @@ export class ProfileMutationService {
     const patch = parseProfilePatch(input);
 
     return this.repo.withTransaction(async (tx) => {
-      const user = await tx.users.findById(userId);
+      const userLock = requireUserRowLock(tx);
+      const user = await userLock.findByIdForUpdate(userId);
       if (user === null) {
         throw notFoundError("USER");
       }
@@ -102,8 +213,7 @@ export class ProfileMutationService {
         }
       }
 
-      await tx.users.update({
-        ...user,
+      await userLock.patchFields(userId, {
         ...(Object.prototype.hasOwnProperty.call(patch, "nickname")
           ? { nickname: patch.nickname }
           : {}),
@@ -127,7 +237,8 @@ export class ProfileMutationService {
     }
 
     return this.repo.withTransaction(async (tx) => {
-      const user = await tx.users.findById(userId);
+      const userLock = requireUserRowLock(tx);
+      const user = await userLock.findByIdForUpdate(userId);
       if (user === null) {
         throw notFoundError("USER");
       }
@@ -151,8 +262,7 @@ export class ProfileMutationService {
         updated_at: serverNow,
       });
 
-      await tx.users.update({
-        ...user,
+      await userLock.patchFields(user.user_id, {
         openid: `deleted:${user.user_id}`,
         unionid: null,
         nickname: null,
@@ -163,15 +273,27 @@ export class ProfileMutationService {
       });
 
       if (tx.userSeasonStats !== undefined) {
-        const seasonStats = await tx.userSeasonStats.findByUser(userId);
+        const seasonLock = requireSeasonRowLock(tx);
+        const seasonStats = [...await tx.userSeasonStats.findByUser(userId)]
+          .sort((left, right) => left.level_season_id.localeCompare(right.level_season_id));
         for (const stats of seasonStats) {
-          if (stats.is_level_frozen) continue;
-          await tx.userSeasonStats.update({
-            ...stats,
+          const locked = await seasonLock.findByUserAndSeasonForUpdate(
+            userId,
+            stats.level_season_id,
+          );
+          if (locked === null || locked.is_level_frozen) continue;
+          await seasonLock.patchFields(userId, stats.level_season_id, {
             is_level_frozen: true,
             updated_at: serverNow,
           });
         }
+      }
+
+      await leaveAllGroups(tx, userId, serverNow);
+      await disableAdminsByOpenid(tx, user.openid, serverNow);
+      const authSessions = tx.authSessions ?? this.options.authSessions;
+      if (authSessions !== undefined) {
+        await authSessions.deleteByOpenid(user.openid);
       }
 
       return { user_id: user.user_id, deleted: true };

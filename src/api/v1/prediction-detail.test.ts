@@ -15,6 +15,7 @@ const data: PredictionDetailData = {
   submitted_at: "2026-08-08T12:00:00.000Z",
   scoring_rule_version: "scoring_v1",
   match_status: "finished",
+  settlement_status: "settled",
   regular_home_score: 2,
   regular_away_score: 1,
   match_score: 12,
@@ -58,6 +59,15 @@ describe("GET /v1/predictions/me/:prediction_id", () => {
         request_id: "request-prediction-detail-3",
       }),
     ).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+    await expect(
+      getMyPrediction(service, {
+        authenticated_user_id: "00000000-0000-4000-8000-000000000001",
+        prediction_id: PREDICTION_ID,
+        query: { extra: "1" },
+        server_now: new Date("2026-08-11T00:00:00.000Z"),
+        request_id: "request-prediction-detail-4",
+      }),
+    ).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
   });
 
   it("limits authenticated detail reads to 120 requests per minute", async () => {
@@ -90,7 +100,7 @@ describe("GET /v1/predictions/me/:prediction_id", () => {
       /  \/predictions\/me\/\{prediction_id\}:[\s\S]*?'429':[\s\S]*?RateLimited/,
     );
     expect(specification).toMatch(
-      /    PredictionDetailData:[\s\S]*?required: \[prediction_id,[\s\S]*?exact_hit\]/,
+      /    PredictionDetailData:[\s\S]*?required: \[prediction_id,[\s\S]*?settlement_status[\s\S]*?exact_hit\]/,
     );
   });
 });

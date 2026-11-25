@@ -2,6 +2,7 @@ import { FIXED_CONFIG_V1, isSupportedLeagueId } from "../../domain/config.js";
 import { MatchStatus } from "../../domain/enums.js";
 import { validationError } from "../../domain/errors.js";
 import { isValidUuid } from "../../domain/ids.js";
+import { isExistingUtcCalendarDate } from "../../domain/time.js";
 import type {
   MatchDetailResult,
   MatchListQuery,
@@ -76,8 +77,12 @@ function parseDate(value: unknown, field: string): Date | null {
   if (value === undefined) {
     return null;
   }
-  if (typeof value !== "string" || !ISO_UTC_DATE_TIME.test(value)) {
-    throw validationError(`${field} 必须是 ISO8601 UTC 时间`, { field });
+  if (
+    typeof value !== "string" ||
+    !ISO_UTC_DATE_TIME.test(value) ||
+    !isExistingUtcCalendarDate(value)
+  ) {
+    throw validationError(`${field} 必须是有效 ISO8601 UTC 时间`, { field });
   }
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {

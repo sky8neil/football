@@ -382,4 +382,97 @@ describe("Provider schedule discovery", () => {
       ),
     ).resolves.toBeNull();
   });
+
+  it("改期归并强制继承已关闭 prediction_closed_at，拒绝合并 Live/已开赛，并校验 round_id (A-S3-03)", async () => {
+    const repo = new InMemoryRepository();
+    await seedTeams(repo);
+    const service = new ProviderFixtureSyncService(repo);
+    // 1. 已有比赛关盘（prediction_closed_at !== null）后换外部 ID 延至未来新时间 -> 必须继承关闭态与截止时间，禁止重开预测
+    const futureInitialKickoff = new Date(NOW.getTime() + 60 * 60_000);
+    const closedAt = new Date(NOW.getTime() - 60_000);
+    const oldDeadline = new Date(futureInitialKickoff.getTime() - 10 * 60_000);
+    await service.applyFixture(makeApiFixture({
+      fixtureId: 1191001,
+      statusShort: "NS",
+      date: futureInitialKickoff.toISOString(),
+      timestamp: futureInitialKickoff.getTime() / 1000,
+    }), {}, new Date(NOW.getTime() - 120 * 60_000));
+    const oldMap = (await repo.matchProviderMappings.findByProviderAndExternalId(Provider.ApiFootball, "1191001"))!;
+    const oldMatch = (await repo.matches.findById(oldMap.match_id))!;
+    await repo.matches.update({ ...oldMatch, match_status: MatchStatus.Postponed, prediction_deadline_at: oldDeadline, prediction_closed_at: closedAt });
+
+    const futureKickoff = new Date(NOW.getTime() + 5 * 24 * 60 * 60_000);
+    await service.applyFixture(makeApiFixture({
+      fixtureId: 1191002,
+      statusShort: "NS",
+      date: futureKickoff.toISOString(),
+      timestamp: futureKickoff.getTime() / 1000,
+    }), {}, NOW);
+    const newMap = (await repo.matchProviderMappings.findByProviderAndExternalId(Provider.ApiFootball, "1191002"))!;
+    const mergedNew = (await repo.matches.findById(newMap.match_id))!;
+    expect(mergedNew.canonical_match_id).toBe(oldMatch.canonical_match_id);
+    expect(mergedNew.prediction_closed_at).toEqual(closedAt);
+    expect(mergedNew.prediction_deadline_at).toEqual(oldDeadline);
+
+    // 2. Live / period_anchor_at != null 拒绝自动归并
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await service.applyFixture(makeApiFixture({ fixtureId: 1191010, statusShort: "NS", round: "Regular Season - 2" }), {}, NOW);
+      const liveMap = (await repo.matchProviderMappings.findByProviderAndExternalId(Provider.ApiFootball, "1191010"))!;
+      const liveMatch = (await repo.matches.findById(liveMap.match_id))!;
+      await repo.matches.update({ ...liveMatch, match_status: MatchStatus.Live, period_anchor_at: NOW });
+      await service.applyFixture(makeApiFixture({ fixtureId: 1191011, statusShort: "NS", round: "Regular Season - 2" }), {}, NOW);
+      const afterLive = (await repo.matches.findById((await repo.matchProviderMappings.findByProviderAndExternalId(Provider.ApiFootball, "1191011"))!.match_id))!;
+      expect(afterLive.canonical_match_id).toBe(afterLive.match_id);
+      expect((await repo.matches.findById(liveMatch.match_id))?.superseded_by).toBeNull();
+      expect(warn).toHaveBeenCalledWith("[match_identity_needs_review]", expect.objectContaining({ reason: "live_or_anchored_candidate" }));
+    } finally {
+      warn.mockRestore();
+    }
+
+    // 3. 不同 round_id（例如 round 3 vs round 4）保持独立身份不误归并
+    await service.applyFixture(makeApiFixture({ fixtureId: 1191020, statusShort: "NS", round: "Regular Season - 3" }), {}, NOW);
+    await service.applyFixture(makeApiFixture({ fixtureId: 1191021, statusShort: "NS", round: "Regular Season - 4" }), {}, NOW);
+    const r3 = (await repo.matchProviderMappings.findByProviderAndExternalId(Provider.ApiFootball, "1191020"))!.match_id;
+    const r4 = (await repo.matchProviderMappings.findByProviderAndExternalId(Provider.ApiFootball, "1191021"))!.match_id;
+    expect((await repo.matches.findById(r3))?.superseded_by).toBeNull();
+    expect((await repo.matches.findById(r4))?.canonical_match_id).toBe(r4);
+  });
+
+  it("[CR-21] discover 归并分支加行锁并使用 patchFields 更新 superseded_by", async () => {
+    const repo = new InMemoryRepository();
+    await seedTeams(repo);
+    const service = new ProviderFixtureSyncService(repo);
+    await service.applyFixture(makeApiFixture({ fixtureId: 1192001, statusShort: "NS" }), {}, NOW);
+    const oldMap = (await repo.matchProviderMappings.findByProviderAndExternalId(Provider.ApiFootball, "1192001"))!;
+    const ops: string[] = [];
+    const origWithTx = repo.withTransaction.bind(repo);
+    vi.spyOn(repo, "withTransaction").mockImplementation((work) =>
+      origWithTx(async (tx) => {
+        const matches = tx.matches;
+        Object.defineProperty(tx, "matches", {
+          value: {
+            ...matches,
+            findByIdForUpdate: async (id: string) => {
+              ops.push(`lock:${id}`);
+              return matches.findByIdForUpdate!(id);
+            },
+            patchFields: async (id: string, fields: Record<string, unknown>) => {
+              ops.push(`patch:${id}`);
+              return matches.patchFields!(id, fields);
+            },
+            update: async () => {
+              ops.push("update");
+            },
+          },
+        });
+        return work(tx);
+      }),
+    );
+
+    await service.applyFixture(makeApiFixture({ fixtureId: 1192002, statusShort: "NS" }), {}, NOW);
+    expect(ops).toContain(`lock:${oldMap.match_id}`);
+    expect(ops).toContain(`patch:${oldMap.match_id}`);
+    expect(ops).not.toContain("update");
+  });
 });

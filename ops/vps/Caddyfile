@@ -5,5 +5,38 @@
 # use a reachable host/bridge address instead of copying this upstream.
 
 api.example.com {
-	reverse_proxy 127.0.0.1:8787
+	request_body {
+		max_size 256KB
+	}
+
+	header {
+		>Strict-Transport-Security "max-age=31536000"
+		>X-Content-Type-Options nosniff
+		>X-Frame-Options DENY
+	}
+
+	@health path /health
+	respond @health 404
+
+	redir /admin /admin/ 308
+	@admin path /admin/*
+	handle @admin {
+		root * /home/neilxu/football/current
+		header Cache-Control "no-store"
+		@admin_tests path *.test.mjs
+		respond @admin_tests 404
+		try_files {path} {path}/index.html =404
+		file_server
+	}
+
+	reverse_proxy 127.0.0.1:8787 {
+		header_up X-Real-Ip {remote_host}
+		transport http {
+			dial_timeout 5s
+			response_header_timeout 120s
+			read_timeout 30s
+			write_timeout 30s
+			keepalive 4s
+		}
+	}
 }

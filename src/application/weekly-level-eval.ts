@@ -247,6 +247,29 @@ function requireLevelPorts(tx: UnitOfWork): asserts tx is UnitOfWork & {
   }
 }
 
+function requireUserRowLock(tx: UnitOfWork) {
+  const findByIdForUpdate = tx.users.findByIdForUpdate;
+  const patchFields = tx.users.patchFields;
+  if (findByIdForUpdate === undefined || patchFields === undefined) {
+    throw internalError("weekly level eval 缺少 users 行锁或局部更新");
+  }
+  return { findByIdForUpdate, patchFields };
+}
+
+function requireSeasonRowLock(tx: UnitOfWork) {
+  const stats = tx.userSeasonStats;
+  if (
+    stats?.findByUserAndSeasonForUpdate === undefined ||
+    stats.patchFields === undefined
+  ) {
+    throw internalError("weekly level eval 缺少 user_season_stats 行锁或局部更新");
+  }
+  return {
+    findByUserAndSeasonForUpdate: stats.findByUserAndSeasonForUpdate,
+    patchFields: stats.patchFields,
+  };
+}
+
 async function userFacts(
   tx: UnitOfWork,
   userId: string,
@@ -481,7 +504,8 @@ export class WeeklyLevelEvalService {
     }
     try {
       return await this.repo.withTransaction(async (tx) => {
-        const user = await tx.users.findById(userId);
+        const userLock = requireUserRowLock(tx);
+        const user = await userLock.findByIdForUpdate(userId);
         if (user === null || user.status !== UserStatus.Active || user.career_valid_predictions < 1) {
           return { evaluated: false, changed: false, skipped: true };
         }
@@ -511,8 +535,7 @@ export class WeeklyLevelEvalService {
             changedAt,
           }));
         }
-        await tx.users.update({
-          ...user,
+        await userLock.patchFields(userId, {
           career_level: result.level,
           career_best_level: Math.max(user.career_best_level, result.level),
           career_level_state: nextState,
@@ -570,12 +593,14 @@ export class WeeklyLevelEvalService {
       try {
         const result = await this.repo.withTransaction(async (tx) => {
           requireLevelPorts(tx);
-          const user = await tx.users.findById(userId);
-          const stats = await tx.userSeasonStats.findByUserAndSeason(userId, row.level_season_id);
-          if (
-            user === null || user.status !== UserStatus.Active || stats === null ||
-            stats.is_level_frozen === true || !eligibleSeasonStats(stats, asOf)
-          ) {
+          const userLock = requireUserRowLock(tx);
+          const seasonLock = requireSeasonRowLock(tx);
+          const user = await userLock.findByIdForUpdate(userId);
+          if (user === null || user.status !== UserStatus.Active) {
+            return { evaluated: false, changed: false, skipped: true };
+          }
+          const stats = await seasonLock.findByUserAndSeasonForUpdate(userId, row.level_season_id);
+          if (stats === null || stats.is_level_frozen === true || !eligibleSeasonStats(stats, asOf)) {
             return { evaluated: false, changed: false, skipped: true };
           }
           const previous = stats.level_state ?? defaultLevelState();
@@ -604,8 +629,7 @@ export class WeeklyLevelEvalService {
             }));
           }
           const freeze = levelSeasonOf(asOf) !== stats.level_season_id;
-          await tx.userSeasonStats.update({
-            ...stats,
+          await seasonLock.patchFields(userId, stats.level_season_id, {
             level: evalResult.level,
             best_level: Math.max(stats.best_level, evalResult.level),
             level_state: nextState,

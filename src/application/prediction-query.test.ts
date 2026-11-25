@@ -138,12 +138,61 @@ describe("PredictionQueryService.getMyPrediction", () => {
         submitted_at: "2026-08-08T12:00:00.000Z",
         scoring_rule_version: "scoring_v1",
         match_status: "finished",
+        settlement_status: "settled",
         regular_home_score: 2,
         regular_away_score: 1,
         match_score: 12,
         wdl_hit: true,
         exact_hit: true,
       });
+  });
+
+  it("[A-S2-03] hides stale scores when correcting or applied_result_version lags result_version, and exposes voided status", async () => {
+    const user = makeUser(USER_ID);
+    const prediction = makePrediction(USER_ID);
+    const cases = [
+      {
+        match: { ...makeMatch(), settlement_status: "correcting" as const, result_version: 2 },
+        expectedStatus: "correcting",
+      },
+      {
+        match: { ...makeMatch(), settlement_status: "settled" as const, result_version: 2 },
+        expectedStatus: "settled",
+      },
+      {
+        match: { ...makeMatch(), settlement_status: "waiting" as const, result_version: 1 },
+        expectedStatus: "waiting",
+      },
+      {
+        match: { ...makeMatch(), settlement_status: "pending" as const, result_version: 0 },
+        expectedStatus: "not_ready",
+      },
+      {
+        match: {
+          ...makeMatch(),
+          match_status: MatchStatus.Abandoned,
+          settlement_status: "voided" as const,
+          regular_home_score: 1,
+          regular_away_score: 0,
+        },
+        expectedStatus: "voided",
+      },
+    ];
+    for (const { match, expectedStatus } of cases) {
+      const repository = {
+        users: { findById: async () => user },
+        predictions: { findById: async () => prediction },
+        matches: { findById: async () => match },
+      } as unknown as InMemoryRepository;
+
+      await expect(new PredictionQueryService(repository).getMyPrediction(USER_ID, PREDICTION_ID))
+        .resolves.toMatchObject({
+          settlement_status: expectedStatus,
+          match_score: null,
+          wdl_hit: null,
+          exact_hit: null,
+        });
+    }
   });
 
   it("returns null settlement fields without formal scores or for cancelled matches", async () => {
@@ -279,6 +328,93 @@ describe("PredictionHistoryQueryService 六联赛过滤", () => {
     expect(nextPage.items[0]).toMatchObject({ match_score: null, wdl_hit: null, exact_hit: null });
   });
 
+  it("[A-S2-03] 历史列表中 correcting / applied_result_version 不一致 / voided 均置空得分并透传 settlement_status", async () => {
+    const repo = await setup();
+    const correctingMatchId = "00000000-0000-4000-8000-000000000015";
+    const voidedMatchId = "00000000-0000-4000-8000-000000000016";
+    const versionMismatchMatchId = "00000000-0000-4000-8000-000000000017";
+    await repo.matches.insert({
+      ...makeMatch(),
+      match_id: correctingMatchId,
+      canonical_match_id: correctingMatchId,
+      settlement_status: "correcting",
+      result_version: 2,
+      settled_result_version: 1,
+    });
+    await repo.matches.insert({
+      ...makeMatch(),
+      match_id: voidedMatchId,
+      canonical_match_id: voidedMatchId,
+      match_status: MatchStatus.Abandoned,
+      settlement_status: "voided",
+      regular_home_score: null,
+      regular_away_score: null,
+    });
+    await repo.matches.insert({
+      ...makeMatch(),
+      match_id: versionMismatchMatchId,
+      canonical_match_id: versionMismatchMatchId,
+      settlement_status: "settled",
+      result_version: 2,
+      settled_result_version: 2,
+    });
+    await repo.predictions.insert({
+      ...makePrediction(USER_ID),
+      prediction_id: "00000000-0000-4000-8000-000000000025",
+      match_id: correctingMatchId,
+      canonical_match_id: correctingMatchId,
+      submitted_at: new Date("2026-08-08T09:00:00.000Z"),
+    });
+    await repo.predictions.insert({
+      ...makePrediction(USER_ID),
+      prediction_id: "00000000-0000-4000-8000-000000000026",
+      match_id: voidedMatchId,
+      canonical_match_id: voidedMatchId,
+      submitted_at: new Date("2026-08-08T08:00:00.000Z"),
+    });
+    await repo.predictions.insert({
+      ...makePrediction(USER_ID),
+      prediction_id: "00000000-0000-4000-8000-000000000027",
+      match_id: versionMismatchMatchId,
+      canonical_match_id: versionMismatchMatchId,
+      submitted_at: new Date("2026-08-08T07:00:00.000Z"),
+    });
+
+    const service = new PredictionHistoryQueryService(repo, "prediction-query-secret");
+    const page = await service.listMyPredictions(USER_ID, {
+      league_id: null,
+      season_id: null,
+      limit: 20,
+      cursor: null,
+    });
+
+    expect(page.items.find((i) => i.match_id === MATCH_ID)).toMatchObject({
+      settlement_status: "settled",
+      match_score: 12,
+      wdl_hit: true,
+      exact_hit: true,
+    });
+    expect(page.items.find((i) => i.match_id === correctingMatchId)).toMatchObject({
+      settlement_status: "correcting",
+      match_score: null,
+      wdl_hit: null,
+      exact_hit: null,
+    });
+    expect(page.items.find((i) => i.match_id === voidedMatchId)).toMatchObject({
+      match_status: "abandoned",
+      settlement_status: "voided",
+      match_score: null,
+      wdl_hit: null,
+      exact_hit: null,
+    });
+    expect(page.items.find((i) => i.match_id === versionMismatchMatchId)).toMatchObject({
+      settlement_status: "settled",
+      match_score: null,
+      wdl_hit: null,
+      exact_hit: null,
+    });
+  });
+
   it("[Slice 4.1] 当页唯一球队经 teams.findByIds 一次批量加载", async () => {
     const repo = await setup();
     const teams = repo.teams;
@@ -303,7 +439,7 @@ describe("PredictionHistoryQueryService 六联赛过滤", () => {
     expect(findByIdsSpy).toHaveBeenCalledTimes(1);
     expect(findByIdsSpy).toHaveBeenCalledWith([HOME_TEAM_ID, AWAY_TEAM_ID]);
     expect(findByIdSpy).not.toHaveBeenCalled();
-    expect(result.items[0]?.home_team).toEqual({ team_id: HOME_TEAM_ID, name: "Arsenal FC" });
-    expect(result.items[0]?.away_team).toEqual({ team_id: AWAY_TEAM_ID, name: "Chelsea FC" });
+    expect(result.items[0]?.home_team).toEqual({ team_id: HOME_TEAM_ID, name: "Arsenal FC", name_zh: null, logo_url: null });
+    expect(result.items[0]?.away_team).toEqual({ team_id: AWAY_TEAM_ID, name: "Chelsea FC", name_zh: null, logo_url: null });
   });
 });

@@ -13,8 +13,8 @@ const HISTORY_ITEM = {
   round_id: "01",
   home_team_id: "00000000-0000-4000-8000-000000000031",
   away_team_id: "00000000-0000-4000-8000-000000000032",
-  home_team: { team_id: "00000000-0000-4000-8000-000000000031", name: "Arsenal FC" },
-  away_team: { team_id: "00000000-0000-4000-8000-000000000032", name: "Chelsea FC" },
+  home_team: { team_id: "00000000-0000-4000-8000-000000000031", name: "Arsenal FC", name_zh: null, logo_url: null },
+  away_team: { team_id: "00000000-0000-4000-8000-000000000032", name: "Chelsea FC", name_zh: null, logo_url: null },
   kickoff_at: "2026-08-08T14:00:00.000Z",
   pred_home_score: 2,
   pred_away_score: 1,
@@ -22,6 +22,7 @@ const HISTORY_ITEM = {
   submitted_at: "2026-08-08T12:00:00.000Z",
   scoring_rule_version: "scoring_v1",
   match_status: "finished",
+  settlement_status: "settled",
   regular_home_score: 2,
   regular_away_score: 1,
   match_score: 12,
@@ -61,9 +62,14 @@ describe("prediction submit OpenAPI contract", () => {
     });
 
     expect(validate(HISTORY_ITEM)).toBe(true);
+    expect(validate({ ...HISTORY_ITEM, settlement_status: "voided" })).toBe(true);
+    expect(validate({ ...HISTORY_ITEM, settlement_status: "pending" })).toBe(false);
     const withoutHomeTeam: Record<string, unknown> = { ...HISTORY_ITEM };
     delete withoutHomeTeam.home_team;
     expect(validate(withoutHomeTeam)).toBe(false);
+    const withoutSettlement: Record<string, unknown> = { ...HISTORY_ITEM };
+    delete withoutSettlement.settlement_status;
+    expect(validate(withoutSettlement)).toBe(false);
   });
 
   it("declares the frozen 49.2 POST /predictions error codes", async () => {

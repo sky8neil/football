@@ -1,6 +1,6 @@
 [Unit]
 Description=Football API
-After=network-online.target
+After=network-online.target postgresql.service
 Wants=network-online.target
 
 [Service]
@@ -11,6 +11,11 @@ EnvironmentFile=/home/neilxu/football/shared/football.env
 ExecStart=/usr/bin/node /home/neilxu/football/current/dist/gateway/http.js
 Restart=on-failure
 RestartSec=5
+LimitNOFILE=65536
+MemoryMax=512M
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target

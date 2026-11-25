@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { GroupStatus, MatchStatus, Provider, SettlementStatus } from "../domain/enums.js";
+import { AnomalyStatus, GroupStatus, MatchStatus, Provider, SettlementStatus } from "../domain/enums.js";
 import { defaultLevelState } from "../domain/types.js";
 import type { Match, MatchProviderMapping, ProviderSnapshot } from "../domain/types.js";
 import { CloudBaseAppRepository } from "./cloudbase-app-repository.js";
@@ -17,6 +17,7 @@ import {
   POSTGRES_LT_OP,
   POSTGRES_LTE_OP,
   POSTGRES_NE_OP,
+  compileAnomalyPage,
   compileLatestRegularBoardSnapshot,
   compilePostgresAdjustCounter,
   compilePostgresDistinctQuery,
@@ -24,6 +25,7 @@ import {
   compilePostgresDocumentDelete,
   compilePostgresDocumentEnsure,
   compilePostgresDocumentGet,
+  compilePostgresDocumentPatch,
   compilePostgresDocumentQuery,
   compilePostgresDocumentUpdate,
   compilePostgresReleaseJobLock,
@@ -224,8 +226,9 @@ describe("postgres document SQL compilation §6.2", () => {
     );
     const kickoffExpr = postgresDocumentFieldExpr(SCHEMA, "matches", "kickoff_at");
     const statusExpr = postgresDocumentFieldExpr(SCHEMA, "matches", "match_status");
+    const finishExpr = postgresDocumentFieldExpr(SCHEMA, "matches", "finish_detected_at");
     expect(query.sql).toBe(
-      `SELECT document FROM "${SCHEMA}"."${matches()}" WHERE ${statusExpr} = $1 AND (document -> 'finish_detected_at') = 'null'::jsonb AND ${kickoffExpr} <= $2::timestamptz ORDER BY ${kickoffExpr} DESC LIMIT $3 OFFSET $4`,
+      `SELECT document FROM "${SCHEMA}"."${matches()}" WHERE ${statusExpr} = $1 AND (${finishExpr}) IS NULL AND ${kickoffExpr} <= $2::timestamptz ORDER BY ${kickoffExpr} DESC LIMIT $3 OFFSET $4`,
     );
     expect(query.params).toEqual([MatchStatus.Scheduled, bound.toISOString(), 50, 3]);
 
@@ -241,6 +244,77 @@ describe("postgres document SQL compilation §6.2", () => {
     );
     expect(counted.params).toEqual(["m1", "HOME"]);
     expect(counted.sql).not.toContain("SELECT document");
+  });
+
+  it("null 过滤改为索引表达式 IS NULL，可命中 ->> 索引并覆盖缺失键", () => {
+    const text = compilePostgresDocumentQuery(CONFIG, matches(), { superseded_by: null });
+    const textExpr = postgresDocumentFieldExpr(SCHEMA, "matches", "superseded_by");
+    expect(text.sql).toContain(`(${textExpr}) IS NULL`);
+    expect(text.sql).not.toContain("= 'null'::jsonb");
+    expect(text.sql).not.toContain("(document -> 'superseded_by')");
+    expect(text.params).toEqual([]);
+
+    const date = compilePostgresDocumentQuery(CONFIG, matches(), { finish_detected_at: null });
+    const dateExpr = postgresDocumentFieldExpr(SCHEMA, "matches", "finish_detected_at");
+    expect(dateExpr).toContain(JSONB_UTC_TIMESTAMPTZ_FUNCTION);
+    expect(date.sql).toContain(`(${dateExpr}) IS NULL`);
+    expect(date.params).toEqual([]);
+
+    const numeric = compilePostgresDocumentQuery(
+      CONFIG,
+      cloudBaseCollectionName(NAMESPACE, "match_results"),
+      { result_version: null },
+    );
+    const numericExpr = postgresDocumentFieldExpr(SCHEMA, "match_results", "result_version");
+    expect(numericExpr).toContain("::numeric");
+    expect(numeric.sql).toContain(`(${numericExpr}) IS NULL`);
+
+    const flag = compilePostgresDocumentQuery(
+      CONFIG,
+      cloudBaseCollectionName(NAMESPACE, "anomalies"),
+      { blocking: null },
+    );
+    const flagExpr = postgresDocumentFieldExpr(SCHEMA, "anomalies", "blocking");
+    expect(flagExpr).toContain("::boolean");
+    expect(flag.sql).toContain(`(${flagExpr}) IS NULL`);
+  });
+
+  it("未声明字段的数字/日期/布尔过滤两侧类型对齐", () => {
+    const score = compilePostgresDocumentQuery(CONFIG, users(), { extra_score: 3 });
+    const scoreExpr = postgresDocumentFieldExpr(SCHEMA, "users", "extra_score");
+    expect(scoreExpr).toBe("(document ->> 'extra_score')");
+    expect(score.sql).toContain(`(${scoreExpr})::numeric = $1::numeric`);
+    expect(score.params).toEqual([3]);
+
+    const at = compilePostgresDocumentQuery(CONFIG, users(), { extra_at: NOW });
+    const atExpr = postgresDocumentFieldExpr(SCHEMA, "users", "extra_at");
+    expect(at.sql).toContain(
+      `"${SCHEMA}"."${JSONB_UTC_TIMESTAMPTZ_FUNCTION}"(${atExpr}) = $1::timestamptz`,
+    );
+    expect(at.sql).not.toContain(`(document ->> 'extra_at')::timestamptz`);
+    expect(at.params).toEqual([NOW.toISOString()]);
+
+    const flag = compilePostgresDocumentQuery(CONFIG, users(), { extra_flag: false });
+    const flagExpr = postgresDocumentFieldExpr(SCHEMA, "users", "extra_flag");
+    expect(flag.sql).toContain(`(${flagExpr})::boolean = $1::boolean`);
+    expect(flag.params).toEqual([false]);
+
+    const upper = compilePostgresDocumentQuery(CONFIG, users(), {
+      extra_score: { [POSTGRES_LTE_OP]: 9 },
+    });
+    expect(upper.sql).toContain(`(${scoreExpr})::numeric <= $1::numeric`);
+    expect(upper.params).toEqual([9]);
+
+    const excluded = compilePostgresDocumentQuery(CONFIG, users(), {
+      extra_flag: { [POSTGRES_NE_OP]: true },
+    });
+    expect(excluded.sql).toContain(`(${flagExpr})::boolean IS DISTINCT FROM $1::boolean`);
+    expect(excluded.params).toEqual([true]);
+
+    const label = compilePostgresDocumentQuery(CONFIG, users(), { extra_label: "keep" });
+    expect(label.sql).toContain(`${postgresDocumentFieldExpr(SCHEMA, "users", "extra_label")} = $1`);
+    expect(label.sql).not.toMatch(/extra_label'\)(?:::|\)::)/);
+    expect(label.params).toEqual(["keep"]);
   });
 
   it("distinctQuery 用 SELECT DISTINCT 在数据库内去重，字段与筛选条件均参数化", () => {
@@ -2514,14 +2588,27 @@ describe("PostgresDocumentDb 业务调用组合", () => {
     expect(statement?.params?.[2]).toBe(50);
   });
 
-  it("crowd count 三次等值 COUNT 加一次单场 match_id query", async () => {
+  it("stale_recovery 在 Postgres SQL 中下推 superseded_by IS NULL (A-S3-08)", async () => {
     const rec = new RecordingQuery();
-    rec.responses.push(
-      { rows: [{ count: 2 }] },
-      { rows: [{ count: 1 }] },
-      { rows: [{ count: 0 }] },
-      { rows: [] },
-    );
+    rec.responses = [{ rows: [] }, { rows: [] }];
+    const db = createPostgresDocumentDb(rec.query, CONFIG);
+    const repo = new CloudBaseAppRepository(REPO_CONFIG, db);
+    await repo.matches.findActiveWindow({ jobType: "stale_recovery", now: NOW, limit: 10 });
+    const queries = rec.statements.filter((item) => item.sql.includes(`"${matches()}"`));
+    expect(queries).toHaveLength(2);
+    for (const q of queries) {
+      expect(q.sql).toContain(`(${postgresDocumentFieldExpr(SCHEMA, "matches", "superseded_by")}) IS NULL`);
+    }
+  });
+
+  it("[A-S2-05] crowd count 单条 GROUP BY derived_result 聚合查询，零全量扫描", async () => {
+    const rec = new RecordingQuery();
+    rec.responses.push({
+      rows: [
+        { derived_result: "HOME", count: 2 },
+        { derived_result: "DRAW", count: 1 },
+      ],
+    });
     const db = createPostgresDocumentDb(rec.query, CONFIG);
     const repo = new CloudBaseAppRepository(REPO_CONFIG, db);
     await expect(repo.predictions.countByMatchGroupedByResult("match-id")).resolves.toEqual({
@@ -2529,15 +2616,13 @@ describe("PostgresDocumentDb 业务调用组合", () => {
       DRAW: 1,
       AWAY: 0,
     });
-    expect(rec.statements).toHaveLength(4);
-    expect(rec.statements.slice(0, 3).every((item) => item.sql.startsWith("SELECT COUNT(*)::int AS count"))).toBe(true);
-    expect(rec.statements[3]?.sql.startsWith("SELECT document")).toBe(true);
-    expect(rec.statements.map((item) => item.params)).toEqual([
-      ["match-id", "HOME"],
-      ["match-id", "DRAW"],
-      ["match-id", "AWAY"],
-      ["match-id"],
-    ]);
+    expect(rec.statements).toHaveLength(1);
+    const canonicalExpr = postgresDocumentFieldExpr(SCHEMA, "predictions", "canonical_match_id");
+    const resultExpr = postgresDocumentFieldExpr(SCHEMA, "predictions", "derived_result");
+    expect(rec.statements[0]?.sql).toBe(
+      `SELECT ${resultExpr} AS derived_result, COUNT(*)::int AS count FROM "${SCHEMA}"."${predictions()}" WHERE ${canonicalExpr} = $1 GROUP BY ${resultExpr}`,
+    );
+    expect(rec.statements[0]?.params).toEqual(["match-id"]);
   });
 });
 
@@ -2655,6 +2740,83 @@ describe("PostgresDocumentDb Slice 3.3 SQL pushdowns", () => {
     expect(rec.statements).toHaveLength(1);
   });
 
+  it("[A-S8-13] compileAnomalyPage pushes status/blocking and (last_seen_at, anomaly_id) keyset desc with limit", async () => {
+    const anomaliesTable = cloudBaseCollectionName(NAMESPACE, "anomalies");
+    const afterAt = new Date("2026-08-09T11:00:00.000Z");
+    const after = {
+      last_seen_at: afterAt,
+      anomaly_id: "00000000-0000-4000-8000-000000000009",
+    };
+    const compiled = compileAnomalyPage(CONFIG, {
+      collection: anomaliesTable,
+      status: AnomalyStatus.Open,
+      blocking: true,
+      after,
+      limit: 21,
+    });
+    const status = postgresDocumentFieldExpr(SCHEMA, "anomalies", "status");
+    const blocking = postgresDocumentFieldExpr(SCHEMA, "anomalies", "blocking");
+    const lastSeen = postgresDocumentFieldExpr(SCHEMA, "anomalies", "last_seen_at");
+    const anomalyId = postgresDocumentFieldExpr(SCHEMA, "anomalies", "anomaly_id");
+    expect(compiled.sql).toBe(
+      `SELECT document FROM "${SCHEMA}"."${anomaliesTable}" WHERE ${status} = $1 AND ${blocking} = $2 AND (${lastSeen}, ${anomalyId}) < ($3::timestamptz, $4) ORDER BY ${lastSeen} DESC, ${anomalyId} DESC LIMIT $5`,
+    );
+    expect(compiled.params).toEqual([
+      AnomalyStatus.Open,
+      true,
+      afterAt.toISOString(),
+      after.anomaly_id,
+      21,
+    ]);
+
+    const unfiltered = compileAnomalyPage(CONFIG, {
+      collection: anomaliesTable,
+      status: null,
+      blocking: null,
+      after: null,
+      limit: 20,
+    });
+    expect(unfiltered.sql).toBe(
+      `SELECT document FROM "${SCHEMA}"."${anomaliesTable}" WHERE TRUE ORDER BY ${lastSeen} DESC, ${anomalyId} DESC LIMIT $1`,
+    );
+
+    const rec = new RecordingQuery();
+    rec.responses.push({
+      rows: [{
+        document: encodeDocument({
+          _id: after.anomaly_id,
+          schema_version: 1,
+          anomaly_id: after.anomaly_id,
+          anomaly_key: "match:type",
+          match_id: "00000000-0000-4000-8000-000000000010",
+          type: "PROVIDER_STATE_CONFLICT",
+          blocking: true,
+          status: AnomalyStatus.Open,
+          first_seen_at: NOW,
+          last_seen_at: afterAt,
+          occurrence_count: 1,
+          details: {},
+          resolved_at: null,
+          resolution: null,
+          created_at: NOW,
+          updated_at: NOW,
+        }),
+      }],
+    });
+    const db = createPostgresDocumentDb(rec.query, CONFIG);
+    const docs = await db.findAnomalyPage({
+      collection: anomaliesTable,
+      status: AnomalyStatus.Open,
+      blocking: true,
+      after,
+      limit: 21,
+    });
+    expect(docs).toHaveLength(1);
+    expect(docs[0]?.last_seen_at).toBeInstanceOf(Date);
+    expect(rec.statements).toHaveLength(1);
+    expect(rec.statements[0]?.params).toEqual(compiled.params);
+  });
+
   it("compileSettlementFallbackPage uses (kickoff_at, match_id) keyset cursor and skips voided", async () => {
     const matchesTable = matches();
     const afterAt = new Date("2026-08-05T15:00:00.000Z");
@@ -2679,5 +2841,104 @@ describe("PostgresDocumentDb Slice 3.3 SQL pushdowns", () => {
       after: { kickoff_at: afterAt, match_id: "m-cursor" },
     })).resolves.toEqual([]);
     expect(rec.statements).toHaveLength(1);
+  });
+});
+
+function requireGetForUpdate(
+  db: { getForUpdate?: (collection: string, id: string) => Promise<CloudBaseDocument | null> },
+): (collection: string, id: string) => Promise<CloudBaseDocument | null> {
+  if (db.getForUpdate === undefined) throw new Error("getForUpdate is not implemented");
+  return db.getForUpdate.bind(db);
+}
+
+describe("PostgresDocumentDb 事务内 getForUpdate 与局部 patch [Slice 2]", () => {
+  it("patch 只用 jsonb_set 改传入字段，不合并整份文档", () => {
+    const compiled = compilePostgresDocumentPatch(CONFIG, users(), "u1", {
+      nickname: "Moon",
+      career_points: 12,
+      updated_at: NOW,
+      deleted_at: null,
+    });
+    expect(compiled.sql).toBe(
+      `UPDATE "${SCHEMA}"."${users()}" SET document = jsonb_set(jsonb_set(jsonb_set(jsonb_set(document, ARRAY[$2]::text[], $3::jsonb, true), ARRAY[$4]::text[], $5::jsonb, true), ARRAY[$6]::text[], $7::jsonb, true), ARRAY[$8]::text[], $9::jsonb, true) WHERE _id = $1 RETURNING _id`,
+    );
+    expect(compiled.params).toEqual([
+      "u1",
+      "nickname",
+      JSON.stringify("Moon"),
+      "career_points",
+      JSON.stringify(12),
+      "updated_at",
+      JSON.stringify(NOW.toISOString()),
+      "deleted_at",
+      "null",
+    ]);
+    expect(compiled.sql).not.toContain("||");
+    expect(() => compilePostgresDocumentPatch(CONFIG, users(), "u1", { "bad-field": 1 }))
+      .toThrow(/invalid query field/);
+  });
+
+  it("patch 不先读整行，缺失文档抛 CloudBaseDocumentNotFoundError", async () => {
+    const missing = new RecordingQuery();
+    missing.responses.push({ rows: [] });
+    const missingDb = createPostgresDocumentDb(missing.query, CONFIG);
+    await expect(missingDb.patch(users(), "missing", { nickname: "x" }))
+      .rejects.toBeInstanceOf(CloudBaseDocumentNotFoundError);
+    expect(missing.statements).toHaveLength(1);
+    expect(missing.statements[0]?.sql).toContain("jsonb_set");
+    expect(missing.statements[0]?.sql).not.toContain("SELECT document");
+
+    const rec = new RecordingQuery();
+    rec.responses.push({ rows: [{ _id: "u1" }] });
+    const db = createPostgresDocumentDb(rec.query, CONFIG);
+    await db.patch(users(), "u1", { nickname: "Moon", updated_at: NOW });
+    expect(rec.statements).toHaveLength(1);
+    expect(rec.statements[0]?.sql).toContain("jsonb_set");
+    expect(rec.statements[0]?.params?.[2]).toBe(JSON.stringify("Moon"));
+  });
+
+  it("事务外 getForUpdate 拒绝且不发 SQL", async () => {
+    const rec = new RecordingQuery();
+    const db = createPostgresDocumentDb(rec.query, CONFIG);
+    const getForUpdate = requireGetForUpdate(db);
+    await expect(getForUpdate(users(), "u1")).rejects.toThrow(/active transaction/);
+    expect(rec.statements).toEqual([]);
+  });
+
+  it("事务内 getForUpdate 发 SELECT ... FOR UPDATE，解码日期，缺失返回 null", async () => {
+    const rec = new ExclusiveRecordingQuery();
+    rec.responses.push(
+      { rows: [{ document: encodeDocument(userDoc("u1")) }] },
+      { rows: [] },
+    );
+    const db = createPostgresDocumentDb(rec.query, CONFIG, { connect: rec.connect });
+    await db.transaction(async (tx) => {
+      const getForUpdate = requireGetForUpdate(tx);
+      const locked = await getForUpdate(users(), "u1");
+      expect(locked?.created_at).toBeInstanceOf(Date);
+      expect((locked?.created_at as Date).getTime()).toBe(NOW.getTime());
+      expect(locked?.openid).toBe("openid-u1");
+      await expect(getForUpdate(users(), "u9")).resolves.toBeNull();
+    });
+    expect(rec.statements.filter((item) => item.sql.includes("FOR UPDATE"))).toEqual([
+      {
+        sql: `SELECT document FROM "${SCHEMA}"."${users()}" WHERE _id = $1 FOR UPDATE`,
+        params: ["u1"],
+      },
+      {
+        sql: `SELECT document FROM "${SCHEMA}"."${users()}" WHERE _id = $1 FOR UPDATE`,
+        params: ["u9"],
+      },
+    ]);
+  });
+
+  it("[CR-16] prefers declared string field type over runtime numeric/boolean inference", () => {
+    const compiled = compilePostgresDocumentQuery(CONFIG, users(), {
+      openid: 12345 as unknown as string,
+    });
+    expect(compiled.sql).toBe(
+      `SELECT document FROM "${SCHEMA}"."${users()}" WHERE (document ->> 'openid') = $1`,
+    );
+    expect(compiled.params).toEqual([12345]);
   });
 });

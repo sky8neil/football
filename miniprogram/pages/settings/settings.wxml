@@ -3,6 +3,8 @@
   <view class="content">
     <view class="title">个人资料设置</view><view class="subtitle">让球友认识你，也为你的主队助威。</view>
     <view wx:if="{{loading}}" class="card">正在加载个人资料…</view>
+    <view wx:elif="{{errorKind === 'unauthorized'}}" class="card"><text>{{errorMessage}}</text><button class="auth-action" bindtap="onLoginTap">去登录</button></view>
+    <view wx:elif="{{errorKind === 'userDeleted'}}" class="card"><text>{{errorMessage}}</text></view>
     <view wx:elif="{{errorMessage}}" class="card"><text>{{errorMessage}}</text><button bindtap="loadProfile">重新加载</button></view>
     <block wx:else>
       <view class="card"><text class="label">昵称</text><input type="text" value="{{nickname}}" bindinput="onNicknameInput" disabled="{{saving}}" placeholder="请输入昵称" /></view>
@@ -20,7 +22,8 @@
         </view>
       </view>
       <view wx:if="{{saveErrorMessage}}" class="save-error">{{saveErrorMessage}}</view>
-      <button class="save" bindtap="onSave" loading="{{saving}}" disabled="{{saving}}">保存</button>
+      <button class="save" bindtap="onSave" loading="{{saving}}" disabled="{{saving || deleting}}">保存</button>
+      <button class="delete-account" bindtap="onDeleteAccount" loading="{{deleting}}" disabled="{{deleting || saving}}">注销账号</button>
     </block>
     <button wx:if="{{showLogout}}" class="logout" bindtap="onLogout">退出登录</button>
   </view>

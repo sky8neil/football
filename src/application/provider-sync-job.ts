@@ -340,7 +340,8 @@ export class ProviderFixtureSyncJobService {
   constructor(
     private readonly repo: Pick<AppRepository, "jobLocks" | "syncLogs"> &
       Partial<Pick<AppRepository, "matches" | "matchProviderMappings">>,
-    private readonly fixtureSync: Pick<ProviderFixtureSyncService, "applyFixture">,
+    private readonly fixtureSync: Pick<ProviderFixtureSyncService, "applyFixture"> &
+      Partial<Pick<ProviderFixtureSyncService, "applyFixtureForJob">>,
     retryOptions: ProviderFixtureSyncRetryOptions = {},
     lockOptions: ProviderFixtureSyncLockOptions = {},
   ) {
@@ -374,8 +375,12 @@ export class ProviderFixtureSyncJobService {
       if (Number.isFinite(nextAtMs) && serverNow.getTime() < nextAtMs) return false;
       return true;
     }
-    // failed 不再被整个周期锁死：退避重试耗尽后按 min(周期, exhaustedRetryMinutes) 重试。
-    const effectiveDueIntervalMs = latest.status === SyncJobStatus.Failed
+    const leaseExpired =
+      latest.status === SyncJobStatus.Running &&
+      serverNow.getTime() - startedMs >= FIXED_CONFIG_V1.JOB_LEASE_MINUTES * 60_000;
+    const effectiveStatus = leaseExpired ? SyncJobStatus.Failed : latest.status;
+    // failed / 超租约僵死 running 不再被整个周期锁死：按 min(周期, exhaustedRetryMinutes) 重试。
+    const effectiveDueIntervalMs = effectiveStatus === SyncJobStatus.Failed
       ? Math.min(dueIntervalMs, SYNC_RETRY_V1.exhaustedRetryMinutes * 60_000)
       : dueIntervalMs;
     if (serverNow.getTime() - startedMs < effectiveDueIntervalMs) return false;
@@ -512,6 +517,7 @@ export class ProviderFixtureSyncJobService {
 
         let changed = 0;
         let failed = 0;
+        let nonEntityFailed = 0;
         let itemsRead = 0;
         const failureDiagnostics: ProviderFixtureFailureDiagnostic[] = [];
         let failureDiagnosticsOmitted = 0;
@@ -529,14 +535,19 @@ export class ProviderFixtureSyncJobService {
           for (const item of batch.value) {
             await lockRenewal.assertHeld();
             try {
-              const outcome = item.seasonId === undefined
-                ? await this.fixtureSync.applyFixture(item.fixture, item.payload, serverNow)
-                : await this.fixtureSync.applyFixture(item.fixture, item.payload, serverNow, item.seasonId);
+              const outcome = typeof this.fixtureSync.applyFixtureForJob === "function"
+                ? await this.fixtureSync.applyFixtureForJob(item.fixture, item.payload, serverNow, item.seasonId, jobType)
+                : item.seasonId === undefined
+                  ? await this.fixtureSync.applyFixture(item.fixture, item.payload, serverNow)
+                  : await this.fixtureSync.applyFixture(item.fixture, item.payload, serverNow, item.seasonId);
               if (isChanged(outcome)) {
                 changed += 1;
               }
               if (isFailed(outcome)) {
                 failed += 1;
+                if (outcome.match_id === null) {
+                  nonEntityFailed += 1;
+                }
                 const diagnostic = outcomeFailureDiagnostic(
                   runningLog.sync_job_id,
                   item,
@@ -547,6 +558,7 @@ export class ProviderFixtureSyncJobService {
             } catch (error) {
               // 单个实体失败不影响同一批次其他实体；其事务已由 fixture service 回滚。
               failed += 1;
+              nonEntityFailed += 1;
               recordFailure(exceptionFailureDiagnostic(runningLog.sync_job_id, item, error));
             }
           }
@@ -560,12 +572,16 @@ export class ProviderFixtureSyncJobService {
           failure_diagnostics_omitted: failureDiagnosticsOmitted,
         } : {};
         if (failed > 0) {
+          const suppressEntityOnlyBackoff =
+            leagueId === undefined &&
+            (jobType === SyncJobType.LiveMatch || jobType === SyncJobType.PostFinishVerify) &&
+            nonEntityFailed === 0;
           const retryAttempt = await this.priorRetryAttempt(
             jobType,
             runningLog.sync_job_id,
             leagueId,
           );
-          const delayMinutes = nextRetryDelayMinutes(retryAttempt);
+          const delayMinutes = suppressEntityOnlyBackoff ? null : nextRetryDelayMinutes(retryAttempt);
           const failureMessage = `provider fixture sync failed for ${failed}/${itemsRead} item(s)`;
           if (delayMinutes === null) {
             await syncLogs.update({

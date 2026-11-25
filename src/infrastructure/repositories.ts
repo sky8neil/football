@@ -80,9 +80,10 @@ import type {
   User,
   UserSeasonStats,
 } from "../domain/types.js";
-import type { AnomalyStatus } from "../domain/enums.js";
+import type { AdminAuditAction, AdminAuditEntityType, AnomalyStatus } from "../domain/enums.js";
+import type { AuthSessionRevoker } from "./cloudbase-db.js";
 
-export type { SettlementTodoQuery, ActiveWindowQuery };
+export type { SettlementTodoQuery, ActiveWindowQuery, AuthSessionRevoker };
 
 /** 唯一约束冲突（模拟数据库唯一索引冲突）。 */
 export class UniqueConstraintError extends Error {
@@ -97,6 +98,27 @@ export class UniqueConstraintError extends Error {
     this.indexName = indexName;
     this.key = key;
   }
+}
+
+/** 丢掉 undefined / _id，并拒绝改写主键。null 是合法局部更新值。 */
+export function repositoryPatchPayload(
+  collection: string,
+  fields: object,
+  identity: Record<string, unknown>,
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(fields)) {
+    if (value === undefined || key === "_id") continue;
+    if (Object.prototype.hasOwnProperty.call(identity, key)) {
+      if (value !== identity[key]) throw internalError(`${collection} 主键不可通过 patch 修改`);
+      continue;
+    }
+    if (key === "schema_version" && value !== SCHEMA_VERSION) {
+      throw internalError("schema_version 必须为 1");
+    }
+    payload[key] = value;
+  }
+  return payload;
 }
 
 /** 对不存在文档执行 update 时抛出。 */
@@ -141,6 +163,13 @@ export interface UserRepository {
   findAll(): Promise<User[]>;
   insert(user: User): Promise<void>;
   update(user: User): Promise<void>;
+  /**
+   * 事务内按 user_id 行锁读取（SELECT ... FOR UPDATE）。事务外必须拒绝；缺失返回 null。
+   * 多文档加锁顺序：users → user_season_stats → rankings → matches → groups，同集合再按 id 升序。
+   */
+  findByIdForUpdate?(userId: string): Promise<User | null>;
+  /** 只合并传入字段，不读取后整文档覆写。缺失抛 DocumentNotFoundError。 */
+  patchFields?(userId: string, fields: Partial<User>): Promise<void>;
 }
 
 /**
@@ -153,11 +182,15 @@ export interface DeletedOpenidMappingRepository {
   upsert(mapping: DeletedOpenidMapping): Promise<void>;
 }
 
-/** 公开比赛查询所需的球队只读 port；写入由 Provider 同步流程负责。 */
+/** 公开比赛查询与同步共用的球队仓储。 */
 export interface TeamRepository {
   findById(teamId: string): Promise<Team | null>;
   findByIds?(teamIds: readonly string[]): Promise<Map<string, Team>>;
+  findAll?(): Promise<Team[]>;
   insert(team: Team): Promise<void>;
+  update?(team: Team): Promise<void>;
+  /** 只合并传入字段，不整文档覆写。缺失抛 DocumentNotFoundError。 */
+  patchFields?(teamId: string, fields: Partial<Team>): Promise<void>;
 }
 
 /** Provider 外部球队 ID 映射；唯一约束由 (provider, provider_team_id) 提供。 */
@@ -172,7 +205,9 @@ export interface TeamProviderMappingRepository {
     providerTeamIds: readonly string[],
   ): Promise<Map<string, TeamProviderMapping>>;
   findByTeamId(teamId: string): Promise<TeamProviderMapping[]>;
+  findAll?(): Promise<TeamProviderMapping[]>;
   insert(mapping: TeamProviderMapping): Promise<void>;
+  update?(mapping: TeamProviderMapping): Promise<void>;
 }
 
 /** Provider 外部比赛 ID 映射；唯一约束由 (provider, provider_match_id) 提供。 */
@@ -226,9 +261,26 @@ export interface AdminRepository {
   update(admin: Admin): Promise<void>;
 }
 
+export interface AdminAuditLogPageQuery {
+  action: AdminAuditAction | null;
+  entity_type: AdminAuditEntityType | null;
+  entity_id: string | null;
+  after: {
+    created_at: Date;
+    audit_id: string;
+  } | null;
+  limit: number;
+}
+
+export interface AdminAuditLogPage {
+  items: AdminAuditLog[];
+  has_more: boolean;
+}
+
 /** 管理员审计日志只追加，不提供 update/delete。 */
 export interface AdminAuditLogRepository {
   findByEntity(entityType: string, entityId: string): Promise<AdminAuditLog[]>;
+  findPage?(query: AdminAuditLogPageQuery): Promise<AdminAuditLogPage>;
   insert(log: AdminAuditLog): Promise<void>;
 }
 
@@ -249,8 +301,11 @@ export interface AdminAnomalyPage {
 
 /** 异常只读查询与 anomaly 记录的基础写入 port。 */
 export interface AnomalyRepository {
+  findById?(anomalyId: string): Promise<Anomaly | null>;
+  findByIdForUpdate?(anomalyId: string): Promise<Anomaly | null>;
   findByKey(anomalyKey: string): Promise<Anomaly | null>;
   findOpenBlockingByMatch(matchId: string): Promise<Anomaly[]>;
+  findOpenByMatch?(matchId: string): Promise<Anomaly[]>;
   findPage(query: AdminAnomalyPageQuery): Promise<AdminAnomalyPage>;
   insert(anomaly: Anomaly): Promise<void>;
   update(anomaly: Anomaly): Promise<void>;
@@ -372,6 +427,10 @@ export interface MatchRepository {
   findActiveWindow(query: ActiveWindowQuery): Promise<Match[]>;
   insert(match: Match): Promise<void>;
   update(match: Match): Promise<void>;
+  /** 事务内按 match_id 行锁读取。事务外必须拒绝；缺失返回 null。 */
+  findByIdForUpdate?(matchId: string): Promise<Match | null>;
+  /** 只合并传入字段，不整文档覆写 settlement 等其它列。缺失抛 DocumentNotFoundError。 */
+  patchFields?(matchId: string, fields: Partial<Match>): Promise<void>;
   updateSettlementProgress(matchId: string, resultVersion: number, settledAt: Date): Promise<void>;
   /** 只更新结算状态与更新时间，保留并发写入的其它 match 字段。 */
   updateSettlementStatus(
@@ -517,6 +576,10 @@ export interface UserSeasonStatsRepository {
   findByLevelSeason(levelSeasonId: string): Promise<UserSeasonStats[]>;
   insert(stats: UserSeasonStats): Promise<void>;
   update(stats: UserSeasonStats): Promise<void>;
+  /** 事务内按 user_id + level_season_id 行锁读取。事务外必须拒绝；缺失返回 null。 */
+  findByUserAndSeasonForUpdate?(userId: string, levelSeasonId: string): Promise<UserSeasonStats | null>;
+  /** 只合并传入字段。缺失抛 DocumentNotFoundError。 */
+  patchFields?(userId: string, levelSeasonId: string, fields: Partial<UserSeasonStats>): Promise<void>;
 }
 
 export interface BoardSnapshotRepository {
@@ -539,6 +602,10 @@ export interface GroupRepository {
   findByInviteCode(inviteCode: string): Promise<Group | null>;
   insert(group: Group): Promise<void>;
   update(group: Group): Promise<void>;
+  /** 事务内按 group_id 行锁读取。事务外必须拒绝；缺失返回 null。 */
+  findByIdForUpdate?(groupId: string): Promise<Group | null>;
+  /** 只合并传入字段。缺失抛 DocumentNotFoundError。 */
+  patchFields?(groupId: string, fields: Partial<Group>): Promise<void>;
 }
 
 export interface GroupMemberRepository {
@@ -572,6 +639,19 @@ export interface RankingRepository {
   ): Promise<RankingEntry[]>;
   insert(entry: RankingEntry): Promise<void>;
   update(entry: RankingEntry): Promise<void>;
+  /** 事务内按 period_type + period_key + user_id 行锁读取。事务外必须拒绝；缺失返回 null。 */
+  findByPeriodAndUserForUpdate?(
+    periodType: RankingEntry["period_type"],
+    periodKey: string,
+    userId: string,
+  ): Promise<RankingEntry | null>;
+  /** 只合并传入字段，不整文档覆写积分与命中。缺失抛 DocumentNotFoundError。 */
+  patchFields?(
+    periodType: RankingEntry["period_type"],
+    periodKey: string,
+    userId: string,
+    fields: Partial<RankingEntry>,
+  ): Promise<void>;
   /** 原子局部更新：仅写 global_rank / updated_at，绝不覆盖积分与命中字段。 */
   updateGlobalRank?(
     periodType: RankingEntry["period_type"],
@@ -593,6 +673,7 @@ export interface UnitOfWork {
   leagueSeasons?: LeagueSeasonRepository;
   seasonTeams?: SeasonTeamRepository;
   providerReconcileTodos?: ProviderReconcileTodoRepository;
+  authSessions?: AuthSessionRevoker;
   users: UserRepository;
   deletedOpenidMappings: DeletedOpenidMappingRepository;
   /** Provider 同步适配器未实现时由应用层 Fail Closed。 */
@@ -887,6 +968,8 @@ export class InMemoryRepository implements AppRepository {
       findAll: () => self.findAllUsers(),
       insert: (user) => self.insertUser(user),
       update: (user) => self.updateUser(user),
+      findByIdForUpdate: (userId) => self.findUserByIdForUpdate(userId),
+      patchFields: (userId, fields) => self.patchUser(userId, fields),
     };
   }
 
@@ -913,7 +996,10 @@ export class InMemoryRepository implements AppRepository {
         }
         return found;
       },
+      findAll: async () => [...self.store.teamsById.values()],
       insert: (team) => self.insertTeam(team),
+      update: (team) => self.updateTeam(team),
+      patchFields: (teamId, fields) => self.patchTeam(teamId, fields),
     };
   }
 
@@ -925,7 +1011,9 @@ export class InMemoryRepository implements AppRepository {
       findByProviderAndExternalIds: (provider, providerTeamIds) =>
         self.findTeamProviderMappingsByExternalIds(provider, providerTeamIds),
       findByTeamId: (teamId) => self.findTeamProviderMappingsByTeamId(teamId),
+      findAll: async () => [...self.store.teamProviderMappingsByKey.values()],
       insert: (mapping) => self.insertTeamProviderMapping(mapping),
+      update: (mapping) => self.updateTeamProviderMapping(mapping),
     };
   }
 
@@ -964,6 +1052,7 @@ export class InMemoryRepository implements AppRepository {
     const self = this;
     return {
       findByEntity: (entityType, entityId) => self.findAdminAuditLogsByEntity(entityType, entityId),
+      findPage: (query) => self.findAdminAuditLogsPage(query),
       insert: (log) => self.insertAdminAuditLog(log),
     };
   }
@@ -971,8 +1060,11 @@ export class InMemoryRepository implements AppRepository {
   get anomalies(): AnomalyRepository {
     const self = this;
     return {
+      findById: (anomalyId) => self.findAnomalyById(anomalyId),
+      findByIdForUpdate: (anomalyId) => self.findAnomalyByIdForUpdate(anomalyId),
       findByKey: (anomalyKey) => self.findAnomalyByKey(anomalyKey),
       findOpenBlockingByMatch: (matchId) => self.findOpenBlockingAnomaliesByMatch(matchId),
+      findOpenByMatch: (matchId) => self.findOpenAnomaliesByMatch(matchId),
       findPage: (query) => self.findAnomaliesPage(query),
       insert: (anomaly) => self.insertAnomaly(anomaly),
       update: (anomaly) => self.updateAnomaly(anomaly),
@@ -1036,6 +1128,8 @@ export class InMemoryRepository implements AppRepository {
       findActiveWindow: (query) => self.findActiveWindow(query),
       insert: (match) => self.insertMatch(match),
       update: (match) => self.updateMatch(match),
+      findByIdForUpdate: (matchId) => self.findMatchByIdForUpdate(matchId),
+      patchFields: (matchId, fields) => self.patchMatch(matchId, fields),
       updateSettlementProgress: async (matchId, resultVersion, settledAt) => {
         const match = await self.findMatchById(matchId);
         if (match === null) throw new DocumentNotFoundError("matches", matchId);
@@ -1204,6 +1298,8 @@ export class InMemoryRepository implements AppRepository {
       findByLevelSeason: (levelSeasonId) => self.findUserSeasonStatsByLevelSeason(levelSeasonId),
       insert: (stats) => self.insertUserSeasonStats(stats),
       update: (stats) => self.updateUserSeasonStats(stats),
+      findByUserAndSeasonForUpdate: (userId, seasonId) => self.findUserSeasonStatsForUpdate(userId, seasonId),
+      patchFields: (userId, seasonId, fields) => self.patchUserSeasonStats(userId, seasonId, fields),
     };
   }
 
@@ -1228,6 +1324,10 @@ export class InMemoryRepository implements AppRepository {
         ),
       insert: (entry) => self.insertRanking(entry),
       update: (entry) => self.updateRanking(entry),
+      findByPeriodAndUserForUpdate: (periodType, periodKey, userId) =>
+        self.findRankingForUpdate(periodType, periodKey, userId),
+      patchFields: (periodType, periodKey, userId, fields) =>
+        self.patchRanking(periodType, periodKey, userId, fields),
       updateGlobalRank: (periodType, periodKey, userId, globalRank, updatedAt) =>
         self.updateRankingGlobalRank(periodType, periodKey, userId, globalRank, updatedAt),
     };
@@ -1271,6 +1371,8 @@ export class InMemoryRepository implements AppRepository {
       findByInviteCode: (inviteCode) => self.findGroupByInviteCode(inviteCode),
       insert: (group) => self.insertGroup(group),
       update: (group) => self.updateGroup(group),
+      findByIdForUpdate: (groupId) => self.findGroupByIdForUpdate(groupId),
+      patchFields: (groupId, fields) => self.patchGroup(groupId, fields),
     };
   }
 
@@ -1402,8 +1504,17 @@ export class InMemoryRepository implements AppRepository {
     return this.store.usersByOpenid.get(openid) ?? null;
   }
 
+  private requireLockTransaction(): void {
+    if (this.undoLog === null) throw new Error("getForUpdate requires an active transaction");
+  }
+
   private async findUserById(userId: string): Promise<User | null> {
     return this.store.usersById.get(userId) ?? null;
+  }
+
+  private async findUserByIdForUpdate(userId: string): Promise<User | null> {
+    this.requireLockTransaction();
+    return this.findUserById(userId);
   }
 
   private async findAllUsers(): Promise<User[]> {
@@ -1469,6 +1580,30 @@ export class InMemoryRepository implements AppRepository {
     });
   }
 
+  private async patchUser(userId: string, fields: Partial<User>): Promise<void> {
+    const payload = repositoryPatchPayload("users", fields, { user_id: userId });
+    const old = this.store.usersById.get(userId);
+    if (old === undefined) throw new DocumentNotFoundError("users", userId);
+    const next: User = { ...old, ...payload, user_id: old.user_id };
+    const openidChanged = next.openid !== old.openid;
+    if (openidChanged) {
+      const owner = this.store.usersByOpenid.get(next.openid);
+      if (owner !== undefined && owner !== old) {
+        throw new UniqueConstraintError("users", "uk_openid", { openid: next.openid });
+      }
+      this.store.usersByOpenid.delete(old.openid);
+    }
+    this.store.usersById.set(userId, next);
+    this.store.usersByOpenid.set(next.openid, next);
+    this.logUndo(() => {
+      if (this.store.usersById.get(userId) !== next) return;
+      if (this.store.usersByOpenid.get(next.openid) !== next) return;
+      this.store.usersById.set(userId, old);
+      if (openidChanged) this.store.usersByOpenid.delete(next.openid);
+      this.store.usersByOpenid.set(old.openid, old);
+    });
+  }
+
   // ---- teams ----
 
   private async findTeamById(teamId: string): Promise<Team | null> {
@@ -1484,6 +1619,31 @@ export class InMemoryRepository implements AppRepository {
     this.logUndo(() => {
       if (this.store.teamsById.get(team.team_id) === team) {
         this.store.teamsById.delete(team.team_id);
+      }
+    });
+  }
+
+  private async updateTeam(team: Team): Promise<void> {
+    assertSchemaVersion(team.schema_version);
+    const old = this.store.teamsById.get(team.team_id);
+    if (old === undefined) throw new DocumentNotFoundError("teams", team.team_id);
+    this.store.teamsById.set(team.team_id, team);
+    this.logUndo(() => {
+      if (this.store.teamsById.get(team.team_id) === team) {
+        this.store.teamsById.set(team.team_id, old);
+      }
+    });
+  }
+
+  private async patchTeam(teamId: string, fields: Partial<Team>): Promise<void> {
+    const payload = repositoryPatchPayload("teams", fields, { team_id: teamId });
+    const old = this.store.teamsById.get(teamId);
+    if (old === undefined) throw new DocumentNotFoundError("teams", teamId);
+    const next: Team = { ...old, ...payload, team_id: old.team_id };
+    this.store.teamsById.set(teamId, next);
+    this.logUndo(() => {
+      if (this.store.teamsById.get(teamId) === next) {
+        this.store.teamsById.set(teamId, old);
       }
     });
   }
@@ -1536,6 +1696,19 @@ export class InMemoryRepository implements AppRepository {
     this.logUndo(() => {
       if (this.store.teamProviderMappingsByKey.get(key) === mapping) {
         this.store.teamProviderMappingsByKey.delete(key);
+      }
+    });
+  }
+
+  private async updateTeamProviderMapping(mapping: TeamProviderMapping): Promise<void> {
+    assertSchemaVersion(mapping.schema_version);
+    const key = providerMappingKey(mapping.provider, mapping.provider_team_id);
+    const old = this.store.teamProviderMappingsByKey.get(key);
+    if (old === undefined) throw new DocumentNotFoundError("team_provider_mappings", key);
+    this.store.teamProviderMappingsByKey.set(key, mapping);
+    this.logUndo(() => {
+      if (this.store.teamProviderMappingsByKey.get(key) === mapping) {
+        this.store.teamProviderMappingsByKey.set(key, old);
       }
     });
   }
@@ -1691,6 +1864,11 @@ export class InMemoryRepository implements AppRepository {
     });
   }
 
+  private async findMatchByIdForUpdate(matchId: string): Promise<Match | null> {
+    this.requireLockTransaction();
+    return this.store.matchesById.get(matchId) ?? null;
+  }
+
   private async updateMatch(match: Match): Promise<void> {
     const old = this.store.matchesById.get(match.match_id);
     if (old === undefined) {
@@ -1737,6 +1915,17 @@ export class InMemoryRepository implements AppRepository {
       if (this.store.matchesById.get(match.match_id) === match) {
         this.store.matchesById.set(match.match_id, old);
       }
+    });
+  }
+
+  private async patchMatch(matchId: string, fields: Partial<Match>): Promise<void> {
+    const payload = repositoryPatchPayload("matches", fields, { match_id: matchId });
+    const old = this.store.matchesById.get(matchId);
+    if (old === undefined) throw new DocumentNotFoundError("matches", matchId);
+    const next: Match = { ...old, ...payload, match_id: old.match_id };
+    this.store.matchesById.set(matchId, next);
+    this.logUndo(() => {
+      if (this.store.matchesById.get(matchId) === next) this.store.matchesById.set(matchId, old);
     });
   }
 
@@ -2252,6 +2441,14 @@ export class InMemoryRepository implements AppRepository {
 
   // ---- user_season_stats ----
 
+  private async findUserSeasonStatsForUpdate(
+    userId: string,
+    seasonId: string,
+  ): Promise<UserSeasonStats | null> {
+    this.requireLockTransaction();
+    return this.findUserSeasonStatsByKey(userId, seasonId);
+  }
+
   private async findUserSeasonStatsByKey(
     userId: string,
     seasonId: string,
@@ -2311,7 +2508,40 @@ export class InMemoryRepository implements AppRepository {
     });
   }
 
+  private async patchUserSeasonStats(
+    userId: string,
+    levelSeasonId: string,
+    fields: Partial<UserSeasonStats>,
+  ): Promise<void> {
+    const payload = repositoryPatchPayload("user_season_stats", fields, {
+      user_id: userId,
+      level_season_id: levelSeasonId,
+    });
+    const key = userSeasonStatsKey(userId, levelSeasonId);
+    const old = this.store.userSeasonStatsByKey.get(key);
+    if (old === undefined) throw new DocumentNotFoundError("user_season_stats", key);
+    const next: UserSeasonStats = {
+      ...old,
+      ...payload,
+      user_id: old.user_id,
+      level_season_id: old.level_season_id,
+    };
+    this.store.userSeasonStatsByKey.set(key, next);
+    this.logUndo(() => {
+      if (this.store.userSeasonStatsByKey.get(key) === next) this.store.userSeasonStatsByKey.set(key, old);
+    });
+  }
+
   // ---- rankings ----
+
+  private async findRankingForUpdate(
+    periodType: RankingEntry["period_type"],
+    periodKey: string,
+    userId: string,
+  ): Promise<RankingEntry | null> {
+    this.requireLockTransaction();
+    return this.findRankingByKey(periodType, periodKey, userId);
+  }
 
   private async findRankingByKey(
     periodType: RankingEntry["period_type"],
@@ -2368,6 +2598,33 @@ export class InMemoryRepository implements AppRepository {
       if (this.store.rankingsByKey.get(key) === entry) {
         this.store.rankingsByKey.set(key, old);
       }
+    });
+  }
+
+  private async patchRanking(
+    periodType: RankingEntry["period_type"],
+    periodKey: string,
+    userId: string,
+    fields: Partial<RankingEntry>,
+  ): Promise<void> {
+    const payload = repositoryPatchPayload("rankings", fields, {
+      period_type: periodType,
+      period_key: periodKey,
+      user_id: userId,
+    });
+    const key = rankingKey(periodType, periodKey, userId);
+    const old = this.store.rankingsByKey.get(key);
+    if (old === undefined) throw new DocumentNotFoundError("rankings", key);
+    const next: RankingEntry = {
+      ...old,
+      ...payload,
+      period_type: old.period_type,
+      period_key: old.period_key,
+      user_id: old.user_id,
+    };
+    this.store.rankingsByKey.set(key, next);
+    this.logUndo(() => {
+      if (this.store.rankingsByKey.get(key) === next) this.store.rankingsByKey.set(key, old);
     });
   }
 
@@ -2522,6 +2779,11 @@ export class InMemoryRepository implements AppRepository {
     });
   }
 
+  private async findGroupByIdForUpdate(groupId: string): Promise<Group | null> {
+    this.requireLockTransaction();
+    return this.findGroupById(groupId);
+  }
+
   private async findGroupById(groupId: string): Promise<Group | null> {
     return this.store.groupsById.get(groupId) ?? null;
   }
@@ -2581,6 +2843,30 @@ export class InMemoryRepository implements AppRepository {
       }
       this.store.groupsById.set(group.group_id, old);
       this.store.groupsByInviteCode.delete(group.invite_code);
+      this.store.groupsByInviteCode.set(old.invite_code, old);
+    });
+  }
+
+  private async patchGroup(groupId: string, fields: Partial<Group>): Promise<void> {
+    const payload = repositoryPatchPayload("groups", fields, { group_id: groupId });
+    const old = this.store.groupsById.get(groupId);
+    if (old === undefined) throw new DocumentNotFoundError("groups", groupId);
+    const next: Group = { ...old, ...payload, group_id: old.group_id };
+    const inviteChanged = next.invite_code !== old.invite_code;
+    if (inviteChanged) {
+      const owner = this.store.groupsByInviteCode.get(next.invite_code);
+      if (owner !== undefined && owner !== old) {
+        throw new UniqueConstraintError("groups", "uk_invite_code", { invite_code: next.invite_code });
+      }
+      this.store.groupsByInviteCode.delete(old.invite_code);
+    }
+    this.store.groupsById.set(groupId, next);
+    this.store.groupsByInviteCode.set(next.invite_code, next);
+    this.logUndo(() => {
+      if (this.store.groupsById.get(groupId) !== next) return;
+      if (this.store.groupsByInviteCode.get(next.invite_code) !== next) return;
+      this.store.groupsById.set(groupId, old);
+      if (inviteChanged) this.store.groupsByInviteCode.delete(next.invite_code);
       this.store.groupsByInviteCode.set(old.invite_code, old);
     });
   }
@@ -2647,6 +2933,32 @@ export class InMemoryRepository implements AppRepository {
     );
   }
 
+  private async findAdminAuditLogsPage(query: AdminAuditLogPageQuery): Promise<AdminAuditLogPage> {
+    const filtered = [...this.store.adminAuditLogsById.values()]
+      .filter((log) => query.action === null || log.action === query.action)
+      .filter((log) => query.entity_type === null || log.entity_type === query.entity_type)
+      .filter((log) => query.entity_id === null || log.entity_id === query.entity_id)
+      .filter((log) => {
+        if (query.after === null) return true;
+        const createdAt = log.created_at.getTime();
+        const cursorCreatedAt = query.after.created_at.getTime();
+        return (
+          createdAt < cursorCreatedAt ||
+          (createdAt === cursorCreatedAt && log.audit_id < query.after.audit_id)
+        );
+      })
+      .sort((a, b) => {
+        const byCreated = b.created_at.getTime() - a.created_at.getTime();
+        if (byCreated !== 0) return byCreated;
+        if (a.audit_id === b.audit_id) return 0;
+        return a.audit_id < b.audit_id ? 1 : -1;
+      });
+    return {
+      items: filtered.slice(0, query.limit),
+      has_more: filtered.length > query.limit,
+    };
+  }
+
   private async insertAdminAuditLog(log: AdminAuditLog): Promise<void> {
     assertSchemaVersion(log.schema_version);
     if (this.store.adminAuditLogsById.has(log.audit_id)) {
@@ -2664,6 +2976,15 @@ export class InMemoryRepository implements AppRepository {
 
   // ---- anomalies ----
 
+  private async findAnomalyById(anomalyId: string): Promise<Anomaly | null> {
+    return this.store.anomaliesById.get(anomalyId) ?? null;
+  }
+
+  private async findAnomalyByIdForUpdate(anomalyId: string): Promise<Anomaly | null> {
+    this.requireLockTransaction();
+    return this.store.anomaliesById.get(anomalyId) ?? null;
+  }
+
   private async findAnomalyByKey(anomalyKey: string): Promise<Anomaly | null> {
     return this.store.anomaliesByKey.get(anomalyKey) ?? null;
   }
@@ -2674,6 +2995,12 @@ export class InMemoryRepository implements AppRepository {
         anomaly.match_id === matchId &&
         anomaly.status === "open" &&
         anomaly.blocking,
+    );
+  }
+
+  private async findOpenAnomaliesByMatch(matchId: string): Promise<Anomaly[]> {
+    return [...this.store.anomaliesById.values()].filter(
+      (anomaly) => anomaly.match_id === matchId && anomaly.status === "open",
     );
   }
 

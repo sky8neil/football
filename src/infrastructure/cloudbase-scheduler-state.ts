@@ -23,15 +23,20 @@ export interface SchedulerStateStore {
   upsertPeriodicJobCycle(state: PeriodicJobCycleState): Promise<void>;
 }
 
+export const POST_FINISH_DAILY_FALLBACK_STATE_ID = "post_finish_daily_fallback";
+
 const PERIODIC_JOB_STATE_IDS = new Set<string>([
   SyncJobType.PeriodFinalize,
   SyncJobType.DailyConsistency,
   SyncJobType.WeeklyLevelEval,
+  SyncJobType.LevelCorrectionReeval,
   SyncJobType.BoardSnapshotCareer,
   SyncJobType.BoardSnapshotStrength,
   SyncJobType.BoardSnapshotSeason,
   SyncJobType.BoardSnapshotSeasonFinal,
   "maintenance_cleanup",
+  "league_seasons",
+  POST_FINISH_DAILY_FALLBACK_STATE_ID,
 ]);
 
 export function periodicJobStateId(jobType: string): string {

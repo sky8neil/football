@@ -18,6 +18,7 @@ import {
   RebuildPeriodRankingsService,
 } from "./ranking-rebuild-service.js";
 import { assertValidServerNow } from "./period-finalize.js";
+import { rankingPeriodLockKey } from "./settlement-item-application-service.js";
 
 const REBUILD_LEASE_MILLISECONDS = FIXED_CONFIG_V1.JOB_LEASE_MINUTES * 60 * 1000;
 
@@ -73,7 +74,7 @@ function assertInput(input: AdminRebuildRankingsInput): void {
   }
   if (
     typeof input.reason !== "string" ||
-    input.reason.length < 1 ||
+    input.reason.trim().length < 1 ||
     input.reason.length > 500
   ) {
     throw validationError("reason 长度必须为 1..500", { field: "reason" });
@@ -161,15 +162,32 @@ export class AdminRebuildRankingsService implements AdminRebuildRankingsCommand 
     const acquired = await this.repo.jobLocks.acquire(
       lockKey,
       ownerId,
-      new Date(serverNow.getTime() + REBUILD_LEASE_MILLISECONDS),
+      new Date(Math.max(serverNow.getTime(), Date.now()) + REBUILD_LEASE_MILLISECONDS),
     );
     if (!acquired) {
-      throw conflictError("SETTLEMENT_ALREADY_RUNNING", "目标榜单存在并发 rebuild", {
+      throw conflictError("RANKING_REBUILD_ALREADY_RUNNING", "目标榜单存在并发 rebuild", {
         lock_key: lockKey,
       });
     }
 
+    const rankingLockKey = board === RankingBoard.Week
+      ? rankingPeriodLockKey(PeriodType.Week, periodKey as string)
+      : null;
+    const rankingOwnerId = newUuid();
+    let rankingAcquired = false;
     try {
+      if (rankingLockKey !== null) {
+        rankingAcquired = await this.repo.jobLocks.acquire(
+          rankingLockKey,
+          rankingOwnerId,
+          new Date(Math.max(serverNow.getTime(), Date.now()) + REBUILD_LEASE_MILLISECONDS),
+        );
+        if (!rankingAcquired) {
+          throw conflictError("RANKING_REBUILD_ALREADY_RUNNING", "周期排行榜重算锁被占用", {
+            lock_key: rankingLockKey,
+          });
+        }
+      }
       return await this.repo.withTransaction(async (tx) => {
         const admin = await this.authorization.requireActiveAdmin(tx, trustedOpenid);
         if (tx.adminAuditLogs === undefined) {
@@ -246,6 +264,9 @@ export class AdminRebuildRankingsService implements AdminRebuildRankingsCommand 
         return { ...outcome, admin_id: admin.admin_id, audit_log: auditLog };
       });
     } finally {
+      if (rankingAcquired && rankingLockKey !== null) {
+        await this.repo.jobLocks.release(rankingLockKey, rankingOwnerId).catch(() => undefined);
+      }
       await this.repo.jobLocks.release(lockKey, ownerId);
     }
   }

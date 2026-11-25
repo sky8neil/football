@@ -1,3 +1,6 @@
+import { readFile } from "node:fs/promises";
+import Ajv from "ajv";
+import YAML from "yaml";
 import { describe, expect, it } from "vitest";
 import { MVP_SEASON, SUPPORTED_LEAGUES } from "../../domain/config.js";
 import { MatchStatus, SettlementStatus } from "../../domain/enums.js";
@@ -11,11 +14,13 @@ import { defaultLevelState, type Match, type Prediction, type User } from "../..
 import {
   getShareCardForUser,
   getShareCardMe,
+  validatePublicShareCardQuery,
   validateShareCardQuery,
 } from "./share-card.js";
 import { InMemoryRateLimiter } from "./rate-limit.js";
 
 const NOW = new Date("2026-08-11T00:00:00.000Z");
+const TEST_SHARE_SECRET = "api-share-card-secret";
 
 function makeUser(userId: string, overrides: Partial<User> = {}): User {
   return {
@@ -203,7 +208,8 @@ describe("share-card API query", () => {
     }));
     await repo.matches.insert(makeMatch());
 
-    const response = await getShareCardMe(new ShareCardQueryService(repo), {
+    const service = new ShareCardQueryService(repo, TEST_SHARE_SECRET);
+    const response = await getShareCardMe(service, {
       authenticated_user_id: userId,
       query: { league_id: MVP_SEASON.league_id, season_id: MVP_SEASON.season_id, round_id: "01" },
       server_now: NOW,
@@ -229,6 +235,12 @@ describe("share-card API query", () => {
       level_season_id: levelSeasonOf(NOW),
       generated_at: NOW.toISOString(),
       pending_predictions: 0,
+      share_token: service.generateShareToken(userId, {
+        league_id: MVP_SEASON.league_id,
+        season_id: MVP_SEASON.season_id,
+        round_id: "01",
+      }),
+      matches: [],
     });
   });
 
@@ -331,7 +343,8 @@ describe("share-card API query", () => {
     await repo.users.insert(makeUser(userId));
     await repo.matches.insert(makeMatch({ season_id: "2024_2025", round_id: "08" }));
 
-    const response = await getShareCardMe(new ShareCardQueryService(repo), {
+    const service = new ShareCardQueryService(repo, TEST_SHARE_SECRET);
+    const response = await getShareCardMe(service, {
       authenticated_user_id: userId,
       query: { league_id: "premier_league", season_id: "2024_2025", round_id: "08" },
       server_now: NOW,
@@ -356,6 +369,12 @@ describe("share-card API query", () => {
       level_season_id: levelSeasonOf(NOW),
       generated_at: NOW.toISOString(),
       pending_predictions: 0,
+      share_token: service.generateShareToken(userId, {
+        league_id: "premier_league",
+        season_id: "2024_2025",
+        round_id: "08",
+      }),
+      matches: [],
     });
   });
 });
@@ -435,20 +454,54 @@ describe("getShareCardForUser", () => {
     });
   });
 
-  it("用户已注销时抛 USER_DELETED", async () => {
+  it("[D-S1-03] 用户已注销时返回 200 脱敏展示且不泄露未截止预测", async () => {
     const repo = new InMemoryRepository();
     const userId = newUuid();
-    await repo.users.insert(makeUser(userId, { status: "deleted", deleted_at: NOW }));
-    await repo.matches.insert(makeMatch());
+    await repo.users.insert(makeUser(userId, {
+      status: "deleted",
+      nickname: null,
+      favorite_team_id: newUuid(),
+      deleted_at: NOW,
+    }));
+    const openMatch = makeMatch({
+      prediction_deadline_at: new Date(NOW.getTime() + 60 * 60 * 1000),
+      prediction_closed_at: null,
+    });
+    const settledMatch = makeSettledMatch();
+    await repo.matches.insert(openMatch);
+    await repo.matches.insert(settledMatch);
+    await repo.predictions.insert(makePrediction(userId, openMatch.match_id, {
+      match_score: null,
+      wdl_hit: null,
+      exact_hit: null,
+      applied_result_version: 0,
+    }));
+    await repo.predictions.insert(makePrediction(userId, settledMatch.match_id));
 
-    await expect(getShareCardForUser(new ShareCardQueryService(repo), {
+    const service = new ShareCardQueryService(repo, TEST_SHARE_SECRET);
+    const oldToken = service.generateShareToken(userId, {
+      league_id: MVP_SEASON.league_id,
+      season_id: MVP_SEASON.season_id,
+      round_id: "01",
+    });
+
+    const response = await getShareCardForUser(service, {
       user_id: userId,
-      query: { league_id: MVP_SEASON.league_id, season_id: MVP_SEASON.season_id, round_id: "01" },
+      query: {
+        league_id: MVP_SEASON.league_id,
+        season_id: MVP_SEASON.season_id,
+        round_id: "01",
+        share_token: oldToken ?? "",
+      },
       server_now: NOW,
       request_id: "request-share-card-for-user-deleted",
-    })).rejects.toMatchObject({
-      code: "USER_DELETED",
     });
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.display_name).toBe("已注销用户");
+    expect(response.body.data.favorite_team_id).toBeNull();
+    expect(response.body.data.share_token).toBeNull();
+    expect(response.body.data.matches.map((item) => item.match_id)).toEqual([settledMatch.match_id]);
   });
 
   it("未接入轮次时抛 ROUND_NOT_FOUND", async () => {
@@ -457,7 +510,7 @@ describe("getShareCardForUser", () => {
     await repo.users.insert(makeUser(userId));
     await repo.matches.insert(makeMatch({ round_id: "01" }));
 
-    await expect(getShareCardForUser(new ShareCardQueryService(repo), {
+    await expect(getShareCardForUser(new ShareCardQueryService(repo, TEST_SHARE_SECRET), {
       user_id: userId,
       query: { league_id: MVP_SEASON.league_id, season_id: MVP_SEASON.season_id, round_id: "00" },
       server_now: NOW,
@@ -465,5 +518,114 @@ describe("getShareCardForUser", () => {
     })).rejects.toMatchObject({
       code: "ROUND_NOT_FOUND",
     });
+  });
+
+  it("validatePublicShareCardQuery 接受可选 share_token 并拒绝未知字段", () => {
+    expect(validatePublicShareCardQuery({
+      league_id: MVP_SEASON.league_id,
+      season_id: MVP_SEASON.season_id,
+      round_id: "01",
+      share_token: "abc_123",
+    })).toEqual({
+      league_id: MVP_SEASON.league_id,
+      season_id: MVP_SEASON.season_id,
+      round_id: "01",
+      share_token: "abc_123",
+    });
+    expect(() => validatePublicShareCardQuery({
+      league_id: MVP_SEASON.league_id,
+      season_id: MVP_SEASON.season_id,
+      round_id: "01",
+      cursor: "x",
+    })).toThrow(DomainError);
+  });
+
+  it("持有有效 share_token 或本人登录态时返回未截止预测，否则严格过滤并校验 OpenAPI schema", async () => {
+    const repo = new InMemoryRepository();
+    const sharerId = newUuid();
+    const viewerId = newUuid();
+    await repo.users.insert(makeUser(sharerId, { nickname: "Sharer" }));
+    await repo.users.insert(makeUser(viewerId, { nickname: "Viewer" }));
+    const openMatch = makeMatch({
+      kickoff_at: new Date("2026-08-12T18:00:00.000Z"),
+      prediction_deadline_at: new Date("2026-08-12T17:50:00.000Z"),
+      prediction_closed_at: null,
+    });
+    const settledMatch = makeSettledMatch({
+      kickoff_at: new Date("2026-08-10T18:00:00.000Z"),
+    });
+    await repo.matches.insert(openMatch);
+    await repo.matches.insert(settledMatch);
+    await repo.predictions.insert(makePrediction(sharerId, openMatch.match_id, {
+      pred_home_score: 4,
+      pred_away_score: 2,
+      match_score: null,
+      wdl_hit: null,
+      exact_hit: null,
+      applied_result_version: 0,
+    }));
+    await repo.predictions.insert(makePrediction(sharerId, settledMatch.match_id));
+
+    const service = new ShareCardQueryService(repo, TEST_SHARE_SECRET);
+    const me = await getShareCardMe(service, {
+      authenticated_user_id: sharerId,
+      query: { league_id: MVP_SEASON.league_id, season_id: MVP_SEASON.season_id, round_id: "01" },
+      server_now: NOW,
+      request_id: "req-me",
+    });
+    expect(me.body.data.share_token).toEqual(expect.any(String));
+    expect(me.body.data.matches).toHaveLength(2);
+
+    const noToken = await getShareCardForUser(service, {
+      user_id: sharerId,
+      authenticated_user_id: viewerId,
+      query: { league_id: MVP_SEASON.league_id, season_id: MVP_SEASON.season_id, round_id: "01" },
+      server_now: NOW,
+      request_id: "req-no-token",
+    });
+    expect(noToken.body.data.share_token).toBeNull();
+    expect(noToken.body.data.matches.map((m) => m.match_id)).toEqual([settledMatch.match_id]);
+
+    const badToken = await getShareCardForUser(service, {
+      user_id: sharerId,
+      query: {
+        league_id: MVP_SEASON.league_id,
+        season_id: MVP_SEASON.season_id,
+        round_id: "01",
+        share_token: "bad-token",
+      },
+      server_now: NOW,
+      request_id: "req-bad-token",
+    });
+    expect(badToken.body.data.share_token).toBeNull();
+    expect(badToken.body.data.matches.map((m) => m.match_id)).toEqual([settledMatch.match_id]);
+
+    const validToken = await getShareCardForUser(service, {
+      user_id: sharerId,
+      query: {
+        league_id: MVP_SEASON.league_id,
+        season_id: MVP_SEASON.season_id,
+        round_id: "01",
+        share_token: me.body.data.share_token ?? "",
+      },
+      server_now: NOW,
+      request_id: "req-valid-token",
+    });
+    expect(validToken.body.data.share_token).toBe(me.body.data.share_token);
+    expect(validToken.body.data.matches.map((m) => m.match_id)).toEqual([
+      settledMatch.match_id,
+      openMatch.match_id,
+    ]);
+
+    const rawSpec = await readFile(new URL("./openapi.yaml", import.meta.url), "utf8");
+    const spec = YAML.parse(rawSpec) as { components: { schemas: Record<string, unknown> } };
+    const ajv = new Ajv({ nullable: false, allErrors: true });
+    ajv.addSchema({ $id: "https://football.local/openapi.json", components: spec.components });
+    const validate = ajv.compile({
+      $ref: "https://football.local/openapi.json#/components/schemas/ShareCardEnvelope",
+    });
+    expect(validate(me.body)).toBe(true);
+    expect(validate(noToken.body)).toBe(true);
+    expect(validate(validToken.body)).toBe(true);
   });
 });

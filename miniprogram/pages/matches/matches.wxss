@@ -143,6 +143,7 @@ page { background: var(--surface-canvas); color: var(--text-primary); font-famil
 
 /* —— 更多 / 加载 / 空 / 错误 —— */
 .more,.retry { margin: var(--space-3) auto var(--space-6); min-height: var(--ghost-button-height); padding: 0 var(--page-padding-inline); border-radius: var(--radius-sm); background: var(--surface-ghost); color: var(--text-secondary); font-size: var(--font-22); line-height: var(--ghost-button-height); }
+.more-error { margin: var(--space-3) auto var(--space-6); text-align: center; color: var(--text-danger); font-size: var(--font-22); }
 .loading,.empty,.error { padding: 60px var(--space-10); text-align: center; color: var(--text-muted); font-size: var(--font-24); white-space: pre-line; }   /* ✂︎ 60px 上下留白是单点观感值 */
 .retry { margin-top: var(--space-6); }
 .more { display: block; }

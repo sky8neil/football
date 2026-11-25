@@ -1,9 +1,17 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import {
+  createInMemoryAdminConsumedJtiStore,
+  createPostgresAdminConsumedJtiStore,
   createPostgresAuthSessionStore,
   type AuthSessionRecord,
 } from "./postgres-auth-sessions.js";
-import { AUTH_SESSIONS_TABLE, qualifiedTable, type PostgresQueryFn } from "./postgres-schema.js";
+import {
+  ADMIN_LOGIN_CONSUMED_JTIS_TABLE,
+  AUTH_SESSIONS_TABLE,
+  qualifiedTable,
+  type PostgresQueryFn,
+} from "./postgres-schema.js";
 
 const SCHEMA = "football_vps04_auth";
 const OPENID = "wx-openid-alice";
@@ -11,6 +19,10 @@ const NOW = new Date("2026-08-09T12:00:00.000Z");
 const TTL_SECONDS = 604800;
 const TOKEN_A = Buffer.alloc(32, 1).toString("base64url");
 const TOKEN_B = Buffer.alloc(32, 2).toString("base64url");
+
+function tokenDigest(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
+}
 
 function uniqueViolation(): Error {
   return Object.assign(new Error("duplicate key"), { code: "23505" });
@@ -57,10 +69,18 @@ describe("createPostgresAuthSessionStore", () => {
     expect(session.token).not.toMatch(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
     expect(calls).toEqual([
       {
-        sql: `INSERT INTO ${qualifiedTable(SCHEMA, AUTH_SESSIONS_TABLE)} (token, openid, expires_at) VALUES ($1, $2, $3)`,
-        params: [TOKEN_A, OPENID, session.expires_at],
+        sql:
+          `INSERT INTO ${qualifiedTable(SCHEMA, AUTH_SESSIONS_TABLE)} (token, openid, expires_at) ` +
+          `SELECT $2, $3, $4 FROM (SELECT pg_advisory_xact_lock(hashtextextended($1, 0))) AS openid_lock`,
+        params: [
+          `football.auth_sessions:${SCHEMA}:${OPENID}`,
+          tokenDigest(TOKEN_A),
+          OPENID,
+          session.expires_at,
+        ],
       },
     ]);
+    expect(calls[0]?.params[1]).not.toBe(TOKEN_A);
   });
 
   it("retries token allocation on unique collision then succeeds", async () => {
@@ -87,9 +107,10 @@ describe("createPostgresAuthSessionStore", () => {
       openid: OPENID,
       expires_at: new Date(NOW.getTime() + 1000),
     };
-    const { query } = makeQuery((_sql, params) => {
-      if (params[0] === TOKEN_A && params[1] === NOW) {
-        return { rows: [{ token: record.token, openid: record.openid, expires_at: record.expires_at }] };
+    const digest = tokenDigest(TOKEN_A);
+    const { query, calls } = makeQuery((_sql, params) => {
+      if (params[0] === digest && params[1] === NOW) {
+        return { rows: [{ token: digest, openid: record.openid, expires_at: record.expires_at }] };
       }
       return { rows: [] };
     });
@@ -99,7 +120,56 @@ describe("createPostgresAuthSessionStore", () => {
     await expect(store.findActiveByToken({ token: TOKEN_A, now: record.expires_at })).resolves.toBeNull();
     await expect(store.findActiveByToken({ token: "missing", now: NOW })).resolves.toBeNull();
     await expect(store.findActiveByToken({ token: "   ", now: NOW })).resolves.toBeNull();
-    expect(query).toHaveBeenCalledTimes(3);
+    await expect(store.findActiveByToken({ token: digest, now: NOW })).resolves.toBeNull();
+    expect(query).toHaveBeenCalledTimes(4);
+    expect(calls.map((call) => call.params[0])).toEqual([
+      digest,
+      digest,
+      tokenDigest("missing"),
+      tokenDigest(digest),
+    ]);
+    expect(calls.some((call) => call.params.includes(TOKEN_A))).toBe(false);
+  });
+
+  it("deletes every session for an openid and leaves other openids untouched", async () => {
+    const calls: { sql: string; params: unknown[] }[] = [];
+    const query: PostgresQueryFn = vi.fn(async (sql, params = []) => {
+      calls.push({ sql, params });
+      return { rows: [], rowCount: params[0] === OPENID ? 2 : 0 };
+    });
+    const store = createPostgresAuthSessionStore(query, SCHEMA);
+
+    await expect(store.deleteByOpenid(OPENID)).resolves.toBe(2);
+    await expect(store.deleteByOpenid("wx-openid-bob")).resolves.toBe(0);
+    expect(calls).toEqual([
+      {
+        sql: `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
+        params: [`football.auth_sessions:${SCHEMA}:${OPENID}`],
+      },
+      {
+        sql: `DELETE FROM ${qualifiedTable(SCHEMA, AUTH_SESSIONS_TABLE)} WHERE openid = $1`,
+        params: [OPENID],
+      },
+      {
+        sql: `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
+        params: [`football.auth_sessions:${SCHEMA}:wx-openid-bob`],
+      },
+      {
+        sql: `DELETE FROM ${qualifiedTable(SCHEMA, AUTH_SESSIONS_TABLE)} WHERE openid = $1`,
+        params: ["wx-openid-bob"],
+      },
+    ]);
+    expect(calls.some((call) => /expires_at/.test(call.sql))).toBe(false);
+  });
+
+  it("rejects a blank or padded openid without querying", async () => {
+    const { query } = makeQuery();
+    const store = createPostgresAuthSessionStore(query, SCHEMA);
+
+    await expect(store.deleteByOpenid("")).rejects.toThrow(/openid is required/);
+    await expect(store.deleteByOpenid("   ")).rejects.toThrow(/openid is required/);
+    await expect(store.deleteByOpenid(` ${OPENID}`)).rejects.toThrow(/openid is required/);
+    expect(query).not.toHaveBeenCalled();
   });
 
   it("deletes expired sessions before cutoff and returns rowCount [Slice 5.4]", async () => {
@@ -141,5 +211,37 @@ describe("createPostgresAuthSessionStore", () => {
         params: [cutoff, 500],
       },
     ]);
+  });
+
+  it("[CR-12] postgres admin_login_consumed_jtis 原子消费 jti 并拒绝未过期重放", async () => {
+    const table = qualifiedTable(SCHEMA, ADMIN_LOGIN_CONSUMED_JTIS_TABLE);
+    const seen = new Map<string, Date>();
+    const query: PostgresQueryFn = vi.fn(async (sql, params = []) => {
+      expect(sql).toContain(`INSERT INTO ${table} (jti, expires_at)`);
+      const [jti, expiresAt, now] = params as [string, Date, Date];
+      const existing = seen.get(jti);
+      if (existing === undefined || existing.getTime() <= now.getTime()) {
+        seen.set(jti, expiresAt);
+        return { rows: [{ jti }], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    });
+
+    const store = createPostgresAdminConsumedJtiStore(query, SCHEMA);
+    const exp = new Date(NOW.getTime() + 300_000);
+    expect(await store.consume({ jti: "jti-1", expiresAt: exp, now: NOW })).toBe(true);
+    expect(await store.consume({ jti: "jti-1", expiresAt: exp, now: NOW })).toBe(false);
+
+    const memStore = createInMemoryAdminConsumedJtiStore();
+    expect(await memStore.consume({ jti: "jti-2", expiresAt: exp, now: NOW })).toBe(true);
+    expect(await memStore.consume({ jti: "jti-2", expiresAt: exp, now: NOW })).toBe(false);
+    // 过期后允许复用或被清理
+    expect(
+      await memStore.consume({
+        jti: "jti-2",
+        expiresAt: new Date(exp.getTime() + 600_000),
+        now: new Date(exp.getTime() + 1_000),
+      }),
+    ).toBe(true);
   });
 });

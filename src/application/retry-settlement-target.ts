@@ -115,10 +115,17 @@ export function selectFailedSettlementTarget(
         consistencyError("settlement correction 标记与版本序列不一致");
       }
     }
-  }
-
-  if (allSettlements !== undefined) {
-    for (let version = 1; version <= match.settled_result_version; version += 1) {
+    if (
+      match.settled_result_version > 0 &&
+      firstSettlementVersion > match.settled_result_version
+    ) {
+      consistencyError("已追平 result_version 缺少 settlement");
+    }
+    for (
+      let version = firstSettlementVersion;
+      version <= match.settled_result_version;
+      version += 1
+    ) {
       if (!relevantAll.some((settlement) => settlement.result_version === version)) {
         consistencyError(`已追平 result_version 缺少 settlement（result_version=${version}）`);
       }

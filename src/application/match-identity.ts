@@ -133,8 +133,37 @@ export async function resolveLatestMatchView(
   return current;
 }
 
-export function filterByTeamPair(matches: readonly Match[], input: { leagueId: string; seasonId: string; homeTeamId: string; awayTeamId: string }): Match[] {
-  return matches.filter((match) => match.superseded_by == null &&
-    match.league_id === input.leagueId && match.season_id === input.seasonId && match.home_team_id === input.homeTeamId &&
-    match.away_team_id === input.awayTeamId);
+export function roundIdMatches(
+  existing: string | null | undefined,
+  incoming: string | null | undefined,
+): boolean {
+  if (existing == null || existing.trim() === "" || incoming == null || incoming.trim() === "") {
+    return true;
+  }
+  const left = existing.trim();
+  const right = incoming.trim();
+  if (left === right) return true;
+  if (/^\d+$/.test(left) && /^\d+$/.test(right)) {
+    return Number(left) === Number(right);
+  }
+  return false;
+}
+
+export function filterByTeamPair(
+  matches: readonly Match[],
+  input: {
+    leagueId: string;
+    seasonId: string;
+    homeTeamId: string;
+    awayTeamId: string;
+    roundId?: string | null;
+  },
+): Match[] {
+  return matches.filter((match) =>
+    match.superseded_by == null &&
+    match.league_id === input.leagueId &&
+    match.season_id === input.seasonId &&
+    match.home_team_id === input.homeTeamId &&
+    match.away_team_id === input.awayTeamId &&
+    roundIdMatches(match.round_id, input.roundId));
 }

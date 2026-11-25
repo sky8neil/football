@@ -267,6 +267,10 @@ export class AdminAnomaliesService {
     this.cursorCodec = new AnomalyCursorCodec(cursorSecret);
   }
 
+  authorizeAdmin(trustedOpenid: string): Promise<void> {
+    return this.authorization.authorizeAdmin(this.repo, trustedOpenid);
+  }
+
   async list(
     trustedOpenid: string | null | undefined,
     input: AdminAnomaliesQuery,

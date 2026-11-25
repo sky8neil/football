@@ -13,6 +13,7 @@ function listMatches(query) {
     method: "GET",
     path: "/v1/matches",
     query: nextQuery,
+    auth: "optional",
   });
 }
 
@@ -20,6 +21,7 @@ function getMatchDetail(matchId) {
   return request({
     method: "GET",
     path: "/v1/matches/" + matchId,
+    auth: "optional",
   });
 }
 

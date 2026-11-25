@@ -4,7 +4,9 @@ import {
   AnomalyType,
   MatchStatus,
   Provider,
+  ResultSource,
   SettlementStatus,
+  SyncJobType,
 } from "../domain/enums.js";
 import { newUuid } from "../domain/ids.js";
 import type { Match, ProviderSnapshot, Team, TeamProviderMapping } from "../domain/types.js";
@@ -222,7 +224,7 @@ describe("ProviderFixtureSyncService", () => {
     const result = await new ProviderFixtureSyncService(repo).applyFixture(
       makeFixture("1199001", "FT", { home: 2, away: 1 }), {}, NOW,
     );
-    expect(result).toMatchObject({ kind: "failed", match_id: effectiveId, anomaly_types: [AnomalyType.ProviderResultPending] });
+    expect(result).toMatchObject({ kind: "pending", match_id: effectiveId, anomaly_types: [AnomalyType.ProviderResultPending] });
     expect(await repo.providerSnapshots.findByEntity("match", effectiveId)).toEqual(expect.arrayContaining([
       expect.objectContaining({ event_type: "result_observed", provider_entity_id: "1199001" }),
     ]));
@@ -1019,5 +1021,208 @@ describe("ProviderFixtureSyncService", () => {
       match_id: match.match_id,
       result_version: 1,
     });
+  });
+
+  it("非权威副源禁止改写状态或作废比赛，且滞后 LIVE 不打开阻塞性 PROVIDER_STATE_CONFLICT (A-S3-01)", async () => {
+    const repo = new InMemoryRepository();
+    const match = makeMatch({
+      match_status: MatchStatus.Finished,
+      finish_detected_at: NOW,
+      period_anchor_at: new Date("2026-08-09T12:00:00.000Z"),
+      settlement_status: SettlementStatus.Waiting,
+    });
+    await seedMatch(repo, match, "1199100", Provider.FootballData);
+    await repo.matchProviderMappings.insert({
+      schema_version: 1, match_id: match.match_id, provider: Provider.OpenFoot, provider_match_id: "1199101", created_at: NOW, updated_at: NOW,
+    });
+    await repo.matchProviderMappings.insert({
+      schema_version: 1, match_id: match.match_id, provider: Provider.FiveDollar, provider_match_id: "1199102", created_at: NOW, updated_at: NOW,
+    });
+
+    const service = new ProviderFixtureSyncService(repo);
+    const ofCanc = makeFixture("1199101", "CANC", undefined, Provider.OpenFoot);
+    ofCanc.league.id = "comp_premier_league_eng";
+    expect(await service.applyFixture(ofCanc, {}, NOW)).toMatchObject({ kind: "unchanged", ignored: true });
+
+    const ofLive = makeFixture("1199101", "1H", undefined, Provider.OpenFoot);
+    ofLive.league.id = "comp_premier_league_eng";
+    expect(await service.applyFixture(ofLive, {}, NOW)).toMatchObject({ kind: "unchanged", ignored: true });
+
+    const fiveDLaggingLive = makeFixture("1199102", "1H", undefined, Provider.FiveDollar);
+    fiveDLaggingLive.league.id = "4160026622";
+    expect(await service.applyFixtureForJob(fiveDLaggingLive, {}, NOW, undefined, SyncJobType.PostFinishVerify))
+      .toMatchObject({ kind: "unchanged", ignored: true });
+
+    expect(await repo.matches.findById(match.match_id)).toMatchObject({ match_status: MatchStatus.Finished });
+    expect(await repo.anomalies.findOpenBlockingByMatch(match.match_id)).toEqual([]);
+  });
+
+  it("5d ±180d 越界告警保留日志、快照与非阻塞异常；Admin 终果不被 ProviderResultConflict 锁死 (A-S3-14)", async () => {
+    const repo = new InMemoryRepository();
+    const outOfBufferMatch = makeMatch({
+      kickoff_at: new Date("2028-06-01T12:00:00.000Z"),
+    });
+    await seedMatch(repo, outOfBufferMatch, "1199200", Provider.FiveDollar);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const fiveDFixture = makeFixture("1199200", "1H", undefined, Provider.FiveDollar);
+      fiveDFixture.league.id = "4160026622";
+      fiveDFixture.fixture.date = "2028-06-01T12:00:00.000Z";
+      fiveDFixture.fixture.timestamp = Date.parse("2028-06-01T12:00:00.000Z") / 1000;
+      const service = new ProviderFixtureSyncService(repo);
+      await expect(service.applyFixture(fiveDFixture, { fixture: fiveDFixture }, NOW))
+        .resolves.toMatchObject({ kind: "applied", match_id: outOfBufferMatch.match_id });
+
+      expect(warn).toHaveBeenCalledWith(
+        "[provider_fixture_mapper_warning]",
+        expect.objectContaining({ provider: "5dollar", provider_match_id: "1199200" }),
+      );
+      expect(await repo.anomalies.findByKey(`${outOfBufferMatch.match_id}:${AnomalyType.ProviderDataInvalid}`)).toMatchObject({
+        status: AnomalyStatus.Open,
+        blocking: false,
+      });
+      expect(await repo.providerSnapshots.findByEntity("match", outOfBufferMatch.match_id)).toEqual(
+        expect.arrayContaining([expect.objectContaining({ event_type: "provider_error" })]),
+      );
+    } finally {
+      warn.mockRestore();
+    }
+
+    // Admin 终果优先保护：上游双源分歧时不打开阻塞 ProviderResultConflict，直接收敛为非阻塞 ADMIN_PROVIDER_RESULT_CONFLICT。
+    const adminMatch = makeMatch({
+      match_status: MatchStatus.Finished,
+      finish_detected_at: NOW,
+      period_anchor_at: NOW,
+      settlement_status: SettlementStatus.Waiting,
+      regular_home_score: 2,
+      regular_away_score: 0,
+      result_version: 1,
+      result_source: ResultSource.Admin,
+    });
+    await seedMatch(repo, adminMatch, "1199300", Provider.FootballData);
+    await repo.matchResults.insert({
+      schema_version: 1, match_id: adminMatch.match_id, result_version: 1,
+      regular_home_score: 2, regular_away_score: 0, source: ResultSource.Admin,
+      provider_status: null, admin_id: "admin-1", reason: "official", created_at: NOW,
+    });
+    await repo.matchProviderMappings.insert({
+      schema_version: 1, match_id: adminMatch.match_id, provider: Provider.FiveDollar,
+      provider_match_id: "1199301", created_at: NOW, updated_at: NOW,
+    });
+    const service = new ProviderFixtureSyncService(repo);
+    const fdRes = makeFixture("1199300", "FT", { home: 1, away: 0 }, Provider.FootballData);
+    const fiveDRes = makeFixture("1199301", "FT", { home: 0, away: 0 }, Provider.FiveDollar);
+    fiveDRes.league.id = "4160026622";
+
+    expect(await service.applyFixture(fdRes, { fixture: fdRes }, NOW))
+      .toMatchObject({ kind: "conflict", anomaly_type: AnomalyType.AdminProviderResultConflict });
+    expect(await service.applyFixture(fiveDRes, { fixture: fiveDRes }, NOW))
+      .toMatchObject({ kind: "conflict", anomaly_type: AnomalyType.AdminProviderResultConflict });
+    expect(await repo.matches.findById(adminMatch.match_id)).toMatchObject({
+      regular_home_score: 2,
+      regular_away_score: 0,
+      result_source: ResultSource.Admin,
+    });
+    expect(await repo.anomalies.findOpenBlockingByMatch(adminMatch.match_id)).toEqual([]);
+  });
+
+  it("[CR-08] 非权威副源 entityFailed 不得修改 matches 状态或打开 blocking: true 异常", async () => {
+    const repo = new InMemoryRepository();
+    const match = makeMatch({
+      match_status: MatchStatus.Scheduled,
+      settlement_status: SettlementStatus.Pending,
+    });
+    await seedMatch(repo, match, "500001", Provider.FiveDollar);
+
+    const badFiveDFixture = makeFixture("500001", "FT", { home: null, away: null }, Provider.FiveDollar);
+    badFiveDFixture.league.id = "4160026622";
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const outcome = await new ProviderFixtureSyncService(repo).applyFixture(
+        badFiveDFixture,
+        { fixture: badFiveDFixture },
+        NOW,
+      );
+      expect(outcome).toMatchObject({ kind: "failed", match_id: match.match_id });
+    } finally {
+      warn.mockRestore();
+    }
+
+    expect(await repo.matches.findById(match.match_id)).toMatchObject({
+      match_status: MatchStatus.Scheduled,
+      settlement_status: SettlementStatus.Pending,
+    });
+    expect(await repo.anomalies.findOpenBlockingByMatch(match.match_id)).toEqual([]);
+    expect(await repo.providerSnapshots.findByEntity("match", match.match_id)).toEqual(
+      expect.arrayContaining([expect.objectContaining({ event_type: "provider_error", provider: Provider.FiveDollar })]),
+    );
+  });
+
+  it("[CR-21] applyAdoptableResult 冲突清空 compared_providers 使用 findByIdForUpdate 与 patchFields", async () => {
+    const repo = new InMemoryRepository();
+    const match = makeMatch({
+      match_status: MatchStatus.Finished,
+      finish_detected_at: NOW,
+      period_anchor_at: NOW,
+      settlement_status: SettlementStatus.Waiting,
+      compared_providers: [Provider.FootballData, Provider.FiveDollar],
+    });
+    await seedMatch(repo, match, "600001", Provider.FootballData);
+    await repo.providerSnapshots.insert({
+      schema_version: 1,
+      snapshot_id: newUuid(),
+      provider: Provider.FiveDollar,
+      entity_type: "match",
+      entity_id: match.match_id,
+      provider_entity_id: "600002",
+      event_type: "result_observed",
+      payload: {
+        provider_result_observation: {
+          provider: Provider.FiveDollar,
+          status: "finished",
+          score: { home: 0, away: 0 },
+          raw_status: "FT",
+          observed_at: NOW.toISOString(),
+        },
+      },
+      created_at: NOW,
+    });
+
+    const ops: string[] = [];
+    const origWithTx = repo.withTransaction.bind(repo);
+    repo.withTransaction = ((fn: Parameters<typeof origWithTx>[0]) =>
+      origWithTx(async (tx) => {
+        const matches = tx.matches;
+        const wrapped = new Proxy(tx, {
+          get(target, prop, receiver) {
+            if (prop === "matches") {
+              return {
+                ...matches,
+                findByIdForUpdate: async (id: string) => {
+                  ops.push(`lock:${id}`);
+                  return matches.findByIdForUpdate!(id);
+                },
+                patchFields: async (id: string, fields: Record<string, unknown>) => {
+                  ops.push(`patch:${id}`);
+                  return matches.patchFields!(id, fields);
+                },
+                update: async () => {
+                  ops.push("update");
+                },
+              };
+            }
+            return Reflect.get(target, prop, receiver);
+          },
+        });
+        return fn(wrapped);
+      })) as typeof repo.withTransaction;
+
+    const fdFixture = makeFixture("600001", "FT", { home: 2, away: 1 }, Provider.FootballData);
+    await new ProviderFixtureSyncService(repo).applyFixture(fdFixture, { fixture: fdFixture }, NOW);
+
+    expect(ops).toContain(`lock:${match.match_id}`);
+    expect(ops).toContain(`patch:${match.match_id}`);
+    expect(ops).not.toContain("update");
+    expect((await repo.matches.findById(match.match_id))?.compared_providers).toEqual([]);
   });
 });

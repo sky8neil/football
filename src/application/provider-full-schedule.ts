@@ -1,9 +1,9 @@
 import { SyncJobType } from "../domain/enums.js";
 import { internalError } from "../domain/errors.js";
-import { activeLeagueSeason, SUPPORTED_LEAGUES, type ProviderLeagueRefs } from "../domain/config.js";
+import { type ProviderLeagueRefs } from "../domain/config.js";
 import type { AppRepository } from "../infrastructure/repositories.js";
 import type { FullScheduleFixtureClient } from "./provider-fixture-loader.js";
-import { createFullScheduleVerifyLoader } from "./provider-fixture-loader.js";
+import { createFullScheduleVerifyLoader, resolveRolloverTargetSeasons } from "./provider-fixture-loader.js";
 import {
   ProviderFixtureSyncJobService,
   type ProviderFixtureBatchLoader,
@@ -63,10 +63,10 @@ export class ProviderFullScheduleVerifyService {
 
   async run(serverNow: Date, leagueId?: string): Promise<ProviderFullScheduleVerifyOutcome> {
     const leagueIds = leagueId === undefined ? undefined : [leagueId];
-    const targetSeasons = Object.fromEntries(SUPPORTED_LEAGUES.map((league) => [league.league_id, activeLeagueSeason(league, serverNow).season_id]));
-    const fullScheduleLoader = createFullScheduleVerifyLoader(this.client, leagueIds, targetSeasons);
     let teams: ProviderTeamSyncOutcome | null = null;
     const load: ProviderFixtureBatchLoader = async function* (this: ProviderFullScheduleVerifyService, loadNow: Date) {
+      const targetSeasons = await resolveRolloverTargetSeasons(this.repo, loadNow, leagueIds);
+      const fullScheduleLoader = createFullScheduleVerifyLoader(this.client, leagueIds, targetSeasons);
       teams ??= await this.teamSync.sync(loadNow, SyncJobType.FullScheduleVerify, leagueIds, targetSeasons);
       yield await fullScheduleLoader(loadNow);
     }.bind(this);

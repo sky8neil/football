@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PeriodType } from "../domain/enums.js";
-import type { RankingEntry } from "../domain/types.js";
-import { InMemoryRepository, type AppRepository } from "../infrastructure/repositories.js";
+import { defaultLevelState, type RankingEntry, type User, type UserSeasonStats } from "../domain/types.js";
+import { InMemoryRepository, type AppRepository, type UnitOfWork } from "../infrastructure/repositories.js";
 import { PeriodFinalizeService } from "./period-finalize-service.js";
+import { rankingPeriodLockKey } from "./settlement-item-application-service.js";
 
 const NOW = new Date("2026-08-09T16:00:00.000Z");
 const BEFORE_END = new Date("2026-08-09T15:59:59.999Z");
@@ -187,5 +188,253 @@ describe("PeriodFinalizeService", () => {
     await expect(repo.rankings.findByPeriod(PeriodType.Week, "2026-W32")).resolves.toEqual([
       entry,
     ]);
+  });
+});
+
+describe("PeriodFinalizeService A-S5-02", () => {
+  beforeEach(() => vi.useFakeTimers({ now: NOW }));
+  afterEach(() => vi.useRealTimers());
+
+  function makeUser(userId: string): User {
+    return {
+      schema_version: 1,
+      user_id: userId,
+      openid: `openid-${userId}`,
+      unionid: null,
+      nickname: `name-${userId}`,
+      favorite_team_id: null,
+      status: "active",
+      career_points: 12,
+      career_valid_predictions: 1,
+      career_wdl_hits: 1,
+      career_exact_hits: 1,
+      career_level: 1,
+      career_best_level: 2,
+      career_last_scoring_match_at: new Date("2026-08-08T06:00:00.000Z"),
+      career_level_state: defaultLevelState(),
+      deleted_at: null,
+      created_at: NOW,
+      updated_at: NOW,
+    };
+  }
+
+  function makeSeason(userId: string, levelSeasonId: string): UserSeasonStats {
+    return {
+      schema_version: 1,
+      user_id: userId,
+      level_season_id: levelSeasonId,
+      points: 12,
+      valid_predictions: 1,
+      wdl_hits: 1,
+      exact_hits: 1,
+      last_scoring_match_at: new Date("2026-08-08T06:00:00.000Z"),
+      level: 1,
+      best_level: levelSeasonId === "2024_2025" ? 4 : 3,
+      level_state: defaultLevelState(),
+      is_level_frozen: true,
+      created_at: NOW,
+      updated_at: NOW,
+    };
+  }
+
+  it("事务外持 ranking 周期锁，事务内按 users → season → rankings 加锁且只 patch is_final", async () => {
+    const repo = new InMemoryRepository();
+    const first = "a-user";
+    const second = "b-user";
+    await repo.users.insert(makeUser(second));
+    await repo.users.insert(makeUser(first));
+    await repo.userSeasonStats.insert(makeSeason(second, "2024_2025"));
+    await repo.userSeasonStats.insert(makeSeason(first, "2026_2027"));
+    await repo.userSeasonStats.insert(makeSeason(first, "2025_2026"));
+    const firstRanking = makeRanking({ user_id: first, global_rank: 2, period_score: 12 });
+    const secondRanking = makeRanking({ user_id: second, global_rank: 1, period_score: 30 });
+    await repo.rankings.insert(secondRanking);
+    await repo.rankings.insert(firstRanking);
+    const calls: string[] = [];
+    const patches: Array<Partial<RankingEntry>> = [];
+    let rankingLockHeld = false;
+    const lockKey = rankingPeriodLockKey(PeriodType.Week, "2026-W32");
+    const original = repo.withTransaction.bind(repo);
+    repo.withTransaction = (async (fn: (tx: UnitOfWork) => Promise<unknown>) => original(async (tx) => {
+      rankingLockHeld = await repo.jobLocks.isHeld(lockKey, NOW);
+      const users = tx.users;
+      const seasons = tx.userSeasonStats;
+      const rankings = tx.rankings;
+      if (seasons === undefined || rankings === undefined) throw new Error("missing ports");
+      const wrapped = new Proxy(tx, {
+        get(target, prop, receiver) {
+          if (prop === "users") {
+            return {
+              ...users,
+              findByIdForUpdate: async (userId: string) => {
+                calls.push(`users.lock:${userId}`);
+                return users.findByIdForUpdate!(userId);
+              },
+              update: async () => {
+                calls.push("users.update");
+              },
+            };
+          }
+          if (prop === "userSeasonStats") {
+            return {
+              ...seasons,
+              findByUserAndSeasonForUpdate: async (userId: string, levelSeasonId: string) => {
+                calls.push(`season.lock:${userId}:${levelSeasonId}`);
+                return seasons.findByUserAndSeasonForUpdate!(userId, levelSeasonId);
+              },
+              update: async () => {
+                calls.push("season.update");
+              },
+            };
+          }
+          if (prop === "rankings") {
+            return {
+              ...rankings,
+              findByPeriodAndUserForUpdate: async (...args: Parameters<NonNullable<typeof rankings.findByPeriodAndUserForUpdate>>) => {
+                calls.push(`ranking.lock:${args[2]}`);
+                return rankings.findByPeriodAndUserForUpdate!(...args);
+              },
+              update: async () => {
+                calls.push("ranking.update");
+              },
+              patchFields: async (...args: Parameters<NonNullable<typeof rankings.patchFields>>) => {
+                calls.push(`ranking.patch:${args[2]}`);
+                patches.push(args[3]);
+                return rankings.patchFields!(...args);
+              },
+            };
+          }
+          return Reflect.get(target, prop, receiver);
+        },
+      });
+      return fn(wrapped);
+    })) as AppRepository["withTransaction"];
+
+    await expect(
+      new PeriodFinalizeService(repo).finalize(PeriodType.Week, "2026-W32", NOW),
+    ).resolves.toMatchObject({ finalized_count: 2, skipped_count: 0, skipped: false });
+
+    expect(rankingLockHeld).toBe(true);
+    expect(calls).toEqual([
+      "users.lock:a-user",
+      "users.lock:b-user",
+      "season.lock:a-user:2025_2026",
+      "season.lock:a-user:2026_2027",
+      "season.lock:b-user:2024_2025",
+      "ranking.lock:a-user",
+      "ranking.lock:b-user",
+      "ranking.patch:a-user",
+      "ranking.patch:b-user",
+    ]);
+    expect(patches).toEqual([{ is_final: true }, { is_final: true }]);
+    expect(await repo.rankings.findByPeriodAndUser(PeriodType.Week, "2026-W32", first)).toMatchObject({
+      is_final: true,
+      period_score: 12,
+      global_rank: 2,
+      updated_at: firstRanking.updated_at,
+    });
+    expect(await repo.rankings.findByPeriodAndUser(PeriodType.Week, "2026-W32", second)).toMatchObject({
+      is_final: true,
+      period_score: 30,
+      global_rank: 1,
+      updated_at: secondRanking.updated_at,
+    });
+    expect(await repo.users.findById(first)).toMatchObject({ nickname: "name-a-user", career_best_level: 2 });
+    expect(await repo.userSeasonStats.findByUserAndSeason(second, "2024_2025")).toMatchObject({
+      best_level: 4,
+      is_level_frozen: true,
+      points: 12,
+    });
+    expect(await repo.jobLocks.isHeld(lockKey, NOW)).toBe(false);
+    expect(await repo.jobLocks.isHeld("sync:period_finalize", NOW)).toBe(false);
+  });
+
+  it("ranking 周期锁被占用时跳过封板，不改 is_final，并释放 period_finalize 锁", async () => {
+    const repo = new InMemoryRepository();
+    const entry = makeRanking();
+    await repo.rankings.insert(entry);
+    const lockKey = rankingPeriodLockKey(PeriodType.Week, "2026-W32");
+    await repo.jobLocks.acquire(lockKey, "rebuild-owner", new Date(NOW.getTime() + 60_000));
+
+    await expect(
+      new PeriodFinalizeService(repo).finalize(PeriodType.Week, "2026-W32", NOW),
+    ).resolves.toMatchObject({ skipped: true, finalized_count: 0 });
+    await expect(repo.rankings.findByPeriodAndUser(PeriodType.Week, "2026-W32", entry.user_id))
+      .resolves.toMatchObject({ is_final: false, period_score: 12 });
+    await expect(
+      repo.jobLocks.acquire("sync:period_finalize", "probe", new Date(NOW.getTime() + 60_000)),
+    ).resolves.toBe(true);
+    await expect(repo.jobLocks.isHeld(lockKey, NOW)).resolves.toBe(true);
+  });
+
+  it("封板不把 findByPeriod 的过期快照整行写回", async () => {
+    const repo = new InMemoryRepository();
+    const entry = makeRanking({ period_score: 12, global_rank: 3, valid_predictions: 1 });
+    await repo.rankings.insert(entry);
+    const original = repo.withTransaction.bind(repo);
+    repo.withTransaction = (async (fn: (tx: UnitOfWork) => Promise<unknown>) => original(async (tx) => {
+      const rankings = tx.rankings;
+      if (rankings === undefined) throw new Error("missing rankings");
+      const wrapped = new Proxy(tx, {
+        get(target, prop, receiver) {
+          if (prop === "rankings") {
+            return {
+              ...rankings,
+              findByPeriod: async () => [{
+                ...entry,
+                period_score: 0,
+                valid_predictions: 0,
+                wdl_hits: 0,
+                exact_hits: 0,
+                global_rank: null,
+                last_scoring_match_at: null,
+              }],
+            };
+          }
+          return Reflect.get(target, prop, receiver);
+        },
+      });
+      return fn(wrapped);
+    })) as AppRepository["withTransaction"];
+
+    await new PeriodFinalizeService(repo).finalize(PeriodType.Week, "2026-W32", NOW);
+
+    expect(await repo.rankings.findByPeriodAndUser(PeriodType.Week, "2026-W32", entry.user_id)).toMatchObject({
+      is_final: true,
+      period_score: 12,
+      valid_predictions: 1,
+      global_rank: 3,
+      updated_at: entry.updated_at,
+    });
+  });
+
+  it("[CR-05] 封榜时若周期内有用户注销，事务内重算 global_rank 消除名次断层", async () => {
+    const repo = new InMemoryRepository();
+    const deletedFirst = makeUser("u-del");
+    deletedFirst.status = "deleted";
+    deletedFirst.deleted_at = new Date("2026-08-09T10:00:00.000Z");
+    const activeSecond = makeUser("u-act");
+    await repo.users.insert(deletedFirst);
+    await repo.users.insert(activeSecond);
+    await repo.rankings.insert(makeRanking({
+      user_id: deletedFirst.user_id,
+      period_score: 30,
+      global_rank: 1,
+    }));
+    await repo.rankings.insert(makeRanking({
+      user_id: activeSecond.user_id,
+      period_score: 12,
+      global_rank: 2,
+    }));
+
+    const outcome = await new PeriodFinalizeService(repo).finalize(PeriodType.Week, "2026-W32", NOW);
+    expect(outcome.finalized_count).toBe(2);
+
+    await expect(
+      repo.rankings.findByPeriodAndUser(PeriodType.Week, "2026-W32", deletedFirst.user_id),
+    ).resolves.toMatchObject({ is_final: true, global_rank: null });
+    await expect(
+      repo.rankings.findByPeriodAndUser(PeriodType.Week, "2026-W32", activeSecond.user_id),
+    ).resolves.toMatchObject({ is_final: true, global_rank: 1 });
   });
 });

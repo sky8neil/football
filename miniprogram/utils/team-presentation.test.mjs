@@ -118,4 +118,65 @@ describe("presentTeam", () => {
       name: "FC Bayern München",
     });
   });
+
+  it("[Q-PLAN-2] prioritizes server team.name_zh over local registry and falls back to safe server logo_url when local logo misses", () => {
+    const getTeamLogo = vi.fn((_leagueId, team) =>
+      team && team.team_id === BAYERN_ID ? "../../assets/logos/teams/bundesliga/bayern-munchen.png" : "../../assets/logos/placeholders/team-placeholder.png",
+    );
+    const { presentTeam } = loadPresentation(getTeamLogo);
+
+    // 1. Server name_zh overrides registry; local 114 PNG cache still wins over server logo_url
+    expect(presentTeam({
+      team_id: BAYERN_ID,
+      name: "FC Bayern München",
+      name_zh: "拜仁（服务端覆盖）",
+      logo_url: "https://cdn.example.com/ignored-when-local-exists.png",
+    }, "bundesliga")).toEqual({
+      teamId: BAYERN_ID,
+      nameZh: "拜仁（服务端覆盖）",
+      logo: "../../assets/logos/teams/bundesliga/bayern-munchen.png",
+      missing: false,
+    });
+
+    // 2. Unknown promoted team uses server name_zh and valid https:// logo_url
+    expect(presentTeam({
+      team_id: UNKNOWN_ID,
+      name: "Promoted United FC",
+      name_zh: "  升班马联  ",
+      logo_url: "  https://cdn.example.com/promoted-united.png  ",
+    }, "premier_league")).toEqual({
+      teamId: UNKNOWN_ID,
+      nameZh: "升班马联",
+      logo: "https://cdn.example.com/promoted-united.png",
+      missing: false,
+    });
+
+    // 3. Relative path starting with / is accepted when local logo misses
+    expect(presentTeam({
+      team_id: UNKNOWN_ID,
+      name: "Promoted City",
+      name_zh: "升班马城",
+      logo_url: "/assets/custom/promoted-city.png",
+    }, "premier_league")).toEqual({
+      teamId: UNKNOWN_ID,
+      nameZh: "升班马城",
+      logo: "/assets/custom/promoted-city.png",
+      missing: false,
+    });
+
+    // 4. Unsafe or malformed logo_url (http://, //evil, javascript:) falls back to local placeholder
+    for (const badUrl of ["http://insecure.example/a.png", "//evil.example/a.png", "javascript:alert(1)", "relative/a.png", "   ", null]) {
+      expect(presentTeam({
+        team_id: UNKNOWN_ID,
+        name: "Promoted FC",
+        name_zh: null,
+        logo_url: badUrl,
+      }, "premier_league")).toEqual({
+        teamId: UNKNOWN_ID,
+        nameZh: "Promoted FC",
+        logo: "../../assets/logos/placeholders/team-placeholder.png",
+        missing: false,
+      });
+    }
+  });
 });

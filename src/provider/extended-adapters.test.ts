@@ -158,6 +158,19 @@ describe("FiveDollarAdapter", () => {
     expect(fixtures[2]?.league.season).toBe("2026");
     expect(normalizeFixture(fixtures[2]!, leagueRefs, NOW).entityFailed).toBe(false);
   });
+
+  it("caps FiveDollar pagination at MAX_PAGES when has_more never turns false (A-S3-13)", async () => {
+    let calls = 0;
+    const client: ProviderHttpClient = {
+      getJson: async () => {
+        calls += 1;
+        return { data: [fiveDollarRow(calls)], pagination: { has_more: true } };
+      },
+    };
+    await expect(new FiveDollarAdapter(client).fetchLiveFixtures({ jobType: "live_match", serverNow: NOW }))
+      .rejects.toThrow(/DIAG_PROVIDER_PAGINATION.*reason=max_pages/);
+    expect(calls).toBe(100);
+  });
 });
 
 describe("OpenFootAdapter", () => {
@@ -207,6 +220,27 @@ describe("OpenFootAdapter", () => {
     const { client } = mockHttp(() => ({ data: [], meta: { partial: true } }));
     await expect(new OpenFootAdapter(client).fetchFixturesByDateRange(EPL, "2026-10-12", "2026-10-12"))
       .rejects.toThrow("DIAG_PROVIDER_PARTIAL source_id=of");
+  });
+
+  it("rejects repeated cursor loops and MAX_PAGES overflow (A-S3-13)", async () => {
+    const { client: loopClient } = mockHttp(() => ({
+      data: [],
+      meta: { pagination: { next_cursor: "same-cursor" } },
+    }));
+    await expect(new OpenFootAdapter(loopClient).fetchSeasonFixtures(EPL, {
+      jobType: "future_schedule",
+      serverNow: NOW,
+    })).rejects.toThrow(/DIAG_PROVIDER_PAGINATION.*reason=cursor_loop/);
+
+    let page = 0;
+    const { client: runawayClient } = mockHttp(() => ({
+      data: [],
+      meta: { pagination: { next_cursor: `cursor-${++page}` } },
+    }));
+    await expect(new OpenFootAdapter(runawayClient).fetchSeasonFixtures(EPL, {
+      jobType: "future_schedule",
+      serverNow: NOW,
+    })).rejects.toThrow(/DIAG_PROVIDER_PAGINATION.*reason=max_pages/);
   });
 });
 

@@ -111,6 +111,15 @@ describe("GET /v1/rankings v2", () => {
     })).resolves.toBeDefined();
   });
 
+  it("先鉴权后校验查询参数", async () => {
+    const list = vi.fn(async () => PAGE_RESULT);
+    await expect(getRankings({ list }, {
+      authenticated_user_id: null, query: {}, server_now: NOW,
+      request_id: "request-auth-first", rate_limiter: { check: vi.fn() },
+    })).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+    expect(list).not.toHaveBeenCalled();
+  });
+
   it("超出已登录读取限流后返回 RATE_LIMITED", async () => {
     const list = async () => PAGE_RESULT;
     const rateLimiter = new InMemoryRateLimiter();

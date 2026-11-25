@@ -112,13 +112,15 @@ describe("validateAdminRebuildRankingsPayload", () => {
   });
 
   it("严格校验 reason", () => {
-    expect(() =>
-      validateAdminRebuildRankingsPayload({
-        board: "week",
-        period_key: "2026-W32",
-        reason: "",
-      }),
-    ).toThrowError(expect.objectContaining({ code: "VALIDATION_ERROR" }));
+    for (const reason of ["", "   ", "\n\t"]) {
+      expect(() =>
+        validateAdminRebuildRankingsPayload({
+          board: "week",
+          period_key: "2026-W32",
+          reason,
+        }),
+      ).toThrowError(expect.objectContaining({ code: "VALIDATION_ERROR" }));
+    }
     expect(() =>
       validateAdminRebuildRankingsPayload({
         board: "week",

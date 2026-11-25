@@ -159,6 +159,7 @@ describe("CloudBaseSchedulerStateStore", () => {
     const db = new RecordingCloudBaseDb();
     const store = new CloudBaseSchedulerStateStore(db, NAMESPACE);
     for (const jobType of [
+      "level_correction_reeval",
       "board_snapshot_career",
       "board_snapshot_strength",
       "board_snapshot_season",

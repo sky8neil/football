@@ -71,4 +71,11 @@ describe("cloud transport startup", () => {
     expect(required).toEqual(["./config.js"]);
     expect(restoreAuth).not.toHaveBeenCalled();
   });
+
+  it("[D-S1-06] launches directly into pages/matches/matches while keeping pages/session/session and pages/public-profile/public-profile registered", () => {
+    const appJson = JSON.parse(readFileSync(join(HERE, "app.json"), "utf8"));
+    expect(appJson.pages[0]).toBe("pages/matches/matches");
+    expect(appJson.pages).toContain("pages/session/session");
+    expect(appJson.pages).toContain("pages/public-profile/public-profile");
+  });
 });

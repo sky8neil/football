@@ -1,6 +1,6 @@
 import { targetProviderSeasonRef, SUPPORTED_LEAGUES } from "../domain/config.js";
 import type { ApiFootballFixturesQuery, ApiFootballSeasonFixturesQuery, ApiFootballTeamQuery, ProviderHttpClient as LegacyProviderHttpClient } from "./http.js";
-import { ApiFootballClient, ProviderHttpError, ProviderQuotaExceededError } from "./http.js";
+import { ApiFootballClient, ProviderDataError, ProviderHttpError, ProviderQuotaExceededError } from "./http.js";
 import type { ApiFootballFixture, ApiFootballTeam } from "./types.js";
 import type { ProviderAdapter, ProviderAdapterLeague, ProviderHttpClient, ProviderHttpResponse } from "./adapter.js";
 import { BsdAdapter } from "./bsd-adapter.js";
@@ -77,27 +77,38 @@ class PooledProviderHttpClient implements ProviderHttpClient {
       await this.pool.markSuccess(firstKey, this.context?.serverNow ?? new Date());
       return response;
     } catch (error) {
-      const status = providerErrorStatus(error);
-      const resetAt = error instanceof ProviderQuotaExceededError ? error.resetAt : null;
-      const code = error instanceof ProviderQuotaExceededError ? error.providerCode : status ? String(status) : null;
-      await this.pool.markFailure(firstKey, status, code, this.context?.serverNow ?? new Date(), resetAt);
+      if (!(error instanceof ProviderDataError)) {
+        const failureNow = this.context?.serverNow ?? new Date();
+        const status = providerErrorStatus(error);
+        const resetAt = error instanceof ProviderQuotaExceededError
+          ? quotaResetAt(this.source.source_id, failureNow, error)
+          : null;
+        const code = error instanceof ProviderQuotaExceededError || error instanceof ProviderHttpError
+          ? (error.providerCode ?? (status ? String(status) : null))
+          : (status ? String(status) : null);
+        await this.pool.markFailure(firstKey, status, code, failureNow, resetAt);
+      }
       if (!isRetryable(error) || this.retrySelector === undefined) throw error;
       const secondKey = await this.retrySelector([firstKey]);
       if (secondKey === null) throw error;
-      this.log?.({ event: "provider_key_failover", source_id: this.source.source_id, from_key_id: firstKey, to_key_id: secondKey, status });
+      const retryMetaStatus = providerErrorStatus(error);
+      this.log?.({ event: "provider_key_failover", source_id: this.source.source_id, from_key_id: firstKey, to_key_id: secondKey, status: retryMetaStatus });
       try {
         const response = await this.request(secondKey, path, query, headers);
         await this.pool.markSuccess(secondKey, this.context?.serverNow ?? new Date());
         return response;
       } catch (retryError) {
-        const retryStatus = providerErrorStatus(retryError);
-        await this.pool.markFailure(
-          secondKey,
-          retryStatus,
-          retryError instanceof ProviderQuotaExceededError ? retryError.providerCode : retryStatus ? String(retryStatus) : null,
-          this.context?.serverNow ?? new Date(),
-          retryError instanceof ProviderQuotaExceededError ? retryError.resetAt : null,
-        );
+        if (!(retryError instanceof ProviderDataError)) {
+          const retryNow = this.context?.serverNow ?? new Date();
+          const retryStatus = providerErrorStatus(retryError);
+          const retryResetAt = retryError instanceof ProviderQuotaExceededError
+            ? quotaResetAt(this.source.source_id, retryNow, retryError)
+            : null;
+          const retryCode = retryError instanceof ProviderQuotaExceededError || retryError instanceof ProviderHttpError
+            ? (retryError.providerCode ?? (retryStatus ? String(retryStatus) : null))
+            : (retryStatus ? String(retryStatus) : null);
+          await this.pool.markFailure(secondKey, retryStatus, retryCode, retryNow, retryResetAt);
+        }
         throw retryError;
       }
     }
@@ -117,8 +128,11 @@ function providerErrorStatus(error: unknown): number {
 }
 
 function isRetryable(error: unknown): boolean {
+  if (error instanceof ProviderDataError) return false;
   if (error instanceof ProviderQuotaExceededError) return true;
-  if (error instanceof ProviderHttpError) return error.status >= 500;
+  if (error instanceof ProviderHttpError) {
+    return error.status >= 500 || error.status === 401 || error.status === 403;
+  }
   return error instanceof Error;
 }
 
@@ -130,8 +144,8 @@ function adapterForSource(
   providerLeagueRefs?: ProviderSourcesConfig["league_refs"],
 ): ProviderAdapter {
   switch (source.adapter) {
-    case "football_data": return new FootballDataAdapter(http);
-    case "bsd": return new BsdAdapter(http, log);
+    case "football_data": return new FootballDataAdapter(http, log);
+    case "bsd": return new BsdAdapter(http, log, source.base_url);
     case "fivedollar": return new FiveDollarAdapter(http, providerLeagueRefs);
     case "openfoot": return new OpenFootAdapter(http, onOpenFootQuota);
     case "sportapi": return new SportApiAdapter(http);
@@ -177,6 +191,9 @@ export class ProviderRegistry {
   private liveRequestCache: { key: string; value: Promise<readonly ApiFootballFixture[]> } | null = null;
   /** RP06：按轮（tick）缓存联赛状态，仅在 beginTickCache()..endTickCache() 之间生效。 */
   private tickStateCache: Map<string, ProviderLeagueState | null> | null = null;
+  /** 按轮记录已失败或配额耗尽的源，防止同一 tick 内后续联赛被节流键阻断降级。 */
+  private tickUnavailableByJob: Map<ProviderBudgetJob, Map<ProviderSourceId, { reason: string; error?: unknown }>> | null = null;
+  private readonly slotUnavailableByJob = new Map<string, Map<ProviderSourceId, { reason: string; error?: unknown }>>();
   /** 请求成功只登记候选；批次满足完成条件后由 commitPendingLeagueSuccess 推进业务完成时间。 */
   private readonly pendingLeagueSuccess = new Map<string, {
     sourceId: ProviderSourceId;
@@ -258,10 +275,14 @@ export class ProviderRegistry {
 
   beginTickCache(): void {
     this.tickStateCache = new Map();
+    this.tickUnavailableByJob = new Map();
+    this.slotUnavailableByJob.clear();
     this.pendingLeagueSuccess.clear();
   }
   endTickCache(): void {
     this.tickStateCache = null;
+    this.tickUnavailableByJob = null;
+    this.slotUnavailableByJob.clear();
     this.pendingLeagueSuccess.clear();
   }
   get tickCacheActive(): boolean { return this.tickStateCache !== null; }
@@ -412,13 +433,28 @@ export class ProviderRegistry {
     if (league === undefined) return [];
     const jobType = asBudgetJob(query.jobType);
     const now = query.serverNow ?? new Date();
-    const selectedPlan = explicitSourceId ? null : this.requestPlan(league.league_id, jobType, now);
+    const unavailable = explicitSourceId ? undefined : this.unavailableSourcesForSlot(jobType, now);
+    const selectedPlan = explicitSourceId ? null : this.requestPlan(league.league_id, jobType, now, unavailable);
     const selected = explicitSourceId
       ? this.entryForSource(explicitSourceId, league.league_id)
-      : jobType === SyncJobType.PostFinishVerify || jobType === SyncJobType.StaleRecovery
+      : jobType === SyncJobType.StaleRecovery
         ? this.primaryEntry(league.league_id, "result")
-        : selectedPlan ? this.entryForSource(selectedPlan.source_id, league.league_id) : null;
+        : jobType === SyncJobType.PostFinishVerify
+          ? (this.primaryEntry(league.league_id, "result")
+            ? (selectedPlan ? this.entryForSource(selectedPlan.source_id, league.league_id) : null)
+            : null)
+          : selectedPlan ? this.entryForSource(selectedPlan.source_id, league.league_id) : null;
     if (selected === null || selected === undefined) {
+      if (
+        !explicitSourceId &&
+        jobType !== SyncJobType.StaleRecovery &&
+        (jobType !== SyncJobType.PostFinishVerify || this.primaryEntry(league.league_id, "result") !== null)
+      ) {
+        const unmaskedPlan = this.requestPlan(league.league_id, jobType, now);
+        if (unmaskedPlan !== null) {
+          throw await this.unavailableSourceError(unmaskedPlan.source_id, jobType, now);
+        }
+      }
       if ((jobType === SyncJobType.PostFinishVerify || jobType === SyncJobType.StaleRecovery) && (this.sourceLeagues.get(league.league_id)?.length ?? 0) > 0) return [];
       return this.legacyFetch(query, season);
     }
@@ -484,39 +520,87 @@ export class ProviderRegistry {
     } catch (error) {
       if (explicitSourceId) throw error;
       if (jobType === SyncJobType.StaleRecovery) throw error;
-      if (jobType === SyncJobType.PostFinishVerify) {
-        if (error instanceof ProviderBudgetDeniedError) {
-          this.log?.({ event: "skipped_budget", source_id: selected.source.source_id, league_id: league.league_id, reason: error.reason });
-        }
-        if (error instanceof ProviderBudgetDeferredError) throw error;
-        return [];
-      }
-      if (error instanceof ProviderBudgetDeniedError && jobType !== SyncJobType.LiveMatch) {
-        this.log?.({ event: "skipped_budget", source_id: selected.source.source_id, league_id: league.league_id, reason: error.reason });
-        if (!(error instanceof ProviderBudgetDeferredError)) return [];
-      }
-      const fallbackReason = error instanceof ProviderBudgetDeniedError ? error.reason : "provider_unavailable";
-      const fallbackPlan = this.requestPlan(league.league_id, jobType, now, new Map([[selected.source.source_id, fallbackReason]]));
-      const fallback = fallbackPlan ? this.entryForSource(fallbackPlan.source_id, league.league_id) : null;
-      if (fallback === null || fallback === undefined) throw error;
-      this.log?.({ event: "fallback_used", diag_code: "DIAG_PROVIDER_FALLBACK_ACTIVE", source_id: fallback.source.source_id, failed_source_id: selected.source.source_id, league_id: league.league_id, job_type: jobType, reason: fallbackReason });
-      const fallbackOptions = this.callOptions(fallback, jobType, now);
-      const fallbackLeague = { ...fallback.league, target_season_id: target, season_ref: targetProviderSeasonRef(league, fallback.source.source_id, target) };
-      const fallbackFixtures = await this.withRequest(fallback.source.source_id, jobType, now, () =>
-        season || !("dateFrom" in query) || query.dateFrom === undefined || query.dateTo === undefined
-          ? fallback.adapter.fetchSeasonFixtures(fallbackLeague, fallbackOptions)
-          : fallback.adapter.fetchFixturesByDateRange(fallbackLeague, query.dateFrom, query.dateTo, fallbackOptions), league.league_id);
-      if (season && fallbackFixtures.length === 0) {
+      if (error instanceof ProviderBudgetDeniedError) {
         this.log?.({
-          diag_code: "DIAG_PROVIDER_NO_DATA",
-          source_id: fallback.source.source_id,
+          event: "skipped_budget",
+          source_id: selected.source.source_id,
           league_id: league.league_id,
-          season_ref: fallback.league.season_ref,
-          job_type: jobType,
-          hint: "检查联赛赛季参数是否已过期",
+          reason: error.reason,
         });
       }
-      return fallbackFixtures;
+      const fallbackReason = error instanceof ProviderBudgetDeniedError ? error.reason : "provider_unavailable";
+      const hasSpareKey =
+        error instanceof ProviderHttpError && (error.status === 401 || error.status === 403)
+          ? ((await this.pools.get(selected.source.source_id)?.candidates(now))?.length ?? 0) > 0
+          : false;
+      const isSourceLevelFailure = !(
+        error instanceof ProviderDataError ||
+        (error instanceof ProviderHttpError &&
+          error.status >= 400 &&
+          error.status < 500 &&
+          error.status !== 429 &&
+          ((error.status !== 401 && error.status !== 403) || hasSpareKey))
+      );
+      if (isSourceLevelFailure) {
+        this.markSourceUnavailable(jobType, now, selected.source.source_id, fallbackReason, error);
+      }
+      const unavailable = this.unavailableSourcesForSlot(jobType, now);
+      unavailable.set(selected.source.source_id, fallbackReason);
+
+      for (;;) {
+        const fallbackPlan = this.requestPlan(league.league_id, jobType, now, unavailable);
+        const fallback = fallbackPlan ? this.entryForSource(fallbackPlan.source_id, league.league_id) : null;
+        if (fallback === null || fallback === undefined) throw error;
+        if (
+          jobType === SyncJobType.LiveMatch &&
+          fallback.source.source_id !== "5d" &&
+          !this.liveRequestDue(fallback.source.source_id, now, league.league_id)
+        ) {
+          unavailable.set(fallback.source.source_id, "live_throttle");
+          continue;
+        }
+        this.log?.({
+          event: "fallback_used",
+          diag_code: "DIAG_PROVIDER_FALLBACK_ACTIVE",
+          source_id: fallback.source.source_id,
+          failed_source_id: selected.source.source_id,
+          league_id: league.league_id,
+          job_type: jobType,
+          reason: fallbackReason,
+        });
+        const fallbackOptions = this.callOptions(fallback, jobType, now);
+        const fallbackLeague = {
+          ...fallback.league,
+          target_season_id: target,
+          season_ref: targetProviderSeasonRef(league, fallback.source.source_id, target),
+        };
+        try {
+          const fallbackFixtures = await this.withRequest(fallback.source.source_id, jobType, now, () =>
+            season || !("dateFrom" in query) || query.dateFrom === undefined || query.dateTo === undefined
+              ? fallback.adapter.fetchSeasonFixtures(fallbackLeague, fallbackOptions)
+              : fallback.adapter.fetchFixturesByDateRange(fallbackLeague, query.dateFrom, query.dateTo, fallbackOptions), league.league_id);
+          if (season && fallbackFixtures.length === 0) {
+            this.log?.({
+              diag_code: "DIAG_PROVIDER_NO_DATA",
+              source_id: fallback.source.source_id,
+              league_id: league.league_id,
+              season_ref: fallback.league.season_ref,
+              job_type: jobType,
+              hint: "检查联赛赛季参数是否已过期",
+            });
+          }
+          return fallbackFixtures;
+        } catch (fallbackError) {
+          const reason = fallbackError instanceof ProviderBudgetDeniedError ? fallbackError.reason : "provider_unavailable";
+          this.markSourceUnavailable(jobType, now, fallback.source.source_id, reason, fallbackError);
+          unavailable.set(fallback.source.source_id, reason);
+          if (this.requestPlan(league.league_id, jobType, now, unavailable) === null) {
+            throw error instanceof ProviderBudgetDeferredError && !(fallbackError instanceof ProviderBudgetDeferredError)
+              ? error
+              : fallbackError;
+          }
+        }
+      }
     }
   }
 
@@ -577,8 +661,15 @@ export class ProviderRegistry {
     const pool = this.pools.get(sourceId)!;
     const http = this.httpBySource.get(sourceId)!;
     http.setContext(jobType, now, (retryExcluded) => this.chooseKey(sourceId, jobType, now, retryExcluded, leagueId));
-    const preferred = this.budget ? await this.budget.candidateKeys(sourceId, now, excluded) : (this.source(sourceId)?.api_keys.map((key) => key.key_id) ?? []);
-    const candidates = await pool.candidates(now, preferred);
+    const preferred = this.budget
+      ? await this.budget.candidateKeys(sourceId, now, excluded)
+      : (this.source(sourceId)?.api_keys.map((key) => key.key_id).filter((id) => !excluded.includes(id)) ?? []);
+    const candidates = (await pool.candidates(now, preferred)).filter((id) => !excluded.includes(id));
+    if (candidates.length === 0) {
+      const recoveryAt = await pool.nextRecoveryAt(now);
+      if (recoveryAt !== null) throw new ProviderBudgetDeferredError("provider_cooldown", recoveryAt);
+      throw new ProviderBudgetDeniedError("provider_cooldown");
+    }
     let lastReason = "provider_cooldown";
     let lastRetryAt: Date | undefined;
     for (const keyId of candidates) {
@@ -631,7 +722,6 @@ export class ProviderRegistry {
         this.log?.({ event: "provider_request", source_id: sourceId, ...this.lastRequests.get(sourceId) });
         return value;
       } catch (error) {
-        this.lastRequestsByJob.set(this.jobThrottleKey(sourceId, jobType, leagueId), now.getTime());
         if (error instanceof ProviderQuotaExceededError) {
           const resetAt = quotaResetAt(sourceId, now, error);
           const keyId = this.activeRequestContext.get(sourceId)?.key_id;
@@ -663,6 +753,67 @@ export class ProviderRegistry {
   private jobThrottleKey(sourceId: ProviderSourceId, jobType: ProviderBudgetJob, leagueId?: string): string {
     if (sourceId === "5d" || !leagueId) return `${sourceId}:${jobType}`;
     return `${sourceId}:${jobType}:${leagueId}`;
+  }
+
+  private unavailableSourcesForSlot(jobType: ProviderBudgetJob, now: Date): Map<ProviderSourceId, string> {
+    const unavailable = new Map<ProviderSourceId, string>();
+    const tickMap = this.tickUnavailableByJob?.get(jobType);
+    if (tickMap) {
+      for (const [sourceId, entry] of tickMap) unavailable.set(sourceId, entry.reason);
+    }
+    const slotMap = this.slotUnavailableByJob.get(`${jobType}:${now.getTime()}`);
+    if (slotMap) {
+      for (const [sourceId, entry] of slotMap) unavailable.set(sourceId, entry.reason);
+    }
+    return unavailable;
+  }
+
+  private markSourceUnavailable(
+    jobType: ProviderBudgetJob,
+    now: Date,
+    sourceId: ProviderSourceId,
+    reason: string,
+    error?: unknown,
+  ): void {
+    const entry = error === undefined ? { reason } : { reason, error };
+    if (this.tickUnavailableByJob !== null) {
+      let tickMap = this.tickUnavailableByJob.get(jobType);
+      if (!tickMap) {
+        tickMap = new Map();
+        this.tickUnavailableByJob.set(jobType, tickMap);
+      }
+      tickMap.set(sourceId, entry);
+    }
+    const slotKey = `${jobType}:${now.getTime()}`;
+    let slotMap = this.slotUnavailableByJob.get(slotKey);
+    if (!slotMap) {
+      slotMap = new Map();
+      this.slotUnavailableByJob.set(slotKey, slotMap);
+    }
+    slotMap.set(sourceId, entry);
+  }
+
+  private async unavailableSourceError(
+    sourceId: ProviderSourceId,
+    jobType: ProviderBudgetJob,
+    now: Date,
+  ): Promise<unknown> {
+    const recorded = this.slotUnavailableByJob.get(`${jobType}:${now.getTime()}`)?.get(sourceId)
+      ?? this.tickUnavailableByJob?.get(jobType)?.get(sourceId);
+    const poolRecovery = await this.pools.get(sourceId)?.nextRecoveryAt(now) ?? null;
+    if (recorded?.error instanceof ProviderBudgetDeferredError) {
+      return recorded.error;
+    }
+    if (recorded?.error instanceof ProviderQuotaExceededError) {
+      return new ProviderBudgetDeferredError("provider_cooldown", quotaResetAt(sourceId, now, recorded.error));
+    }
+    if (poolRecovery !== null) {
+      return new ProviderBudgetDeferredError(recorded?.reason ?? "provider_cooldown", poolRecovery);
+    }
+    if (recorded?.error !== undefined) {
+      return recorded.error;
+    }
+    return new ProviderBudgetDeniedError(recorded?.reason ?? "provider_unavailable");
   }
 
   private liveRequestDue(sourceId: ProviderSourceId, now: Date, leagueId?: string): boolean {

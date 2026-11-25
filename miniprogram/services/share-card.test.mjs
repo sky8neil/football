@@ -215,6 +215,25 @@ describe("getShareCardForUser", () => {
       auth: "optional",
     });
   });
+
+  it("includes share_token in query when shareToken is provided and omits blank values", () => {
+    const request = vi.fn();
+    const service = loadService("share-card.js", request);
+    service.getShareCardForUser(USER_ID, { ...VALID, shareToken: " tok_abc " });
+    service.getShareCardForUser(USER_ID, { ...VALID, shareToken: "   " });
+
+    expect(request.mock.calls[0][0].query).toEqual({
+      league_id: "premier_league",
+      season_id: "2025_2026",
+      round_id: "12",
+      share_token: "tok_abc",
+    });
+    expect(request.mock.calls[1][0].query).toEqual({
+      league_id: "premier_league",
+      season_id: "2025_2026",
+      round_id: "12",
+    });
+  });
 });
 
 describe("public share-card HTTP auth", () => {
@@ -273,5 +292,16 @@ describe("public share-card HTTP auth", () => {
     await expect(shareCard.getShareCardForUser(USER_ID, VALID)).resolves.toMatchObject({ statusCode: 200 });
     expect(wxRequest).toHaveBeenCalledTimes(1);
     expect(wxRequest.mock.calls[0][0].header.Authorization).toBeUndefined();
+  });
+
+  it("permits share_token through api.js assertNoClientIdentity over HTTP", async () => {
+    const { shareCard, wxRequest } = loadShareCardStack();
+    wxRequest.mockImplementation((options) => {
+      options.success({ statusCode: 200, data: { data: { user_id: USER_ID }, request_id: "share-token-http" } });
+    });
+    await expect(
+      shareCard.getShareCardForUser(USER_ID, { ...VALID, shareToken: "hmac_share_token_v1" }),
+    ).resolves.toMatchObject({ statusCode: 200 });
+    expect(wxRequest.mock.calls[0][0].url).toContain("share_token=hmac_share_token_v1");
   });
 });

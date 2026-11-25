@@ -231,13 +231,15 @@ export class ProviderBudget {
     const stateKey = providerStateKey(sourceId, keyId);
     const blocked = this.blockedUntil.get(stateKey);
     if (blocked !== undefined) {
-      if (now.getTime() < blocked) return { allowed: false, reason: "provider_cooldown", key_id: key.key_id };
+      if (now.getTime() < blocked) {
+        return { allowed: false, reason: "provider_cooldown", key_id: key.key_id, retry_at: new Date(blocked) };
+      }
       this.blockedUntil.delete(stateKey);
     }
     const observation = this.observedRemaining.get(stateKey);
     if (observation !== undefined) {
       if (now.getTime() < observation.reset_at && observation.count <= 0) {
-        return { allowed: false, reason: "provider_quota", key_id: key.key_id };
+        return { allowed: false, reason: "provider_quota", key_id: key.key_id, retry_at: new Date(observation.reset_at) };
       }
       if (now.getTime() >= observation.reset_at) this.observedRemaining.delete(stateKey);
     }

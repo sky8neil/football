@@ -1,6 +1,6 @@
 import { SyncJobType } from "../domain/enums.js";
 import { internalError } from "../domain/errors.js";
-import { activeLeagueSeason, SUPPORTED_LEAGUES, type ProviderLeagueRefs } from "../domain/config.js";
+import { type ProviderLeagueRefs } from "../domain/config.js";
 import type { AppRepository } from "../infrastructure/repositories.js";
 import type { FutureScheduleFixtureClient } from "./provider-fixture-loader.js";
 import {
@@ -18,7 +18,7 @@ import {
   type ProviderTeamClient,
   type ProviderTeamSyncOutcome,
 } from "./provider-team-sync.js";
-import { createFutureScheduleLoader } from "./provider-fixture-loader.js";
+import { createFutureScheduleLoader, resolveRolloverTargetSeasons } from "./provider-fixture-loader.js";
 
 export interface ProviderScheduleSyncClient
   extends FutureScheduleFixtureClient,
@@ -68,10 +68,10 @@ export class ProviderFutureScheduleService {
 
   async run(serverNow: Date, leagueId?: string): Promise<ProviderFutureScheduleOutcome> {
     const leagueIds = leagueId === undefined ? undefined : [leagueId];
-    const targetSeasons = Object.fromEntries(SUPPORTED_LEAGUES.map((league) => [league.league_id, activeLeagueSeason(league, serverNow).season_id]));
-    const futureScheduleLoader = createFutureScheduleLoader(this.client, leagueIds, targetSeasons);
     let teams: ProviderTeamSyncOutcome | null = null;
     const load: ProviderFixtureBatchLoader = async function* (this: ProviderFutureScheduleService, loadNow: Date) {
+      const targetSeasons = await resolveRolloverTargetSeasons(this.repo, loadNow, leagueIds);
+      const futureScheduleLoader = createFutureScheduleLoader(this.client, leagueIds, targetSeasons);
       teams ??= await this.teamSync.sync(loadNow, SyncJobType.FutureSchedule, leagueIds, targetSeasons);
       yield await futureScheduleLoader(loadNow);
     }.bind(this);

@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
+import { AdminAuthorizationService } from "./admin.js";
+import { AdminAnomaliesService } from "./admin-anomalies.js";
 import { SUPPORTED_LEAGUES } from "../domain/config.js";
-import { Provider, SCHEMA_VERSION, SyncJobType, TeamStatus } from "../domain/enums.js";
+import { AdminRole, AdminStatus, AnomalyStatus, AnomalyType, Provider, SCHEMA_VERSION, SyncJobType, TeamStatus } from "../domain/enums.js";
 import { newUuid } from "../domain/ids.js";
 import type { TeamProviderMapping } from "../domain/types.js";
 import { InMemoryRepository } from "../infrastructure/repositories.js";
@@ -144,5 +146,117 @@ describe("ProviderTeamSyncService", () => {
     await expect(
       repo.teamProviderMappings.findByProviderAndExternalId(Provider.ApiFootball, "40"),
     ).resolves.toBeNull();
+  });
+
+  it("单联赛 getTeams 失败时隔离并入库健康联赛，仅在全部联赛失败时抛错 (A-S3-05)", async () => {
+    const repo = new InMemoryRepository();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const service = new ProviderTeamSyncService(repo, {
+        getTeams: async (query) => {
+          if (query.leagueId === "169") throw new Error("csl teams down");
+          if (query.leagueId === "39") return [providerTeam(40, "Home FC")];
+          return [];
+        },
+      });
+      await expect(service.sync(NOW)).resolves.toEqual({
+        kind: "completed",
+        teams_read: 1,
+        teams_created: 1,
+        teams_unchanged: 0,
+      });
+      expect(await repo.teamProviderMappings.findByProviderAndExternalId(Provider.ApiFootball, "40")).not.toBeNull();
+
+      const failAll = new ProviderTeamSyncService(repo, {
+        getTeams: async () => { throw new Error("all teams down"); },
+      });
+      await expect(failAll.sync(NOW)).rejects.toThrow("all teams down");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("[Q-PLAN-2] records non-blocking missing-name_zh anomaly for new teams (compatible with AdminAnomaliesService), never overwrites existing name_zh/logo_url, and supports multi-season arrays", async () => {
+    const repo = new InMemoryRepository();
+    await repo.admins.insert({
+      schema_version: SCHEMA_VERSION,
+      admin_id: newUuid(),
+      openid: "admin-openid",
+      role: AdminRole.Admin,
+      status: AdminStatus.Active,
+      created_at: NOW,
+      updated_at: NOW,
+    });
+    const service = new ProviderTeamSyncService(repo, {
+      getTeams: async (query) => query.leagueId === "39"
+        ? [{ provider: Provider.FootballData, team: { id: 901, name: "Promoted Town FC" } }]
+        : [],
+    });
+
+    await expect(service.sync(NOW, SyncJobType.FullScheduleVerify, ["premier_league"], {
+      premier_league: ["2025_2026", "2026_2027"],
+    })).resolves.toEqual({
+      kind: "completed",
+      teams_read: 2,
+      teams_created: 1,
+      teams_unchanged: 1,
+    });
+
+    const mapping = await repo.teamProviderMappings.findByProviderAndExternalId(Provider.FootballData, "901");
+    expect(mapping).not.toBeNull();
+    const createdTeam = await repo.teams.findById(mapping!.team_id);
+    expect(createdTeam).toMatchObject({
+      name: "Promoted Town FC",
+      name_zh: null,
+      logo_url: null,
+    });
+    expect(await repo.seasonTeams.findByLeagueSeason("premier_league", "2025_2026")).toHaveLength(1);
+    expect(await repo.seasonTeams.findByLeagueSeason("premier_league", "2026_2027")).toHaveLength(1);
+
+    const anomaly = await repo.anomalies.findByKey(`${mapping!.team_id}:${AnomalyType.ProviderDataInvalid}`);
+    expect(anomaly).toMatchObject({
+      blocking: false,
+      status: AnomalyStatus.Open,
+      details: expect.objectContaining({
+        entity_type: "team",
+        reason: "team_name_zh_missing",
+        team_id: mapping!.team_id,
+        league_id: "premier_league",
+        team_name: "Promoted Town FC",
+      }),
+    });
+
+    // Must pass AdminAnomaliesService invariant checks
+    const adminPage = await new AdminAnomaliesService(repo, "cursor-secret").list("admin-openid", {
+      status: AnomalyStatus.Open,
+      blocking: false,
+      limit: 20,
+      cursor: null,
+    });
+    expect(adminPage.items).toHaveLength(1);
+
+    // Manually curated name_zh & logo_url MUST NEVER be overwritten on subsequent team syncs
+    await repo.teams.patchFields!(mapping!.team_id, {
+      name_zh: "升班马镇",
+      logo_url: "https://cdn.example.com/promoted-town.png",
+      updated_at: NOW,
+    });
+    const resync = new ProviderTeamSyncService(repo, {
+      getTeams: async () => [{
+        provider: Provider.FootballData,
+        team: { id: 901, name: "Promoted Town FC Renamed", name_zh: "错误覆盖名", logo_url: "https://evil.example/x.png" } as never,
+      }],
+    });
+    await expect(resync.sync(NOW, SyncJobType.FutureSchedule, ["premier_league"])).resolves.toEqual({
+      kind: "completed",
+      teams_read: 1,
+      teams_created: 0,
+      teams_unchanged: 1,
+    });
+    expect(await repo.teams.findById(mapping!.team_id)).toMatchObject({
+      name: "Promoted Town FC",
+      name_zh: "升班马镇",
+      logo_url: "https://cdn.example.com/promoted-town.png",
+    });
   });
 });

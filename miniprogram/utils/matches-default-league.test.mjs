@@ -47,4 +47,23 @@ describe("default match league", () => {
     expect(resolveDefaultLeagueFromStatus([]).leagueId).toBe("premier_league");
     expect(resolveDefaultLeagueFromStatus(undefined).leagueId).toBe("premier_league");
   });
+
+  it("[A-S7-11] ignores live or next_kickoff_at from non-active phases and falls back to activeLeagueIds[0]", () => {
+    const withOffseasonLiveAndKickoff = [
+      { league_id: "premier_league", phase: "completed", has_live_match: true, next_kickoff_at: "2026-08-01T00:00:00Z" },
+      { league_id: "serie_a", phase: "between_seasons", next_kickoff_at: "2026-08-02T00:00:00Z" },
+      { league_id: "chinese_super_league", phase: "break" },
+      { league_id: "bundesliga", phase: "in_season" },
+    ];
+    expect(resolveDefaultLeagueFromStatus(withOffseasonLiveAndKickoff)).toEqual({
+      leagueId: "chinese_super_league",
+      activeLeagueIds: ["chinese_super_league", "bundesliga"],
+    });
+
+    const withLaterActiveKickoff = [
+      { league_id: "premier_league", phase: "completed", next_kickoff_at: "2026-08-01T00:00:00Z" },
+      { league_id: "la_liga", phase: "in_season", next_kickoff_at: "2026-08-10T00:00:00Z" },
+    ];
+    expect(resolveDefaultLeagueFromStatus(withLaterActiveKickoff).leagueId).toBe("la_liga");
+  });
 });

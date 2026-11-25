@@ -140,4 +140,57 @@ describe("loadActiveWindowFixtures", () => {
     expect(requests[0]?.dateTo).toBe("2026-10-10");
     expect(requests[0]).not.toHaveProperty("secondaryDates");
   });
+
+  it("单联赛异常时按联赛隔离，保留健康联赛数据并仅在全败时上抛 (A-S3-05)", async () => {
+    const matches = [
+      mappedMatch("premier_league", new Date(NOW.getTime() - 60_000), { match_id: "m-pl" }),
+      mappedMatch("la_liga", new Date(NOW.getTime() - 60_000), { match_id: "m-pd" }),
+    ];
+    const mappings: Record<string, string> = { "ext-pl": "m-pl", "ext-pd": "m-pd" };
+    const repo = {
+      matches: { findActiveWindow: async () => matches },
+      matchProviderMappings: {
+        findByProviderAndExternalId: async (_provider: Provider, extId: string) =>
+          mappings[extId] ? { match_id: mappings[extId]! } : null,
+      },
+    } as unknown as AppRepository;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const items = await loadActiveWindowFixtures(repo, {
+        getFixtures: async (query) => {
+          if (query.leagueId === "140") throw new Error("la liga timeout");
+          return [{ fixture: { id: "ext-pl" } } as any];
+        },
+      }, SyncJobType.LiveMatch, NOW);
+      expect(items.map((item) => item.fixture.fixture.id)).toEqual(["ext-pl"]);
+
+      await expect(loadActiveWindowFixtures(repo, {
+        getFixtures: async () => { throw new Error("all down"); },
+      }, SyncJobType.LiveMatch, NOW)).rejects.toThrow("all down");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("fixturesToItems 对命中 M_old 的已有映射经 resolveEffectiveMatchesByIds 解析到有效 M_new (A-S3-04)", async () => {
+    const oldMatch = mappedMatch("premier_league", NOW, { match_id: "m-old", superseded_by: "m-new" } as Partial<Match>);
+    const newMatch = mappedMatch("premier_league", NOW, { match_id: "m-new", superseded_by: null } as Partial<Match>);
+    const byId = new Map([["m-old", oldMatch], ["m-new", newMatch]]);
+    const repo = {
+      matches: {
+        findActiveWindow: async () => [newMatch],
+        findById: async (id: string) => byId.get(id) ?? null,
+      },
+      matchProviderMappings: {
+        findByProviderAndExternalId: async (_provider: Provider, extId: string) =>
+          extId === "of-old" ? { match_id: "m-old" } : null,
+      },
+    } as unknown as AppRepository;
+    const ofFixture = { fixture: { id: "of-old" }, provider: Provider.OpenFoot } as any;
+    const items = await loadActiveWindowFixtures(repo, {
+      getFixtures: async () => [ofFixture],
+    }, SyncJobType.PostFinishVerify, NOW);
+    expect(items).toHaveLength(1);
+    expect(items[0]?.fixture.fixture.id).toBe("of-old");
+  });
 });

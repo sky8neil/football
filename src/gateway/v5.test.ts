@@ -156,7 +156,8 @@ describe("GET /v1/rankings", () => {
   });
 
   it("returns 422 VALIDATION_ERROR when board is missing", async () => {
-    const harness = makeHarness();
+    const harness = makeHarness(makeConfig({ environment: "dev", mock_trusted_openid: MOCK_OPENID }));
+    await request(harness, { method: "POST", path: "/v1/session/init", body: { nickname: "Sky" } });
     const response = await request(harness, {
       method: "GET",
       path: "/v1/rankings",
@@ -170,7 +171,8 @@ describe("GET /v1/rankings", () => {
   });
 
   it("returns 422 VALIDATION_ERROR when board is illegal", async () => {
-    const harness = makeHarness();
+    const harness = makeHarness(makeConfig({ environment: "dev", mock_trusted_openid: MOCK_OPENID }));
+    await request(harness, { method: "POST", path: "/v1/session/init", body: { nickname: "Sky" } });
     const response = await request(harness, {
       method: "GET",
       path: "/v1/rankings",

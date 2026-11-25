@@ -15,6 +15,7 @@ import { formatSDisplay } from "../domain/levels.js";
 import {
   compareRankingEntry,
   countSeasonsParticipated,
+  isDeletedForPeriod,
   isSeasonBoardVisible,
   isSeasonRankEligible,
 } from "../domain/ranking.js";
@@ -619,13 +620,13 @@ export class RankingQueryService {
           .map((entry) => entry.user_id);
         await preloadUsers(visibleCandidateIds);
         let visibleCount = 0;
-        const historical = periodEndAt("week", weekKey).getTime() <= input.server_now.getTime();
+        const weekEndAt = periodEndAt("week", weekKey);
         for (const entry of rows) {
           if (entry.global_rank === null || (groupMembers !== null && !groupMembers.has(entry.user_id))) {
             continue;
           }
           const user = await readUser(entry.user_id);
-          if (user.status === UserStatus.Deleted && !historical) continue;
+          if (user.status === UserStatus.Deleted && isDeletedForPeriod(user, weekEndAt)) continue;
           if (user.status !== UserStatus.Active && user.status !== UserStatus.Deleted) {
             throw internalError(`用户状态非法（user_id=${user.user_id}）`);
           }
@@ -706,6 +707,14 @@ export class RankingQueryService {
         filterSnapshotEntries(previousSeasonVersion, null, true),
       ]);
     const requestedSeasonId = input.level_season_id ?? cursorPosition?.level_season_id ?? null;
+    if (
+      input.board === RankingBoard.Season &&
+      input.scope === RankingScope.Group &&
+      requestedSeasonId !== null &&
+      requestedSeasonId !== currentLevelSeasonId
+    ) {
+      throw validationError("群赛季榜不可查询历史赛季", { field: "level_season_id" });
+    }
     let selectedSeasonVersion: readonly BoardSnapshot[] = currentSeasonVersion;
     let selectedSeasonId = requestedSeasonId ?? currentLevelSeasonId;
     let isProvisional = false;
@@ -816,9 +825,17 @@ export class RankingQueryService {
       selectedSeasonId !== currentLevelSeasonId;
     await preloadUsers(sourceEntries.map(sourceUserId));
     const withUsers: RankedEntry[] = [];
+    const weekEndAt = input.board === RankingBoard.Week
+      ? periodEndAt("week", periodKey!)
+      : null;
     for (const source of sourceEntries) {
       const user = await readUser(sourceUserId(source));
-      if (user.status === UserStatus.Deleted && !isHistoricalWeek && !isHistoricalSeason) continue;
+      if (user.status === UserStatus.Deleted) {
+        const hidden = weekEndAt !== null
+          ? isDeletedForPeriod(user, weekEndAt)
+          : !isHistoricalSeason;
+        if (hidden) continue;
+      }
       if (user.status !== UserStatus.Active && user.status !== UserStatus.Deleted) {
         throw internalError(`用户状态非法（user_id=${user.user_id}）`);
       }

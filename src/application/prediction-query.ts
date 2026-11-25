@@ -4,13 +4,14 @@ import {
   findSupportedLeagueById,
   isSupportedLeagueId,
 } from "../domain/config.js";
-import { UserStatus } from "../domain/enums.js";
+import { MatchStatus, SettlementStatus, UserStatus } from "../domain/enums.js";
 import { conflictError, internalError, notFoundError, validationError } from "../domain/errors.js";
 import { isValidUuid } from "../domain/ids.js";
 import type { Match, Team } from "../domain/types.js";
 import type { AppRepository } from "../infrastructure/repositories.js";
 import { assertLeagueSeasonAttached } from "./league-season-validation.js";
 import { fetchByIds, resolveEffectiveMatchesByIds } from "./match-identity.js";
+import { toPublicSettlementStatus, type PublicSettlementStatus } from "./match-query.js";
 
 export interface PredictionDetailData {
   prediction_id: string;
@@ -21,6 +22,7 @@ export interface PredictionDetailData {
   submitted_at: string;
   scoring_rule_version: string;
   match_status: "scheduled" | "live" | "finished" | "postponed" | "cancelled" | "abandoned";
+  settlement_status: PublicSettlementStatus;
   regular_home_score: number | null;
   regular_away_score: number | null;
   match_score: 0 | 3 | 12 | null;
@@ -41,8 +43,8 @@ export interface PredictionHistoryItem extends PredictionDetailData {
   round_id: string;
   home_team_id: string;
   away_team_id: string;
-  home_team: { team_id: string; name: string };
-  away_team: { team_id: string; name: string };
+  home_team: { team_id: string; name: string; name_zh: string | null; logo_url: string | null };
+  away_team: { team_id: string; name: string; name_zh: string | null; logo_url: string | null };
   kickoff_at: string;
 }
 
@@ -197,7 +199,11 @@ export class PredictionQueryService {
     }
     const hasFormalScore =
       match.regular_home_score !== null && match.regular_away_score !== null;
-    const hasSettlement = hasFormalScore && match.match_status !== "cancelled";
+    const settled =
+      hasFormalScore &&
+      match.match_status !== MatchStatus.Cancelled &&
+      match.settlement_status === SettlementStatus.Settled &&
+      prediction.applied_result_version === match.result_version;
 
     return {
       prediction_id: prediction.prediction_id,
@@ -208,11 +214,12 @@ export class PredictionQueryService {
       submitted_at: prediction.submitted_at.toISOString(),
       scoring_rule_version: prediction.scoring_rule_version,
       match_status: match.match_status,
+      settlement_status: toPublicSettlementStatus(match.settlement_status),
       regular_home_score: match.regular_home_score,
       regular_away_score: match.regular_away_score,
-      match_score: hasSettlement ? prediction.match_score : null,
-      wdl_hit: hasSettlement ? prediction.wdl_hit : null,
-      exact_hit: hasSettlement ? prediction.exact_hit : null,
+      match_score: settled ? prediction.match_score : null,
+      wdl_hit: settled ? prediction.wdl_hit : null,
+      exact_hit: settled ? prediction.exact_hit : null,
     };
   }
 }
@@ -337,7 +344,13 @@ export class PredictionHistoryQueryService {
       assertValidDate(match.kickoff_at, "kickoff_at");
       const hasFormalScore =
         match.regular_home_score !== null && match.regular_away_score !== null;
-      const hasSettlement = hasFormalScore && match.match_status !== "cancelled";
+      const settled =
+        hasFormalScore &&
+        match.match_status !== MatchStatus.Cancelled &&
+        match.settlement_status === SettlementStatus.Settled &&
+        prediction.applied_result_version === match.result_version;
+      const homeTeam = teamsById.get(match.home_team_id);
+      const awayTeam = teamsById.get(match.away_team_id);
       items.push({
         prediction_id: prediction.prediction_id,
         match_id: match.match_id,
@@ -348,11 +361,23 @@ export class PredictionHistoryQueryService {
         away_team_id: match.away_team_id,
         home_team: {
           team_id: match.home_team_id,
-          name: teamsById.get(match.home_team_id)?.name ?? "",
+          name: homeTeam?.name ?? "",
+          name_zh: typeof homeTeam?.name_zh === "string" && homeTeam.name_zh.trim().length > 0
+            ? homeTeam.name_zh.trim()
+            : null,
+          logo_url: typeof homeTeam?.logo_url === "string" && homeTeam.logo_url.trim().length > 0
+            ? homeTeam.logo_url.trim()
+            : null,
         },
         away_team: {
           team_id: match.away_team_id,
-          name: teamsById.get(match.away_team_id)?.name ?? "",
+          name: awayTeam?.name ?? "",
+          name_zh: typeof awayTeam?.name_zh === "string" && awayTeam.name_zh.trim().length > 0
+            ? awayTeam.name_zh.trim()
+            : null,
+          logo_url: typeof awayTeam?.logo_url === "string" && awayTeam.logo_url.trim().length > 0
+            ? awayTeam.logo_url.trim()
+            : null,
         },
         kickoff_at: match.kickoff_at.toISOString(),
         pred_home_score: prediction.pred_home_score,
@@ -361,11 +386,12 @@ export class PredictionHistoryQueryService {
         submitted_at: prediction.submitted_at.toISOString(),
         scoring_rule_version: prediction.scoring_rule_version,
         match_status: match.match_status,
+        settlement_status: toPublicSettlementStatus(match.settlement_status),
         regular_home_score: match.regular_home_score,
         regular_away_score: match.regular_away_score,
-        match_score: hasSettlement ? prediction.match_score : null,
-        wdl_hit: hasSettlement ? prediction.wdl_hit : null,
-        exact_hit: hasSettlement ? prediction.exact_hit : null,
+        match_score: settled ? prediction.match_score : null,
+        wdl_hit: settled ? prediction.wdl_hit : null,
+        exact_hit: settled ? prediction.exact_hit : null,
       });
     }
 

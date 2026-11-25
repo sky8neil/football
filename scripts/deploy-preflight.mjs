@@ -15,7 +15,7 @@
  *   npm run deploy:preflight            # 目标从 FOOTBALL_DEPLOY_TARGET / 仓库后端推断
  */
 import { existsSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const DIST_DEPLOY_TARGET = new URL("../dist/sync/deploy-target.js", import.meta.url);
 const DIST_SYNC_CONFIG = new URL("../dist/sync/config.js", import.meta.url);
@@ -101,13 +101,16 @@ export async function main(args = process.argv.slice(2), env = process.env, writ
   if (
     env.FOOTBALL_ENVIRONMENT === "prod" ||
     (typeof env.FOOTBALL_LEVEL_FIRST_EVAL_AS_OF === "string" &&
-      env.FOOTBALL_LEVEL_FIRST_EVAL_AS_OF.trim().length > 0)
+      env.FOOTBALL_LEVEL_FIRST_EVAL_AS_OF.trim().length > 0) ||
+    (typeof env.FOOTBALL_RANKING_FIRST_PERIOD_KEY === "string" &&
+      env.FOOTBALL_RANKING_FIRST_PERIOD_KEY.trim().length > 0)
   ) {
     if (!existsSync(fileURLToPath(DIST_GATEWAY_CONFIG))) {
       throw new Error("dist/ 尚未构建，请先 npm run build（或用 npm run deploy:preflight）");
     }
     const gatewayConfig = await import(DIST_GATEWAY_CONFIG.href);
     gatewayConfig.parseLevelFirstEvalAsOf(env, env.FOOTBALL_ENVIRONMENT);
+    gatewayConfig.parseRankingFirstPeriodKey(env, env.FOOTBALL_ENVIRONMENT);
   }
 
   const target = explicitTarget === undefined
@@ -140,7 +143,7 @@ export async function main(args = process.argv.slice(2), env = process.env, writ
   return failOnDegraded && report.degraded.length > 0 ? 1 : 0;
 }
 
-const invoked = process.argv[1] !== undefined && import.meta.url === new URL(`file://${process.argv[1]}`).href;
+const invoked = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (invoked) {
   main()
     .then((code) => {

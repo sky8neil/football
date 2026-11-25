@@ -24,7 +24,7 @@ describe("league summary gateway routes", () => {
     expect(await request("/v1/predictions/summary", { league_id: "x" })).toMatchObject({ status: 401, body: { code: "UNAUTHORIZED" } });
     expect((await request("/v1/session/init", {}, "openid", "POST", { nickname: "Player" })).status).toBe(201);
     const response = await request("/v1/predictions/summary", { league_id: "chinese_super_league" }, "openid");
-    expect(response).toEqual({ status: 200, body: { request_id: expect.any(String), data: { availability: "not_available", league_id: "chinese_super_league", season_id: null, completion_confirmed_at: null, ended_at: null, summary: null, reason: "not_available" } } });
+    expect(response).toEqual({ status: 200, body: { request_id: expect.any(String), data: { availability: "not_available", league_id: "chinese_super_league", season_id: null, completion_confirmed_at: null, ended_at: null, summary: null, reason: "no_eligible_season" } } });
     for (const query of [{ league_id: "x", user_id: "other_user" }, {}]) {
       const invalid = await request("/v1/predictions/summary", query, "openid");
       expect(invalid).toMatchObject({ status: 422, body: { code: "VALIDATION_ERROR" } });

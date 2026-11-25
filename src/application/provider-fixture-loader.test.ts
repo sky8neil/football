@@ -313,4 +313,32 @@ describe("createLiveMatchLoader", () => {
     });
     expect(getFixtures).not.toHaveBeenCalled();
   });
+
+  it("多联赛加载按联赛隔离失败，保留健康联赛数据并仅在全败时抛错 (A-S3-05)", async () => {
+    const kickoff = new Date(NOW.getTime() + 60 * 60 * 1000);
+    const healthy = makeApiFixture({
+      fixtureId: 1100040,
+      date: kickoff.toISOString(),
+      timestamp: kickoff.getTime() / 1000,
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const partialLoader = createLiveMatchLoader({
+        getFixtures: async (query) => {
+          if (query.leagueId === "169") throw new Error("csl timeout");
+          return eplOnly(query, [healthy]);
+        },
+      });
+      await expect(partialLoader(NOW)).resolves.toEqual([
+        { fixture: healthy, payload: { fixture: healthy } },
+      ]);
+
+      const allFailLoader = createLiveMatchLoader({
+        getFixtures: async () => { throw new Error("every league failed"); },
+      });
+      await expect(allFailLoader(NOW)).rejects.toThrow("every league failed");
+    } finally {
+      warn.mockRestore();
+    }
+  });
 });

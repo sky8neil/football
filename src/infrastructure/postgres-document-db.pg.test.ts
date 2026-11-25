@@ -456,8 +456,12 @@ describe.skipIf(!ENABLED)("Postgres ranking global_rank 原子局部更新 Slice
     await pool.query(
       `CREATE TABLE IF NOT EXISTS ${qualifiedTable(RANK_SCHEMA, jobLocks())} (_id text PRIMARY KEY, document jsonb NOT NULL)`,
     );
+    await pool.query(
+      `CREATE TABLE IF NOT EXISTS ${qualifiedTable(RANK_SCHEMA, cloudBaseCollectionName(NAMESPACE, "users"))} (_id text PRIMARY KEY, document jsonb NOT NULL)`,
+    );
     await pool.query(`TRUNCATE ${qualifiedTable(RANK_SCHEMA, rankings())}`);
     await pool.query(`TRUNCATE ${qualifiedTable(RANK_SCHEMA, jobLocks())}`);
+    await pool.query(`TRUNCATE ${qualifiedTable(RANK_SCHEMA, cloudBaseCollectionName(NAMESPACE, "users"))}`);
   });
 
   afterAll(async () => {

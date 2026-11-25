@@ -208,6 +208,16 @@ export class CloudBaseWxDb implements CloudBaseDb {
     }
   }
 
+  /**
+   * wx-server-sdk 事务没有 FOR UPDATE。事务内 doc.get 读快照，同事务后续写在 commit
+   * 做冲突检测（DATABASE_TRANSACTION_CONFLICT），失败回滚而不是静默覆盖。
+   * 事务外必须拒绝，不能退化为无锁 get。
+   */
+  async getForUpdate(collection: string, id: string): Promise<CloudBaseDocument | null> {
+    if (!this.transactionDb) throw new Error("getForUpdate requires an active transaction");
+    return this.get(collection, id);
+  }
+
   async add(collection: string, id: string, document: CloudBaseDocument): Promise<void> {
     const target = this.db.collection(collection);
     try {

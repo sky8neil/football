@@ -1,0 +1,85 @@
+<view class="page">
+  <image class="pitch" src="/assets/images/baseline-pitch.webp" mode="aspectFill" />
+  <view class="content">
+    <view wx:if="{{state === 'loading'}}" class="card state-card">正在加载主页…</view>
+
+    <view wx:elif="{{state === 'notFound'}}" class="card state-card">
+      <view class="state-title">用户不存在</view>
+      <view class="state-message">{{errorMessage}}</view>
+      <button class="action-btn" bindtap="onBackTap">返回</button>
+    </view>
+
+    <view wx:elif="{{state === 'validationError'}}" class="card state-card">
+      <view class="state-title">无法打开主页</view>
+      <view class="state-message">{{errorMessage}}</view>
+      <button class="action-btn" bindtap="onBackTap">返回</button>
+    </view>
+
+    <view wx:elif="{{state === 'rateLimited'}}" class="card state-card">
+      <view class="state-title">请求过于频繁</view>
+      <view class="state-message">{{errorMessage}}</view>
+      <button class="action-btn" bindtap="onBackTap">返回</button>
+    </view>
+
+    <view wx:elif="{{state === 'unauthorized'}}" class="card state-card">
+      <view class="state-title">请先登录</view>
+      <view class="state-message">{{errorMessage}}</view>
+      <button class="action-btn primary" bindtap="onLoginTap">去登录</button>
+    </view>
+
+    <view wx:elif="{{state === 'error'}}" class="card state-card">
+      <view class="state-title">加载失败</view>
+      <view class="state-message">{{errorMessage}}</view>
+      <button class="action-btn primary" bindtap="onRetry">重试</button>
+    </view>
+
+    <block wx:elif="{{state === 'ready'}}">
+      <view class="card identity-card">
+        <view class="avatar">{{avatarInitial}}</view>
+        <view class="identity-copy">
+          <view class="name-row">
+            <text class="display-name">{{displayName}}</text>
+            <text class="level-badge">Lv.{{careerLevel}} {{careerLevelName}}</text>
+          </view>
+          <view wx:if="{{isDeleted}}" class="deleted-note">该账号已注销，仅保留历史公开统计</view>
+          <view wx:else class="team-row">
+            <image wx:if="{{hasFavoriteTeam}}" class="team-logo" src="{{favoriteTeamLogo}}" mode="aspectFit" binderror="onTeamLogoError" />
+            <text class="team-name">主队 · {{favoriteTeamText}}</text>
+          </view>
+        </view>
+      </view>
+
+      <view class="card stats-card">
+        <view class="section-title">生涯战绩</view>
+        <view class="metrics">
+          <view class="metric">
+            <text class="metric-value num">{{careerPoints}}</text>
+            <text class="metric-label">生涯积分</text>
+          </view>
+          <view class="metric">
+            <text class="metric-value num">{{careerValidPredictions}}</text>
+            <text class="metric-label">有效预测</text>
+          </view>
+          <view class="metric">
+            <text class="metric-value num">{{careerExactHits}}</text>
+            <text class="metric-label">精确命中</text>
+          </view>
+        </view>
+        <view class="level-summary">
+          <text>当前生涯等级：Lv.{{careerLevel}} {{careerLevelName}}</text>
+          <text>历史最高等级：Lv.{{careerBestLevel}} {{careerBestLevelName}}</text>
+        </view>
+      </view>
+
+      <view class="card stats-card">
+        <view class="section-title">当前赛季</view>
+        <view class="season-row">
+          <text class="season-label">当前赛季等级</text>
+          <text class="season-value">Lv.{{seasonLevel}} {{seasonLevelName}}</text>
+        </view>
+      </view>
+
+      <view class="privacy-note">公开主页仅展示聚合战绩，不展示单场预测明细。</view>
+    </block>
+  </view>
+</view>

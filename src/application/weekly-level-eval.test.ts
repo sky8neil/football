@@ -23,7 +23,7 @@ import type {
   UserSeasonStats,
 } from "../domain/types.js";
 import { defaultLevelState } from "../domain/types.js";
-import { InMemoryRepository } from "../infrastructure/repositories.js";
+import { InMemoryRepository, type UnitOfWork } from "../infrastructure/repositories.js";
 import { DailyConsistencyService } from "./daily-consistency-service.js";
 import { RepositoryDailyConsistencySnapshotSource } from "./daily-consistency-snapshot.js";
 import { RebuildUserStatsService } from "./stats-rebuild-service.js";
@@ -920,5 +920,145 @@ describe("WeeklyLevelEvalService §17.6 / §32.9", () => {
       expect((leaseUntil as Date).getTime()).toBeGreaterThan(wallClockBefore);
       expect((leaseUntil as Date).getTime()).toBeGreaterThan(Date.now());
     }
+  });
+});
+
+const SCORE_AT = new Date("2026-08-11T03:04:05.000Z");
+
+function installScoreRace(repo: InMemoryRepository, log: string[]): void {
+  const injected = new Set<string>();
+  const original = repo.withTransaction.bind(repo);
+  repo.withTransaction = (async (fn) => original(async (tx) => {
+    const rawUsers = tx.users;
+    const rawStats = tx.userSeasonStats;
+    const users = {
+      ...rawUsers,
+      findByIdForUpdate: async (userId: string) => {
+        log.push(`users.findByIdForUpdate|${userId}`);
+        const user = await rawUsers.findByIdForUpdate!(userId);
+        if (user !== null && !injected.has(`user:${userId}`)) {
+          injected.add(`user:${userId}`);
+          await rawUsers.update({
+            ...user,
+            career_points: 7777,
+            career_last_scoring_match_at: SCORE_AT,
+          });
+        }
+        return user;
+      },
+      update: async (user: User) => {
+        log.push(`users.update|${user.user_id}`);
+        return rawUsers.update(user);
+      },
+      patchFields: async (userId: string, fields: Partial<User>) => {
+        log.push(`users.patchFields|${userId}|${Object.keys(fields).sort().join(",")}`);
+        return rawUsers.patchFields!(userId, fields);
+      },
+    };
+    const stats = rawStats === undefined ? undefined : {
+      ...rawStats,
+      findByUserAndSeasonForUpdate: async (userId: string, seasonId: string) => {
+        log.push(`stats.findByUserAndSeasonForUpdate|${seasonId}`);
+        const row = await rawStats.findByUserAndSeasonForUpdate!(userId, seasonId);
+        const key = `stats:${userId}:${seasonId}`;
+        if (row !== null && !injected.has(key)) {
+          injected.add(key);
+          await rawStats.update({
+            ...row,
+            points: 8888,
+            last_scoring_match_at: SCORE_AT,
+          });
+        }
+        return row;
+      },
+      update: async (row: UserSeasonStats) => {
+        log.push(`stats.update|${row.level_season_id}`);
+        return rawStats.update(row);
+      },
+      patchFields: async (
+        userId: string,
+        seasonId: string,
+        fields: Partial<UserSeasonStats>,
+      ) => {
+        log.push(`stats.patchFields|${seasonId}|${Object.keys(fields).sort().join(",")}`);
+        return rawStats.patchFields!(userId, seasonId, fields);
+      },
+    };
+    const proxied = new Proxy(tx, {
+      get(target, prop) {
+        if (prop === "users") return users;
+        if (prop === "userSeasonStats") return stats;
+        const value = Reflect.get(target, prop, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    log.push("tx:begin");
+    try {
+      return await fn(proxied as UnitOfWork);
+    } finally {
+      log.push("tx:end");
+    }
+  })) as InMemoryRepository["withTransaction"];
+}
+
+function writeTransactions(log: string[]): string[][] {
+  const groups: string[][] = [];
+  let current: string[] | null = null;
+  for (const line of log) {
+    if (line === "tx:begin") current = [];
+    else if (line === "tx:end") {
+      if (current !== null) groups.push(current);
+      current = null;
+    } else if (current !== null) current.push(line);
+  }
+  return groups.filter((events) => events.some((event) =>
+    event.startsWith("users.patchFields") ||
+    event.startsWith("stats.patchFields") ||
+    event.startsWith("users.update") ||
+    event.startsWith("stats.update") ||
+    event.includes("ForUpdate"),
+  ));
+}
+
+describe("WeeklyLevelEvalService A-S4-01", () => {
+  it("周评估先行锁 users 再锁 user_season_stats，只局部更新等级字段", async () => {
+    const repo = new InMemoryRepository();
+    const user = await seedUser(repo, 20);
+    const log: string[] = [];
+    installScoreRace(repo, log);
+
+    await weekly(repo).run(RUN_AT);
+
+    expect(writeTransactions(log)).toEqual([
+      [
+        `users.findByIdForUpdate|${user.user_id}`,
+        `users.patchFields|${user.user_id}|career_best_level,career_level,career_level_state,updated_at`,
+      ],
+      [
+        `users.findByIdForUpdate|${user.user_id}`,
+        "stats.findByUserAndSeasonForUpdate|2026_2027",
+        "stats.patchFields|2026_2027|best_level,is_level_frozen,level,level_state,updated_at",
+      ],
+    ]);
+    await expect(repo.users.findById(user.user_id)).resolves.toMatchObject({
+      career_level: 2,
+      career_best_level: 2,
+      career_points: 7777,
+      career_valid_predictions: 20,
+      career_wdl_hits: 20,
+      career_exact_hits: 20,
+      career_last_scoring_match_at: SCORE_AT,
+    });
+    await expect(repo.userSeasonStats.findByUserAndSeason(user.user_id, "2026_2027"))
+      .resolves.toMatchObject({
+        level: 2,
+        best_level: 2,
+        is_level_frozen: false,
+        points: 8888,
+        valid_predictions: 20,
+        wdl_hits: 20,
+        exact_hits: 20,
+        last_scoring_match_at: SCORE_AT,
+      });
   });
 });

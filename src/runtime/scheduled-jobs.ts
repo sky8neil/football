@@ -3,8 +3,8 @@ import { DomainError } from "../domain/errors.js";
 import { FIXED_CONFIG_V1 } from "../domain/config.js";
 import { newUuid } from "../domain/ids.js";
 import { cloudBaseCollectionName, type CloudBaseDb } from "../infrastructure/cloudbase-db.js";
-import { failedJobCooldownMs, providerJobIntervalMs, SYNC_TASKS_V1 } from "../sync/config.js";
-import type { ProviderFixtureFailureDiagnostic } from "../application/provider-sync-job.js";
+import { failedJobCooldownMs, LEAGUE_SEASONS_MAINTENANCE_INTERVAL_MINUTES, providerJobIntervalMs, SYNC_TASKS_V1 } from "../sync/config.js";
+import { startJobLockRenewal, type ProviderFixtureFailureDiagnostic } from "../application/provider-sync-job.js";
 import type { ProviderReconcileService } from "../application/provider-reconcile.js";
 import type { ProviderStaleRecoveryService } from "../application/provider-stale-recovery.js";
 import { runSettlementTimer, type SettlementTimerOutcome } from "../application/settlement-timer.js";
@@ -55,6 +55,12 @@ export const WIRED_PERIODIC_TASKS = [
     note: "Monday 02:10 UTC; as_of Monday 02:00 UTC; strength snapshot on success, no second event",
   },
   {
+    task: SyncJobType.LevelCorrectionReeval,
+    status: "wired",
+    intervalMinutes: SYNC_TASKS_V1[SyncJobType.LevelCorrectionReeval].intervalMinutes ?? 15,
+    note: "intra-week compensation scan for pending correction re-evaluation",
+  },
+  {
     task: SyncJobType.BoardSnapshotCareer,
     status: "wired",
     intervalMinutes: FIXED_CONFIG_V1.CAREER_BOARD_SNAPSHOT_MINUTES,
@@ -85,7 +91,7 @@ export const SETTLEMENT_ORCHESTRATION_TASKS = [
   {
     task: SyncJobType.LevelCorrectionReeval,
     status: "wired_via_settlement",
-    note: "invoked from settlement orchestration, not a standalone tick job",
+    note: "event trigger from settlement orchestration; periodic pending compensation scan runs separately",
   },
 ] as const;
 
@@ -155,10 +161,15 @@ function intervalSkip(
     if (Number.isFinite(nextAtMs) && serverNow.getTime() < nextAtMs) return "deferred_not_due";
     return undefined;
   }
-  // failed 不再被整个周期锁死：退避重试耗尽后按 exhaustedRetryMinutes 收敛重试。
-  const effectiveIntervalMs = last?.status === "failed" ? failedCooldownMs : intervalMs;
+  const leaseExpired =
+    last?.status === "running" &&
+    Number.isFinite(lastStartedMs) &&
+    serverNow.getTime() - lastStartedMs >= FIXED_CONFIG_V1.JOB_LEASE_MINUTES * 60_000;
+  const effectiveStatus = leaseExpired ? "failed" : last?.status;
+  // failed / 超过租约的僵死 running 不被整个周期锁死：按 exhaustedRetryMinutes 收敛重试。
+  const effectiveIntervalMs = effectiveStatus === "failed" ? failedCooldownMs : intervalMs;
   if (Number.isFinite(lastStartedMs) && serverNow.getTime() - lastStartedMs < effectiveIntervalMs) {
-    return last?.status === "failed" ? "failed_cooldown" : "interval_not_due";
+    return effectiveStatus === "failed" ? "failed_cooldown" : "interval_not_due";
   }
   return undefined;
 }
@@ -214,12 +225,15 @@ export async function planDueProviderJobs(input: {
   }
 
   const lastReconcile = await latestSyncLog(input.cloudDb, input.namespace, SyncJobType.ProviderReconcile);
-  const lastReconcileMs = toEpochMs(lastReconcile?.started_at);
-  if (Number.isFinite(lastReconcileMs) && input.serverNow.getTime() - lastReconcileMs < 24 * 60 * 60_000) {
-    decisions.push({ task: SyncJobType.ProviderReconcile, action: "skip", reason: "interval_not_due" });
-  } else {
-    decisions.push({ task: SyncJobType.ProviderReconcile, action: "run", reason: "due" });
-  }
+  const reconcileSkip = intervalSkip(
+    lastReconcile,
+    input.serverNow,
+    providerJobIntervalMs(SyncJobType.ProviderReconcile, input.profile),
+    failedJobCooldownMs(SyncJobType.ProviderReconcile, input.profile),
+  );
+  decisions.push(reconcileSkip === undefined
+    ? { task: SyncJobType.ProviderReconcile, action: "run", reason: "due" }
+    : { task: SyncJobType.ProviderReconcile, action: "skip", reason: reconcileSkip });
   const lastRecovery = await latestSyncLog(input.cloudDb, input.namespace, SyncJobType.StaleRecovery);
   const recoveryInterval = providerJobIntervalMs(SyncJobType.StaleRecovery, input.profile);
   // 延期待办可能早于 next_attempt_at 到期，但恢复任务本身仍受「每自然小时最多一次」约束，
@@ -292,6 +306,9 @@ export async function planDuePeriodicJobs(input: {
 }): Promise<DueJobDecision[]> {
   const finalizeInterval = intervalMinutesMs(SYNC_TASKS_V1[SyncJobType.PeriodFinalize].intervalMinutes ?? 60);
   const consistencyInterval = intervalMinutesMs(SYNC_TASKS_V1[SyncJobType.DailyConsistency].intervalMinutes ?? 24 * 60);
+  const levelCorrectionInterval = intervalMinutesMs(
+    SYNC_TASKS_V1[SyncJobType.LevelCorrectionReeval].intervalMinutes ?? 15,
+  );
   const finalizeCycle = await input.runtime.schedulerState.getPeriodicJobCycle(SyncJobType.PeriodFinalize);
   const finalizeSkip = cycleSkip(finalizeCycle?.completed_cycle_at, input.serverNow, finalizeInterval);
   const decisions: DueJobDecision[] = [];
@@ -328,6 +345,23 @@ export async function planDuePeriodicJobs(input: {
   } else {
     decisions.push({ task: SyncJobType.WeeklyLevelEval, action: "skip", reason: "interval_not_due" });
   }
+  const levelCorrectionCycle = await input.runtime.schedulerState.getPeriodicJobCycle(
+    SyncJobType.LevelCorrectionReeval,
+  );
+  const levelCorrectionSkip = cycleSkip(
+    levelCorrectionCycle?.completed_cycle_at,
+    input.serverNow,
+    levelCorrectionInterval,
+  );
+  if (levelCorrectionSkip !== undefined) {
+    decisions.push({
+      task: SyncJobType.LevelCorrectionReeval,
+      action: "skip",
+      reason: levelCorrectionSkip,
+    });
+  } else {
+    decisions.push({ task: SyncJobType.LevelCorrectionReeval, action: "run", reason: "due" });
+  }
   for (const jobType of [
     SyncJobType.BoardSnapshotCareer,
     SyncJobType.BoardSnapshotStrength,
@@ -359,6 +393,21 @@ export async function planDuePeriodicJobs(input: {
         due_level_season_ids: dueLevelSeasonIds,
       });
     }
+  }
+  if (input.runtime.leagueSeasons !== undefined) {
+    const leagueSeasonsCycle = await input.runtime.schedulerState.getPeriodicJobCycle(
+      LEAGUE_SEASONS_CYCLE_KEY,
+    );
+    const leagueSeasonsSkip = cycleSkip(
+      leagueSeasonsCycle?.completed_cycle_at,
+      input.serverNow,
+      LEAGUE_SEASONS_INTERVAL_MS,
+    );
+    decisions.push(
+      leagueSeasonsSkip !== undefined
+        ? { task: LEAGUE_SEASONS_CYCLE_KEY, action: "skip", reason: leagueSeasonsSkip }
+        : { task: LEAGUE_SEASONS_CYCLE_KEY, action: "run", reason: "due" },
+    );
   }
   if (input.runtime.maintenanceCleanup !== undefined) {
     const cleanupCycle = await input.runtime.schedulerState.getPeriodicJobCycle(
@@ -657,13 +706,11 @@ async function runPeriodFinalizeJob(
     return { bucket: "ran", due_period_keys: [] };
   }
   let skippedLock = false;
-  let finalized = 0;
   for (const periodKey of keys) {
     const outcome = await runtime.periodFinalize.finalize(PeriodType.Week, periodKey, serverNow);
     if (outcome.skipped) skippedLock = true;
-    finalized += outcome.finalized_count;
   }
-  if (skippedLock && finalized === 0) {
+  if (skippedLock) {
     return { bucket: "skipped", reason: "lock_held", due_period_keys: keys };
   }
   await markPeriodicCycle(runtime, SyncJobType.PeriodFinalize, serverNow);
@@ -724,6 +771,30 @@ async function runWeeklyLevelEvalJob(
   return { bucket: "ran", as_of: outcome.as_of };
 }
 
+async function runLevelCorrectionReevalPendingJob(
+  runtime: ApplicationRuntime,
+  serverNow: Date,
+): Promise<{ bucket: "ran" | "skipped"; reason?: string }> {
+  const weeklyCycle = await runtime.schedulerState.getPeriodicJobCycle(
+    SyncJobType.WeeklyLevelEval,
+  );
+  const outcome = await runtime.levelCorrectionReeval.runPendingCompensation(
+    serverNow,
+    weeklyCycle?.completed_cycle_at ?? null,
+  );
+  if (outcome.kind === "skipped") {
+    return { bucket: "skipped", reason: "lock_held" };
+  }
+  if (outcome.kind === "deferred") {
+    return {
+      bucket: "skipped",
+      reason: outcome.deferred_reason ?? outcome.deferred_reasons?.[0] ?? "deferred",
+    };
+  }
+  await markPeriodicCycle(runtime, SyncJobType.LevelCorrectionReeval, serverNow);
+  return { bucket: "ran" };
+}
+
 function isSnapshotLockHeld(error: unknown): boolean {
   return error instanceof DomainError && error.code === "SETTLEMENT_ALREADY_RUNNING";
 }
@@ -759,11 +830,9 @@ async function runBoardSnapshotSeasonFinalJob(
     return { bucket: "ran", due_level_season_ids: [] };
   }
   let skippedLock = false;
-  let generated = 0;
   for (const seasonId of ids) {
     try {
       await runtime.boardSnapshot.generateSeasonFinal(seasonId, serverNow);
-      generated += 1;
     } catch (error) {
       if (isSnapshotLockHeld(error)) {
         skippedLock = true;
@@ -772,7 +841,7 @@ async function runBoardSnapshotSeasonFinalJob(
       throw error;
     }
   }
-  if (skippedLock && generated === 0) {
+  if (skippedLock) {
     return { bucket: "skipped", reason: "lock_held", due_level_season_ids: ids };
   }
   await markPeriodicCycle(runtime, SyncJobType.BoardSnapshotSeasonFinal, serverNow);
@@ -801,9 +870,46 @@ async function runDailyConsistencyJob(
 
 export const MAINTENANCE_CLEANUP_CYCLE_KEY = "maintenance_cleanup";
 export const MAINTENANCE_CLEANUP_LOCK_KEY = "sync:maintenance_cleanup";
+export const LEAGUE_SEASONS_CYCLE_KEY = "league_seasons";
+export const LEAGUE_SEASONS_LOCK_KEY = "sync:league_seasons";
 export const WEEKLY_INLINE_SNAPSHOT_GRACE_MS = 60 * 60_000;
+const LEAGUE_SEASONS_INTERVAL_MS = LEAGUE_SEASONS_MAINTENANCE_INTERVAL_MINUTES * 60_000;
 const MAINTENANCE_CLEANUP_INTERVAL_MS = 24 * 60 * 60_000;
 const MAINTENANCE_CLEANUP_LEASE_MS = FIXED_CONFIG_V1.JOB_LEASE_MINUTES * 60 * 1000;
+
+async function runLeagueSeasonsMaintenanceJob(
+  runtime: ApplicationRuntime,
+  serverNow: Date,
+): Promise<{ bucket: "ran" | "skipped"; reason?: string; outcome: LeagueSeasonMaintenanceResult | null }> {
+  const jobLocks = (runtime.repo as Partial<AppRepository>).jobLocks;
+  if (jobLocks === undefined) {
+    const outcome = await runtime.leagueSeasons.run(serverNow);
+    await markPeriodicCycle(runtime, LEAGUE_SEASONS_CYCLE_KEY, serverNow);
+    return { bucket: "ran", outcome };
+  }
+  const ownerId = newUuid();
+  const leaseMs = FIXED_CONFIG_V1.JOB_LEASE_MINUTES * 60 * 1000;
+  const leaseUntil = new Date(Math.max(Date.now(), serverNow.getTime()) + leaseMs);
+  const acquired = await jobLocks.acquire(LEAGUE_SEASONS_LOCK_KEY, ownerId, leaseUntil);
+  if (!acquired) {
+    runtime.log({ event: "league_seasons_maintenance_skipped", reason: "lock_held" });
+    return { bucket: "skipped", reason: "lock_held", outcome: null };
+  }
+  const lockRenewal = startJobLockRenewal(
+    { jobLocks },
+    LEAGUE_SEASONS_LOCK_KEY,
+    ownerId,
+    { leaseMs, now: () => Math.max(Date.now(), serverNow.getTime()) },
+  );
+  try {
+    const outcome = await runtime.leagueSeasons.run(serverNow);
+    await markPeriodicCycle(runtime, LEAGUE_SEASONS_CYCLE_KEY, serverNow);
+    return { bucket: "ran", outcome };
+  } finally {
+    lockRenewal.stop();
+    await jobLocks.release(LEAGUE_SEASONS_LOCK_KEY, ownerId).catch(() => undefined);
+  }
+}
 
 async function runMaintenanceCleanupJob(
   runtime: ApplicationRuntime,
@@ -852,6 +958,7 @@ export async function runDuePeriodicJobs(input: {
   const ran: string[] = [];
   const failed: ProviderJobFailed[] = [];
   const errors: unknown[] = [];
+  let leagueSeasonsOutcome: LeagueSeasonMaintenanceResult | null = null;
   for (const decision of decisions) {
     if (decision.action === "skip") {
       skipped.push({ task: decision.task, reason: decision.reason });
@@ -885,6 +992,12 @@ export async function runDuePeriodicJobs(input: {
         }
         continue;
       }
+      if (decision.task === SyncJobType.LevelCorrectionReeval) {
+        const outcome = await runLevelCorrectionReevalPendingJob(input.runtime, input.serverNow);
+        if (outcome.bucket === "ran") ran.push(decision.task);
+        else skipped.push({ task: decision.task, reason: outcome.reason ?? "skipped" });
+        continue;
+      }
       if (
         decision.task === SyncJobType.BoardSnapshotCareer
         || decision.task === SyncJobType.BoardSnapshotStrength
@@ -905,6 +1018,13 @@ export async function runDuePeriodicJobs(input: {
         else skipped.push({ task: decision.task, reason: outcome.reason ?? "skipped" });
         continue;
       }
+      if (decision.task === LEAGUE_SEASONS_CYCLE_KEY) {
+        const outcome = await runLeagueSeasonsMaintenanceJob(input.runtime, input.serverNow);
+        leagueSeasonsOutcome = outcome.outcome;
+        if (outcome.bucket === "ran") ran.push(decision.task);
+        else skipped.push({ task: decision.task, reason: outcome.reason ?? "skipped" });
+        continue;
+      }
       if (decision.task === MAINTENANCE_CLEANUP_CYCLE_KEY) {
         const outcome = await runMaintenanceCleanupJob(input.runtime, input.serverNow);
         if (outcome.bucket === "ran") ran.push(decision.task);
@@ -921,6 +1041,7 @@ export async function runDuePeriodicJobs(input: {
     skipped,
     failed,
     errors,
+    league_seasons: leagueSeasonsOutcome,
   };
 }
 
@@ -970,12 +1091,8 @@ export async function runScheduledJobs(input: {
     }
     if (runPeriodic) {
       try {
-        leagueSeasons = await runtime.leagueSeasons.run(serverNow);
-      } catch (error) {
-        errors.push(error);
-      }
-      try {
         const periodic = await runDuePeriodicJobs({ runtime, serverNow });
+        leagueSeasons = (periodic.league_seasons as LeagueSeasonMaintenanceResult | null | undefined) ?? null;
         const nested = periodic.errors;
         if (Array.isArray(nested)) errors.push(...nested);
         const periodicRan = Array.isArray(periodic.jobs_run)

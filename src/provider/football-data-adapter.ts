@@ -18,7 +18,7 @@ function mapStatus(status: unknown): string {
   }
 }
 
-function mapMatch(value: unknown): ApiFootballFixture {
+function mapMatch(value: unknown, league: ProviderAdapterLeague): ApiFootballFixture {
   const match = asRecord(value);
   if (match === null) return {} as ApiFootballFixture;
   const competition = asRecord(match.competition);
@@ -44,7 +44,7 @@ function mapMatch(value: unknown): ApiFootballFixture {
       status: { short: finalScoreIsUsable ? mapStatus(match.status) : "AWARDED" },
     },
     league: {
-      id: asIdentifier(competition?.code) ?? "PL",
+      id: asIdentifier(competition?.code) ?? league.source_league_ref,
       ...(asText(competition?.name) ? { name: asText(competition?.name)! } : {}),
       season: typeof season?.startDate === "string" ? season.startDate.slice(0, 4) : "",
       round: typeof round === "number" ? `Matchday ${round}` : "",
@@ -93,15 +93,38 @@ export class FootballDataAdapter implements ProviderAdapter {
   readonly sourceId = "fd" as const;
   readonly provider = "football_data" as const;
 
-  constructor(private readonly http: ProviderHttpClient) {}
+  constructor(
+    private readonly http: ProviderHttpClient,
+    private readonly log?: (entry: Record<string, unknown>) => void,
+  ) {}
+
+  private filterRegularSeasonMatches(matches: unknown[], league: ProviderAdapterLeague): ApiFootballFixture[] {
+    const regular: ApiFootballFixture[] = [];
+    for (const item of matches) {
+      const record = asRecord(item);
+      const stage = record?.stage;
+      if (stage !== undefined && stage !== null && stage !== "" && stage !== "REGULAR_SEASON") {
+        this.log?.({
+          event: "provider_fixture_ignored",
+          source_id: this.sourceId,
+          league_id: league.league_id,
+          reason: "non_regular_stage",
+          stage,
+        });
+        continue;
+      }
+      regular.push(mapMatch(item, league));
+    }
+    return regular;
+  }
 
   async fetchSeasonFixtures(league: ProviderAdapterLeague, options?: ProviderAdapterCallOptions): Promise<readonly ApiFootballFixture[]> {
     await options?.beforeRequest?.();
     const matches = parseMatches(await this.http.getJson(
       `competitions/${encodeURIComponent(league.source_league_ref)}/matches`,
-      { season: league.season_ref },
+      { season: league.season_ref, stage: "REGULAR_SEASON" },
     ));
-    return matches.map(mapMatch);
+    return this.filterRegularSeasonMatches(matches, league);
   }
 
   async fetchFixturesByDateRange(
@@ -117,7 +140,7 @@ export class FootballDataAdapter implements ProviderAdapter {
         `competitions/${encodeURIComponent(league.source_league_ref)}/matches`,
         { dateFrom: chunk.from, dateTo: chunk.to },
       ));
-      output.push(...matches.map(mapMatch));
+      output.push(...this.filterRegularSeasonMatches(matches, league));
     }
     return output;
   }

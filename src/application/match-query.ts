@@ -51,10 +51,14 @@ export interface MatchListItem {
   home_team: {
     team_id: string;
     name: string;
+    name_zh: string | null;
+    logo_url: string | null;
   };
   away_team: {
     team_id: string;
     name: string;
+    name_zh: string | null;
+    logo_url: string | null;
   };
   kickoff_at: string;
   prediction_deadline_at: string | null;
@@ -279,19 +283,34 @@ function assertMatch(match: Match): void {
   }
 }
 
-function mapTeam(team: Team | null, teamId: string): { team_id: string; name: string } {
+function mapTeam(
+  team: Team | null,
+  teamId: string,
+  matchId?: string,
+): { team_id: string; name: string; name_zh: string | null; logo_url: string | null } {
   if (
     team === null ||
     team.team_id !== teamId ||
     typeof team.name !== "string" ||
     team.name.length === 0
   ) {
-    throw internalError(`match 缺少球队资料（team_id=${teamId}）`);
+    console.warn(JSON.stringify({
+      event: "match_query_team_missing",
+      match_id: matchId ?? null,
+      team_id: teamId,
+      reason: team === null ? "missing_team" : team.team_id !== teamId ? "team_id_mismatch" : "empty_name",
+    }));
+    return { team_id: teamId, name: "", name_zh: null, logo_url: null };
   }
-  return { team_id: team.team_id, name: team.name };
+  return {
+    team_id: team.team_id,
+    name: team.name,
+    name_zh: typeof team.name_zh === "string" && team.name_zh.trim().length > 0 ? team.name_zh.trim() : null,
+    logo_url: typeof team.logo_url === "string" && team.logo_url.trim().length > 0 ? team.logo_url.trim() : null,
+  };
 }
 
-function toPublicSettlementStatus(status: Match["settlement_status"]): PublicSettlementStatus {
+export function toPublicSettlementStatus(status: Match["settlement_status"]): PublicSettlementStatus {
   if (status === SettlementStatus.Pending || status === SettlementStatus.Failed) {
     return "not_ready";
   }
@@ -346,8 +365,8 @@ function toItem(
     league_id: match.league_id,
     season_id: match.season_id,
     round_id: match.round_id,
-    home_team: mapTeam(homeTeam, match.home_team_id),
-    away_team: mapTeam(awayTeam, match.away_team_id),
+    home_team: mapTeam(homeTeam, match.home_team_id, match.match_id),
+    away_team: mapTeam(awayTeam, match.away_team_id, match.match_id),
     kickoff_at: match.kickoff_at.toISOString(),
     prediction_deadline_at: match.prediction_deadline_at?.toISOString() ?? null,
     prediction_closed_at: match.prediction_closed_at?.toISOString() ?? null,

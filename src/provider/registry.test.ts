@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SyncJobType } from "../domain/enums.js";
-import { InMemoryProviderUsageStore, ProviderBudget, ProviderBudgetDeniedError } from "./budget.js";
+import { InMemoryProviderUsageStore, ProviderBudget, ProviderBudgetDeferredError, ProviderBudgetDeniedError } from "./budget.js";
+import { InMemoryProviderKeyStateStore } from "./key-pool.js";
 import { InMemoryProviderLeagueStateStore } from "./league-state.js";
 import { OpenFootAdapter } from "./openfoot-adapter.js";
 import { loadProviderSources } from "./sources.js";
@@ -195,7 +196,7 @@ describe("ProviderRegistry", () => {
     };
 
     await client.getFixtures(query);
-    await expect(client.getFixtures(query)).resolves.toEqual([]);
+    await expect(client.getFixtures(query)).rejects.toBeInstanceOf(ProviderBudgetDeferredError);
     expect(requestCount).toBe(1);
   });
 
@@ -227,7 +228,10 @@ describe("ProviderRegistry", () => {
       status: 429,
       providerCode: "taster_exhausted",
     });
-    await expect(client.getFixtures(query)).resolves.toEqual([]);
+    await expect(client.getFixtures(query)).rejects.toMatchObject({
+      name: "ProviderBudgetDeferredError",
+      retry_at: new Date("2026-10-12T00:00:00.000Z"),
+    });
     expect(requestCount).toBe(1);
   });
 
@@ -341,7 +345,7 @@ describe("ProviderRegistry", () => {
       status: 429,
       providerCode: "rate_limited",
     });
-    await expect(client.getFixtures(query)).resolves.toEqual([]);
+    await expect(client.getFixtures(query)).rejects.toBeInstanceOf(ProviderBudgetDeferredError);
     expect(requestCount).toBe(1);
   });
 
@@ -575,5 +579,177 @@ describe("ProviderRegistry", () => {
     ]);
     expect(requests.filter((url) => url.hostname === "openfootapi.com").map((url) => url.searchParams.get("date")))
       .toEqual(["2026-10-10", "2026-10-11", "2026-10-12"]);
+  });
+
+  it("falls back to fd across all remaining European leagues in the same tick when 5d live fails (A-S3-06)", async () => {
+    const config = loadProviderSources({
+      FOOTBALL_PROVIDER_SOURCES: "fd,5d",
+      FOOTBALL_PROVIDER_KEY_FD_1: "fd-key-1",
+      FOOTBALL_PROVIDER_KEY_5D: "5d-key-1",
+      FOOTBALL_SYNC_LEAGUES: "premier_league,la_liga",
+    });
+    const requests: string[] = [];
+    const fetchImpl: typeof fetch = async (input) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      requests.push(url);
+      if (url.includes("5dollarfootballapi")) {
+        return new Response("upstream error", { status: 500 });
+      }
+      const matchId = url.includes("/competitions/PL/") ? 101 : 202;
+      return new Response(JSON.stringify({
+        matches: [{
+          id: matchId,
+          utcDate: "2026-10-11T11:30:00Z",
+          status: "IN_PLAY",
+          matchday: 8,
+          homeTeam: { id: 10, name: "Home" },
+          awayTeam: { id: 11, name: "Away" },
+        }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    };
+    const registry = new ProviderRegistry({ config, fetchImpl, minimumGapMs: 0 });
+    const now = new Date("2026-10-11T12:00:00.000Z");
+    registry.beginTickCache();
+    try {
+      const client = registry.asClient();
+      const epl = await client.getFixtures({
+        leagueId: "39", season: "2026", dateFrom: "2026-10-11", dateTo: "2026-10-11",
+        jobType: SyncJobType.LiveMatch, serverNow: now,
+      });
+      const laLiga = await client.getFixtures({
+        leagueId: "140", season: "2026", dateFrom: "2026-10-11", dateTo: "2026-10-11",
+        jobType: SyncJobType.LiveMatch, serverNow: now,
+      });
+      expect(epl.map((item) => item.fixture.id)).toEqual([101]);
+      expect(laLiga.map((item) => item.fixture.id)).toEqual([202]);
+      expect(requests.filter((u) => u.includes("5dollarfootballapi"))).toHaveLength(1);
+    } finally {
+      registry.endTickCache();
+    }
+  });
+
+  it("uses fallback on budget denial and throws ProviderBudgetDeferredError when no fallback remains on PostFinishVerify (A-S3-06)", async () => {
+    const config = loadProviderSources({
+      FOOTBALL_PROVIDER_SOURCES: "fd,of",
+      FOOTBALL_PROVIDER_KEY_FD_1: "fd-key-1",
+      FOOTBALL_PROVIDER_KEY_OF: "of-key-1",
+      FOOTBALL_SYNC_LEAGUES: "premier_league",
+    });
+    const budget = new ProviderBudget(config.sources, new InMemoryProviderUsageStore());
+    const now = new Date("2026-10-11T12:00:00.000Z");
+    const fdReset = new Date("2026-10-11T12:05:00.000Z");
+    const ofReset = new Date("2026-10-11T12:15:00.000Z");
+    budget.pauseSource("fd", fdReset, "rate_limited");
+    const fetchImpl: typeof fetch = vi.fn(async () => new Response(JSON.stringify({
+      data: [{ id: "of-1", competitionId: "comp_premier_league_eng", kickoffAt: "2026-10-11T10:00:00Z", status: "finished", homeTeam: { id: "h" }, awayTeam: { id: "a" }, score: { home: 1, away: 0 } }],
+      meta: { pagination: { next_cursor: null } },
+    }), { status: 200, headers: { "content-type": "application/json" } }));
+    const client = new ProviderRegistry({ config, budget, fetchImpl, minimumGapMs: 0 }).asClient();
+
+    // Primary fd in cooldown -> PostFinishVerify falls back to secondary of.
+    const fromFallback = await client.getFixtures({
+      leagueId: "39", season: "2026", dateFrom: "2026-10-11", dateTo: "2026-10-11",
+      jobType: SyncJobType.PostFinishVerify, serverNow: now,
+    });
+    expect(fromFallback.map((item) => item.fixture.id)).toEqual(["of-1"]);
+
+    // When all fallback sources are also in cooldown -> throws ProviderBudgetDeferredError, never returns [].
+    budget.pauseSource("of", ofReset, "rate_limited");
+    await expect(client.getFixtures({
+      leagueId: "39", season: "2026", dateFrom: "2026-10-11", dateTo: "2026-10-11",
+      jobType: SyncJobType.PostFinishVerify, serverNow: now,
+    })).rejects.toMatchObject({ name: "ProviderBudgetDeferredError", retry_at: ofReset });
+  });
+
+  it("[CR-09] 单联赛 400/404 不标记整个源当前 tick 不可用，同源其他联赛仍正常拉取", async () => {
+    const config = loadProviderSources({
+      FOOTBALL_PROVIDER_SOURCES: "fd",
+      FOOTBALL_PROVIDER_KEY_FD_1: "fd-key-1",
+      FOOTBALL_SYNC_LEAGUES: "premier_league,la_liga",
+    });
+    const fetchImpl: typeof fetch = vi.fn(async (input) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.includes("/PL/")) {
+        return new Response(JSON.stringify({ message: "season not published" }), {
+          status: 404,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({ matches: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    const registry = new ProviderRegistry({ config, fetchImpl, minimumGapMs: 0 });
+    registry.beginTickCache();
+    try {
+      const client = registry.asClient();
+      const now = new Date("2026-06-15T00:00:00.000Z");
+      await expect(client.getSeasonFixtures({
+        leagueId: "39",
+        season: "2026",
+        jobType: SyncJobType.FullScheduleVerify,
+        serverNow: now,
+      })).rejects.toMatchObject({ status: 404 });
+
+      await expect(client.getSeasonFixtures({
+        leagueId: "140",
+        season: "2026",
+        jobType: SyncJobType.FullScheduleVerify,
+        serverNow: now,
+      })).resolves.toEqual([]);
+    } finally {
+      registry.endTickCache();
+    }
+  });
+
+  it("[CR-10] 401/403 触发同源 KeyPool failover，而 ProviderDataError 不重试也不计入 network_errors", async () => {
+    const config = loadProviderSources({
+      FOOTBALL_PROVIDER_SOURCES: "fd",
+      FOOTBALL_PROVIDER_KEY_FD_1: "fd-key-1",
+      FOOTBALL_PROVIDER_KEY_FD_2: "fd-key-2",
+      FOOTBALL_SYNC_LEAGUES: "premier_league",
+    });
+    const keyStateStore = new InMemoryProviderKeyStateStore();
+    let mode: "failover_401" | "bad_json" = "failover_401";
+    const usedTokens: string[] = [];
+    const fetchImpl: typeof fetch = vi.fn(async (_input, init) => {
+      const headers = new Headers(init?.headers);
+      const token = headers.get("X-Auth-Token") ?? "";
+      usedTokens.push(token);
+      if (mode === "bad_json") {
+        return new Response("<html>not json</html>", { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (token === "fd-key-1") {
+        return new Response(JSON.stringify({ message: "invalid token" }), { status: 401, headers: { "content-type": "application/json" } });
+      }
+      return new Response(JSON.stringify({ matches: [] }), { status: 200, headers: { "content-type": "application/json" } });
+    });
+    const registry = new ProviderRegistry({ config, keyStateStore, fetchImpl, minimumGapMs: 0 });
+    const now = new Date("2026-10-11T12:00:00.000Z");
+
+    await expect(registry.asClient().getFixtures({
+      leagueId: "39",
+      season: "2026",
+      dateFrom: "2026-10-11",
+      dateTo: "2026-10-11",
+      jobType: SyncJobType.FutureSchedule,
+      serverNow: now,
+    })).resolves.toEqual([]);
+    expect(usedTokens).toEqual(["fd-key-1", "fd-key-2"]);
+    expect((await keyStateStore.get("fd#1"))?.status).toBe("invalid");
+
+    usedTokens.length = 0;
+    mode = "bad_json";
+    await expect(registry.asClient().getFixtures({
+      leagueId: "39",
+      season: "2026",
+      dateFrom: "2026-10-11",
+      dateTo: "2026-10-11",
+      jobType: SyncJobType.FutureSchedule,
+      serverNow: now,
+    })).rejects.toMatchObject({ name: "ProviderDataError" });
+    expect(usedTokens).toHaveLength(1);
+    expect((await keyStateStore.get("fd#2"))?.network_errors).toBe(0);
   });
 });

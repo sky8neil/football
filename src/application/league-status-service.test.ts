@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { SUPPORTED_LEAGUES } from "../domain/config.js";
 import { InMemoryRepository } from "../infrastructure/repositories.js";
 import { LeagueStatusService } from "./league-status-service.js";
@@ -37,12 +37,63 @@ describe("LeagueStatusService", () => {
     const repo = new InMemoryRepository();
     await repo.leagueSeasons.insert(season("2025_2026"));
     await repo.matches.insert(match("late", { match_status: "scheduled", kickoff_at: new Date("2026-06-01T12:00:00Z") }));
-    const service = new LeagueStatusService(repo);
+    const service = new LeagueStatusService(repo, { cacheTtlMs: 0 });
     expect((await service.list(now))[0]).toMatchObject({ phase: "break", next_kickoff_at: "2026-06-01T12:00:00.000Z" });
     await repo.matches.update(match("late"));
     await repo.leagueSeasons.update(season("2025_2026", "completed"));
     expect((await service.list(now))[0]).toMatchObject({ phase: "completed" });
     await repo.matches.insert(match("next", { season_id: "2026_2027", match_status: "scheduled", kickoff_at: new Date("2026-08-01T12:00:00Z") }));
     expect((await service.list(now))[0]).toMatchObject({ phase: "between_seasons", active_season_id: "2025_2026", next_season_kickoff_at: "2026-08-01T12:00:00.000Z" });
+  });
+
+  it("[A-S7-08] avoids unbounded findByLeague scans and only loads bounded recent seasons via findByLeagueSeason", async () => {
+    const repo = new InMemoryRepository();
+    for (const sId of ["2021_2022", "2022_2023", "2023_2024", "2024_2025", "2025_2026"]) {
+      await repo.leagueSeasons.insert(season(sId, "completed"));
+      await repo.matches.insert(match(`m-${sId}`, { season_id: sId }));
+    }
+    const matchesPort = repo.matches;
+    const findByLeagueSpy = vi.spyOn(matchesPort, "findByLeague");
+    const findByLeagueSeasonSpy = vi.spyOn(matchesPort, "findByLeagueSeason");
+    vi.spyOn(repo, "matches", "get").mockReturnValue(matchesPort);
+
+    const result = await new LeagueStatusService(repo, { cacheTtlMs: 0 }).list(now);
+    expect(result[0]).toMatchObject({ phase: "completed", active_season_id: "2025_2026" });
+    expect(findByLeagueSpy).not.toHaveBeenCalled();
+
+    const queriedEplSeasons = findByLeagueSeasonSpy.mock.calls
+      .filter(([leagueId]) => leagueId === "premier_league")
+      .map(([, seasonId]) => seasonId);
+    expect(queriedEplSeasons).toContain("2025_2026");
+    expect(queriedEplSeasons).not.toContain("2021_2022");
+    expect(queriedEplSeasons).not.toContain("2022_2023");
+  });
+
+  it("[A-S7-08] caches league status within TTL and refreshes once TTL elapses", async () => {
+    const repo = new InMemoryRepository();
+    await repo.leagueSeasons.insert(season("2025_2026", "open"));
+    await repo.matches.insert(match("m1", { match_status: "scheduled", kickoff_at: new Date("2026-06-01T12:00:00Z") }));
+    const matchesPort = repo.matches;
+    const findByLeagueSeasonSpy = vi.spyOn(matchesPort, "findByLeagueSeason");
+    vi.spyOn(repo, "matches", "get").mockReturnValue(matchesPort);
+    const service = new LeagueStatusService(repo, { cacheTtlMs: 15_000 });
+
+    const first = await service.list(now);
+    expect(first[0]?.phase).toBe("break");
+    const firstCalls = findByLeagueSeasonSpy.mock.calls.length;
+    expect(firstCalls).toBeGreaterThan(0);
+
+    // Mutate DB while within TTL -> still serves cached result without DB queries
+    await repo.leagueSeasons.update(season("2025_2026", "completed"));
+    const second = await service.list(new Date(now.getTime() + 10_000));
+    expect(second[0]?.phase).toBe("break");
+    expect(findByLeagueSeasonSpy.mock.calls.length).toBe(firstCalls);
+
+    // Concurrent calls share in-flight load after expiry
+    const tExpired = new Date(now.getTime() + 15_000);
+    const [a, b] = await Promise.all([service.list(tExpired), service.list(tExpired)]);
+    expect(a[0]?.phase).toBe("completed");
+    expect(b[0]?.phase).toBe("completed");
+    expect(findByLeagueSeasonSpy.mock.calls.length).toBe(firstCalls * 2);
   });
 });

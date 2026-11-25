@@ -1,6 +1,16 @@
-import { activeLeagueSeason, FIXED_CONFIG_V1, SUPPORTED_LEAGUES, type SupportedLeagueId } from "../domain/config.js";
+import {
+  activeLeagueSeason,
+  FIXED_CONFIG_V1,
+  nextLeagueSeasonId,
+  previousLeagueSeasonId,
+  seasonBounds,
+  SUPPORTED_LEAGUES,
+  type SupportedLeagueId,
+} from "../domain/config.js";
 import { SyncJobType } from "../domain/enums.js";
 import { internalError, validationError } from "../domain/errors.js";
+import type { AppRepository } from "../infrastructure/repositories.js";
+import { ProviderBudgetDeferredError } from "../provider/budget.js";
 import { parseKickoff } from "../provider/kickoff.js";
 import type {
   ApiFootballFixturesQuery,
@@ -67,13 +77,86 @@ function parseFixtureKickoff(fixture: ApiFootballFixture): Date | null {
   return parseKickoff(fields.timestamp, fields.date).kickoffAt;
 }
 
+/**
+ * 换季过渡期相邻赛季探测集合：
+ * - 跨年联赛（7/1 换季）：6 月（UTC month===5）探测 nextSeason；7 月（UTC month===6）若上赛季未 completed 探测 previousSeason；
+ * - 自然年联赛（1/1 换季）：12 月（UTC month===11）探测 nextSeason；1 月（UTC month===0）若上赛季未 completed 探测 previousSeason。
+ */
+export async function resolveRolloverTargetSeasons(
+  repo: Pick<AppRepository, "leagueSeasons" | "matches">,
+  serverNow: Date,
+  leagueIds?: readonly string[],
+): Promise<Partial<Record<SupportedLeagueId, string[]>>> {
+  assertValidDate(serverNow);
+  const utcMonth = serverNow.getUTCMonth();
+  const result: Partial<Record<SupportedLeagueId, string[]>> = {};
+  const leagues = leagueIds
+    ? SUPPORTED_LEAGUES.filter((league) => leagueIds.includes(league.league_id))
+    : SUPPORTED_LEAGUES;
+
+  for (const league of leagues) {
+    const activeSeasonId = activeLeagueSeason(league, serverNow).season_id;
+    const targets = [activeSeasonId];
+    const crossYear = /^\d{4}_\d{4}$/.test(league.season_id);
+    const naturalYear = /^\d{4}$/.test(league.season_id);
+
+    if ((crossYear && utcMonth === 5) || (naturalYear && utcMonth === 11)) {
+      const next = nextLeagueSeasonId(league, serverNow);
+      if (next !== null && !targets.includes(next)) {
+        targets.push(next);
+      }
+    }
+
+    if ((crossYear && utcMonth === 6) || (naturalYear && utcMonth === 0)) {
+      const prev = previousLeagueSeasonId(league, serverNow);
+      if (prev !== null && !targets.includes(prev)) {
+        const prevRecord = repo.leagueSeasons
+          ? await repo.leagueSeasons.findByKey(league.league_id, prev)
+          : null;
+        if (prevRecord !== null) {
+          if (prevRecord.completion_status !== "completed") {
+            targets.push(prev);
+          }
+        } else {
+          const prevMatches = typeof repo.matches.findByLeagueSeason === "function"
+            ? await repo.matches.findByLeagueSeason(league.league_id, prev)
+            : (await repo.matches.findBySeason(prev)).filter((m) => m.league_id === league.league_id);
+          if (prevMatches.some((match) => match.superseded_by == null)) {
+            targets.push(prev);
+          }
+        }
+      }
+    }
+
+    result[league.league_id] = targets;
+  }
+  return result;
+}
+
+function fixtureMatchesTargetSeason(fixture: ApiFootballFixture, seasonId: string, isSecondaryProbe: boolean): boolean {
+  const rawSeason = fixture?.league?.season;
+  if (typeof rawSeason === "string" || typeof rawSeason === "number") {
+    const seasonYear = String(rawSeason).slice(0, 4);
+    if (/^\d{4}$/.test(seasonYear)) {
+      return seasonYear === seasonId.split("_")[0];
+    }
+  }
+  if (!isSecondaryProbe) {
+    return true;
+  }
+  const bounds = seasonBounds(seasonId);
+  const kickoff = parseFixtureKickoff(fixture);
+  if (bounds === null || kickoff === null) return false;
+  return kickoff.getTime() >= bounds.start.getTime() && kickoff.getTime() < bounds.end.getTime();
+}
+
 async function loadFixturesForSupportedLeagues(
   client: { orderLeagues?: (leagueIds: readonly string[], jobType: SyncJobType, now: Date) => Promise<string[]> },
   load: (leagueId: string, season: string, jobType: SyncJobType, serverNow: Date, seasonId?: string) => Promise<readonly ApiFootballFixture[]>,
   jobType: SyncJobType,
   serverNow: Date,
   leagueIds?: readonly string[],
-  targetSeasons?: Partial<Record<SupportedLeagueId, string>>,
+  targetSeasons?: Partial<Record<SupportedLeagueId, string | readonly string[]>>,
 ): Promise<ProviderFixtureBatchItem[]> {
   const fixtures: ProviderFixtureBatchItem[] = [];
   const eligibleLeagues = leagueIds
@@ -82,18 +165,54 @@ async function loadFixturesForSupportedLeagues(
   const orderedIds = client.orderLeagues
     ? await client.orderLeagues(eligibleLeagues.map((league) => league.league_id), jobType, serverNow)
     : eligibleLeagues.map((league) => league.league_id);
+  let attemptedPrimary = 0;
+  let succeededPrimary = 0;
+  let firstError: unknown;
+  let deferredError: ProviderBudgetDeferredError | undefined;
   for (const leagueId of orderedIds) {
     const league = SUPPORTED_LEAGUES.find((row) => row.league_id === leagueId);
     if (!league) continue;
-    const seasonId = targetSeasons?.[league.league_id];
-    const rows = await load(
-      league.api_football_league_id,
-      seasonId?.split("_")[0] ?? activeLeagueSeason(league, serverNow).api_football_season,
-      jobType,
-      serverNow,
-      seasonId,
-    );
-    fixtures.push(...rows.map((fixture) => ({ fixture, payload: { fixture }, ...(seasonId === undefined ? {} : { seasonId }) })));
+    const configured = targetSeasons?.[league.league_id];
+    const seasonEntries: Array<{ seasonId: string | undefined; isSecondaryProbe: boolean }> = configured === undefined
+      ? [{ seasonId: undefined, isSecondaryProbe: false }]
+      : (typeof configured === "string" ? [configured] : [...new Set(configured)])
+          .map((seasonId, index) => ({ seasonId, isSecondaryProbe: index > 0 }));
+
+    for (const entry of seasonEntries) {
+      if (!entry.isSecondaryProbe) attemptedPrimary += 1;
+      try {
+        const effectiveSeasonId = entry.seasonId ?? activeLeagueSeason(league, serverNow).season_id;
+        const rows = await load(
+          league.api_football_league_id,
+          entry.seasonId?.split("_")[0] ?? activeLeagueSeason(league, serverNow).api_football_season,
+          jobType,
+          serverNow,
+          entry.seasonId,
+        );
+        const filteredRows = seasonEntries.length > 1
+          ? rows.filter((fixture) => fixtureMatchesTargetSeason(fixture, effectiveSeasonId, entry.isSecondaryProbe))
+          : rows;
+        fixtures.push(...filteredRows.map((fixture) => ({ fixture, payload: { fixture }, ...(entry.seasonId === undefined ? {} : { seasonId: entry.seasonId }) })));
+        if (!entry.isSecondaryProbe) succeededPrimary += 1;
+      } catch (error) {
+        if (!entry.isSecondaryProbe) {
+          if (firstError === undefined) firstError = error;
+          if (deferredError === undefined && error instanceof ProviderBudgetDeferredError) deferredError = error;
+        }
+        console.warn(
+          entry.isSecondaryProbe ? "[provider_fixture_loader_season_probe_failed]" : "[provider_fixture_loader_league_failed]",
+          {
+            job_type: jobType,
+            league_id: league.league_id,
+            ...(entry.seasonId === undefined ? {} : { season_id: entry.seasonId }),
+            error: error instanceof Error ? error.message : String(error),
+          },
+        );
+      }
+    }
+  }
+  if (attemptedPrimary > 0 && succeededPrimary === 0) {
+    throw deferredError ?? firstError;
   }
   return fixtures;
 }
@@ -116,7 +235,7 @@ function nearMatchWindowHours(): { earliest: number; latest: number } {
 export function createFutureScheduleLoader(
   client: FutureScheduleFixtureClient,
   leagueIds?: readonly string[],
-  targetSeasons?: Partial<Record<SupportedLeagueId, string>>,
+  targetSeasons?: Partial<Record<SupportedLeagueId, string | readonly string[]>>,
 ): ProviderFixtureBatchLoader {
   return async (serverNow) => {
     assertValidDate(serverNow);
@@ -237,7 +356,7 @@ export function createLiveMatchLoader(
 export function createFullScheduleVerifyLoader(
   client: FullScheduleFixtureClient,
   leagueIds?: readonly string[],
-  targetSeasons?: Partial<Record<SupportedLeagueId, string>>,
+  targetSeasons?: Partial<Record<SupportedLeagueId, string | readonly string[]>>,
 ): ProviderFixtureBatchLoader {
   return async (serverNow) => {
     assertValidDate(serverNow);

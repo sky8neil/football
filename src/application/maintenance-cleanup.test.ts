@@ -142,6 +142,7 @@ describe("MaintenanceCleanupService [Slice 5.4]", () => {
     const authSessions: AuthSessionStore = {
       create: vi.fn(),
       findActiveByToken: vi.fn(),
+      deleteByOpenid: vi.fn(async () => 0),
       deleteExpiredBefore: vi.fn(async () => 4),
     };
     const counted = createCountingDb(db);
@@ -166,7 +167,7 @@ describe("MaintenanceCleanupService [Slice 5.4]", () => {
       auth_sessions: 4,
       provider_usage: 3, // min-old, hr-old, day-400d
       sync_logs: 1,
-      provider_snapshots: 1,
+      provider_snapshots: 0,
       board_snapshots: 4, // 2 oldest timestamps (index 24, 25) * 2 users
     });
     expect(ops.write).toBeGreaterThan(0);
@@ -177,6 +178,7 @@ describe("MaintenanceCleanupService [Slice 5.4]", () => {
     ]);
     expect(store.get(cloudBaseCollectionName(NS, "sync_logs"))?.map((r) => r._id)).toEqual(["sl-new"]);
     expect(store.get(cloudBaseCollectionName(NS, "provider_snapshots"))?.map((r) => r._id)).toEqual([
+      "ps-old",
       "ps-new",
     ]);
     const remainingBoards = store.get(cloudBaseCollectionName(NS, "board_snapshots")) ?? [];
@@ -301,5 +303,29 @@ describe("MaintenanceCleanupService [Slice 5.4]", () => {
       max_batches_per_target: 2,
       deleted_so_far: 4,
     }));
+  });
+
+  it("永不按时间自动物理删除关键审计与观测 provider_snapshots (A-S3-11)", async () => {
+    const oldCreatedAt = new Date(NOW.getTime() - 365 * DAY_MS);
+    const eventTypes = [
+      "discovered",
+      "kickoff_changed",
+      "status_changed",
+      "result_observed",
+      "result_changed",
+      "provider_conflict",
+      "admin_conflict",
+      "provider_error",
+    ] as const;
+    const { db, store } = makeCleanupFakeDb({
+      provider_snapshots: eventTypes.map((eventType, idx) => ({
+        _id: `snap-${idx}`,
+        event_type: eventType,
+        created_at: oldCreatedAt,
+      })),
+    });
+    const res = await new MaintenanceCleanupService({ db, namespace: NS }).run(NOW);
+    expect(res.deleted.provider_snapshots).toBe(0);
+    expect(store.get(cloudBaseCollectionName(NS, "provider_snapshots"))).toHaveLength(eventTypes.length);
   });
 });

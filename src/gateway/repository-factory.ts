@@ -67,9 +67,21 @@ export function createPostgresPool(
 function createPostgresConnect(pool: pg.Pool): PostgresConnectFn {
   return async () => {
     const client = await pool.connect();
+    let clientError: Error | undefined;
+    const swallowClientError = () => {};
+    const onClientError = (err: Error) => {
+      clientError = err;
+      console.error(JSON.stringify({ event: "pg_client_error", message: err.message }));
+      client.on("error", swallowClientError);
+    };
+    client.once("error", onClientError);
     return {
       query: createPostgresQueryFn(client),
-      release: (err?: Error) => client.release(err),
+      release: (err?: Error) => {
+        client.removeListener("error", onClientError);
+        client.removeListener("error", swallowClientError);
+        client.release(err ?? clientError);
+      },
     };
   };
 }

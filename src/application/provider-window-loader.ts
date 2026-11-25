@@ -1,11 +1,13 @@
 import { SUPPORTED_LEAGUES, findSupportedLeagueById, type ProviderLeagueRefs } from "../domain/config.js";
-import type { SyncJobType } from "../domain/enums.js";
+import { MatchStatus, type Provider, type SyncJobType } from "../domain/enums.js";
 import type { MatchProviderMapping } from "../domain/types.js";
 import type { AppRepository } from "../infrastructure/repositories.js";
+import { ProviderBudgetDeferredError } from "../provider/budget.js";
 import type { ApiFootballFixturesQuery } from "../provider/http.js";
 import type { ApiFootballFixture } from "../provider/types.js";
-import type { Provider } from "../domain/enums.js";
 import { normalizeFixture } from "../provider/fixture-mapper.js";
+import { mapProviderStatus } from "../provider/status.js";
+import { resolveEffectiveMatchesByIds } from "./match-identity.js";
 import type { ProviderFixtureBatchItem } from "./provider-sync-job.js";
 import { ensureCrossSourceMatchMapping } from "./provider-cross-source.js";
 import type { ProviderSourceId } from "../provider/sources.js";
@@ -64,18 +66,43 @@ export async function fixturesToItems(
   if (!mappings) return [];
   const result: ProviderFixtureBatchItem[] = [];
   const mappingByExternalId = await loadMappingsByExternalId(mappings, fixtures);
-  for (const fixture of fixtures) {
+  const resolvedFixtures = new Array<MatchProviderMapping | null>(fixtures.length);
+  const unresolvedMatchIds: string[] = [];
+  for (let index = 0; index < fixtures.length; index += 1) {
+    const fixture = fixtures[index]!;
     const fixtureId = fixture.fixture?.id;
     if (fixtureId === undefined || String(fixtureId).length === 0) {
-      result.push({ fixture, payload: { fixture }, ...(seasonId === undefined ? {} : { seasonId }) });
+      resolvedFixtures[index] = null;
       continue;
     }
     const provider = (fixture.provider ?? "api_football") as Provider;
     const mapping = mappingByExternalId === null
       ? await mappings.findByProviderAndExternalId(provider, String(fixtureId))
       : mappingByExternalId.get(String(fixtureId)) ?? null;
-    if (mapping && ids.has(mapping.match_id)) {
+    resolvedFixtures[index] = mapping;
+    if (mapping !== null && !ids.has(mapping.match_id)) {
+      unresolvedMatchIds.push(mapping.match_id);
+    }
+  }
+  const effectiveMatches = unresolvedMatchIds.length > 0 && typeof repo.matches?.findById === "function"
+    ? await resolveEffectiveMatchesByIds(repo.matches, unresolvedMatchIds)
+    : new Map();
+  for (let index = 0; index < fixtures.length; index += 1) {
+    const fixture = fixtures[index]!;
+    const fixtureId = fixture.fixture?.id;
+    if (fixtureId === undefined || String(fixtureId).length === 0) {
       result.push({ fixture, payload: { fixture }, ...(seasonId === undefined ? {} : { seasonId }) });
+      continue;
+    }
+    const provider = (fixture.provider ?? "api_football") as Provider;
+    const mapping = resolvedFixtures[index] ?? null;
+    if (mapping !== null) {
+      const targetMatchId = ids.has(mapping.match_id)
+        ? mapping.match_id
+        : effectiveMatches.get(mapping.match_id)?.match_id ?? null;
+      if (targetMatchId !== null && ids.has(targetMatchId)) {
+        result.push({ fixture, payload: { fixture }, ...(seasonId === undefined ? {} : { seasonId }) });
+      }
       continue;
     }
     if (provider !== "5dollar" && provider !== "openfoot" && provider !== "sportapi") continue;
@@ -87,17 +114,26 @@ export async function fixturesToItems(
   return result;
 }
 
+export interface ActiveWindowLoadOptions {
+  includeOverdueDailyFallback?: boolean;
+  overdueStatus?: { allOverdueLeaguesSucceeded: boolean };
+}
+
 export async function loadActiveWindowFixtures(
   repo: AppRepository,
   client: ProviderWindowFixtureClient,
   jobType: ProviderWindowJob,
   serverNow: Date,
   providerLeagueRefs?: ProviderLeagueRefs,
+  options?: ActiveWindowLoadOptions,
 ): Promise<ProviderFixtureBatchItem[]> {
   const matches = (await repo.matches.findActiveWindow({
     jobType,
     now: serverNow,
     limit: WINDOW_CANDIDATE_LIMIT,
+    ...(options?.includeOverdueDailyFallback === undefined
+      ? {}
+      : { includeOverdueDailyFallback: options.includeOverdueDailyFallback }),
   })).filter((match) => match.superseded_by == null);
   const mappings = repo.matchProviderMappings;
   if (mappings === undefined) return [];
@@ -115,32 +151,60 @@ export async function loadActiveWindowFixtures(
   const orderedIds = client.orderLeagues
     ? await client.orderLeagues(SUPPORTED_LEAGUES.map((league) => league.league_id), jobType, serverNow)
     : SUPPORTED_LEAGUES.map((league) => league.league_id);
+  let attemptedLeagues = 0;
+  let succeededLeagues = 0;
+  let firstError: unknown;
+  let deferredError: ProviderBudgetDeferredError | undefined;
   for (const leagueId of orderedIds) {
     const league = SUPPORTED_LEAGUES.find((row) => row.league_id === leagueId);
     if (!league) continue;
     const allLeagueMatches = candidateMatchesByLeague.get(league.league_id) ?? [];
-    for (const seasonId of new Set(allLeagueMatches.map((match) => match.season_id))) {
-      const leagueMatches = allLeagueMatches.filter((match) => match.season_id === seasonId);
-      const ids = new Set(leagueMatches.map((match) => match.match_id));
-      const earliestKickoffMs = leagueMatches.reduce(
-        (acc, match) => Math.min(acc, match.kickoff_at.getTime()),
-        leagueMatches[0]!.kickoff_at.getTime(),
-      );
-      const latestKickoffMs = leagueMatches.reduce(
-        (acc, match) => Math.max(acc, match.kickoff_at.getTime()),
-        leagueMatches[0]!.kickoff_at.getTime(),
-      );
-      const fixtures = await client.getFixtures({
-        dateFrom: new Date(earliestKickoffMs).toISOString().slice(0, 10),
-        dateTo: new Date(latestKickoffMs).toISOString().slice(0, 10),
-        leagueId: league.api_football_league_id,
-        season: seasonId.split("_")[0]!,
-        seasonId,
-        jobType,
-        serverNow,
+    if (allLeagueMatches.length === 0) continue;
+    const hasOverdueCandidates = allLeagueMatches.some(
+      (match) => serverNow.getTime() - match.kickoff_at.getTime() > DAY_MS,
+    );
+    attemptedLeagues += 1;
+    try {
+      const leagueItems: ProviderFixtureBatchItem[] = [];
+      for (const seasonId of new Set(allLeagueMatches.map((match) => match.season_id))) {
+        const leagueMatches = allLeagueMatches.filter((match) => match.season_id === seasonId);
+        const ids = new Set(leagueMatches.map((match) => match.match_id));
+        const earliestKickoffMs = leagueMatches.reduce(
+          (acc, match) => Math.min(acc, match.kickoff_at.getTime()),
+          leagueMatches[0]!.kickoff_at.getTime(),
+        );
+        const latestKickoffMs = leagueMatches.reduce(
+          (acc, match) => Math.max(acc, match.kickoff_at.getTime()),
+          leagueMatches[0]!.kickoff_at.getTime(),
+        );
+        const fixtures = await client.getFixtures({
+          dateFrom: new Date(earliestKickoffMs).toISOString().slice(0, 10),
+          dateTo: new Date(latestKickoffMs).toISOString().slice(0, 10),
+          leagueId: league.api_football_league_id,
+          season: seasonId.split("_")[0]!,
+          seasonId,
+          jobType,
+          serverNow,
+        });
+        leagueItems.push(...await fixturesToItems(repo, fixtures, ids, serverNow, providerLeagueRefs, seasonId));
+      }
+      result.push(...leagueItems);
+      succeededLeagues += 1;
+    } catch (error) {
+      if (hasOverdueCandidates && options?.overdueStatus !== undefined) {
+        options.overdueStatus.allOverdueLeaguesSucceeded = false;
+      }
+      if (firstError === undefined) firstError = error;
+      if (deferredError === undefined && error instanceof ProviderBudgetDeferredError) deferredError = error;
+      console.warn("[provider_window_league_failed]", {
+        job_type: jobType,
+        league_id: league.league_id,
+        error: error instanceof Error ? error.message : String(error),
       });
-      result.push(...await fixturesToItems(repo, fixtures, ids, serverNow, providerLeagueRefs, seasonId));
     }
+  }
+  if (attemptedLeagues > 0 && succeededLeagues === 0) {
+    throw deferredError ?? firstError;
   }
   return result;
 }
@@ -150,8 +214,9 @@ export async function* loadPostFinishBatches(
   client: ProviderWindowFixtureClient,
   serverNow: Date,
   providerLeagueRefs?: ProviderLeagueRefs,
+  options?: ActiveWindowLoadOptions,
 ): AsyncGenerator<readonly ProviderFixtureBatchItem[]> {
-  yield await loadActiveWindowFixtures(repo, client, "post_finish_verify", serverNow, providerLeagueRefs);
+  yield await loadActiveWindowFixtures(repo, client, "post_finish_verify", serverNow, providerLeagueRefs, options);
   if (!client.getFixturesFromSource || !client.getResultComparisonSources) return;
 
   const orderedIds = client.orderLeagues
@@ -164,7 +229,14 @@ export async function* loadPostFinishBatches(
     let secondarySucceeded = false;
     for (const source of [...sources.filter((entry) => entry.role === "secondary"), ...sources.filter((entry) => entry.role === "fallback")]) {
       if (source.role === "fallback" && secondarySucceeded) break;
-      const matches = (await repo.matches.findActiveWindow({ jobType: "post_finish_verify", now: serverNow, limit: WINDOW_CANDIDATE_LIMIT }))
+      const matches = (await repo.matches.findActiveWindow({
+        jobType: "post_finish_verify",
+        now: serverNow,
+        limit: WINDOW_CANDIDATE_LIMIT,
+        ...(options?.includeOverdueDailyFallback === undefined
+          ? {}
+          : { includeOverdueDailyFallback: options.includeOverdueDailyFallback }),
+      }))
         .filter((match) => match.league_id === leagueId && match.superseded_by == null &&
           !(match.result_version > 0 && new Set(match.compared_providers ?? []).size >= 2));
       if (matches.length === 0) break;
@@ -183,7 +255,8 @@ export async function* loadPostFinishBatches(
               jobType: "post_finish_verify", serverNow,
             });
             if (source.role === "secondary") secondarySucceeded = true;
-            fixtures.push(...rows.filter((fixture) => fixture.fixture?.status?.short !== "NS"));
+            // 副源对比只采集已明确终局（finished）的赛果，忽略滞后 LIVE/NS/取消观测。
+            fixtures.push(...rows.filter((fixture) => mapProviderStatus(fixture.fixture?.status?.short).kind === MatchStatus.Finished));
           } catch (error) {
             client.recordComparisonSkipped?.(source.sourceId, leagueId, error);
           }

@@ -1,0 +1,169 @@
+@import "../../styles/baseline-v041.wxss";
+.page {
+  min-height: 100vh;
+  background: var(--surface-canvas);
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.pitch {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100vh;
+  opacity: 0.28;
+  pointer-events: none;
+}
+.content {
+  position: relative;
+  z-index: 1;
+  padding: 20px 16px 40px;
+}
+.card {
+  padding: 16px;
+  margin-bottom: 14px;
+  background: rgba(255, 255, 255, 0.8);
+  border: 1px solid rgba(255, 255, 255, 0.88);
+  border-radius: 16px;
+  box-shadow: var(--shadow-card);
+}
+.state-card {
+  text-align: center;
+  padding: 28px 16px;
+}
+.state-title {
+  font-size: 16px;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+.state-message {
+  color: var(--text-secondary);
+  margin-bottom: 16px;
+}
+.action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 38px;
+  padding: 0 24px;
+  border-radius: 10px;
+  background: var(--surface-ghost);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 700;
+}
+.action-btn.primary {
+  background: var(--cta-background);
+  color: var(--text-on-brand);
+}
+.identity-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: var(--color-brand-soft);
+  color: var(--text-positive);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  font-weight: 700;
+  flex: none;
+}
+.identity-copy {
+  flex: 1;
+  min-width: 0;
+}
+.name-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.display-name {
+  font-size: 17px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+.level-badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 99px;
+  background: var(--color-brand-soft);
+  color: var(--text-positive);
+  font-weight: 600;
+}
+.team-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.team-logo {
+  width: 18px;
+  height: 18px;
+  flex: none;
+}
+.deleted-note {
+  margin-top: 6px;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+.section-title {
+  font-size: 14px;
+  font-weight: 700;
+  margin-bottom: 12px;
+}
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  text-align: center;
+  gap: 8px;
+}
+.metric-value {
+  display: block;
+  font-size: 22px;
+  font-weight: 700;
+}
+.metric-label {
+  display: block;
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-top: 4px;
+}
+.level-summary {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.season-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+}
+.season-label {
+  color: var(--text-secondary);
+}
+.season-value {
+  font-weight: 700;
+  color: var(--text-positive);
+}
+.privacy-note {
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-top: 8px;
+}

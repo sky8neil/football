@@ -58,6 +58,7 @@ interface MyGroupsCursorPayload {
 }
 
 const MY_GROUPS_CURSOR_VERSION = 1 as const;
+const INVITE_CODE_MAX_ATTEMPTS = 10;
 
 interface GroupRepositories {
   users: UnitOfWork["users"];
@@ -176,6 +177,44 @@ function requireRepositories(
   };
 }
 
+function alreadyMemberError(groupId: string) {
+  return groupError("GROUP_ALREADY_MEMBER", "已经是群成员", { group_id: groupId });
+}
+
+function isUkGroupUser(error: unknown): error is UniqueConstraintError {
+  return error instanceof UniqueConstraintError
+    && error.collection === "group_members"
+    && error.indexName === "uk_group_user";
+}
+
+async function lockUser(repos: GroupRepositories, userId: string): Promise<User | null> {
+  const findByIdForUpdate = repos.users.findByIdForUpdate;
+  if (findByIdForUpdate === undefined) {
+    throw internalError("users.findByIdForUpdate 未配置");
+  }
+  return findByIdForUpdate(userId);
+}
+
+async function lockGroup(repos: GroupRepositories, groupId: string): Promise<Group | null> {
+  const findByIdForUpdate = repos.groups.findByIdForUpdate;
+  if (findByIdForUpdate === undefined) {
+    throw internalError("groups.findByIdForUpdate 未配置");
+  }
+  return findByIdForUpdate(groupId);
+}
+
+async function patchGroup(
+  repos: GroupRepositories,
+  groupId: string,
+  fields: Partial<Group>,
+): Promise<void> {
+  const patchFields = repos.groups.patchFields;
+  if (patchFields === undefined) {
+    throw internalError("groups.patchFields 未配置");
+  }
+  await patchFields(groupId, fields);
+}
+
 function inviteCode(): string {
   const alphabet = FIXED_CONFIG_V1.GROUP_INVITE_CODE_ALPHABET;
   return Array.from({ length: FIXED_CONFIG_V1.GROUP_INVITE_CODE_LENGTH }, () =>
@@ -276,13 +315,17 @@ export class GroupsService {
   async createGroup(userId: string, serverNow: Date): Promise<GroupMutationResult> {
     requireUserId(userId);
     requireValidServerNow(serverNow);
-    for (;;) {
+    for (let attempt = 0; attempt < INVITE_CODE_MAX_ATTEMPTS; attempt += 1) {
       const code = this.inviteCodeFactory();
       try {
         return await this.repo.withTransaction(async (tx) => {
           const repos = requireRepositories(tx);
-          if (await repos.users.findById(userId) === null) {
+          const owner = await lockUser(repos, userId);
+          if (owner === null) {
             throw internalError("已认证群主用户记录不存在");
+          }
+          if (owner.status !== UserStatus.Active) {
+            throw conflictError("USER_DELETED", "该账号已被注销");
           }
           const owned = (await repos.groups.findByOwner(userId))
             .filter((group) => group.status === GroupStatus.Active);
@@ -322,55 +365,76 @@ export class GroupsService {
         throw error;
       }
     }
+    throw internalError("邀请码冲突重试次数已达上限");
   }
 
   async joinGroup(userId: string, inviteCodeValue: unknown, serverNow: Date): Promise<GroupJoinResult> {
     requireUserId(userId);
     requireValidServerNow(serverNow);
     const code = validateInviteCode(inviteCodeValue);
-    return this.repo.withTransaction(async (tx) => {
-      const repos = requireRepositories(tx);
-      const group = await repos.groups.findByInviteCode(code);
-      if (group === null) {
-        throw groupError("GROUP_NOT_FOUND", "群不存在");
-      }
-      if (group.status === GroupStatus.Dissolved) {
-        throw groupError("GROUP_DISSOLVED", "群已解散");
-      }
-      const existing = await repos.groupMembers.findByGroupAndUser(group.group_id, userId);
-      if (existing?.status === GroupMemberStatus.Active) {
-        throw groupError("GROUP_ALREADY_MEMBER", "已经是群成员");
-      }
-      if (group.member_count >= FIXED_CONFIG_V1.GROUP_MAX_MEMBERS) {
-        throw groupError("GROUP_MEMBER_LIMIT_REACHED", "群成员数量已达上限");
-      }
-      await assertJoinLimitNotReached(repos, userId);
-      if (await repos.users.findById(userId) === null) {
-        throw conflictError("AUTH_REQUIRED", "需要有效用户身份");
-      }
-      if (existing === null) {
-        await repos.groupMembers.insert(createOwnerMember(group, userId, serverNow));
-      } else {
-        await repos.groupMembers.update({
-          ...existing,
-          status: GroupMemberStatus.Active,
-          joined_at: serverNow,
-          left_at: null,
+    try {
+      return await this.repo.withTransaction(async (tx) => {
+        const repos = requireRepositories(tx);
+        const located = await repos.groups.findByInviteCode(code);
+        if (located === null) {
+          throw groupError("GROUP_NOT_FOUND", "群不存在");
+        }
+        const lockedUser = await lockUser(repos, userId);
+        if (lockedUser === null) {
+          throw conflictError("AUTH_REQUIRED", "需要有效用户身份");
+        }
+        if (lockedUser.status !== UserStatus.Active) {
+          throw conflictError("USER_DELETED", "该账号已被注销");
+        }
+        const group = await lockGroup(repos, located.group_id);
+        if (group === null) {
+          throw groupError("GROUP_NOT_FOUND", "群不存在");
+        }
+        if (group.status === GroupStatus.Dissolved) {
+          throw groupError("GROUP_DISSOLVED", "群已解散");
+        }
+        const existing = await repos.groupMembers.findByGroupAndUser(group.group_id, userId);
+        if (existing?.status === GroupMemberStatus.Active) {
+          throw alreadyMemberError(group.group_id);
+        }
+        if (group.member_count >= FIXED_CONFIG_V1.GROUP_MAX_MEMBERS) {
+          throw groupError("GROUP_MEMBER_LIMIT_REACHED", "群成员数量已达上限");
+        }
+        await assertJoinLimitNotReached(repos, userId);
+        try {
+          if (existing === null) {
+            await repos.groupMembers.insert(createOwnerMember(group, userId, serverNow));
+          } else {
+            await repos.groupMembers.update({
+              ...existing,
+              status: GroupMemberStatus.Active,
+              joined_at: serverNow,
+              left_at: null,
+              updated_at: serverNow,
+            });
+          }
+        } catch (error) {
+          if (isUkGroupUser(error)) throw alreadyMemberError(group.group_id);
+          throw error;
+        }
+        const memberCount = group.member_count + 1;
+        await patchGroup(repos, group.group_id, {
+          member_count: memberCount,
           updated_at: serverNow,
         });
+        return {
+          group_id: group.group_id,
+          member_count: memberCount,
+          joined_at: serverNow.toISOString(),
+        };
+      });
+    } catch (error) {
+      if (isUkGroupUser(error)) {
+        const groupId = error.key.group_id;
+        if (typeof groupId === "string" && groupId.length > 0) throw alreadyMemberError(groupId);
       }
-      const updatedGroup: Group = {
-        ...group,
-        member_count: group.member_count + 1,
-        updated_at: serverNow,
-      };
-      await repos.groups.update(updatedGroup);
-      return {
-        group_id: group.group_id,
-        member_count: updatedGroup.member_count,
-        joined_at: serverNow.toISOString(),
-      };
-    });
+      throw error;
+    }
   }
 
   async leaveGroup(userId: string, groupId: string, serverNow: Date): Promise<void> {
@@ -379,14 +443,18 @@ export class GroupsService {
     requireValidServerNow(serverNow);
     await this.repo.withTransaction(async (tx) => {
       const repos = requireRepositories(tx);
-      const group = await repos.groups.findById(groupId);
+      await lockUser(repos, userId);
+      const group = await lockGroup(repos, groupId);
       if (group === null) {
         throw groupError("GROUP_NOT_FOUND", "群不存在");
+      }
+      if (group.status === GroupStatus.Dissolved) {
+        throw groupError("GROUP_NOT_MEMBER", "不是该群 active 成员");
       }
       if (group.owner_user_id === userId) {
         throw groupError("GROUP_OWNER_CANNOT_LEAVE", "群主只能解散群");
       }
-      const member = await repos.groupMembers.findByGroupAndUser(groupId, userId);
+      const member = await repos.groupMembers.findByGroupAndUser(group.group_id, userId);
       if (member?.status !== GroupMemberStatus.Active) {
         throw groupError("GROUP_NOT_MEMBER", "不是该群 active 成员");
       }
@@ -396,8 +464,7 @@ export class GroupsService {
         left_at: serverNow,
         updated_at: serverNow,
       });
-      await repos.groups.update({
-        ...group,
+      await patchGroup(repos, group.group_id, {
         member_count: group.member_count - 1,
         updated_at: serverNow,
       });
@@ -410,14 +477,15 @@ export class GroupsService {
     requireValidServerNow(serverNow);
     await this.repo.withTransaction(async (tx) => {
       const repos = requireRepositories(tx);
-      const group = await repos.groups.findById(groupId);
+      await lockUser(repos, userId);
+      const group = await lockGroup(repos, groupId);
       if (group === null) {
         throw groupError("GROUP_NOT_FOUND", "群不存在");
       }
       if (group.owner_user_id !== userId) {
         throw conflictError("FORBIDDEN", "仅群主可解散群");
       }
-      for (const member of await repos.groupMembers.findByGroup(groupId)) {
+      for (const member of await repos.groupMembers.findByGroup(group.group_id)) {
         if (member.status === GroupMemberStatus.Active) {
           await repos.groupMembers.update({
             ...member,
@@ -428,8 +496,7 @@ export class GroupsService {
         }
       }
       if (group.status !== GroupStatus.Dissolved || group.member_count !== 0) {
-        await repos.groups.update({
-          ...group,
+        await patchGroup(repos, group.group_id, {
           status: GroupStatus.Dissolved,
           member_count: 0,
           updated_at: serverNow,
@@ -454,7 +521,9 @@ export class GroupsService {
     const repos = requireRepositories(this.repo);
     const memberships = (await repos.groupMembers.findByUser(userId))
       .filter((member) => member.status === GroupMemberStatus.Active)
-      .sort((a, b) => a.joined_at.getTime() - b.joined_at.getTime() || a.group_id.localeCompare(b.group_id));
+      .sort((a, b) =>
+        a.joined_at.getTime() - b.joined_at.getTime() ||
+        (a.group_id < b.group_id ? -1 : a.group_id > b.group_id ? 1 : 0));
     const joined: Array<{ membership: GroupMember; group: Group }> = [];
     for (const membership of memberships) {
       const group = await repos.groups.findById(membership.group_id);

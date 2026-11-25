@@ -1,7 +1,21 @@
 import { describe, expect, it } from "vitest";
-import { TeamStatus, UserStatus } from "../domain/enums.js";
-import type { Team, User } from "../domain/types.js";
-import { InMemoryRepository } from "../infrastructure/repositories.js";
+import {
+  AdminRole,
+  AdminStatus,
+  GroupMemberStatus,
+  GroupStatus,
+  TeamStatus,
+  UserStatus,
+} from "../domain/enums.js";
+import type {
+  Admin,
+  Group,
+  GroupMember,
+  Team,
+  User,
+  UserSeasonStats,
+} from "../domain/types.js";
+import { InMemoryRepository, type UnitOfWork } from "../infrastructure/repositories.js";
 import { ProfileMutationService } from "./profile-mutation.js";
 import { defaultLevelState } from "../domain/types.js";
 
@@ -41,6 +55,50 @@ function makeTeam(overrides: Partial<Team> = {}): Team {
     primary_color: null,
     secondary_color: null,
     status: TeamStatus.Active,
+    created_at: NOW,
+    updated_at: NOW,
+    ...overrides,
+  };
+}
+
+function makeGroup(overrides: Partial<Group> = {}): Group {
+  return {
+    schema_version: 1,
+    group_id: "00000000-0000-4000-8000-000000000021",
+    owner_user_id: "00000000-0000-4000-8000-000000000022",
+    invite_code: "ABCDEFGH",
+    status: GroupStatus.Active,
+    member_count: 1,
+    created_at: NOW,
+    updated_at: NOW,
+    ...overrides,
+  };
+}
+
+function makeGroupMember(
+  groupId: string,
+  userId: string,
+  status: GroupMember["status"] = GroupMemberStatus.Active,
+): GroupMember {
+  return {
+    schema_version: 1,
+    group_id: groupId,
+    user_id: userId,
+    status,
+    joined_at: NOW,
+    left_at: status === GroupMemberStatus.Left ? NOW : null,
+    created_at: NOW,
+    updated_at: NOW,
+  };
+}
+
+function makeAdmin(overrides: Partial<Admin> = {}): Admin {
+  return {
+    schema_version: 1,
+    admin_id: "00000000-0000-4000-8000-000000000031",
+    openid: "openid-profile-mutation",
+    status: AdminStatus.Active,
+    role: AdminRole.Admin,
     created_at: NOW,
     updated_at: NOW,
     ...overrides,
@@ -266,4 +324,450 @@ describe("ProfileMutationService.deleteMyProfile", () => {
     });
   });
 
+  it("A-S1-02：注销吊销原 openid 的全部 auth_sessions", async () => {
+    const repo = new InMemoryRepository();
+    const user = makeUser();
+    await repo.users.insert(user);
+    const deletedOpenids: string[] = [];
+    const authSessions = {
+      async deleteByOpenid(openid: string) {
+        deletedOpenids.push(openid);
+        return 2;
+      },
+    };
+
+    await new ProfileMutationService(repo, { authSessions })
+      .deleteMyProfile(user.user_id, NOW);
+
+    expect(deletedOpenids).toEqual([user.openid]);
+  });
+
+  it("auth_sessions 吊销失败时注销事务回滚，用户不会处于已注销但 Token 仍有效状态", async () => {
+    const repo = new InMemoryRepository();
+    const user = makeUser();
+    await repo.users.insert(user);
+    const authSessions = {
+      async deleteByOpenid(): Promise<number> {
+        throw new Error("auth session store unavailable");
+      },
+    };
+
+    await expect(
+      new ProfileMutationService(repo, { authSessions }).deleteMyProfile(user.user_id, NOW),
+    ).rejects.toThrow("auth session store unavailable");
+
+    await expect(repo.users.findById(user.user_id)).resolves.toEqual(user);
+    await expect(repo.deletedOpenidMappings.findByOriginalOpenid(user.openid)).resolves.toBeNull();
+  });
+
+  it("A-S5-05：注销退出全部 active 群并扣减 member_count，群主群保留 active", async () => {
+    const repo = new InMemoryRepository();
+    const user = makeUser();
+    await repo.users.insert(user);
+    const ownedGroup = makeGroup({
+      group_id: "00000000-0000-4000-8000-000000000041",
+      owner_user_id: user.user_id,
+      invite_code: "ABCDEFGH",
+      member_count: 2,
+    });
+    const joinedGroup = makeGroup({
+      group_id: "00000000-0000-4000-8000-000000000042",
+      owner_user_id: "00000000-0000-4000-8000-000000000043",
+      invite_code: "BCDEFGHJ",
+      member_count: 3,
+    });
+    const leftMembershipGroup = makeGroup({
+      group_id: "00000000-0000-4000-8000-000000000044",
+      owner_user_id: "00000000-0000-4000-8000-000000000045",
+      invite_code: "CDEFGHJK",
+      member_count: 1,
+    });
+    for (const group of [ownedGroup, joinedGroup, leftMembershipGroup]) {
+      await repo.groups.insert(group);
+    }
+    await repo.groupMembers.insert(makeGroupMember(ownedGroup.group_id, user.user_id));
+    await repo.groupMembers.insert(makeGroupMember(ownedGroup.group_id, "00000000-0000-4000-8000-000000000046"));
+    await repo.groupMembers.insert(makeGroupMember(joinedGroup.group_id, user.user_id));
+    await repo.groupMembers.insert(makeGroupMember(leftMembershipGroup.group_id, user.user_id, GroupMemberStatus.Left));
+
+    await new ProfileMutationService(repo).deleteMyProfile(user.user_id, NOW);
+
+    await expect(repo.groupMembers.findByGroupAndUser(ownedGroup.group_id, user.user_id))
+      .resolves.toMatchObject({
+        status: GroupMemberStatus.Left,
+        left_at: NOW,
+        updated_at: NOW,
+      });
+    await expect(repo.groupMembers.findByGroupAndUser(joinedGroup.group_id, user.user_id))
+      .resolves.toMatchObject({ status: GroupMemberStatus.Left, left_at: NOW });
+    await expect(repo.groupMembers.findByGroupAndUser(leftMembershipGroup.group_id, user.user_id))
+      .resolves.toMatchObject({
+        status: GroupMemberStatus.Left,
+        left_at: NOW,
+        updated_at: NOW,
+      });
+    await expect(repo.groups.findById(ownedGroup.group_id)).resolves.toMatchObject({
+      status: GroupStatus.Active,
+      member_count: 1,
+      updated_at: NOW,
+    });
+    await expect(repo.groups.findById(joinedGroup.group_id)).resolves.toMatchObject({
+      status: GroupStatus.Active,
+      member_count: 2,
+      updated_at: NOW,
+    });
+    await expect(repo.groups.findById(leftMembershipGroup.group_id)).resolves.toMatchObject({
+      status: GroupStatus.Active,
+      member_count: 1,
+    });
+  });
+
+  it("A-S8-04：注销禁用同 openid 的 active 管理员，其他管理员不受影响", async () => {
+    const repo = new InMemoryRepository();
+    const user = makeUser();
+    await repo.users.insert(user);
+    const sameOpenidAdmin = makeAdmin({ openid: user.openid });
+    const otherAdmin = makeAdmin({
+      admin_id: "00000000-0000-4000-8000-000000000032",
+      openid: "other-admin-openid",
+    });
+    await repo.admins.insert(sameOpenidAdmin);
+    await repo.admins.insert(otherAdmin);
+
+    await new ProfileMutationService(repo).deleteMyProfile(user.user_id, NOW);
+
+    await expect(repo.admins.findByOpenid(user.openid)).resolves.toMatchObject({
+      admin_id: sameOpenidAdmin.admin_id,
+      status: AdminStatus.Disabled,
+      updated_at: NOW,
+    });
+    await expect(repo.admins.findByOpenid(otherAdmin.openid)).resolves.toEqual(otherAdmin);
+  });
+
+  it("事务内存在 authSessions 端口时优先使用，不调用事务外的 store", async () => {
+    const repo = new InMemoryRepository();
+    const user = makeUser();
+    await repo.users.insert(user);
+    const txDeleted: string[] = [];
+    const outsideDeleted: string[] = [];
+    const original = repo.withTransaction.bind(repo);
+    repo.withTransaction = (async (fn) => original(async (tx) => {
+      const proxied = new Proxy(tx, {
+        get(target, prop) {
+          if (prop === "authSessions") {
+            return {
+              deleteByOpenid: async (openid: string) => {
+                txDeleted.push(openid);
+                return 2;
+              },
+            };
+          }
+          const value = Reflect.get(target, prop, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+      return fn(proxied as UnitOfWork);
+    })) as InMemoryRepository["withTransaction"];
+
+    await new ProfileMutationService(repo, {
+      authSessions: {
+        deleteByOpenid: async (openid: string) => {
+          outsideDeleted.push(openid);
+          return 1;
+        },
+      },
+    }).deleteMyProfile(user.user_id, NOW);
+
+    expect(txDeleted).toEqual([user.openid]);
+    expect(outsideDeleted).toEqual([]);
+  });
+
+  it("群成员在等群锁期间已被并发退群时，注销不重复扣减 member_count", async () => {
+    const repo = new InMemoryRepository();
+    const user = makeUser();
+    await repo.users.insert(user);
+    const otherUserId = "00000000-0000-4000-8000-000000000047";
+    const group = makeGroup({
+      group_id: "00000000-0000-4000-8000-000000000048",
+      owner_user_id: "00000000-0000-4000-8000-000000000049",
+      invite_code: "DEFGHJKL",
+      member_count: 2,
+    });
+    await repo.groups.insert(group);
+    await repo.groupMembers.insert(makeGroupMember(group.group_id, user.user_id));
+    await repo.groupMembers.insert(makeGroupMember(group.group_id, otherUserId));
+    installConcurrentLeave(repo, group.group_id, user.user_id);
+
+    await new ProfileMutationService(repo).deleteMyProfile(user.user_id, NOW);
+
+    await expect(repo.groupMembers.findByGroupAndUser(group.group_id, user.user_id))
+      .resolves.toMatchObject({
+        status: GroupMemberStatus.Left,
+        left_at: CONCURRENT_LEFT_AT,
+        updated_at: CONCURRENT_LEFT_AT,
+      });
+    await expect(repo.groups.findById(group.group_id)).resolves.toMatchObject({
+      status: GroupStatus.Active,
+      member_count: 1,
+      updated_at: CONCURRENT_LEFT_AT,
+    });
+  });
+
+});
+
+const SCORE_AT = new Date("2026-08-11T03:04:05.000Z");
+const CONCURRENT_LEFT_AT = new Date("2026-08-09T00:30:00.000Z");
+
+function installConcurrentLeave(
+  repo: InMemoryRepository,
+  groupId: string,
+  userId: string,
+): void {
+  const original = repo.withTransaction.bind(repo);
+  repo.withTransaction = (async (fn) => original(async (tx) => {
+    const groups = tx.groups;
+    const groupMembers = tx.groupMembers;
+    if (groups === undefined || groupMembers === undefined) {
+      throw new Error("测试需要 groups/groupMembers 仓储");
+    }
+    let simulated = false;
+    const proxiedGroups = {
+      ...groups,
+      findByIdForUpdate: async (id: string) => {
+        if (!simulated && id === groupId) {
+          simulated = true;
+          const member = await groupMembers.findByGroupAndUser(id, userId);
+          if (member?.status === GroupMemberStatus.Active) {
+            await groupMembers.update({
+              ...member,
+              status: GroupMemberStatus.Left,
+              left_at: CONCURRENT_LEFT_AT,
+              updated_at: CONCURRENT_LEFT_AT,
+            });
+            const current = await groups.findById(id);
+            if (current !== null) {
+              await groups.patchFields!(id, {
+                member_count: Math.max(0, current.member_count - 1),
+                updated_at: CONCURRENT_LEFT_AT,
+              });
+            }
+          }
+        }
+        return groups.findByIdForUpdate!(id);
+      },
+    };
+    const proxied = new Proxy(tx, {
+      get(target, prop) {
+        if (prop === "groups") return proxiedGroups;
+        const value = Reflect.get(target, prop, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    return fn(proxied as UnitOfWork);
+  })) as InMemoryRepository["withTransaction"];
+}
+
+function installScoreRace(repo: InMemoryRepository, log: string[]): void {
+  const injected = new Set<string>();
+  const original = repo.withTransaction.bind(repo);
+  repo.withTransaction = (async (fn) => original(async (tx) => {
+    const rawUsers = tx.users;
+    const rawStats = tx.userSeasonStats;
+    const users = {
+      ...rawUsers,
+      findByIdForUpdate: async (userId: string) => {
+        log.push(`users.findByIdForUpdate|${userId}`);
+        const user = await rawUsers.findByIdForUpdate!(userId);
+        if (user !== null && !injected.has(`user:${userId}`)) {
+          injected.add(`user:${userId}`);
+          await rawUsers.update({
+            ...user,
+            career_points: 7777,
+            career_last_scoring_match_at: SCORE_AT,
+          });
+        }
+        return user;
+      },
+      update: async (user: User) => {
+        log.push(`users.update|${user.user_id}`);
+        return rawUsers.update(user);
+      },
+      patchFields: async (userId: string, fields: Partial<User>) => {
+        log.push(`users.patchFields|${userId}|${Object.keys(fields).sort().join(",")}`);
+        return rawUsers.patchFields!(userId, fields);
+      },
+    };
+    const stats = rawStats === undefined ? undefined : {
+      ...rawStats,
+      findByUserAndSeasonForUpdate: async (userId: string, seasonId: string) => {
+        log.push(`stats.findByUserAndSeasonForUpdate|${seasonId}`);
+        const row = await rawStats.findByUserAndSeasonForUpdate!(userId, seasonId);
+        const key = `stats:${userId}:${seasonId}`;
+        if (row !== null && !injected.has(key)) {
+          injected.add(key);
+          await rawStats.update({
+            ...row,
+            points: 8888,
+            last_scoring_match_at: SCORE_AT,
+          });
+        }
+        return row;
+      },
+      update: async (row: UserSeasonStats) => {
+        log.push(`stats.update|${row.level_season_id}`);
+        return rawStats.update(row);
+      },
+      patchFields: async (
+        userId: string,
+        seasonId: string,
+        fields: Partial<UserSeasonStats>,
+      ) => {
+        log.push(`stats.patchFields|${seasonId}|${Object.keys(fields).sort().join(",")}`);
+        return rawStats.patchFields!(userId, seasonId, fields);
+      },
+    };
+    const proxied = new Proxy(tx, {
+      get(target, prop) {
+        if (prop === "users") return users;
+        if (prop === "userSeasonStats") return stats;
+        const value = Reflect.get(target, prop, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    log.push("tx:begin");
+    try {
+      return await fn(proxied as UnitOfWork);
+    } finally {
+      log.push("tx:end");
+    }
+  })) as InMemoryRepository["withTransaction"];
+}
+
+function writeTransactions(log: string[]): string[][] {
+  const groups: string[][] = [];
+  let current: string[] | null = null;
+  for (const line of log) {
+    if (line === "tx:begin") current = [];
+    else if (line === "tx:end") {
+      if (current !== null) groups.push(current);
+      current = null;
+    } else if (current !== null) current.push(line);
+  }
+  return groups.filter((events) => events.some((event) =>
+    event.startsWith("users.patchFields") ||
+    event.startsWith("stats.patchFields") ||
+    event.startsWith("users.update") ||
+    event.startsWith("stats.update") ||
+    event.includes("ForUpdate"),
+  ));
+}
+
+function seasonStats(
+  userId: string,
+  levelSeasonId: string,
+  points: number,
+  isLevelFrozen: boolean,
+): UserSeasonStats {
+  return {
+    schema_version: 1,
+    user_id: userId,
+    level_season_id: levelSeasonId,
+    points,
+    valid_predictions: 20,
+    wdl_hits: 1,
+    exact_hits: 1,
+    last_scoring_match_at: NOW,
+    level: 1,
+    best_level: 1,
+    level_state: defaultLevelState(),
+    is_level_frozen: isLevelFrozen,
+    created_at: NOW,
+    updated_at: NOW,
+  };
+}
+
+describe("ProfileMutationService A-S4-01", () => {
+  it("更新资料时行锁用户并局部写入，不覆盖并发结算积分", async () => {
+    const repo = new InMemoryRepository();
+    const user = makeUser();
+    const team = makeTeam();
+    await repo.users.insert(user);
+    await repo.teams.insert(team);
+    const log: string[] = [];
+    installScoreRace(repo, log);
+
+    await new ProfileMutationService(repo).updateMyProfile(user.user_id, {
+      nickname: "Alice",
+      favorite_team_id: team.team_id,
+    }, NOW);
+
+    expect(writeTransactions(log)).toEqual([[
+      `users.findByIdForUpdate|${user.user_id}`,
+      `users.patchFields|${user.user_id}|favorite_team_id,nickname,updated_at`,
+    ]]);
+    await expect(repo.users.findById(user.user_id)).resolves.toMatchObject({
+      nickname: "Alice",
+      favorite_team_id: team.team_id,
+      career_points: 7777,
+      career_valid_predictions: user.career_valid_predictions,
+      career_wdl_hits: user.career_wdl_hits,
+      career_exact_hits: user.career_exact_hits,
+      career_last_scoring_match_at: SCORE_AT,
+      career_level: user.career_level,
+      updated_at: NOW,
+    });
+  });
+
+  it("注销按 users 后 user_season_stats 的 id 升序加锁，只冻结未冻结赛季且不覆盖积分", async () => {
+    const repo = new InMemoryRepository();
+    const user = makeUser();
+    await repo.users.insert(user);
+    await repo.userSeasonStats.insert(seasonStats(user.user_id, "2027_2028", 4, false));
+    await repo.userSeasonStats.insert(seasonStats(user.user_id, "2025_2026", 9, true));
+    await repo.userSeasonStats.insert(seasonStats(user.user_id, "2026_2027", 18, false));
+    const log: string[] = [];
+    installScoreRace(repo, log);
+
+    await new ProfileMutationService(repo).deleteMyProfile(user.user_id, NOW);
+
+    expect(writeTransactions(log)).toEqual([[
+      `users.findByIdForUpdate|${user.user_id}`,
+      `users.patchFields|${user.user_id}|deleted_at,favorite_team_id,nickname,openid,status,unionid,updated_at`,
+      "stats.findByUserAndSeasonForUpdate|2025_2026",
+      "stats.findByUserAndSeasonForUpdate|2026_2027",
+      "stats.patchFields|2026_2027|is_level_frozen,updated_at",
+      "stats.findByUserAndSeasonForUpdate|2027_2028",
+      "stats.patchFields|2027_2028|is_level_frozen,updated_at",
+    ]]);
+    await expect(repo.users.findById(user.user_id)).resolves.toMatchObject({
+      status: UserStatus.Deleted,
+      openid: `deleted:${user.user_id}`,
+      career_points: 7777,
+      career_valid_predictions: user.career_valid_predictions,
+      career_exact_hits: user.career_exact_hits,
+      career_last_scoring_match_at: SCORE_AT,
+    });
+    await expect(repo.userSeasonStats.findByUserAndSeason(user.user_id, "2025_2026"))
+      .resolves.toMatchObject({
+        is_level_frozen: true,
+        points: 8888,
+        level: 1,
+        last_scoring_match_at: SCORE_AT,
+      });
+    await expect(repo.userSeasonStats.findByUserAndSeason(user.user_id, "2026_2027"))
+      .resolves.toMatchObject({
+        is_level_frozen: true,
+        points: 8888,
+        valid_predictions: 20,
+        level: 1,
+        last_scoring_match_at: SCORE_AT,
+      });
+    await expect(repo.userSeasonStats.findByUserAndSeason(user.user_id, "2027_2028"))
+      .resolves.toMatchObject({
+        is_level_frozen: true,
+        points: 8888,
+        level: 1,
+        last_scoring_match_at: SCORE_AT,
+      });
+  });
 });

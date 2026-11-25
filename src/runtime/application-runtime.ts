@@ -1,4 +1,5 @@
 import { MatchQueryService } from "../application/match-query.js";
+import { LeagueStatusService } from "../application/league-status-service.js";
 import { LeagueSeasonMaintenanceService } from "../application/league-season-maintenance.js";
 import { MaintenanceCleanupService } from "../application/maintenance-cleanup.js";
 import { SessionService } from "../application/session.js";
@@ -68,6 +69,7 @@ export interface ApplicationRuntime {
   services: {
     session: SessionService;
     matches: MatchQueryService;
+    league_status?: LeagueStatusService;
   };
 }
 
@@ -99,6 +101,7 @@ export function createApplicationRuntime(input: ApplicationRuntimeInput): Applic
     minimumGapMs: Number(input.env.FOOTBALL_PROVIDER_MIN_GAP_SECONDS ?? "3") * 1000,
     log: logger,
   });
+  const schedulerState = new CloudBaseSchedulerStateStore(input.db, input.namespace);
   const providerClient = providerRegistry.asClient();
   const profile = providerSources.sync_profile;
   const providerDispatcher = new ProviderSyncDispatcher({
@@ -116,13 +119,12 @@ export function createApplicationRuntime(input: ApplicationRuntimeInput): Applic
     }, providerLeagueRefs).run(now),
     [SyncJobType.PostFinishVerify]: (now) => new ProviderPostFinishVerifyService(input.repo, providerClient, {}, {
       dueIntervalMs: providerJobIntervalMs(SyncJobType.PostFinishVerify, profile),
-    }, providerLeagueRefs).run(now),
+    }, providerLeagueRefs, schedulerState).run(now),
   });
   const providerReconcile = new ProviderReconcileService(input.repo, providerClient, providerLeagueRefs);
   const providerStaleRecovery = new ProviderStaleRecoveryService(input.repo, providerClient, {}, {
     dueIntervalMs: providerJobIntervalMs(SyncJobType.StaleRecovery, profile),
   }, providerLeagueRefs, logger);
-  const schedulerState = new CloudBaseSchedulerStateStore(input.db, input.namespace);
   const levelFirstEvalAsOf = parseLevelFirstEvalAsOf(input.env, input.env.FOOTBALL_ENVIRONMENT);
   const periodFinalize = new PeriodFinalizeService(input.repo);
   const dailyConsistency = new DailyConsistencyService(
@@ -165,6 +167,7 @@ export function createApplicationRuntime(input: ApplicationRuntimeInput): Applic
     services: {
       session: new SessionService(input.repo),
       matches: new MatchQueryService(input.repo, input.matchCursorSecret),
+      league_status: new LeagueStatusService(input.repo),
     },
   };
 }

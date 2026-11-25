@@ -1,7 +1,7 @@
 import { singleBatch } from "./provider-sync-test-batch.js";
 import { describe, expect, it, vi } from "vitest";
 import { FIXED_CONFIG_V1 } from "../domain/config.js";
-import { MatchStatus, SettlementStatus, SyncJobType } from "../domain/enums.js";
+import { MatchStatus, Provider, SettlementStatus, SyncJobStatus, SyncJobType } from "../domain/enums.js";
 import { validationError } from "../domain/errors.js";
 import { newUuid } from "../domain/ids.js";
 import type { Match, SyncLog } from "../domain/types.js";
@@ -66,7 +66,7 @@ async function seedMatch(
   repo: InMemoryRepository,
   match: Match,
   providerMatchId: string,
-  provider: "api_football" | "football_data" = "api_football",
+  provider: Provider = Provider.ApiFootball,
 ): Promise<void> {
   await repo.matches.insert(match);
   await repo.matchProviderMappings.insert({
@@ -636,7 +636,7 @@ describe("ProviderFixtureSyncJobService", () => {
     });
   });
 
-  it("单 fixture 的 fail-closed outcome 计入 items_failed 并延后补偿", async () => {
+  it("单 fixture 的已隔离实体 fail-closed outcome 计入 items_failed 并写 failed 日志，不触发全局指数退避", async () => {
     const repo = new InMemoryRepository();
     const match = makeMatch();
     await seedMatch(repo, match, "1100004");
@@ -651,11 +651,8 @@ describe("ProviderFixtureSyncJobService", () => {
     );
 
     await expect(service.run(SyncJobType.PostFinishVerify, singleBatch(load), NOW)).resolves.toEqual({
-      kind: "deferred",
+      kind: "completed",
       job_type: SyncJobType.PostFinishVerify,
-      next_attempt_at: new Date(NOW.getTime() + 60_000),
-      retry_attempt: 0,
-      last_error_code: "PROVIDER_FIXTURE_FAILED",
       items_read: 1,
       items_changed: 0,
       items_failed: 1,
@@ -678,7 +675,7 @@ describe("ProviderFixtureSyncJobService", () => {
       result_version: 0,
     });
     expect(syncLogs.update).toHaveBeenCalledWith(expect.objectContaining({
-      status: "deferred",
+      status: "failed",
       items_read: 1,
       items_changed: 0,
       items_failed: 1,
@@ -1033,5 +1030,62 @@ describe("Provider 调度联赛隔离", () => {
     expect(result.failed).toEqual(expect.arrayContaining([
       { task: `${SyncJobType.FutureSchedule}:premier_league`, reason: "exception" },
     ]));
+  });
+});
+
+describe("Slice 4 A-S3-02 / A-S3-10 调度收敛验证", () => {
+  it("5d 先报 FT 返回 ProviderResultPending 不触发全局 30m 指数退避 (A-S3-02)", async () => {
+    const repo = new InMemoryRepository();
+    const match = makeMatch();
+    await seedMatch(repo, match, "5d-fast", Provider.FiveDollar);
+    const fiveDFixture = makeApiFixture({ fixtureId: 500001, statusShort: "FT", fulltimeHome: 2, fulltimeAway: 1 });
+    fiveDFixture.provider = Provider.FiveDollar;
+    fiveDFixture.fixture.id = "5d-fast";
+    fiveDFixture.league.id = "4160026622";
+    const service = new ProviderFixtureSyncJobService(repo, new ProviderFixtureSyncService(repo));
+
+    const outcome = await service.run(SyncJobType.LiveMatch, singleBatch(async () => [item(fiveDFixture)]), NOW);
+    expect(outcome).toEqual({
+      kind: "completed",
+      job_type: SyncJobType.LiveMatch,
+      items_read: 1,
+      items_changed: 0,
+      items_failed: 0,
+    });
+    expect(await repo.syncLogs.findLatestByJobType!(SyncJobType.LiveMatch)).toMatchObject({
+      status: SyncJobStatus.Success,
+      items_failed: 0,
+    });
+  });
+
+  it("超过 JOB_LEASE_MINUTES 的僵死 running 日志在锁内资格复核按 failed 冷却收敛 (A-S3-10)", async () => {
+    const repo = new InMemoryRepository();
+    const staleStartedAt = new Date(NOW.getTime() - (FIXED_CONFIG_V1.JOB_LEASE_MINUTES + 1) * 60_000);
+    await repo.syncLogs.insert({
+      schema_version: 1,
+      sync_job_id: "zombie-running",
+      job_type: SyncJobType.NearMatch,
+      status: SyncJobStatus.Running,
+      started_at: staleStartedAt,
+      finished_at: null,
+      attempt_count: 1,
+      items_read: 0,
+      items_changed: 0,
+      items_failed: 0,
+      last_error_code: null,
+      last_error_message: null,
+      created_at: staleStartedAt,
+    });
+    const service = new ProviderFixtureSyncJobService(
+      repo,
+      { applyFixture: vi.fn(async () => ({ kind: "unchanged" as const, match_id: "m", match_status: MatchStatus.Scheduled })) },
+      {},
+      { dueIntervalMs: 30 * 60_000 },
+    );
+    // 经过 11m (< 30m 正常周期)，僵死 running 按 failedCooldownMs=30m 等待而不按未过期锁定到整周期外；若经过 30m 则恢复运行
+    await expect(service.run(SyncJobType.NearMatch, singleBatch(async () => []), NOW))
+      .resolves.toMatchObject({ kind: "skipped", reason: "not_due_after_lock" });
+    await expect(service.run(SyncJobType.NearMatch, singleBatch(async () => []), new Date(staleStartedAt.getTime() + 30 * 60_000)))
+      .resolves.toMatchObject({ kind: "completed" });
   });
 });

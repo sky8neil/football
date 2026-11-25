@@ -82,6 +82,9 @@ describe("resolveTrustedOpenid", () => {
       findActiveByToken: async () => {
         throw new Error("must not read bearer");
       },
+      deleteByOpenid: async () => {
+        throw new Error("must not delete");
+      },
     };
     await expect(resolveRequestTrustedOpenid({
       config: makeConfig({ environment: "prod", mock_trusted_openid: MOCK_OPENID }),
@@ -108,6 +111,9 @@ describe("resolveTrustedOpenid", () => {
         const expiresAt = new Date(NOW.getTime() + 1000);
         if (input.token !== "opaque-token" || expiresAt.getTime() <= input.now.getTime()) return null;
         return { token: input.token, openid: MOCK_OPENID, expires_at: expiresAt };
+      },
+      deleteByOpenid: async () => {
+        throw new Error("must not delete");
       },
     };
     await expect(resolveRequestTrustedOpenid({
@@ -150,7 +156,9 @@ describe("resolveTrustedOpenid", () => {
       loadGatewayRuntimeConfig({
         FOOTBALL_ENVIRONMENT: "prod",
         FOOTBALL_MATCH_CURSOR_SECRET: TEST_CURSOR_SECRET,
-        FOOTBALL_REPOSITORY_BACKEND: "memory",
+        FOOTBALL_REPOSITORY_BACKEND: "cloudbase",
+        FOOTBALL_CLOUD_ENVIRONMENT_ID: "env-prod",
+        FOOTBALL_RESOURCE_NAMESPACE: "football_prod",
         FOOTBALL_LEVEL_FIRST_EVAL_AS_OF: "2026-08-03T02:00:00.000Z",
         FOOTBALL_RANKING_FIRST_PERIOD_KEY: "2026-W31",
         FOOTBALL_MOCK_TRUSTED_OPENID: MOCK_OPENID,

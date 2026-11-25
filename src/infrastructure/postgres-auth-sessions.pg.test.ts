@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import pg from "pg";
 import { issueWechatSession, resolveBearerOpenid } from "../gateway/auth.js";
@@ -21,6 +22,10 @@ const AUTH = {
   wechat_app_secret: "wx-test-secret-must-not-leak",
   session_ttl_seconds: 60,
 };
+
+function tokenDigest(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
+}
 
 describe.skipIf(!ENABLED)("Postgres auth sessions 创建/读取/过期重登", () => {
   let pool!: pg.Pool;
@@ -87,16 +92,49 @@ describe.skipIf(!ENABLED)("Postgres auth sessions 创建/读取/过期重登", (
     await expect(sessions.findActiveByToken({ token: other.token, now: NOW })).resolves.toMatchObject({
       openid: OTHER_OPENID,
     });
+    await expect(sessions.findActiveByToken({
+      token: tokenDigest(created.token),
+      now: NOW,
+    })).resolves.toBeNull();
+
     const stored = await pool.query(
       `SELECT token, openid FROM ${qualifiedTable(SCHEMA, AUTH_SESSIONS_TABLE)} ORDER BY token`,
     );
     const storedRows = [...stored.rows].sort((a, b) => a.token.localeCompare(b.token));
     expect(storedRows).toEqual(
       [
-        { token: created.token, openid: OPENID },
-        { token: issued.access_token, openid: OPENID },
-        { token: other.token, openid: OTHER_OPENID },
+        { token: tokenDigest(created.token), openid: OPENID },
+        { token: tokenDigest(issued.access_token), openid: OPENID },
+        { token: tokenDigest(other.token), openid: OTHER_OPENID },
       ].sort((a, b) => a.token.localeCompare(b.token)),
     );
+    expect(storedRows.every((row) => /^[a-f0-9]{64}$/.test(row.token))).toBe(true);
+    expect(storedRows.map((row) => row.token)).not.toEqual(expect.arrayContaining([
+      created.token,
+      issued.access_token,
+      other.token,
+    ]));
+  });
+
+  it("deleteByOpenid removes every row for that openid and leaves others", async () => {
+    await pool.query(`TRUNCATE ${qualifiedTable(SCHEMA, AUTH_SESSIONS_TABLE)}`);
+    const query = createPostgresQueryFn(pool);
+    const sessions = createPostgresAuthSessionStore(query, SCHEMA);
+    const aliceA = await sessions.create({ openid: OPENID, now: NOW, ttlSeconds: 60 });
+    const aliceB = await sessions.create({ openid: OPENID, now: NOW, ttlSeconds: 120 });
+    const bob = await sessions.create({ openid: OTHER_OPENID, now: NOW, ttlSeconds: 60 });
+
+    await expect(sessions.deleteByOpenid(OPENID)).resolves.toBe(2);
+    await expect(sessions.findActiveByToken({ token: aliceA.token, now: NOW })).resolves.toBeNull();
+    await expect(sessions.findActiveByToken({ token: aliceB.token, now: NOW })).resolves.toBeNull();
+    await expect(sessions.findActiveByToken({ token: bob.token, now: NOW })).resolves.toMatchObject({
+      openid: OTHER_OPENID,
+    });
+    await expect(sessions.deleteByOpenid(OPENID)).resolves.toBe(0);
+
+    const stored = await pool.query(
+      `SELECT openid FROM ${qualifiedTable(SCHEMA, AUTH_SESSIONS_TABLE)}`,
+    );
+    expect(stored.rows).toEqual([{ openid: OTHER_OPENID }]);
   });
 });

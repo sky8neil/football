@@ -2,6 +2,7 @@ import { SUPPORTED_LEAGUES } from "../domain/config.js";
 import { notFoundError, validationError } from "../domain/errors.js";
 import { summarizePersonalLeague } from "../domain/league-season-summary.js";
 import type { AppRepository } from "../infrastructure/repositories.js";
+import { isLeagueSeasonFormatValid } from "./league-season-validation.js";
 import { loadLeagueStatus } from "./league-status-service.js";
 
 export interface PersonalLeagueSummaryResponse {
@@ -18,12 +19,11 @@ export class PersonalLeagueSummaryService {
   constructor(private readonly repo: AppRepository) {}
 
   async get(userId: string, leagueId: string, seasonId: string | undefined, serverNow: Date): Promise<PersonalLeagueSummaryResponse> {
-    if (await this.repo.users.findById(userId) === null) throw notFoundError("user");
+    if (await this.repo.users.findById(userId) === null) throw notFoundError("USER");
     const league = SUPPORTED_LEAGUES.find((item) => item.league_id === leagueId);
     if (league === undefined) throw validationError("league_id");
-    if (seasonId !== undefined) {
-      const pattern = league.season_id.includes("_") ? /^\d{4}_\d{4}$/ : /^\d{4}$/;
-      if (!pattern.test(seasonId)) throw validationError("season_id");
+    if (seasonId !== undefined && !isLeagueSeasonFormatValid(league.season_id, seasonId)) {
+      throw validationError("season_id");
     }
     const selectedId = seasonId ?? (await loadLeagueStatus(this.repo, league, serverNow)).active_season_id;
     const season = selectedId === null ? null : await this.repo.leagueSeasons!.findByKey(leagueId, selectedId);
@@ -36,7 +36,8 @@ export class PersonalLeagueSummaryService {
       summary: null,
       reason,
     });
-    if (season === null || season.completion_status !== "completed") return unavailable("not_available");
+    if (season === null) return unavailable("no_eligible_season");
+    if (season.completion_status !== "completed") return unavailable("season_not_completed");
     const matches = await this.repo.matches.findByLeagueSeason(leagueId, selectedId!);
     const ids = [...new Set(matches.map((match) => match.canonical_match_id))];
     const predictions = await this.repo.predictions.findByUserAndCanonicalMatchIds(userId, ids);

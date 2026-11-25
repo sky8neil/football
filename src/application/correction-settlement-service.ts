@@ -348,7 +348,6 @@ export class CorrectionSettlementService {
           settlementCreated,
           target,
         } = prepared;
-        const tx = this.repo;
         let processedCount = 0;
         let skippedAppliedCount = 0;
         let maxAppliedAtMs: number | null = null;
@@ -382,7 +381,9 @@ export class CorrectionSettlementService {
             });
           } catch (err) {
             const { code, message } = workerErrorInfo(err);
+            let auditLog: AdminAuditLog | undefined;
             await this.repo.withTransaction(async (tx) => {
+              await renewSettlementLockForFinalize(tx, lockKey, ownerId);
               await tx.settlementItems.update({
                 ...item,
                 status: SettlementItemStatus.Failed,
@@ -405,6 +406,21 @@ export class CorrectionSettlementService {
                 SettlementStatus.Failed,
                 serverNow,
               );
+              if (auditWriter !== undefined) {
+                auditLog = await auditWriter(
+                  tx,
+                  oldAuditValue ??
+                    (await snapshotSettlementForAudit(
+                      tx,
+                      settlement.settlement_id,
+                    )),
+                  await snapshotSettlementForAudit(
+                    tx,
+                    settlement.settlement_id,
+                  ),
+                  serverNow,
+                );
+              }
             });
             const outcome: CorrectionSettlementOutcome = {
               kind: "failed",
@@ -414,24 +430,7 @@ export class CorrectionSettlementService {
               processed_count: processedCount,
               skipped_applied_count: skippedAppliedCount,
             };
-            return auditWriter === undefined
-              ? outcome
-              : {
-                  ...outcome,
-                  audit_log: await auditWriter(
-                    tx,
-                    oldAuditValue ??
-                      (await snapshotSettlementForAudit(
-                        tx,
-                        settlement.settlement_id,
-                      )),
-                    await snapshotSettlementForAudit(
-                      tx,
-                      settlement.settlement_id,
-                    ),
-                    serverNow,
-                  ),
-                };
+            return auditLog === undefined ? outcome : { ...outcome, audit_log: auditLog };
           }
 
           lockRenewal.assertHealthy();
@@ -441,7 +440,7 @@ export class CorrectionSettlementService {
 
         const finalizedAt = resolveFinalizeTimestamp(serverNow, maxAppliedAtMs);
         lockRenewal.assertHealthy();
-        await tx.settlements.update({
+        await this.repo.settlements.update({
           ...runningSettlement,
           phase: SettlementPhase.RebuildRanks,
           updated_at: serverNow,
@@ -454,7 +453,9 @@ export class CorrectionSettlementService {
           );
         }
         lockRenewal.assertHealthy();
-        const remaining = await this.repo.withTransaction(async (tx) => {
+        let remaining = false;
+        let auditLog: AdminAuditLog | undefined;
+        await this.repo.withTransaction(async (tx) => {
           await renewSettlementLockForFinalize(tx, lockKey, ownerId);
           lockRenewal.assertHealthy();
           const finalizingSettlement: SettlementDoc = {
@@ -486,7 +487,7 @@ export class CorrectionSettlementService {
           if (afterFinalize === null) {
             throw notFoundError("MATCH");
           }
-          const remaining =
+          remaining =
             nextSettlementVersion(afterFinalize.result_version, target) !==
             null;
           await transitionMatchSettlementStatus(
@@ -495,7 +496,18 @@ export class CorrectionSettlementService {
             remaining ? SettlementStatus.Correcting : SettlementStatus.Settled,
             finalizedAt,
           );
-          return remaining;
+          if (auditWriter !== undefined) {
+            auditLog = await auditWriter(
+              tx,
+              oldAuditValue ??
+                (await snapshotSettlementForAudit(
+                  tx,
+                  settlement.settlement_id,
+                )),
+              await snapshotSettlementForAudit(tx, settlement.settlement_id),
+              finalizedAt,
+            );
+          }
         });
 
         const outcome: CorrectionSettlementOutcome = {
@@ -506,21 +518,7 @@ export class CorrectionSettlementService {
           processed_count: processedCount,
           skipped_applied_count: skippedAppliedCount,
         };
-        return auditWriter === undefined
-          ? outcome
-          : {
-              ...outcome,
-              audit_log: await auditWriter(
-                tx,
-                oldAuditValue ??
-                  (await snapshotSettlementForAudit(
-                    tx,
-                    settlement.settlement_id,
-                  )),
-                await snapshotSettlementForAudit(tx, settlement.settlement_id),
-                finalizedAt,
-              ),
-            };
+        return auditLog === undefined ? outcome : { ...outcome, audit_log: auditLog };
       })();
     } finally {
       lockRenewal.stop();

@@ -6,7 +6,10 @@ import {
 } from "../domain/enums.js";
 import type { Match } from "../domain/types.js";
 import { parseLevelFirstEvalAsOf } from "../gateway/config.js";
-import type { AppRepository } from "../infrastructure/repositories.js";
+import type {
+  AppRepository,
+  SettlementTodoQuery,
+} from "../infrastructure/repositories.js";
 import type { SchedulerStateStore } from "../infrastructure/cloudbase-scheduler-state.js";
 import { LevelCorrectionReevalService } from "./level-correction-reeval.js";
 import { SettlementOrchestrationService } from "./settlement-orchestration-service.js";
@@ -51,29 +54,29 @@ export async function runSettlementTimer(
     new LevelCorrectionReevalService(repo, firstEvalAsOf),
   );
   const limit = settlementTodoBatch(options.env ?? {});
-  const ids = new Set<string>();
-  for (const match of await repo.matches.findSettlementTodos({ limit })) {
-    ids.add(match.match_id);
-  }
+  const examined = new Set<string>();
+  const ids = new Set(
+    await collectExecutableSettlementTodoIds(repo, limit, examined),
+  );
   for (const status of [
     SettlementDocStatus.Running,
     SettlementDocStatus.Failed,
   ]) {
     for (const settlement of await repo.settlements.findByStatus(status)) {
+      if (examined.has(settlement.match_id)) continue;
+      examined.add(settlement.match_id);
       ids.add(settlement.match_id);
     }
   }
   const outcomes: SettlementTimerOutcome[] = [];
-  const processed = new Set<string>();
   for (const matchId of ids) {
-    processed.add(matchId);
     outcomes.push(await settleOneMatch(repo, service, matchId, now));
   }
   if (options.schedulerState) {
     const fallback = await runSettlementFallbackScan(repo, service, now, {
       limit,
       schedulerState: options.schedulerState,
-      skipMatchIds: processed,
+      skipMatchIds: examined,
     });
     outcomes.push(...fallback);
   }
@@ -129,6 +132,57 @@ function alreadyCaughtUp(match: Match): boolean {
     match.settlement_status === SettlementStatus.Settled &&
     match.settled_result_version >= match.result_version
   );
+}
+
+async function hasOpenBlockingAnomaly(
+  repo: AppRepository,
+  matchId: string,
+): Promise<boolean> {
+  try {
+    return ((await repo.anomalies?.findOpenBlockingByMatch(matchId))?.length ?? 0) > 0;
+  } catch {
+    return false;
+  }
+}
+
+async function collectExecutableSettlementTodoIds(
+  repo: AppRepository,
+  limit: number,
+  examined: Set<string>,
+): Promise<string[]> {
+  const ids: string[] = [];
+  let after: SettlementTodoQuery["after"] = null;
+  while (ids.length < limit) {
+    const page = await repo.matches.findSettlementTodos({ limit, after });
+    if (page.length === 0) break;
+    for (const match of page) {
+      if (ids.length >= limit) break;
+      if (examined.has(match.match_id)) continue;
+      examined.add(match.match_id);
+      if (alreadyCaughtUp(match)) continue;
+      if (await hasOpenBlockingAnomaly(repo, match.match_id)) continue;
+      ids.push(match.match_id);
+    }
+    if (page.length < limit) break;
+    const last = page[page.length - 1];
+    if (last === undefined) break;
+    const nextAfter = {
+      kickoff_at: last.kickoff_at,
+      match_id: last.match_id,
+    };
+    if (after !== null) {
+      const previousKickoff = after.kickoff_at.getTime();
+      const nextKickoff = nextAfter.kickoff_at.getTime();
+      if (
+        nextKickoff < previousKickoff ||
+        (nextKickoff === previousKickoff && nextAfter.match_id <= after.match_id)
+      ) {
+        break;
+      }
+    }
+    after = nextAfter;
+  }
+  return ids;
 }
 
 async function settleOneMatch(

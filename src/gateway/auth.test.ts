@@ -65,6 +65,19 @@ function memorySessions(seed: AuthSessionRecord[] = []): AuthSessionStore & { re
       return records.find((item) => item.token === input.token && item.expires_at.getTime() > input.now.getTime()) ??
         null;
     },
+    async deleteByOpenid(openid) {
+      if (typeof openid !== "string" || openid.trim().length === 0 || openid.trim() !== openid) {
+        throw new Error("openid is required");
+      }
+      let deleted = 0;
+      for (let index = records.length - 1; index >= 0; index -= 1) {
+        if (records[index]?.openid === openid) {
+          records.splice(index, 1);
+          deleted += 1;
+        }
+      }
+      return deleted;
+    },
   };
 }
 
@@ -159,6 +172,22 @@ describe("resolveBearerOpenid", () => {
         now: NOW,
       })));
     }
+  });
+});
+
+describe("memorySessions deleteByOpenid", () => {
+  it("removes every session for the openid, including expired ones, and leaves others", async () => {
+    const sessions = memorySessions([
+      { token: "a1", openid: OPENID, expires_at: new Date(NOW.getTime() - 1000) },
+      { token: "a2", openid: OPENID, expires_at: new Date(NOW.getTime() + 1000) },
+      { token: "b1", openid: "wx-openid-bob", expires_at: new Date(NOW.getTime() + 1000) },
+    ]);
+
+    await expect(sessions.deleteByOpenid(OPENID)).resolves.toBe(2);
+    expect(sessions.records.map((item) => item.token)).toEqual(["b1"]);
+    await expect(sessions.deleteByOpenid(OPENID)).resolves.toBe(0);
+    await expect(sessions.deleteByOpenid("   ")).rejects.toThrow(/openid is required/);
+    expect(sessions.records).toHaveLength(1);
   });
 });
 

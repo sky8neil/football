@@ -179,6 +179,44 @@ describe("createCountingDb", () => {
     });
   });
 
+  it("forwards getForUpdate without falling back to get", async () => {
+    const calls: string[] = [];
+    const inner = fakeDb();
+    inner.get = async () => {
+      calls.push("get");
+      return { _id: "u1" };
+    };
+    inner.getForUpdate = async () => {
+      calls.push("lock");
+      return { _id: "u1", locked: true };
+    };
+    const { db, counter } = createCountingDb(inner);
+    counter.begin();
+    await expect(db.getForUpdate!("users", "u1")).resolves.toMatchObject({ locked: true });
+    await db.transaction(async (tx) => {
+      await expect(tx.getForUpdate!("users", "u1")).resolves.toMatchObject({ locked: true });
+    });
+    expect(calls).toEqual(["lock", "lock"]);
+    expect(counter.end()).toEqual({
+      read: 2,
+      write: 0,
+      by_collection: [{ collection: "users", read: 2, write: 0 }],
+    });
+  });
+
+  it("does not invent getForUpdate when the adapter has none", async () => {
+    const calls: string[] = [];
+    const inner = fakeDb();
+    inner.get = async () => {
+      calls.push("get");
+      return { _id: "u1" };
+    };
+    const { db } = createCountingDb(inner);
+    expect(db.getForUpdate).toBeUndefined();
+    await db.get("users", "u1");
+    expect(calls).toEqual(["get"]);
+  });
+
   it("counts acquireJobLock, renewJobLock, and releaseJobLock as writes", async () => {
     const { db, counter } = createCountingDb(fakeDb());
     counter.begin();

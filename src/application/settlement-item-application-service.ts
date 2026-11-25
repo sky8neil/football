@@ -19,10 +19,11 @@ import { DomainError, conflictError, internalError, notFoundError } from "../dom
 import { newUuid } from "../domain/ids.js";
 import {
   compareRankingEntry,
+  isDeletedForPeriod,
   lastScoringForPeriodScore,
   rankForPosition,
 } from "../domain/ranking.js";
-import { calculatePeriodKey, levelSeasonOf } from "../domain/time.js";
+import { calculatePeriodKey, levelSeasonOf, periodEndAt } from "../domain/time.js";
 import {
   defaultLevelState,
   type Match,
@@ -53,18 +54,93 @@ function invalidLedger(message: string): DomainError {
 }
 
 type AggregationPorts = {
-  userSeasonStats: UserSeasonStatsRepository;
-  rankings: RankingRepository;
+  userSeasonStats: UserSeasonStatsRepository & {
+    findByUserAndSeasonForUpdate: NonNullable<UserSeasonStatsRepository["findByUserAndSeasonForUpdate"]>;
+    patchFields: NonNullable<UserSeasonStatsRepository["patchFields"]>;
+  };
+  rankings: RankingRepository & {
+    findByPeriodAndUserForUpdate: NonNullable<RankingRepository["findByPeriodAndUserForUpdate"]>;
+    patchFields: NonNullable<RankingRepository["patchFields"]>;
+  };
 };
 
 function requireAggregationPorts(tx: UnitOfWork): AggregationPorts {
-  if (tx.userSeasonStats === undefined || tx.rankings === undefined) {
-    throw internalError("结算 item 缺少 career/season/ranking repository ports");
+  const userSeasonStats = tx.userSeasonStats;
+  const rankings = tx.rankings;
+  const findSeason = userSeasonStats?.findByUserAndSeasonForUpdate;
+  const patchSeason = userSeasonStats?.patchFields;
+  const findRanking = rankings?.findByPeriodAndUserForUpdate;
+  const patchRanking = rankings?.patchFields;
+  if (
+    tx.users.findByIdForUpdate === undefined ||
+    tx.users.patchFields === undefined ||
+    userSeasonStats === undefined ||
+    findSeason === undefined ||
+    patchSeason === undefined ||
+    rankings === undefined ||
+    findRanking === undefined ||
+    patchRanking === undefined
+  ) {
+    throw internalError("结算 item 缺少 users/user_season_stats/rankings 行锁与局部更新端口");
   }
   return {
-    userSeasonStats: tx.userSeasonStats,
-    rankings: tx.rankings,
+    userSeasonStats: {
+      ...userSeasonStats,
+      findByUserAndSeasonForUpdate: findSeason,
+      patchFields: patchSeason,
+    },
+    rankings: {
+      ...rankings,
+      findByPeriodAndUserForUpdate: findRanking,
+      patchFields: patchRanking,
+    },
   };
+}
+
+function userScorePatch(user: User): Partial<User> {
+  return {
+    career_points: user.career_points,
+    career_valid_predictions: user.career_valid_predictions,
+    career_wdl_hits: user.career_wdl_hits,
+    career_exact_hits: user.career_exact_hits,
+    career_last_scoring_match_at: user.career_last_scoring_match_at,
+    updated_at: user.updated_at,
+  };
+}
+
+function seasonScorePatch(stats: UserSeasonStats): Partial<UserSeasonStats> {
+  return {
+    points: stats.points,
+    valid_predictions: stats.valid_predictions,
+    wdl_hits: stats.wdl_hits,
+    exact_hits: stats.exact_hits,
+    last_scoring_match_at: stats.last_scoring_match_at,
+    updated_at: stats.updated_at,
+  };
+}
+
+function rankingScorePatch(entry: RankingEntry): Partial<RankingEntry> {
+  return {
+    period_score: entry.period_score,
+    valid_predictions: entry.valid_predictions,
+    wdl_hits: entry.wdl_hits,
+    exact_hits: entry.exact_hits,
+    last_scoring_match_at: entry.last_scoring_match_at,
+    updated_at: entry.updated_at,
+  };
+}
+
+async function insertOrPatch<T>(
+  existing: T | null,
+  row: T,
+  insert: (row: T) => Promise<void>,
+  patch: (row: T) => Promise<void>,
+): Promise<void> {
+  if (existing !== null) {
+    await patch(row);
+    return;
+  }
+  await insert(row);
 }
 
 function hitDelta(newHit: boolean, oldHit: boolean): number {
@@ -236,9 +312,19 @@ export async function rebuildGlobalRanksInTransaction(
     },
   }));
   comparable.sort((a, b) => compareRankingEntry(RankingBoard.Week, a.value, b.value));
+  const periodEnd = periodEndAt(periodType, periodKey);
+  const deletedUserIds = new Set(
+    (await tx.users.findAll())
+      .filter((user) => isDeletedForPeriod(user, periodEnd))
+      .map((user) => user.user_id),
+  );
   let position = 0;
   for (const item of comparable) {
-    const globalRank = item.entry.valid_predictions < 1 ? null : rankForPosition(item.entry.valid_predictions, ++position);
+    const globalRank = deletedUserIds.has(item.entry.user_id)
+      ? null
+      : item.entry.valid_predictions < 1
+        ? null
+        : rankForPosition(item.entry.valid_predictions, ++position);
     if (item.entry.global_rank !== globalRank) {
       await updateGlobalRank.call(
         rankings,
@@ -439,7 +525,12 @@ export class SettlementItemApplicationService {
     );
     assertPredictionInvariants(updatedPrediction);
 
-    const user = await tx.users.findById(currentItem.user_id);
+    const lockUser = tx.users.findByIdForUpdate;
+    const patchUser = tx.users.patchFields;
+    if (lockUser === undefined || patchUser === undefined) {
+      throw internalError("结算 item 缺少 users 行锁与局部更新端口");
+    }
+    const user = await lockUser(currentItem.user_id);
     if (user === null) {
       throw notFoundError("USER");
     }
@@ -456,7 +547,8 @@ export class SettlementItemApplicationService {
     if (match.period_anchor_at === null) {
       throw invalidLedger(`finished match 缺少 period_anchor_at（match_id=${match.match_id}）`);
     }
-    const levelSeasonId = levelSeasonOf(match.period_anchor_at);
+    const periodAnchorAt = match.period_anchor_at;
+    const levelSeasonId = levelSeasonOf(periodAnchorAt);
     const needsZeroCorrectionRebuild =
       settlement.is_correction &&
       currentItem.old_score > MatchScoreValue.Miss &&
@@ -483,7 +575,7 @@ export class SettlementItemApplicationService {
     };
     const careerNeedsRebuild =
       needsZeroCorrectionRebuild &&
-      existingCareerLastScoringAt?.getTime() === match.period_anchor_at.getTime();
+      existingCareerLastScoringAt?.getTime() === periodAnchorAt.getTime();
     const updatedUser: User = {
       ...user,
       career_points: updatedUserBase.career_points,
@@ -496,58 +588,68 @@ export class SettlementItemApplicationService {
             return findLatestScoringAnchorAt(ctx.effectiveMatches, ctx.predictions, updatedPrediction);
           })()
         : currentItem.new_score > MatchScoreValue.Miss
-          ? maxScoringAt(existingCareerLastScoringAt, match.period_anchor_at)
+          ? maxScoringAt(existingCareerLastScoringAt, periodAnchorAt)
           : existingCareerLastScoringAt,
       updated_at: serverNow,
     };
     assertUserCareerInvariants(updatedUser);
 
-    const seasonStats = await ports.userSeasonStats.findByUserAndSeason(
+    const seasonStats = await ports.userSeasonStats.findByUserAndSeasonForUpdate(
       user.user_id,
       levelSeasonId,
     );
     if (seasonStats === null && currentItem.valid_prediction_delta !== 1) {
       throw invalidLedger(`修正 item 缺少已有 season stats（level_season_id=${levelSeasonId}）`);
     }
-    const seasonBase = seasonStats ?? emptySeasonStats(user.user_id, levelSeasonId, serverNow);
-    const updatedSeasonBase = applyStatsDelta(seasonBase, currentItem);
-    const existingSeasonLastScoringAt = seasonBase.last_scoring_match_at ?? null;
-    const seasonNeedsRebuild =
-      needsZeroCorrectionRebuild &&
-      existingSeasonLastScoringAt?.getTime() === match.period_anchor_at.getTime();
-    const seasonLastScoring = seasonNeedsRebuild
-      ? await (async () => {
-          const ctx = await getScoringHistoryContext();
-          return findLatestScoringAnchorAt(
-            ctx.effectiveMatches,
-            ctx.predictions,
-            updatedPrediction,
-            (resolvedMatch) => levelSeasonOf(resolvedMatch.period_anchor_at as Date) === levelSeasonId,
-          );
-        })()
-      : currentItem.new_score > MatchScoreValue.Miss
-        ? maxScoringAt(existingSeasonLastScoringAt, match.period_anchor_at)
-        : existingSeasonLastScoringAt;
-    const updatedSeason: UserSeasonStats = {
-      ...seasonBase,
-      ...updatedSeasonBase,
-      last_scoring_match_at: lastScoringForPeriodScore(
-        updatedSeasonBase.points,
-        seasonLastScoring,
-      ),
-      updated_at: serverNow,
+    const buildSeason = async (seasonBase: UserSeasonStats): Promise<UserSeasonStats> => {
+      const updatedSeasonBase = applyStatsDelta(seasonBase, currentItem);
+      const existingSeasonLastScoringAt = seasonBase.last_scoring_match_at ?? null;
+      const seasonNeedsRebuild =
+        needsZeroCorrectionRebuild &&
+        existingSeasonLastScoringAt?.getTime() === periodAnchorAt.getTime();
+      const seasonLastScoring = seasonNeedsRebuild
+        ? await (async () => {
+            const ctx = await getScoringHistoryContext();
+            return findLatestScoringAnchorAt(
+              ctx.effectiveMatches,
+              ctx.predictions,
+              updatedPrediction,
+              (resolvedMatch) => levelSeasonOf(resolvedMatch.period_anchor_at as Date) === levelSeasonId,
+            );
+          })()
+        : currentItem.new_score > MatchScoreValue.Miss
+          ? maxScoringAt(existingSeasonLastScoringAt, periodAnchorAt)
+          : existingSeasonLastScoringAt;
+      const updatedSeason: UserSeasonStats = {
+        ...seasonBase,
+        ...updatedSeasonBase,
+        last_scoring_match_at: lastScoringForPeriodScore(
+          updatedSeasonBase.points,
+          seasonLastScoring,
+        ),
+        updated_at: serverNow,
+      };
+      assertSeasonStatsInvariants(updatedSeason);
+      return updatedSeason;
     };
-    assertSeasonStatsInvariants(updatedSeason);
+    const updatedSeason = await buildSeason(
+      seasonStats ?? emptySeasonStats(user.user_id, levelSeasonId, serverNow),
+    );
 
     const periodRefs = [
       {
         period_type: PeriodType.Week,
-        period_key: calculatePeriodKey(PeriodType.Week, match.period_anchor_at),
+        period_key: calculatePeriodKey(PeriodType.Week, periodAnchorAt),
       },
     ] as const;
-    const rankingUpdates: Array<{ previous: RankingEntry | null; next: RankingEntry }> = [];
+    const rankingUpdates: Array<{
+      previous: RankingEntry | null;
+      next: RankingEntry;
+      periodType: typeof PeriodType.Week;
+      periodKey: string;
+    }> = [];
     for (const ref of periodRefs) {
-      const existing = await ports.rankings.findByPeriodAndUser(
+      const existing = await ports.rankings.findByPeriodAndUserForUpdate(
         ref.period_type,
         ref.period_key,
         user.user_id,
@@ -555,37 +657,47 @@ export class SettlementItemApplicationService {
       if (existing === null && currentItem.valid_prediction_delta !== 1) {
         throw invalidLedger(`修正 item 缺少已有 ranking（${ref.period_type}:${ref.period_key}）`);
       }
-      const base = existing ?? emptyRanking(ref.period_type, ref.period_key, user.user_id, serverNow);
-      const rankingNeedsRebuild =
-        needsZeroCorrectionRebuild &&
-        base.last_scoring_match_at?.getTime() === match.period_anchor_at.getTime();
-      const lastScoring = rankingNeedsRebuild
-        ? await (async () => {
-            const ctx = await getScoringHistoryContext();
-            return findLatestScoringAnchorAt(
-              ctx.effectiveMatches,
-              ctx.predictions,
-              updatedPrediction,
-              (resolvedMatch) => calculatePeriodKey(ref.period_type, resolvedMatch.period_anchor_at as Date) === ref.period_key,
-            );
-          })()
-        : currentItem.new_score > MatchScoreValue.Miss
-          ? maxScoringAt(base.last_scoring_match_at, match.period_anchor_at)
-          : base.last_scoring_match_at;
-      const next: RankingEntry = {
-        ...base,
-        period_score: base.period_score + currentItem.score_delta,
-        valid_predictions: base.valid_predictions + currentItem.valid_prediction_delta,
-        wdl_hits: base.wdl_hits + hitDelta(currentItem.new_wdl_hit, currentItem.old_wdl_hit),
-        exact_hits: base.exact_hits + hitDelta(currentItem.new_exact_hit, currentItem.old_exact_hit),
-        last_scoring_match_at: lastScoringForPeriodScore(
-          base.period_score + currentItem.score_delta,
-          lastScoring,
-        ),
-        updated_at: serverNow,
+      const buildRanking = async (base: RankingEntry): Promise<RankingEntry> => {
+        const rankingNeedsRebuild =
+          needsZeroCorrectionRebuild &&
+          base.last_scoring_match_at?.getTime() === periodAnchorAt.getTime();
+        const lastScoring = rankingNeedsRebuild
+          ? await (async () => {
+              const ctx = await getScoringHistoryContext();
+              return findLatestScoringAnchorAt(
+                ctx.effectiveMatches,
+                ctx.predictions,
+                updatedPrediction,
+                (resolvedMatch) => calculatePeriodKey(ref.period_type, resolvedMatch.period_anchor_at as Date) === ref.period_key,
+              );
+            })()
+          : currentItem.new_score > MatchScoreValue.Miss
+            ? maxScoringAt(base.last_scoring_match_at, periodAnchorAt)
+            : base.last_scoring_match_at;
+        const next: RankingEntry = {
+          ...base,
+          period_score: base.period_score + currentItem.score_delta,
+          valid_predictions: base.valid_predictions + currentItem.valid_prediction_delta,
+          wdl_hits: base.wdl_hits + hitDelta(currentItem.new_wdl_hit, currentItem.old_wdl_hit),
+          exact_hits: base.exact_hits + hitDelta(currentItem.new_exact_hit, currentItem.old_exact_hit),
+          last_scoring_match_at: lastScoringForPeriodScore(
+            base.period_score + currentItem.score_delta,
+            lastScoring,
+          ),
+          updated_at: serverNow,
+        };
+        assertRankingInvariants(next);
+        return next;
       };
-      assertRankingInvariants(next);
-      rankingUpdates.push({ previous: existing, next });
+      const next = await buildRanking(
+        existing ?? emptyRanking(ref.period_type, ref.period_key, user.user_id, serverNow),
+      );
+      rankingUpdates.push({
+        previous: existing,
+        next,
+        periodType: ref.period_type,
+        periodKey: ref.period_key,
+      });
     }
 
     const existingUnlocks = await tx.unlocks.findByUser(user.user_id);
@@ -604,18 +716,29 @@ export class SettlementItemApplicationService {
     }));
 
     await tx.predictions.update({ ...updatedPrediction, updated_at: serverNow });
-    await tx.users.update(updatedUser);
-    if (seasonStats === null) {
-      await ports.userSeasonStats.insert(updatedSeason);
-    } else {
-      await ports.userSeasonStats.update(updatedSeason);
-    }
+    await patchUser(updatedUser.user_id, userScorePatch(updatedUser));
+    await insertOrPatch(
+      seasonStats,
+      updatedSeason,
+      (row) => ports.userSeasonStats.insert(row),
+      (row) => ports.userSeasonStats.patchFields(
+        user.user_id,
+        levelSeasonId,
+        seasonScorePatch(row),
+      ),
+    );
     for (const ranking of rankingUpdates) {
-      if (ranking.previous === null) {
-        await ports.rankings.insert(ranking.next);
-      } else {
-        await ports.rankings.update(ranking.next);
-      }
+      await insertOrPatch(
+        ranking.previous,
+        ranking.next,
+        (row) => ports.rankings.insert(row),
+        (row) => ports.rankings.patchFields(
+          ranking.periodType,
+          ranking.periodKey,
+          user.user_id,
+          rankingScorePatch(row),
+        ),
+      );
     }
     for (const unlock of unlocks) {
       await tx.unlocks.insert(unlock);

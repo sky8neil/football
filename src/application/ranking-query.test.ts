@@ -609,6 +609,22 @@ describe("RankingQueryService v2", () => {
     ]);
   });
 
+  it("[A-S5-04] 历史周查询不展示周期结束前已注销的遗留名次", async () => {
+    const repo = new InMemoryRepository();
+    await repo.users.insert(makeUser(id(1)));
+    await repo.users.insert(makeUser(id(2), {
+      status: UserStatus.Deleted,
+      nickname: null,
+      deleted_at: new Date("2026-07-01T00:00:00.000Z"),
+    }));
+    await repo.rankings.insert(makeRanking(id(2), 2, { period_key: "2026-W31", is_final: false }));
+    await repo.rankings.insert(makeRanking(id(1), 1, { period_key: "2026-W31", is_final: false }));
+    const service = new RankingQueryService(repo, SECRET);
+
+    const history = await service.list(query({ period_key: "2026-W31" }));
+    expect(history.items.map((item) => [item.user_id, item.rank])).toEqual([[id(1), 1]]);
+  });
+
   it("K84：群榜仅保留 active 成员、独立重排，退群后立即消失", async () => {
     const repo = new InMemoryRepository();
     const group = makeGroup();
@@ -648,6 +664,39 @@ describe("RankingQueryService v2", () => {
     expect((await service.list(input)).items).toHaveLength(1);
     await groupsService.dissolveGroup(id(1), group.group_id, NOW);
     await expect(service.list(input)).rejects.toMatchObject({ code: "GROUP_NOT_FOUND" });
+  });
+
+  it("拒绝群赛季榜通过游标翻到历史赛季", async () => {
+    const repo = new InMemoryRepository();
+    const group = makeGroup();
+    await repo.groups.insert(group);
+    await repo.users.insert(makeUser(id(1)));
+    await repo.groupMembers.insert(makeMember(id(1)));
+    await repo.boardSnapshots.insert(makeSeasonSnapshot(
+      id(1), 1, 48, "2025_2026", new Date(NOW.getTime() - 1000),
+    ));
+    await repo.boardSnapshots.insert(makeSeasonSnapshot(id(1), 1, 60, "2026_2027"));
+    const service = new RankingQueryService(repo, SECRET);
+    const encodeCursor = (levelSeasonId: string) => new RankingCursorCodec(SECRET).encode({
+      board: RankingBoard.Season,
+      scope: RankingScope.Group,
+      group_id: group.group_id,
+      period_key: null,
+      level_season_id: levelSeasonId,
+      offset: 20,
+    });
+    const base = {
+      board: RankingBoard.Season,
+      period_key: null,
+      scope: RankingScope.Group,
+      group_id: group.group_id,
+      authenticated_user_id: id(1),
+    };
+
+    await expect(service.list(query({ ...base, cursor: encodeCursor("2025_2026") })))
+      .rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+    await expect(service.list(query({ ...base, cursor: encodeCursor("2026_2027") })))
+      .resolves.toMatchObject({ items: [], has_more: false, next_cursor: null });
   });
 
   it("K87：明确请求第 3 页时返回空列表和 null cursor", async () => {

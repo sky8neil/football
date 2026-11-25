@@ -6,11 +6,21 @@ import {
 import {
   AdminRole,
   AdminStatus,
+  AnomalyStatus,
+  AnomalyType,
   MatchStatus,
+  Result,
   ResultSource,
+  SettlementDocStatus,
+  SettlementPhase,
   SettlementStatus,
+  UserStatus,
 } from "../domain/enums.js";
-import type { Admin, Match, MatchResult } from "../domain/types.js";
+import { newUuid } from "../domain/ids.js";
+import type { Admin, Anomaly, Match, MatchResult, Prediction, SettlementDoc, User } from "../domain/types.js";
+import { defaultLevelState } from "../domain/types.js";
+import { FirstSettlementService } from "./first-settlement-service.js";
+import { AdminRetrySettlementService } from "./admin-retry-settlement.js";
 import { InMemoryRepository } from "../infrastructure/repositories.js";
 import type { AppRepository, UnitOfWork } from "../infrastructure/repositories.js";
 
@@ -101,6 +111,61 @@ async function seedSettledMatch(
   await repo.matches.insert(match);
   await repo.matchResults.insert(makeResult({ match_id: match.match_id }));
   return match;
+}
+
+const SETTLEMENT_FIELDS = ["settlement_status", "settled_result_version", "settled_at"] as const;
+
+function watchMatchPatch(repo: InMemoryRepository): {
+  repo: AppRepository;
+  calls: string[];
+  patches: Array<Partial<Match>>;
+} {
+  const calls: string[] = [];
+  const patches: Array<Partial<Match>> = [];
+  const guardedRepo = Object.create(repo) as AppRepository;
+  Object.defineProperty(guardedRepo, "withTransaction", {
+    value: <T>(fn: (tx: UnitOfWork) => Promise<T>) =>
+      repo.withTransaction((tx) => {
+        const guardedTx = Object.create(tx) as UnitOfWork;
+        Object.defineProperty(guardedTx, "matches", {
+          value: {
+            ...tx.matches,
+            findById: async (matchId: string) => {
+              calls.push("findById");
+              return tx.matches.findById(matchId);
+            },
+            findByIdForUpdate: async (matchId: string) => {
+              calls.push("findByIdForUpdate");
+              return tx.matches.findByIdForUpdate!(matchId);
+            },
+            update: async () => {
+              calls.push("update");
+              throw new Error("matches.update full document overwrite");
+            },
+            patchFields: async (matchId: string, fields: Partial<Match>) => {
+              calls.push("patchFields");
+              for (const key of SETTLEMENT_FIELDS) {
+                if (Object.prototype.hasOwnProperty.call(fields, key)) {
+                  throw new Error(`patch overwrote ${key}`);
+                }
+              }
+              patches.push(fields);
+              return tx.matches.patchFields!(matchId, fields);
+            },
+            updateSettlementStatus: async (
+              matchId: string,
+              status: Match["settlement_status"],
+              updatedAt: Date,
+            ) => {
+              calls.push("updateSettlementStatus");
+              return tx.matches.updateSettlementStatus(matchId, status, updatedAt);
+            },
+          },
+        });
+        return fn(guardedTx);
+      }),
+  });
+  return { repo: guardedRepo, calls, patches };
 }
 
 function withSettlementWriteGuard(
@@ -411,5 +476,374 @@ describe("AdminResultCorrectionService", () => {
       result_version: 1,
     });
     expect(await repo.adminAuditLogs.findByEntity("match", match.match_id)).toEqual([]);
+  });
+
+  it("waiting 首次修正先锁后读再局部写入，不覆写结算状态与职责外字段", async () => {
+    const repo = new InMemoryRepository();
+    const settledAt = new Date("2026-08-08T12:00:00.000Z");
+    const match = makeMatch({
+      result_version: 0,
+      settled_result_version: 0,
+      settlement_status: SettlementStatus.Waiting,
+      regular_home_score: null,
+      regular_away_score: null,
+      result_source: null,
+      extra_home_score: 4,
+      penalty_away_score: 2,
+      settled_at: settledAt,
+    });
+    await repo.admins.insert(makeAdmin());
+    await repo.matches.insert(match);
+    const watched = watchMatchPatch(repo);
+
+    const outcome = await new AdminResultCorrectionService(watched.repo).correct(
+      "admin-openid",
+      match.match_id,
+      correction({ expected_result_version: 0, regular_home_score: 1, regular_away_score: 0 }),
+      NOW,
+    );
+
+    expect(outcome.match).toMatchObject({
+      result_version: 1,
+      settlement_status: SettlementStatus.Waiting,
+      settled_result_version: 0,
+      settled_at: settledAt,
+      extra_home_score: 4,
+      penalty_away_score: 2,
+    });
+    expect(await repo.matches.findById(match.match_id)).toMatchObject({
+      result_version: 1,
+      regular_home_score: 1,
+      regular_away_score: 0,
+      result_source: ResultSource.Admin,
+      settlement_status: SettlementStatus.Waiting,
+      settled_result_version: 0,
+      settled_at: settledAt,
+      extra_home_score: 4,
+      penalty_away_score: 2,
+    });
+    expect(watched.calls[0]).toBe("findByIdForUpdate");
+    expect(watched.calls.indexOf("findById")).toBeGreaterThan(0);
+    expect(watched.calls.indexOf("patchFields")).toBeGreaterThan(watched.calls.indexOf("findById"));
+    expect(watched.calls).not.toContain("update");
+    expect(watched.calls).not.toContain("updateSettlementStatus");
+    expect(Object.keys(watched.patches[0] ?? {}).sort()).toEqual([
+      "regular_away_score",
+      "regular_home_score",
+      "result_source",
+      "result_version",
+      "updated_at",
+    ]);
+  });
+
+  it("已结算修正先锁再转移状态，局部 patch 保留 settled_at 与 settled_result_version", async () => {
+    const repo = new InMemoryRepository();
+    const settledAt = new Date("2026-08-08T12:00:00.000Z");
+    const match = await seedSettledMatch(repo, {
+      extra_home_score: 6,
+      settled_at: settledAt,
+    });
+    const watched = watchMatchPatch(repo);
+
+    const outcome = await new AdminResultCorrectionService(watched.repo).correct(
+      "admin-openid",
+      match.match_id,
+      correction(),
+      NOW,
+    );
+
+    expect(outcome.match).toMatchObject({
+      result_version: 2,
+      settlement_status: SettlementStatus.Correcting,
+      settled_result_version: 1,
+      settled_at: settledAt,
+      extra_home_score: 6,
+    });
+    expect(await repo.matches.findById(match.match_id)).toMatchObject({
+      settlement_status: SettlementStatus.Correcting,
+      settled_result_version: 1,
+      settled_at: settledAt,
+      extra_home_score: 6,
+      regular_home_score: 1,
+      regular_away_score: 1,
+      result_version: 2,
+    });
+    const lockAt = watched.calls.indexOf("findByIdForUpdate");
+    const readAt = watched.calls.indexOf("findById");
+    const statusAt = watched.calls.indexOf("updateSettlementStatus");
+    const patchAt = watched.calls.indexOf("patchFields");
+    expect(lockAt).toBe(0);
+    expect(readAt).toBeGreaterThan(lockAt);
+    expect(statusAt).toBeGreaterThan(readAt);
+    expect(patchAt).toBeGreaterThan(statusAt);
+    expect(watched.calls).not.toContain("update");
+    expect(watched.patches[0]).not.toHaveProperty("settlement_status");
+    expect(watched.patches[0]).not.toHaveProperty("settled_result_version");
+    expect(watched.patches[0]).not.toHaveProperty("settled_at");
+  });
+
+  it("A-S8-03 同事务按白名单自动解除赛果类阻塞异常，并打通阻塞异常 → 修正赛果 → 结算解锁闭环", async () => {
+    const repo = new InMemoryRepository();
+    const match = makeMatch({
+      result_version: 0,
+      settled_result_version: 0,
+      settlement_status: SettlementStatus.Waiting,
+      regular_home_score: null,
+      regular_away_score: null,
+      result_source: null,
+      finish_detected_at: new Date("2026-08-08T10:00:00.000Z"),
+      settled_at: null,
+    });
+    await repo.admins.insert(makeAdmin());
+    await repo.matches.insert(match);
+
+    const user: User = {
+      schema_version: 1,
+      user_id: "00000000-0000-4000-8000-000000000091",
+      openid: "user-openid-91",
+      unionid: null,
+      nickname: "Tester",
+      favorite_team_id: null,
+      status: UserStatus.Active,
+      career_points: 0,
+      career_valid_predictions: 0,
+      career_wdl_hits: 0,
+      career_exact_hits: 0,
+      career_last_scoring_match_at: null,
+      career_level: 1,
+      career_best_level: 1,
+      career_level_state: defaultLevelState(),
+      deleted_at: null,
+      created_at: NOW,
+      updated_at: NOW,
+    };
+    await repo.users.insert(user);
+    const prediction: Prediction = {
+      schema_version: 1,
+      prediction_id: "00000000-0000-4000-8000-000000000092",
+      user_id: user.user_id,
+      match_id: match.match_id,
+      canonical_match_id: match.canonical_match_id,
+      idempotency_key: newUuid(),
+      pred_home_score: 2,
+      pred_away_score: 1,
+      derived_result: Result.Home,
+      submitted_at: new Date("2026-08-08T05:00:00.000Z"),
+      scoring_rule_version: "scoring_v1",
+      match_score: null,
+      wdl_hit: null,
+      exact_hit: null,
+      applied_result_version: 0,
+      created_at: NOW,
+      updated_at: NOW,
+    };
+    await repo.predictions.insert(prediction);
+
+    const blockingStatusAnomaly: Anomaly = {
+      schema_version: 1,
+      anomaly_id: "00000000-0000-4000-8000-000000000081",
+      anomaly_key: `${match.match_id}:${AnomalyType.UnexpectedProviderStatus}`,
+      match_id: match.match_id,
+      type: AnomalyType.UnexpectedProviderStatus,
+      blocking: true,
+      status: AnomalyStatus.Open,
+      first_seen_at: NOW,
+      last_seen_at: NOW,
+      occurrence_count: 1,
+      details: { raw_status: "INT" },
+      resolved_at: null,
+      resolution: null,
+    };
+    const conflictAnomaly: Anomaly = {
+      schema_version: 1,
+      anomaly_id: "00000000-0000-4000-8000-000000000082",
+      anomaly_key: `${match.match_id}:${AnomalyType.AdminProviderResultConflict}`,
+      match_id: match.match_id,
+      type: AnomalyType.AdminProviderResultConflict,
+      blocking: false,
+      status: AnomalyStatus.Open,
+      first_seen_at: NOW,
+      last_seen_at: NOW,
+      occurrence_count: 1,
+      details: {},
+      resolved_at: null,
+      resolution: null,
+    };
+    await repo.anomalies.insert(blockingStatusAnomaly);
+    await repo.anomalies.insert(conflictAnomaly);
+
+    // 修正前被阻塞异常拦截，无法启动结算
+    const firstSettlement = new FirstSettlementService(repo);
+    const blocked = await firstSettlement.start(match.match_id, NOW, true);
+    expect(blocked).toEqual({ kind: "not_started", code: "SETTLEMENT_NOT_READY" });
+
+    // 管理员修正赛果后同事务解除白名单异常
+    const outcome = await new AdminResultCorrectionService(repo).correct(
+      "admin-openid",
+      match.match_id,
+      correction({ expected_result_version: 0, regular_home_score: 2, regular_away_score: 1 }),
+      NOW,
+    );
+    expect(outcome.resolved_anomaly_ids?.sort()).toEqual([
+      blockingStatusAnomaly.anomaly_id,
+      conflictAnomaly.anomaly_id,
+    ]);
+    expect(await repo.anomalies.findOpenBlockingByMatch(match.match_id)).toEqual([]);
+    expect(await repo.anomalies.findById!(blockingStatusAnomaly.anomaly_id)).toMatchObject({
+      status: AnomalyStatus.Resolved,
+      resolved_at: NOW,
+      resolution: `admin_result_correction:${outcome.audit_log.audit_id}`,
+    });
+
+    // 解锁后结算顺利完成
+    const unlocked = await firstSettlement.start(match.match_id, NOW, false);
+    expect(unlocked).toMatchObject({ kind: "started", processed_count: 1 });
+    expect((await repo.matches.findById(match.match_id))?.settlement_status).toBe(
+      SettlementStatus.Settled,
+    );
+  });
+
+  it("A-S8-03 非赛果白名单阻塞异常（TEAM_CHANGE_AFTER_PREDICTION）不会被赛果修正自动解除，且 failed 结算在修正后可通过 retry 解锁", async () => {
+    const repo = new InMemoryRepository();
+    const match = await seedSettledMatch(repo, {
+      settlement_status: SettlementStatus.Failed,
+      settled_result_version: 0,
+      settled_at: null,
+    });
+    const failedSettlement: SettlementDoc = {
+      schema_version: 1,
+      settlement_id: "00000000-0000-4000-8000-000000000077",
+      match_id: match.match_id,
+      result_version: 1,
+      rule_version: "scoring_v1",
+      status: SettlementDocStatus.Failed,
+      phase: SettlementPhase.ApplyItems,
+      is_correction: false,
+      started_at: NOW,
+      settled_at: null,
+      attempt_count: 1,
+      last_error_code: "SETTLEMENT_ITEM_FAILED",
+      last_error_message: "transient",
+      created_at: NOW,
+      updated_at: NOW,
+    };
+    await repo.settlements.insert(failedSettlement);
+
+    const stateConflict: Anomaly = {
+      schema_version: 1,
+      anomaly_id: "00000000-0000-4000-8000-000000000083",
+      anomaly_key: `${match.match_id}:${AnomalyType.ProviderStateConflict}`,
+      match_id: match.match_id,
+      type: AnomalyType.ProviderStateConflict,
+      blocking: true,
+      status: AnomalyStatus.Open,
+      first_seen_at: NOW,
+      last_seen_at: NOW,
+      occurrence_count: 1,
+      details: {},
+      resolved_at: null,
+      resolution: null,
+    };
+    const teamChange: Anomaly = {
+      schema_version: 1,
+      anomaly_id: "00000000-0000-4000-8000-000000000084",
+      anomaly_key: `${match.match_id}:${AnomalyType.TeamChangeAfterPrediction}`,
+      match_id: match.match_id,
+      type: AnomalyType.TeamChangeAfterPrediction,
+      blocking: true,
+      status: AnomalyStatus.Open,
+      first_seen_at: NOW,
+      last_seen_at: NOW,
+      occurrence_count: 1,
+      details: {},
+      resolved_at: null,
+      resolution: null,
+    };
+    await repo.anomalies.insert(stateConflict);
+    await repo.anomalies.insert(teamChange);
+
+    const retryService = new AdminRetrySettlementService(repo);
+    await expect(retryService.retry("admin-openid", match.match_id, NOW)).rejects.toMatchObject({
+      code: "SETTLEMENT_NOT_READY",
+    });
+
+    await new AdminResultCorrectionService(repo).correct(
+      "admin-openid",
+      match.match_id,
+      correction({ expected_result_version: 1, regular_home_score: 3, regular_away_score: 1 }),
+      NOW,
+    );
+
+    expect(await repo.anomalies.findById!(stateConflict.anomaly_id)).toMatchObject({
+      status: AnomalyStatus.Resolved,
+    });
+    expect(await repo.anomalies.findById!(teamChange.anomaly_id)).toMatchObject({
+      status: AnomalyStatus.Open,
+    });
+
+    // 非白名单阻塞异常仍在时，retry 仍拒绝；仅当它被解除后才解锁
+    await expect(retryService.retry("admin-openid", match.match_id, NOW)).rejects.toMatchObject({
+      code: "SETTLEMENT_NOT_READY",
+    });
+    await repo.anomalies.update({
+      ...teamChange,
+      status: AnomalyStatus.Resolved,
+      resolved_at: NOW,
+      resolution: "manual",
+    });
+    const retried = await retryService.retry("admin-openid", match.match_id, NOW);
+    expect(retried).toMatchObject({ kind: "settled" });
+  });
+
+  it("[CR-19] 拒绝纯空白 reason", async () => {
+    const repo = new InMemoryRepository();
+    await repo.admins.insert(makeAdmin());
+    await repo.matches.insert(makeMatch());
+    await expect(
+      new AdminResultCorrectionService(repo).correct(
+        "admin-openid",
+        "00000000-0000-4000-8000-000000000010",
+        correction({ reason: "   \t\n  " }),
+        NOW,
+      ),
+    ).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+  });
+
+  it("[CR-29] 赛果修正同事务内自动解除 LIVE_TOO_LONG 阻塞异常", async () => {
+    const repo = new InMemoryRepository();
+    const match = await seedSettledMatch(repo, {
+      settlement_status: SettlementStatus.Failed,
+      settled_result_version: 0,
+      settled_at: null,
+    });
+    const liveTooLong: Anomaly = {
+      schema_version: 1,
+      anomaly_id: "00000000-0000-4000-8000-000000000599",
+      anomaly_key: `${match.match_id}:${AnomalyType.LiveTooLong}`,
+      match_id: match.match_id,
+      type: AnomalyType.LiveTooLong,
+      blocking: true,
+      status: AnomalyStatus.Open,
+      first_seen_at: NOW,
+      last_seen_at: NOW,
+      occurrence_count: 1,
+      details: {},
+      resolved_at: null,
+      resolution: null,
+    };
+    await repo.anomalies.insert(liveTooLong);
+
+    const outcome = await new AdminResultCorrectionService(repo).correct(
+      "admin-openid",
+      match.match_id,
+      correction({ expected_result_version: 1, regular_home_score: 2, regular_away_score: 0 }),
+      NOW,
+    );
+
+    expect(outcome.resolved_anomaly_ids).toEqual([liveTooLong.anomaly_id]);
+    expect(await repo.anomalies.findById!(liveTooLong.anomaly_id)).toMatchObject({
+      status: AnomalyStatus.Resolved,
+      resolution: `admin_result_correction:${outcome.audit_log.audit_id}`,
+    });
   });
 });

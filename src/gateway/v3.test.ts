@@ -29,6 +29,7 @@ const FROZEN_HISTORY_ITEM_KEYS = [
   "submitted_at",
   "scoring_rule_version",
   "match_status",
+  "settlement_status",
   "regular_home_score",
   "regular_away_score",
   "match_score",
@@ -205,8 +206,8 @@ describe("GET /v1/predictions/me", () => {
       match_status: expect.any(String),
     }));
     expect(Object.keys(item).sort()).toEqual([...FROZEN_HISTORY_ITEM_KEYS].sort());
-    expect(item.home_team).toEqual({ team_id: expect.any(String), name: expect.any(String) });
-    expect(item.away_team).toEqual({ team_id: expect.any(String), name: expect.any(String) });
+    expect(item.home_team).toEqual({ team_id: expect.any(String), name: expect.any(String), name_zh: null, logo_url: null });
+    expect(item.away_team).toEqual({ team_id: expect.any(String), name: expect.any(String), name_zh: null, logo_url: null });
   });
 
   it("pages two match predictions with limit=1 and the server next_cursor", async () => {
@@ -258,5 +259,33 @@ describe("GET /v1/predictions/me", () => {
       code: "VALIDATION_ERROR",
       request_id: expect.any(String),
     }));
+  });
+
+  it("[A-S2-07] returns 422 VALIDATION_ERROR for unknown query params on GET /v1/predictions/me/:prediction_id and exposes settlement_status", async () => {
+    const harness = await initAuthedHarness();
+    const matchIds = await predictableMatchIds(harness);
+    const created = await submitPrediction(harness, matchIds[0]!, 2, 1);
+    const predictionId = ((created.body as { data: { prediction_id: string } }).data).prediction_id;
+
+    const bad = await request(harness, {
+      method: "GET",
+      path: `/v1/predictions/me/${predictionId}`,
+      query: { extra: "1" },
+    });
+    expect(bad.status).toBe(422);
+    expect(bad.body).toEqual(expect.objectContaining({
+      code: "VALIDATION_ERROR",
+      request_id: expect.any(String),
+    }));
+
+    const ok = await request(harness, {
+      method: "GET",
+      path: `/v1/predictions/me/${predictionId}`,
+    });
+    expect(ok.status).toBe(200);
+    expect((ok.body as { data: Record<string, unknown> }).data).toMatchObject({
+      prediction_id: predictionId,
+      settlement_status: expect.stringMatching(/^(not_ready|waiting|settling|settled|correcting|voided)$/),
+    });
   });
 });

@@ -16,12 +16,16 @@ function validationError(message) {
   });
 }
 
-function shareCardQuery({ leagueId, seasonId, roundId }) {
-  return {
+function shareCardQuery({ leagueId, seasonId, roundId, shareToken }) {
+  const query = {
     league_id: leagueId,
     season_id: seasonId,
     round_id: String(roundId),
   };
+  if (typeof shareToken === "string" && shareToken.trim().length > 0) {
+    query.share_token = shareToken.trim();
+  }
+  return query;
 }
 
 function getMyShareCard({ leagueId, seasonId, roundId } = {}) {
@@ -41,7 +45,7 @@ function getMyShareCard({ leagueId, seasonId, roundId } = {}) {
   });
 }
 
-function getShareCardForUser(userId, { leagueId, seasonId, roundId } = {}) {
+function getShareCardForUser(userId, { leagueId, seasonId, roundId, shareToken } = {}) {
   if (!isNonEmptyString(userId)) {
     return validationError("缺少 userId");
   }
@@ -57,7 +61,7 @@ function getShareCardForUser(userId, { leagueId, seasonId, roundId } = {}) {
   return request({
     method: "GET",
     path: "/v1/share-card/" + userId,
-    query: shareCardQuery({ leagueId, seasonId, roundId }),
+    query: shareCardQuery({ leagueId, seasonId, roundId, shareToken }),
     auth: "optional",
   });
 }

@@ -33,11 +33,18 @@ function groupPredictionsByWeek(items) {
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(item);
   }
-  return [...groups.entries()].map(([key, entries]) => ({
-    key,
-    label: key === "unknown" ? "比赛周次未知" : `${key.replace("-W", " 第")}周`,
-    items: entries,
-  }));
+  return [...groups.entries()]
+    .sort(([keyA], [keyB]) => {
+      if (keyA === keyB) return 0;
+      if (keyA === "unknown") return 1;
+      if (keyB === "unknown") return -1;
+      return keyA > keyB ? -1 : 1;
+    })
+    .map(([key, entries]) => ({
+      key,
+      label: key === "unknown" ? "比赛周次未知" : `${key.replace("-W", " 第")}周`,
+      items: entries,
+    }));
 }
 
 module.exports = { formatShanghaiKickoff, groupPredictionsByWeek, isoWeekKey };

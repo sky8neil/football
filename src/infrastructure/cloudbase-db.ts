@@ -11,6 +11,27 @@ export interface CloudBaseQueryOptions {
   offset?: number;
 }
 
+export interface AuthSessionRevoker {
+  deleteByOpenid(openid: string): Promise<number>;
+}
+
+export interface CloudBaseAnomalyPageQuery {
+  collection: string;
+  status: string | null;
+  blocking: boolean | null;
+  after?: { last_seen_at: Date; anomaly_id: string } | null;
+  limit: number;
+}
+
+export interface CloudBaseAuditLogPageQuery {
+  collection: string;
+  action: string | null;
+  entity_type: string | null;
+  entity_id: string | null;
+  after?: { created_at: Date; audit_id: string } | null;
+  limit: number;
+}
+
 export interface CloudBaseHistoryCursor {
   submitted_at: Date;
   prediction_id: string;
@@ -23,7 +44,10 @@ export interface CloudBasePredictionHistoryPage {
 }
 
 export interface CloudBaseDb {
+  authSessions?: AuthSessionRevoker;
   get(collection: string, id: string): Promise<CloudBaseDocument | null>;
+  /** 事务内行锁读取（SELECT ... FOR UPDATE）。事务外调用必须拒绝。 */
+  getForUpdate?(collection: string, id: string): Promise<CloudBaseDocument | null>;
   /** 原子新增；主键或唯一索引冲突时拒绝。 */
   add(collection: string, id: string, document: CloudBaseDocument): Promise<void>;
   /** 仅合并传入字段，与 SDK doc.update 一致。 */
@@ -62,6 +86,13 @@ export interface CloudBaseDb {
     limit: number;
     after?: { kickoff_at: Date; match_id: string } | null;
   }): Promise<CloudBaseDocument[]>;
+  findAnomalyPage?(params: CloudBaseAnomalyPageQuery): Promise<CloudBaseDocument[]>;
+  findAuditLogPage?(params: CloudBaseAuditLogPageQuery): Promise<CloudBaseDocument[]>;
+  /** 专有聚合：按 COALESCE(canonical_match_id, match_id) 统计单场胜平负预测分布。 */
+  countPredictionsByMatchGroupedByResult?(params: {
+    collection: string;
+    canonical_match_id: string;
+  }): Promise<{ HOME: number; DRAW: number; AWAY: number }>;
   /**
    * 构造「字段 < / <= / >= 值」范围条件，返回可直接并入 query/delete filter 的对象。
    * 适配器不支持范围查询时返回 undefined（调用方退化为不带该条件）。

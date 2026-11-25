@@ -20,6 +20,7 @@
  *   week：period_score DESC -> exact_hits DESC -> valid_predictions ASC
  *   -> last_scoring_match_at ASC（null 排后）-> user_id ASC。
  * global_rank（19.1 / 19.5）：valid_predictions < 1 为 null；>=1 为排序位置。
+ * excludedUserIds（周期内已注销用户）保留累加值但 global_rank 恒为 null，且不占名次。
  *
  * 账本完整性校验（非法 ledger 抛 INVALID_LEDGER）：
  * - status=applied、score_delta=(new_score-old_score)、valid_prediction_delta∈{0,1}
@@ -125,6 +126,7 @@ export function rebuildPeriodRankings(
   items: readonly SettlementItem[],
   periodByPrediction: ReadonlyMap<string, PeriodRef>,
   anchorByPrediction: ReadonlyMap<string, Date>,
+  excludedUserIds: ReadonlySet<string> = new Set(),
 ): RebuiltRankingEntry[] {
   if (items.length === 0) {
     return [];
@@ -257,8 +259,16 @@ export function rebuildPeriodRankings(
   );
 
   let position = 0;
-  return ranked.map(({ entry }) => ({
-    ...entry,
-    global_rank: entry.valid_predictions < 1 ? null : rankForPosition(entry.valid_predictions, ++position),
-  }));
+  return ranked.map(({ entry }) => {
+    if (excludedUserIds.has(entry.user_id)) {
+      return { ...entry, global_rank: null };
+    }
+    return {
+      ...entry,
+      global_rank:
+        entry.valid_predictions < 1
+          ? null
+          : rankForPosition(entry.valid_predictions, ++position),
+    };
+  });
 }

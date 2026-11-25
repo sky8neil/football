@@ -1,5 +1,9 @@
 import { FIXED_CONFIG_V1 } from "../domain/config.js";
-import { MatchScoreValue, SettlementItemStatus } from "../domain/enums.js";
+import {
+  MatchScoreValue,
+  SettlementDocStatus,
+  SettlementItemStatus,
+} from "../domain/enums.js";
 import { conflictError, DomainError } from "../domain/errors.js";
 import { calculateMatchScore } from "../domain/scoring.js";
 import type {
@@ -271,6 +275,14 @@ export async function loadAppliedSettlementFacts(
   return facts;
 }
 
+function isIncompleteCorrection(fact: AppliedSettlementFact): boolean {
+  return (
+    fact.settlement.is_correction &&
+    (fact.settlement.status !== SettlementDocStatus.Settled ||
+      fact.settlement.settled_at === null)
+  );
+}
+
 export function buildReplayFacts(facts: readonly AppliedSettlementFact[]): {
   facts: LevelPredictionFact[];
   correctionSettledAts: Date[];
@@ -278,6 +290,11 @@ export function buildReplayFacts(facts: readonly AppliedSettlementFact[]): {
   const byPrediction = new Map<string, LevelPredictionFact>();
   const corrections = new Map<string, Date>();
   for (const fact of facts) {
+    // failed / 未完成修正单的 applied item 已计入统计缓存但尚未完成等级重评，
+    // 回放必须隔离其事实，避免 INVALID_LEDGER 并使重试完成后再统一重放。
+    if (isIncompleteCorrection(fact)) {
+      continue;
+    }
     if (fact.match.period_anchor_at === null || fact.item.applied_at === null) {
       throw invalidLedger(`applied item 缺少 applied_at 或 period_anchor_at（prediction_id=${fact.item.prediction_id}）`);
     }

@@ -29,15 +29,15 @@ function joinGroup(inviteCode) {
 }
 
 function leaveGroup(groupId) {
-  return request({ method: "POST", path: `/v1/groups/${groupId}/leave` });
+  return request({ method: "POST", path: `/v1/groups/${encodeURIComponent(groupId)}/leave` });
 }
 
 function dissolveGroup(groupId) {
-  return request({ method: "DELETE", path: `/v1/groups/${groupId}` });
+  return request({ method: "DELETE", path: `/v1/groups/${encodeURIComponent(groupId)}` });
 }
 
 function getGroup(groupId) {
-  return request({ method: "GET", path: `/v1/groups/${groupId}` });
+  return request({ method: "GET", path: `/v1/groups/${encodeURIComponent(groupId)}` });
 }
 
 module.exports = {

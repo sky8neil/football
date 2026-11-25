@@ -22,6 +22,11 @@ import type {
   AdminRebuildRankingsInput,
   AdminRebuildRankingsOutcome,
 } from "../../application/admin-rebuild-rankings.js";
+import type {
+  AdminResolveAnomalyCommand,
+  AdminResolveAnomalyInput,
+  AdminResolveAnomalyOutcome,
+} from "../../application/admin-resolve-anomaly.js";
 import { assertUnknownFields } from "./validation.js";
 import {
   defaultApiRateLimiter,
@@ -37,6 +42,14 @@ export type {
   GetAdminAnomaliesInput,
   GetAdminAnomaliesSuccessResponse,
 } from "./admin-anomalies.js";
+export { getAdminMatchDetail } from "./admin-match-detail.js";
+export type {
+  AdminMatchDetailAnomalyResponse,
+  AdminMatchDetailResponseData,
+  AdminMatchDetailTeamResponse,
+  GetAdminMatchDetailInput,
+  GetAdminMatchDetailSuccessResponse,
+} from "./admin-match-detail.js";
 
 const ADMIN_RESULT_CORRECTION_FIELDS = new Set([
   "expected_result_version",
@@ -50,6 +63,8 @@ const ADMIN_REBUILD_RANKINGS_FIELDS = new Set([
   "period_key",
   "reason",
 ]);
+
+const ADMIN_RESOLVE_ANOMALY_FIELDS = new Set(["reason"]);
 
 function assertIntegerInRange(
   value: unknown,
@@ -72,7 +87,7 @@ export function validateAdminResultCorrectionPayload(
   assertIntegerInRange(body.regular_away_score, "regular_away_score", 0, 99);
   if (
     typeof body.reason !== "string" ||
-    body.reason.length < 1 ||
+    body.reason.trim().length < 1 ||
     body.reason.length > 500
   ) {
     throw validationError("reason 长度必须为 1..500", { field: "reason" });
@@ -97,6 +112,28 @@ export function validateAdminUserId(value: unknown): string {
     throw validationError("user_id 必须为 UUID v4", { field: "user_id" });
   }
   return value;
+}
+
+export function validateAdminAnomalyId(value: unknown): string {
+  if (typeof value !== "string" || !isValidUuid(value)) {
+    throw validationError("anomaly_id 必须为 UUID v4", { field: "anomaly_id" });
+  }
+  return value;
+}
+
+export function validateAdminResolveAnomalyPayload(
+  payload: unknown,
+): AdminResolveAnomalyInput {
+  const body = payload as Record<string, unknown>;
+  assertUnknownFields(body, ADMIN_RESOLVE_ANOMALY_FIELDS);
+  if (
+    typeof body.reason !== "string" ||
+    body.reason.trim().length < 1 ||
+    body.reason.length > 500
+  ) {
+    throw validationError("reason 长度必须为 1..500", { field: "reason" });
+  }
+  return { reason: body.reason.trim() };
 }
 
 export function validateAdminRebuildRankingsPayload(
@@ -124,7 +161,7 @@ export function validateAdminRebuildRankingsPayload(
   }
   if (
     typeof body.reason !== "string" ||
-    body.reason.length < 1 ||
+    body.reason.trim().length < 1 ||
     body.reason.length > 500
   ) {
     throw validationError("reason 长度必须为 1..500", { field: "reason" });
@@ -168,6 +205,13 @@ function validateEmptyAdminBody(body: unknown): void {
   assertUnknownFields(body as Record<string, unknown>, new Set());
 }
 
+function validateEmptyAdminQuery(query: unknown): void {
+  if (query === undefined) {
+    return;
+  }
+  assertUnknownFields(query as Record<string, unknown>, new Set());
+}
+
 function assertResultCorrectionResponse(
   outcome: AdminResultCorrectionOutcome,
   matchId: string,
@@ -207,6 +251,7 @@ function assertResultCorrectionResponse(
 export interface PostAdminResultCorrectionInput {
   trusted_openid?: string | null;
   match_id: unknown;
+  query?: unknown;
   body: unknown;
   server_now: Date;
   request_id: string;
@@ -233,6 +278,7 @@ export async function postAdminResultCorrection(
   service: Pick<AdminResultCorrectionService, "correct" | "authorizeAdmin">,
   input: PostAdminResultCorrectionInput,
 ): Promise<PostAdminResultCorrectionSuccessResponse> {
+  validateEmptyAdminQuery(input.query);
   const trustedOpenid = await preflightAdmin(service, input.trusted_openid);
   const matchId = validateAdminMatchId(input.match_id);
   const correction = validateAdminResultCorrectionPayload(input.body);
@@ -264,6 +310,7 @@ export async function postAdminResultCorrection(
 export interface PostAdminRetrySettlementInput {
   trusted_openid?: string | null;
   match_id: unknown;
+  query?: unknown;
   body?: unknown;
   server_now: Date;
   request_id: string;
@@ -306,6 +353,7 @@ export async function postAdminRetrySettlement(
   service: RetrySettlementCommand,
   input: PostAdminRetrySettlementInput,
 ): Promise<PostAdminRetrySettlementSuccessResponse> {
+  validateEmptyAdminQuery(input.query);
   const trustedOpenid = await preflightAdmin(service, input.trusted_openid);
   const matchId = validateAdminMatchId(input.match_id);
   validateEmptyAdminBody(input.body);
@@ -359,6 +407,7 @@ export async function postAdminRetrySettlement(
 export interface PostAdminRebuildUserStatsInput {
   trusted_openid?: string | null;
   user_id: unknown;
+  query?: unknown;
   body?: unknown;
   server_now: Date;
   request_id: string;
@@ -383,6 +432,7 @@ export async function postAdminRebuildUserStats(
   service: AdminRebuildUserStatsCommand,
   input: PostAdminRebuildUserStatsInput,
 ): Promise<PostAdminRebuildUserStatsSuccessResponse> {
+  validateEmptyAdminQuery(input.query);
   const trustedOpenid = await preflightAdmin(service, input.trusted_openid);
   const userId = validateAdminUserId(input.user_id);
   validateEmptyAdminBody(input.body);
@@ -419,6 +469,7 @@ export async function postAdminRebuildUserStats(
 
 export interface PostAdminRebuildRankingsInput {
   trusted_openid?: string | null;
+  query?: unknown;
   body: unknown;
   server_now: Date;
   request_id: string;
@@ -443,6 +494,7 @@ export async function postAdminRebuildRankings(
   service: AdminRebuildRankingsCommand,
   input: PostAdminRebuildRankingsInput,
 ): Promise<PostAdminRebuildRankingsSuccessResponse> {
+  validateEmptyAdminQuery(input.query);
   const trustedOpenid = await preflightAdmin(service, input.trusted_openid);
   const rebuild = validateAdminRebuildRankingsPayload(input.body);
   await checkAdminRateLimit(trustedOpenid, input.server_now, input.rate_limiter);
@@ -467,6 +519,70 @@ export async function postAdminRebuildRankings(
         board: rebuild.board,
         period_key: rebuild.period_key,
         rebuilt_entry_count: outcome.rebuilt_entry_count,
+        audit_id: outcome.audit_log.audit_id,
+      },
+      request_id: input.request_id,
+    },
+  };
+}
+
+export interface PostAdminResolveAnomalyInput {
+  trusted_openid?: string | null;
+  anomaly_id: unknown;
+  query?: unknown;
+  body: unknown;
+  server_now: Date;
+  request_id: string;
+  rate_limiter?: RateLimiter;
+}
+
+export interface PostAdminResolveAnomalySuccessResponse {
+  status: 200;
+  body: {
+    data: {
+      anomaly_id: string;
+      status: "resolved";
+      resolved_at: string;
+      resolution: string;
+      audit_id: string;
+    };
+    request_id: string;
+  };
+}
+
+export async function postAdminResolveAnomaly(
+  service: AdminResolveAnomalyCommand,
+  input: PostAdminResolveAnomalyInput,
+): Promise<PostAdminResolveAnomalySuccessResponse> {
+  validateEmptyAdminQuery(input.query);
+  const trustedOpenid = await preflightAdmin(service, input.trusted_openid);
+  const anomalyId = validateAdminAnomalyId(input.anomaly_id);
+  const resolvedInput = validateAdminResolveAnomalyPayload(input.body);
+  await checkAdminRateLimit(trustedOpenid, input.server_now, input.rate_limiter);
+  const outcome: AdminResolveAnomalyOutcome = await service.resolve(
+    trustedOpenid,
+    anomalyId,
+    resolvedInput,
+    input.server_now,
+  );
+  if (
+    outcome.anomaly.anomaly_id !== anomalyId ||
+    outcome.anomaly.status !== "resolved" ||
+    outcome.anomaly.resolved_at === null ||
+    typeof outcome.anomaly.resolution !== "string" ||
+    outcome.anomaly.resolution.length === 0 ||
+    !isValidUuid(outcome.audit_log.audit_id)
+  ) {
+    throw internalError("管理员 resolve anomaly 返回的数据无效");
+  }
+  return {
+    status: 200,
+    body: {
+      data: {
+        anomaly_id: outcome.anomaly.anomaly_id,
+        status: "resolved",
+        resolved_at: outcome.anomaly.resolved_at.toISOString(),
+        resolution: outcome.anomaly.resolution,
         audit_id: outcome.audit_log.audit_id,
       },
       request_id: input.request_id,

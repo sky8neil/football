@@ -21,7 +21,7 @@ import type {
   User,
   UserSeasonStats,
 } from "../domain/types.js";
-import { InMemoryRepository, type AppRepository } from "../infrastructure/repositories.js";
+import { InMemoryRepository, UniqueConstraintError, type AppRepository, type UnitOfWork } from "../infrastructure/repositories.js";
 import {
   rankingPeriodLockKey,
   rebuildGlobalRanks,
@@ -863,6 +863,49 @@ describe("SettlementItemApplicationService", () => {
       .toMatchObject({ global_rank: 1 });
   });
 
+  it("[A-S4-04] 增量重排保留注销用户周统计，仅清空 global_rank 且不占名次", async () => {
+    const repo = new InMemoryRepository();
+    await repo.users.insert(makeUser({
+      user_id: "u-deleted",
+      openid: "openid_u_deleted",
+      status: "deleted",
+      deleted_at: new Date("2026-08-01T00:00:00.000Z"),
+    }));
+    await repo.users.insert(makeUser({ user_id: "u-active", openid: "openid_u_active" }));
+    const ranking = (userId: string, score: number, rank: number): RankingEntry => ({
+      schema_version: 1,
+      period_type: PeriodType.Week,
+      period_key: "2026-W32",
+      user_id: userId,
+      period_score: score,
+      valid_predictions: 3,
+      wdl_hits: 2,
+      exact_hits: 1,
+      last_scoring_match_at: ANCHOR,
+      global_rank: rank,
+      is_final: false,
+      created_at: NOW,
+      updated_at: NOW,
+    });
+    await repo.rankings.insert(ranking("u-deleted", 30, 1));
+    await repo.rankings.insert(ranking("u-active", 12, 2));
+
+    await repo.withTransaction((tx) =>
+      rebuildGlobalRanksInTransaction(tx, PeriodType.Week, "2026-W32", NOW),
+    );
+
+    expect(await repo.rankings.findByPeriodAndUser(PeriodType.Week, "2026-W32", "u-deleted"))
+      .toMatchObject({
+        period_score: 30,
+        valid_predictions: 3,
+        wdl_hits: 2,
+        exact_hits: 1,
+        global_rank: null,
+      });
+    expect(await repo.rankings.findByPeriodAndUser(PeriodType.Week, "2026-W32", "u-active"))
+      .toMatchObject({ period_score: 12, global_rank: 1 });
+  });
+
   it("[Slice 1] 周榜重算在 repo.withTransaction 外持锁并在完成后释放", async () => {
     const repo = new InMemoryRepository();
     await repo.rankings.insert({
@@ -1081,4 +1124,359 @@ describe("SettlementItemApplicationService", () => {
     expect(
       await failRepo.jobLocks.acquire(lockKey, "after-fail", new Date(Date.now() + 60_000)),
     ).toBe(true);
+  });
+
+  it("[A-S4-01] 同用户结算按 users → season → rankings 加锁，并只局部更新计分字段", async () => {
+    const { repo, user, match, settlement } = await setup({
+      user: {
+        nickname: "Keeper",
+        favorite_team_id: null,
+        career_points: 18,
+        career_valid_predictions: 20,
+        career_wdl_hits: 3,
+        career_exact_hits: 1,
+        career_level: 3,
+        career_best_level: 4,
+      },
+    });
+    const seasonId = levelSeasonOf(match.period_anchor_at as Date);
+    const seasonState = { ...defaultLevelState(), below_count: 1, last_eval_n: 1, last_eval_score_sum: 3, last_eval_b_points: 3 };
+    await repo.userSeasonStats.insert({
+      schema_version: 1,
+      user_id: user.user_id,
+      level_season_id: seasonId,
+      points: 9,
+      valid_predictions: 1,
+      wdl_hits: 1,
+      exact_hits: 1,
+      last_scoring_match_at: ANCHOR,
+      level: 1,
+      best_level: 2,
+      level_state: seasonState,
+      is_level_frozen: true,
+      created_at: NOW,
+      updated_at: NOW,
+    });
+    await repo.rankings.insert({
+      schema_version: 1,
+      period_type: PeriodType.Week,
+      period_key: "2026-W32",
+      user_id: user.user_id,
+      period_score: 9,
+      valid_predictions: 1,
+      wdl_hits: 1,
+      exact_hits: 1,
+      last_scoring_match_at: ANCHOR,
+      global_rank: 4,
+      is_final: true,
+      created_at: NOW,
+      updated_at: NOW,
+    });
+    const calls: string[] = [];
+    const userPatches: Array<Partial<User>> = [];
+    const seasonPatches: Array<Partial<UserSeasonStats>> = [];
+    const rankingPatches: Array<Partial<RankingEntry>> = [];
+    const original = repo.withTransaction.bind(repo);
+    repo.withTransaction = (async (fn) => original(async (tx) => {
+      const users = tx.users;
+      const seasons = tx.userSeasonStats;
+      const rankings = tx.rankings;
+      if (seasons === undefined || rankings === undefined) throw new Error("missing ports");
+      const wrapped = new Proxy(tx, {
+        get(target, prop, receiver) {
+          if (prop === "users") {
+            return {
+              ...users,
+              findByIdForUpdate: async (id: string) => {
+                calls.push("users.lock");
+                return users.findByIdForUpdate!(id);
+              },
+              update: async (next: User) => {
+                calls.push("users.update");
+                return users.update(next);
+              },
+              patchFields: async (id: string, fields: Partial<User>) => {
+                calls.push("users.patch");
+                userPatches.push(fields);
+                return users.patchFields!(id, fields);
+              },
+            };
+          }
+          if (prop === "userSeasonStats") {
+            return {
+              ...seasons,
+              findByUserAndSeasonForUpdate: async (userId: string, levelSeasonId: string) => {
+                calls.push("season.lock");
+                return seasons.findByUserAndSeasonForUpdate!(userId, levelSeasonId);
+              },
+              update: async (next: UserSeasonStats) => {
+                calls.push("season.update");
+                return seasons.update(next);
+              },
+              patchFields: async (userId: string, levelSeasonId: string, fields: Partial<UserSeasonStats>) => {
+                calls.push("season.patch");
+                seasonPatches.push(fields);
+                return seasons.patchFields!(userId, levelSeasonId, fields);
+              },
+            };
+          }
+          if (prop === "rankings") {
+            return {
+              ...rankings,
+              findByPeriodAndUserForUpdate: async (...args: Parameters<NonNullable<typeof rankings.findByPeriodAndUserForUpdate>>) => {
+                calls.push("ranking.lock");
+                return rankings.findByPeriodAndUserForUpdate!(...args);
+              },
+              update: async (next: RankingEntry) => {
+                calls.push("ranking.update");
+                return rankings.update(next);
+              },
+              patchFields: async (...args: Parameters<NonNullable<typeof rankings.patchFields>>) => {
+                calls.push("ranking.patch");
+                rankingPatches.push(args[3]);
+                return rankings.patchFields!(...args);
+              },
+            };
+          }
+          return Reflect.get(target, prop, receiver);
+        },
+      });
+      return fn(wrapped);
+    })) as AppRepository["withTransaction"];
+
+    await new SettlementItemApplicationService(repo).apply(settlement.settlement_id, "p1", NOW);
+
+    expect(calls.indexOf("users.lock")).toBeGreaterThanOrEqual(0);
+    expect(calls.indexOf("users.lock")).toBeLessThan(calls.indexOf("season.lock"));
+    expect(calls.indexOf("season.lock")).toBeLessThan(calls.indexOf("ranking.lock"));
+    expect(calls.indexOf("ranking.lock")).toBeLessThan(calls.indexOf("users.patch"));
+    expect(calls).not.toContain("users.update");
+    expect(calls).not.toContain("season.update");
+    expect(calls).not.toContain("ranking.update");
+    expect(Object.keys(userPatches[0] ?? {}).sort()).toEqual([
+      "career_exact_hits",
+      "career_last_scoring_match_at",
+      "career_points",
+      "career_valid_predictions",
+      "career_wdl_hits",
+      "updated_at",
+    ]);
+    expect(Object.keys(seasonPatches[0] ?? {}).sort()).toEqual([
+      "exact_hits",
+      "last_scoring_match_at",
+      "points",
+      "updated_at",
+      "valid_predictions",
+      "wdl_hits",
+    ]);
+    expect(Object.keys(rankingPatches[0] ?? {}).sort()).toEqual([
+      "exact_hits",
+      "last_scoring_match_at",
+      "period_score",
+      "updated_at",
+      "valid_predictions",
+      "wdl_hits",
+    ]);
+    expect(await repo.users.findById(user.user_id)).toMatchObject({
+      nickname: "Keeper",
+      career_points: 30,
+      career_level: 3,
+      career_best_level: 4,
+      career_level_state: user.career_level_state,
+    });
+    expect(await repo.userSeasonStats.findByUserAndSeason(user.user_id, seasonId)).toMatchObject({
+      points: 21,
+      valid_predictions: 2,
+      level: 1,
+      best_level: 2,
+      is_level_frozen: true,
+      level_state: seasonState,
+    });
+    expect(await repo.rankings.findByPeriodAndUser(PeriodType.Week, "2026-W32", user.user_id)).toMatchObject({
+      period_score: 21,
+      valid_predictions: 2,
+      global_rank: 4,
+      is_final: true,
+    });
+  });
+
+  it("[A-S4-01] 持锁未见 season/ranking 时 insert 计分行，不 patch", async () => {
+    const { repo, user, match, settlement } = await setup({
+      user: { nickname: "Keeper", career_level: 1, career_best_level: 1 },
+    });
+    const seasonId = levelSeasonOf(match.period_anchor_at as Date);
+    const calls: string[] = [];
+    const original = repo.withTransaction.bind(repo);
+    repo.withTransaction = (async (fn: (tx: UnitOfWork) => Promise<unknown>) => original(async (tx) => {
+      const seasons = tx.userSeasonStats;
+      const rankings = tx.rankings;
+      if (seasons === undefined || rankings === undefined) throw new Error("missing ports");
+      const wrapped = new Proxy(tx, {
+        get(target, prop, receiver) {
+          if (prop === "users") {
+            const users = target.users;
+            return {
+              ...users,
+              findByIdForUpdate: async (id: string) => {
+                calls.push("users.lock");
+                return users.findByIdForUpdate!(id);
+              },
+            };
+          }
+          if (prop === "userSeasonStats") {
+            return {
+              ...seasons,
+              findByUserAndSeasonForUpdate: async (userId: string, levelSeasonId: string) => {
+                calls.push("season.lock");
+                return seasons.findByUserAndSeasonForUpdate!(userId, levelSeasonId);
+              },
+              insert: async (row: UserSeasonStats) => {
+                calls.push("season.insert");
+                return seasons.insert(row);
+              },
+              patchFields: async () => {
+                calls.push("season.patch");
+                throw new Error("absent season must insert");
+              },
+            };
+          }
+          if (prop === "rankings") {
+            return {
+              ...rankings,
+              findByPeriodAndUserForUpdate: async (...args: Parameters<NonNullable<typeof rankings.findByPeriodAndUserForUpdate>>) => {
+                calls.push("ranking.lock");
+                return rankings.findByPeriodAndUserForUpdate!(...args);
+              },
+              insert: async (row: RankingEntry) => {
+                calls.push("ranking.insert");
+                return rankings.insert(row);
+              },
+              patchFields: async () => {
+                calls.push("ranking.patch");
+                throw new Error("absent ranking must insert");
+              },
+            };
+          }
+          return Reflect.get(target, prop, receiver);
+        },
+      });
+      return fn(wrapped);
+    })) as AppRepository["withTransaction"];
+
+    await new SettlementItemApplicationService(repo).apply(settlement.settlement_id, "p1", NOW);
+
+    expect(calls).toEqual([
+      "users.lock",
+      "season.lock",
+      "ranking.lock",
+      "season.insert",
+      "ranking.insert",
+    ]);
+    expect(await repo.users.findById(user.user_id)).toMatchObject({ nickname: "Keeper", career_points: 12 });
+    expect(await repo.userSeasonStats.findByUserAndSeason(user.user_id, seasonId)).toMatchObject({
+      points: 12,
+      valid_predictions: 1,
+      wdl_hits: 1,
+      exact_hits: 1,
+      level: 1,
+      best_level: 1,
+      is_level_frozen: false,
+      last_scoring_match_at: ANCHOR,
+    });
+    expect(await repo.rankings.findByPeriodAndUser(PeriodType.Week, "2026-W32", user.user_id)).toMatchObject({
+      period_score: 12,
+      valid_predictions: 1,
+      wdl_hits: 1,
+      exact_hits: 1,
+      global_rank: null,
+      is_final: false,
+      last_scoring_match_at: ANCHOR,
+    });
+  });
+
+  it("[A-S4-01] season/ranking 唯一冲突直接失败，不在已中止事务内重锁", async () => {
+    const { repo, user, match, settlement } = await setup({
+      user: { nickname: "Keeper", career_level: 1, career_best_level: 1 },
+    });
+    const seasonId = levelSeasonOf(match.period_anchor_at as Date);
+    const calls: string[] = [];
+    const original = repo.withTransaction.bind(repo);
+    repo.withTransaction = (async (fn: (tx: UnitOfWork) => Promise<unknown>) => original(async (tx) => {
+      const seasons = tx.userSeasonStats;
+      const rankings = tx.rankings;
+      if (seasons === undefined || rankings === undefined) throw new Error("missing ports");
+      const wrapped = new Proxy(tx, {
+        get(target, prop, receiver) {
+          if (prop === "users") {
+            const users = target.users;
+            return {
+              ...users,
+              findByIdForUpdate: async (id: string) => {
+                calls.push("users.lock");
+                return users.findByIdForUpdate!(id);
+              },
+            };
+          }
+          if (prop === "userSeasonStats") {
+            return {
+              ...seasons,
+              findByUserAndSeasonForUpdate: async (userId: string, levelSeasonId: string) => {
+                calls.push("season.lock");
+                return seasons.findByUserAndSeasonForUpdate!(userId, levelSeasonId);
+              },
+              insert: async (row: UserSeasonStats) => {
+                calls.push("season.insert");
+                throw new UniqueConstraintError("user_season_stats", "uk_user_season", {
+                  user_id: row.user_id,
+                  level_season_id: row.level_season_id,
+                });
+              },
+              patchFields: async () => {
+                calls.push("season.patch");
+                throw new Error("unique conflict must not patch");
+              },
+            };
+          }
+          if (prop === "rankings") {
+            return {
+              ...rankings,
+              findByPeriodAndUserForUpdate: async (...args: Parameters<NonNullable<typeof rankings.findByPeriodAndUserForUpdate>>) => {
+                calls.push("ranking.lock");
+                return rankings.findByPeriodAndUserForUpdate!(...args);
+              },
+              insert: async (row: RankingEntry) => {
+                calls.push("ranking.insert");
+                throw new UniqueConstraintError("rankings", "uk_period_user", {
+                  period_type: row.period_type,
+                  period_key: row.period_key,
+                  user_id: row.user_id,
+                });
+              },
+              patchFields: async () => {
+                calls.push("ranking.patch");
+                throw new Error("unique conflict must not patch");
+              },
+            };
+          }
+          return Reflect.get(target, prop, receiver);
+        },
+      });
+      return fn(wrapped);
+    })) as AppRepository["withTransaction"];
+
+    await expect(
+      new SettlementItemApplicationService(repo).apply(settlement.settlement_id, "p1", NOW),
+    ).rejects.toBeInstanceOf(UniqueConstraintError);
+
+    expect(calls).toEqual([
+      "users.lock",
+      "season.lock",
+      "ranking.lock",
+      "season.insert",
+    ]);
+    expect(await repo.users.findById(user.user_id)).toMatchObject({ career_points: 0 });
+    expect(await repo.userSeasonStats.findByUserAndSeason(user.user_id, seasonId)).toBeNull();
+    expect(await repo.rankings.findByPeriodAndUser(PeriodType.Week, "2026-W32", user.user_id)).toBeNull();
+    expect(await repo.settlementItems.findBySettlementAndPrediction(settlement.settlement_id, "p1"))
+      .toMatchObject({ status: SettlementItemStatus.Pending, attempt_count: 0 });
   });

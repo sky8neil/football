@@ -19,10 +19,12 @@ CloudBase 入口是 `cloudfunctions/api/index.js` → `cloudfunctions/api/dist/c
 
 | 文件 | 用途 |
 |---|---|
-| `football-api.service` | API unit，`Type=simple` |
-| `football-jobs.service` | 单轮任务，`Type=oneshot`，`TimeoutStartSec=1800` |
-| `football-jobs.timer` | 每 3 分钟（VPS 实时档），`Persistent=true` |
-| `Caddyfile` | 备案域名反代到 `127.0.0.1:8787` |
+| `football-api.service` | API unit，`Type=simple`（含 `postgresql.service` 依赖、资源限额与进程沙箱） |
+| `football-jobs.service` | 实时轮任务，`Type=oneshot`（`--mode=realtime`，`TimeoutStartSec=150`，`FOOTBALL_PG_POOL_MAX=5`） |
+| `football-jobs.timer` | 每 3 分钟（VPS 实时档，`*:00/3:00`），`Persistent=true` |
+| `football-periodic.service` | 周期维护任务，`Type=oneshot`（`--mode=periodic`，`TimeoutStartSec=600`，`FOOTBALL_PG_POOL_MAX=5`） |
+| `football-periodic.timer` | 每 15 分钟错峰（`*:01/15:00`，避免与实时档共振），`Persistent=true` |
+| `Caddyfile` | 备案域名反代到 `127.0.0.1:8787`，托管 `/admin/` 静态管理端并屏蔽 `/health` 与测试文件 |
 | `football.env.example` | VPS EnvironmentFile 占位，无真实凭据 |
 | `cloudbase.env.example` | 云函数环境变量占位，无腾讯云密钥 |
 
@@ -56,20 +58,41 @@ npm run cloudbase:deploy         # 预检已串在部署链第一位，云端降
 完整合同见 `docs/VPS_SELF_HOSTED_DEPLOYMENT_DEV_PLAN__v1.0.md` §11。摘要：
 
 ```bash
+# 1. 收紧凭据文件权限（仅运行用户可读）
+chmod 600 /home/neilxu/football/shared/football.env
+
+# 2. 安装依赖、构建与数据库/管理员初始化
 npm ci
 npm run typecheck
 npm run build
 npm run vps:db -- --plan
 npm run vps:db -- --apply
-npm run vps:admin -- --openid <wechat-openid>
+npm run vps:admin -- --apply --openid <wechat-openid>
 npm run jobs:tick -- --dry-run
+
+# 3. 启用 API 与双定时器（realtime 3m + periodic 15m 错峰）
+sudo cp ops/vps/football-api.service ops/vps/football-jobs.* ops/vps/football-periodic.* /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now football-api.service football-jobs.timer football-periodic.timer
 ```
+
+### 独立 Web 管理端（`/admin/`）与一次性登录令牌
+
+`Caddyfile` 通过 `/admin/*` 直接托管 `admin/` 静态管理后台（自动将 `/admin` 重定向至 `/admin/`，关闭缓存，禁止访问 `*.test.mjs` 并阻断公网 `/health`）。
+
+推荐通过 CLI 为活跃管理员签发短期一次性登录令牌（`login_token`）：
+
+```bash
+npm run vps:admin -- --issue-login --openid <wechat-openid>
+```
+
+也可在 `football.env` 中可选配置 `FOOTBALL_ADMIN_LOGIN_SECRET`（未配置时回退至 `FOOTBALL_MATCH_CURSOR_SECRET`）；若需启用口令登录，需配置哈希口令映射。
 
 模板校验（本仓库可做，不启动服务）：
 
 ```bash
-systemd-analyze verify ops/vps/football-api.service ops/vps/football-jobs.service ops/vps/football-jobs.timer
-systemd-analyze calendar '*-*-* *:00/15:00'
+systemd-analyze verify ops/vps/football-api.service ops/vps/football-jobs.service ops/vps/football-jobs.timer ops/vps/football-periodic.service ops/vps/football-periodic.timer
+systemd-analyze calendar '*-*-* *:00/3:00' '*-*-* *:01/15:00'
 caddy validate --config ops/vps/Caddyfile --adapter caddyfile
 ```
 

@@ -10,6 +10,19 @@ export interface StatusMatchInput {
   home_team_id: string;
   away_team_id: string;
   match_status: "scheduled" | "live" | "finished" | "postponed" | "cancelled" | "abandoned";
+  regular_home_score: number | null;
+  regular_away_score: number | null;
+}
+
+/** Q8 收官终态：仅 cancelled 或已具备非空常规比分的 finished 场次允许计入收官，abandoned/无比分 finished 不收官。 */
+export function isTerminalSeasonMatch(
+  match: Pick<StatusMatchInput, "match_status" | "regular_home_score" | "regular_away_score">,
+): boolean {
+  return match.match_status === "cancelled" || (
+    match.match_status === "finished" &&
+    match.regular_home_score !== null &&
+    match.regular_away_score !== null
+  );
 }
 
 export interface EvaluateInput {
@@ -60,7 +73,7 @@ export function evaluateLeagueSeason(input: EvaluateInput): LeagueSeasonEvaluati
     identities.set(key, ids);
   }
   const duplicate = [...identities.values()].some((ids) => ids.size > 1);
-  const nonTerminal = matches.some((match) => !["finished", "cancelled", "abandoned"].includes(match.match_status));
+  const nonTerminal = matches.some((match) => !isTerminalSeasonMatch(match));
   const completion_status = schedule_status === "locked" && !duplicate && !nonTerminal ? "completed" : "open";
   const reopened = input.previous?.completion_status === "completed" && completion_status === "open";
   const reason = reopened ? "reopened" : schedule_status === "uninitialized" ? "uninitialized"

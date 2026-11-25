@@ -54,6 +54,14 @@ function handleStub(overrides: Record<string, unknown> = {}): JobsTickHandle {
         skipped_count: 0,
       })),
     },
+    levelCorrectionReeval: {
+      runPendingCompensation: vi.fn(async () => ({
+        kind: "completed" as const,
+        scanned_count: 0,
+        completed_count: 0,
+        pending_count: 0,
+      })),
+    },
     boardSnapshot: {
       generate: vi.fn(async () => []),
       generateSeasonFinal: vi.fn(async () => []),

@@ -52,11 +52,16 @@ describe("decideProviderResultAdoption", () => {
     }
   });
 
-  it("flags a finished/live conflict after the finish grace period", () => {
+  it("adopts the authoritative finished result without flagging lagging secondary live observations", () => {
     const afterGrace = new Date(KICKOFF.getTime() + 150 * 60_000);
     expect(decideProviderResultAdoption("premier_league", [
       observation("football_data", "finished"), observation("5dollar", "live", null),
-    ], KICKOFF, afterGrace)).toEqual({ kind: "anomaly", reason: "finished_live_conflict" });
+    ], KICKOFF, afterGrace)).toMatchObject({
+      kind: "adopt",
+      provider: "football_data",
+      compared_providers: ["football_data"],
+      score: { home: 2, away: 1 },
+    });
   });
 
   it("counts only distinct providers with a finished score", () => {

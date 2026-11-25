@@ -87,6 +87,12 @@ export function createCountingDb(db: CloudBaseDb): { db: CloudBaseDb; counter: D
         return inner.transaction((transactionDb) => work(wrap(transactionDb)));
       },
     };
+    if (inner.getForUpdate) {
+      wrapped.getForUpdate = async (collection, id) => {
+        bump("read", collection);
+        return inner.getForUpdate!(collection, id);
+      };
+    }
     if (inner.patch) {
       wrapped.patch = async (collection, id, fields) => {
         bump("write", collection);
@@ -173,6 +179,18 @@ export function createCountingDb(db: CloudBaseDb): { db: CloudBaseDb; counter: D
       wrapped.findSettlementFallbackPage = async (params) => {
         bump("read", params.collection);
         return inner.findSettlementFallbackPage!(params);
+      };
+    }
+    if (inner.findAnomalyPage) {
+      wrapped.findAnomalyPage = async (params) => {
+        bump("read", params.collection);
+        return inner.findAnomalyPage!(params);
+      };
+    }
+    if (inner.countPredictionsByMatchGroupedByResult) {
+      wrapped.countPredictionsByMatchGroupedByResult = async (params) => {
+        bump("read", params.collection);
+        return inner.countPredictionsByMatchGroupedByResult!(params);
       };
     }
     return wrapped;

@@ -50,6 +50,7 @@ import {
   CloudBaseDocumentNotFoundError,
   CloudBaseDuplicateKeyError,
   cloudBaseCollectionName,
+  type AuthSessionRevoker,
   type CloudBaseDb,
   type CloudBaseDocument,
   type CloudBaseQueryOptions,
@@ -71,9 +72,12 @@ import {
   DocumentNotFoundError,
   StaleResultVersionError,
   UniqueConstraintError,
+  repositoryPatchPayload,
   aggregateLeagueSeasonCatalog,
   selectPredictionHistoryPage,
   type AdminRepository,
+  type AdminAuditLogPage,
+  type AdminAuditLogPageQuery,
   type AdminAuditLogRepository,
   type AdminAnomalyPageQuery,
   type AdminAnomalyPage,
@@ -206,11 +210,13 @@ export class CloudBaseAppRepository implements AppRepository {
   readonly groups: GroupRepository;
   readonly groupMembers: GroupMemberRepository;
   readonly jobLocks: JobLockRepository;
+  readonly authSessions?: AuthSessionRevoker;
 
   constructor(
     private readonly config: Pick<CloudBaseRepositoryConfig, "resource_namespace">,
     private readonly db: CloudBaseDb,
   ) {
+    if (db.authSessions !== undefined) this.authSessions = db.authSessions;
     this.leagueSeasons = {
       findByKey: async (leagueId, seasonId) => this.one<LeagueSeason>("league_seasons", { league_id: leagueId, season_id: seasonId }),
       findByLeague: async (leagueId) => this.where<LeagueSeason>("league_seasons", { league_id: leagueId }),
@@ -256,6 +262,10 @@ export class CloudBaseAppRepository implements AppRepository {
         if (user.career_best_level < old.career_best_level) throw internalError("career_best_level 只增不减");
         await this.update("users", user.user_id, user);
       },
+      findByIdForUpdate: async (userId) => this.byIdForUpdate<User>("users", userId),
+      patchFields: async (userId, fields) => {
+        await this.patchFields("users", userId, repositoryPatchPayload("users", fields, { user_id: userId }));
+      },
     };
 
     this.deletedOpenidMappings = {
@@ -275,7 +285,12 @@ export class CloudBaseAppRepository implements AppRepository {
     this.teams = {
       findById: async (id) => this.byId<Team>("teams", id),
       findByIds: async (teamIds) => this.findEntitiesByIds<Team>("teams", teamIds, (t) => t.team_id),
+      findAll: async () => this.all<Team>("teams"),
       insert: async (team) => this.add("teams", team.team_id, team),
+      update: async (team) => this.update("teams", team.team_id, team),
+      patchFields: async (teamId, fields) => {
+        await this.patchFields("teams", teamId, repositoryPatchPayload("teams", fields, { team_id: teamId }));
+      },
     };
     this.teamProviderMappings = {
       findByProviderAndExternalId: async (provider, externalId) => this.one<TeamProviderMapping>("team_provider_mappings", { provider, provider_team_id: externalId }),
@@ -287,7 +302,9 @@ export class CloudBaseAppRepository implements AppRepository {
           providerTeamIds,
         ),
       findByTeamId: async (teamId) => this.where<TeamProviderMapping>("team_provider_mappings", { team_id: teamId }),
+      findAll: async () => this.all<TeamProviderMapping>("team_provider_mappings"),
       insert: async (mapping) => this.add("team_provider_mappings", compositeId(mapping.provider, mapping.provider_team_id), mapping),
+      update: async (mapping) => this.update("team_provider_mappings", compositeId(mapping.provider, mapping.provider_team_id), mapping),
     };
     this.matchProviderMappings = {
       findByProviderAndExternalId: async (provider, externalId) => this.one<MatchProviderMapping>("match_provider_mappings", { provider, provider_match_id: externalId }),
@@ -352,11 +369,15 @@ export class CloudBaseAppRepository implements AppRepository {
     };
     this.adminAuditLogs = {
       findByEntity: async (entityType, entityId) => this.where<AdminAuditLog>("admin_audit_logs", { entity_type: entityType, entity_id: entityId }),
+      findPage: async (query) => this.findAuditLogPage(query),
       insert: async (log) => this.add("admin_audit_logs", log.audit_id, log),
     };
     this.anomalies = {
+      findById: async (anomalyId) => this.byId<Anomaly>("anomalies", anomalyId),
+      findByIdForUpdate: async (anomalyId) => this.byIdForUpdate<Anomaly>("anomalies", anomalyId),
       findByKey: async (key) => this.one<Anomaly>("anomalies", { anomaly_key: key }),
       findOpenBlockingByMatch: async (matchId) => (await this.where<Anomaly>("anomalies", { match_id: matchId, status: "open", blocking: true })),
+      findOpenByMatch: async (matchId) => (await this.where<Anomaly>("anomalies", { match_id: matchId, status: "open" })),
       findPage: async (query) => this.findAnomalyPage(query),
       insert: async (anomaly) => this.add("anomalies", anomaly.anomaly_id, anomaly),
       update: async (anomaly) => this.update("anomalies", anomaly.anomaly_id, anomaly),
@@ -526,6 +547,10 @@ export class CloudBaseAppRepository implements AppRepository {
         assertMatchResultVersionInvariants(match);
         await this.update("matches", match.match_id, match);
       },
+      findByIdForUpdate: async (matchId) => this.byIdForUpdate<Match>("matches", matchId),
+      patchFields: async (matchId, fields) => {
+        await this.patchFields("matches", matchId, repositoryPatchPayload("matches", fields, { match_id: matchId }));
+      },
       updateSettlementProgress: async (matchId, resultVersion, settledAt) => {
         const match = await this.byId<Match>("matches", matchId);
         if (match === null) throw new DocumentNotFoundError("matches", matchId);
@@ -557,6 +582,7 @@ export class CloudBaseAppRepository implements AppRepository {
         const ids = uniqueIds(canonicalMatchIds);
         if (ids.length === 0) return [];
         const selected = new Map<string, Prediction>();
+        const seenCanonical = new Set<string>();
         const queryByField = async (field: "canonical_match_id" | "match_id", values: readonly string[]) => {
           const rows: Prediction[] = [];
           for (const chunk of chunksOf(values, MAPPING_IN_CHUNK)) {
@@ -567,13 +593,14 @@ export class CloudBaseAppRepository implements AppRepository {
           return rows;
         };
         for (const prediction of await queryByField("canonical_match_id", ids)) {
-          selected.set(prediction.canonical_match_id, prediction);
+          selected.set(prediction.prediction_id, prediction);
+          seenCanonical.add(prediction.canonical_match_id);
         }
-        const missing = ids.filter((id) => !selected.has(id));
+        const missing = ids.filter((id) => !seenCanonical.has(id));
         if (missing.length > 0) {
           for (const prediction of await queryByField("match_id", missing)) {
-            if (prediction.canonical_match_id !== prediction.match_id || selected.has(prediction.canonical_match_id)) continue;
-            selected.set(prediction.canonical_match_id, prediction);
+            if (prediction.canonical_match_id !== prediction.match_id || seenCanonical.has(prediction.canonical_match_id)) continue;
+            selected.set(prediction.prediction_id, prediction);
           }
         }
         return [...selected.values()];
@@ -608,21 +635,36 @@ export class CloudBaseAppRepository implements AppRepository {
       },
       countByMatchGroupedByResult: async (matchId) => {
         const collection = this.collection("predictions");
-        const [HOME, DRAW, AWAY, matchIdDocs] = await Promise.all([
-          this.db.count(collection, { canonical_match_id: matchId, derived_result: "HOME" }),
-          this.db.count(collection, { canonical_match_id: matchId, derived_result: "DRAW" }),
-          this.db.count(collection, { canonical_match_id: matchId, derived_result: "AWAY" }),
-          // 已限定 match_id = matchId（单场），不会全表扫描。
+        if (this.db.countPredictionsByMatchGroupedByResult !== undefined) {
+          return this.db.countPredictionsByMatchGroupedByResult({
+            collection,
+            canonical_match_id: matchId,
+          });
+        }
+        const [byCanonicalDocs, matchIdDocs] = await Promise.all([
+          this.db.query(collection, { canonical_match_id: matchId }),
           this.db.query(collection, { match_id: matchId }),
         ]);
-        const counts = { HOME, DRAW, AWAY };
-        for (const doc of matchIdDocs) {
-          const canonical = doc.canonical_match_id;
-          if (canonical !== undefined && canonical !== null && canonical !== "") continue;
+        const counts = { HOME: 0, DRAW: 0, AWAY: 0 };
+        const seenIds = new Set<string>();
+        const accumulate = (doc: CloudBaseDocument) => {
+          const id = typeof doc.prediction_id === "string" && doc.prediction_id.length > 0
+            ? doc.prediction_id
+            : doc._id;
+          if (seenIds.has(id)) return;
+          seenIds.add(id);
           const result = doc.derived_result;
           if (result === "HOME" || result === "DRAW" || result === "AWAY") {
             counts[result] += 1;
           }
+        };
+        for (const doc of byCanonicalDocs) {
+          accumulate(doc);
+        }
+        for (const doc of matchIdDocs) {
+          const canonical = doc.canonical_match_id;
+          if (canonical !== undefined && canonical !== null && canonical !== "") continue;
+          accumulate(doc);
         }
         return counts;
       },
@@ -814,6 +856,15 @@ export class CloudBaseAppRepository implements AppRepository {
         assertSeasonStatsInvariants(stats);
         await this.update("user_season_stats", compositeId(stats.user_id, stats.level_season_id), stats);
       },
+      findByUserAndSeasonForUpdate: async (userId, seasonId) =>
+        this.byIdForUpdate<UserSeasonStats>("user_season_stats", compositeId(userId, seasonId)),
+      patchFields: async (userId, seasonId, fields) => {
+        await this.patchFields(
+          "user_season_stats",
+          compositeId(userId, seasonId),
+          repositoryPatchPayload("user_season_stats", fields, { user_id: userId, level_season_id: seasonId }),
+        );
+      },
     };
     this.rankings = {
       findByPeriodAndUser: async (periodType, periodKey, userId) => this.one<RankingEntry>("rankings", { period_type: periodType, period_key: periodKey, user_id: userId }),
@@ -844,6 +895,19 @@ export class CloudBaseAppRepository implements AppRepository {
       },
       insert: async (entry) => { assertRankingInvariants(entry); await this.add("rankings", compositeId(entry.period_type, entry.period_key, entry.user_id), entry); },
       update: async (entry) => { assertRankingInvariants(entry); await this.update("rankings", compositeId(entry.period_type, entry.period_key, entry.user_id), entry); },
+      findByPeriodAndUserForUpdate: async (periodType, periodKey, userId) =>
+        this.byIdForUpdate<RankingEntry>("rankings", compositeId(periodType, periodKey, userId)),
+      patchFields: async (periodType, periodKey, userId, fields) => {
+        await this.patchFields(
+          "rankings",
+          compositeId(periodType, periodKey, userId),
+          repositoryPatchPayload("rankings", fields, {
+            period_type: periodType,
+            period_key: periodKey,
+            user_id: userId,
+          }),
+        );
+      },
       updateGlobalRank: async (periodType, periodKey, userId, globalRank, updatedAt) => {
         await this.patchFields(
           "rankings",
@@ -894,6 +958,10 @@ export class CloudBaseAppRepository implements AppRepository {
       findByInviteCode: async (inviteCode) => this.one<Group>("groups", { invite_code: inviteCode }),
       insert: async (group) => { assertGroupInvariants(group); await this.add("groups", group.group_id, group); },
       update: async (group) => { assertGroupInvariants(group); await this.update("groups", group.group_id, group); },
+      findByIdForUpdate: async (groupId) => this.byIdForUpdate<Group>("groups", groupId),
+      patchFields: async (groupId, fields) => {
+        await this.patchFields("groups", groupId, repositoryPatchPayload("groups", fields, { group_id: groupId }));
+      },
     };
     this.groupMembers = {
       findByGroupAndUser: async (groupId, userId) => this.byId<GroupMember>("group_members", compositeId(groupId, userId)),
@@ -956,6 +1024,12 @@ export class CloudBaseAppRepository implements AppRepository {
     return doc === null ? null : withoutId<T>(name, doc);
   }
 
+  private async byIdForUpdate<T>(name: string, id: string): Promise<T | null> {
+    if (this.db.getForUpdate === undefined) throw new Error("getForUpdate is not implemented");
+    const doc = await this.db.getForUpdate(this.collection(name), id);
+    return doc === null ? null : withoutId<T>(name, doc);
+  }
+
   private async all<T>(name: string): Promise<T[]> {
     return (await this.db.query(this.collection(name))).map((doc) => withoutId<T>(name, doc));
   }
@@ -975,7 +1049,10 @@ export class CloudBaseAppRepository implements AppRepository {
   private async findActiveWindow(query: ActiveWindowQuery): Promise<Match[]> {
     const collected = new Map<string, Match>();
     for (const fragment of buildActiveWindowFilters(query)) {
-      const filter: Record<string, unknown> = { ...fragment.equals };
+      const filter: Record<string, unknown> = {
+        ...fragment.equals,
+        ...(fragment.supersededByNull ? { superseded_by: null } : {}),
+      };
       if (fragment.kickoffAtGte !== undefined) {
         const range = this.db.gteFilter?.("kickoff_at", fragment.kickoffAtGte);
         if (range !== undefined) Object.assign(filter, range);
@@ -1310,12 +1387,47 @@ export class CloudBaseAppRepository implements AppRepository {
   }
 
   private async findAnomalyPage(query: AdminAnomalyPageQuery): Promise<AdminAnomalyPage> {
+    const fetchLimit = query.limit + 1;
+    if (this.db.findAnomalyPage !== undefined) {
+      const items = (await this.db.findAnomalyPage({
+        collection: this.collection("anomalies"),
+        status: query.status,
+        blocking: query.blocking,
+        after: query.after,
+        limit: fetchLimit,
+      })).map((doc) => withoutId<Anomaly>("anomalies", doc));
+      return { items: items.slice(0, query.limit), has_more: items.length > query.limit };
+    }
     const items = (await this.all<Anomaly>("anomalies"))
       .filter((item) => query.status === null || item.status === query.status)
       .filter((item) => query.blocking === null || item.blocking === query.blocking)
       .filter((item) => query.after === null || item.last_seen_at < query.after.last_seen_at ||
         (item.last_seen_at.getTime() === query.after.last_seen_at.getTime() && item.anomaly_id < query.after.anomaly_id))
       .sort(compareDateDesc<Anomaly>("last_seen_at", "anomaly_id"));
+    return { items: items.slice(0, query.limit), has_more: items.length > query.limit };
+  }
+
+  private async findAuditLogPage(query: AdminAuditLogPageQuery): Promise<AdminAuditLogPage> {
+    const fetchLimit = query.limit + 1;
+    if (this.db.findAuditLogPage !== undefined) {
+      const items = (await this.db.findAuditLogPage({
+        collection: this.collection("admin_audit_logs"),
+        action: query.action,
+        entity_type: query.entity_type,
+        entity_id: query.entity_id,
+        after: query.after,
+        limit: fetchLimit,
+      })).map((doc) => withoutId<AdminAuditLog>("admin_audit_logs", doc));
+      return { items: items.slice(0, query.limit), has_more: items.length > query.limit };
+    }
+    const filter: Record<string, unknown> = {};
+    if (query.action !== null) filter.action = query.action;
+    if (query.entity_type !== null) filter.entity_type = query.entity_type;
+    if (query.entity_id !== null) filter.entity_id = query.entity_id;
+    const items = (await this.where<AdminAuditLog>("admin_audit_logs", filter))
+      .filter((item) => query.after === null || item.created_at < query.after.created_at ||
+        (item.created_at.getTime() === query.after.created_at.getTime() && item.audit_id < query.after.audit_id))
+      .sort(compareDateDesc<AdminAuditLog>("created_at", "audit_id"));
     return { items: items.slice(0, query.limit), has_more: items.length > query.limit };
   }
 }

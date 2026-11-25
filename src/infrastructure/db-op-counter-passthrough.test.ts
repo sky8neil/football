@@ -309,7 +309,7 @@ describe("createCountingDb passthrough of inFilter/lteFilter", () => {
     expect(counter.end()).toEqual({ read: 0, write: 0, by_collection: [] });
   });
 
-  it("[Slice 3.2/3.3] 透传 deleteWhere({ limit })、findLatestRegularBoardSnapshot 与 findSettlementFallbackPage 并准确计数", async () => {
+  it("[Slice 3.2/3.3] 透传 deleteWhere({ limit })、findLatestRegularBoardSnapshot、findSettlementFallbackPage 与 findAnomalyPage 并准确计数", async () => {
     const inner = new FakeDb(true, true) as CloudBaseDb;
     const seen: Record<string, unknown> = {};
     inner.deleteWhere = async (collection, filter, options) => {
@@ -324,12 +324,28 @@ describe("createCountingDb passthrough of inFilter/lteFilter", () => {
       seen.fallback = params;
       return [];
     };
+    inner.findAnomalyPage = async (params) => {
+      seen.anomalies = params;
+      return [];
+    };
+    inner.countPredictionsByMatchGroupedByResult = async (params) => {
+      seen.grouped = params;
+      return { HOME: 1, DRAW: 2, AWAY: 3 };
+    };
 
     const { db, counter } = createCountingDb(inner);
     counter.begin();
     await expect(db.deleteWhere!("ft_sync_logs", { started_at: NOW }, { limit: 1000 })).resolves.toBe(3);
     await expect(db.findLatestRegularBoardSnapshot!({ collection: "ft_board_snapshots", board: "career" })).resolves.toEqual([]);
     await expect(db.findSettlementFallbackPage!({ collection: "ft_matches", limit: 20, after: null })).resolves.toEqual([]);
+    const anomalyQuery = { collection: "ft_anomalies", status: null, blocking: null, after: null, limit: 20 };
+    await expect(db.findAnomalyPage!(anomalyQuery)).resolves.toEqual([]);
+    const groupedQuery = { collection: "ft_predictions", canonical_match_id: "match-1" };
+    await expect(db.countPredictionsByMatchGroupedByResult!(groupedQuery)).resolves.toEqual({
+      HOME: 1,
+      DRAW: 2,
+      AWAY: 3,
+    });
     const ops = counter.end();
 
     expect(seen.delete).toEqual({
@@ -339,7 +355,9 @@ describe("createCountingDb passthrough of inFilter/lteFilter", () => {
     });
     expect(seen.snapshot).toEqual({ collection: "ft_board_snapshots", board: "career" });
     expect(seen.fallback).toEqual({ collection: "ft_matches", limit: 20, after: null });
-    expect(ops).toMatchObject({ read: 2, write: 1 });
+    expect(seen.anomalies).toEqual(anomalyQuery);
+    expect(seen.grouped).toEqual(groupedQuery);
+    expect(ops).toMatchObject({ read: 4, write: 1 });
   });
 });
 

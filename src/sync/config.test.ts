@@ -75,7 +75,9 @@ describe("SYNC_TASKS_V1（规范 32.1-32.6）", () => {
     expect(SYNC_TASKS_V1[SyncJobType.WeeklyLevelEval]).toEqual({
       cronExpression: "10 2 * * 1",
     });
-    expect(SYNC_TASKS_V1[SyncJobType.LevelCorrectionReeval]).toEqual({});
+    expect(SYNC_TASKS_V1[SyncJobType.LevelCorrectionReeval]).toEqual({
+      intervalMinutes: 15,
+    });
   });
 
   it("不再保留 intervalHours 字段：间隔一律用分钟表达，避免两套单位", () => {

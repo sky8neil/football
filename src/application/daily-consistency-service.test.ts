@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
+import { AnomalyType } from "../domain/enums.js";
+import { InMemoryRepository } from "../infrastructure/repositories.js";
 import type { DailyConsistencyInput } from "./daily-consistency.js";
 import {
+  DAILY_CONSISTENCY_ANOMALY_MATCH_ID,
   DAILY_CONSISTENCY_LOCK_KEY,
   DailyConsistencyService,
 } from "./daily-consistency-service.js";
@@ -46,6 +49,7 @@ describe("DailyConsistencyService", () => {
       { jobLocks: lockRepository, syncLogs },
       source,
     );
+    const wallClockBefore = Date.now();
 
     await expect(service.run(NOW)).resolves.toEqual({
       kind: "completed",
@@ -59,12 +63,36 @@ describe("DailyConsistencyService", () => {
       expect.any(Date),
     );
     const leaseUntil = lockRepository.acquire.mock.calls[0]?.[2] as Date;
-    expect(leaseUntil.getTime()).toBe(NOW.getTime() + 10 * 60 * 1000);
+    expect(leaseUntil.getTime()).toBeGreaterThanOrEqual(
+      Math.max(NOW.getTime(), wallClockBefore) + 10 * 60 * 1000,
+    );
+    expect(leaseUntil.getTime()).toBeLessThanOrEqual(Date.now() + 10 * 60 * 1000);
     expect(source.load).toHaveBeenCalledTimes(1);
     expect(lockRepository.release).toHaveBeenCalledWith(
       DAILY_CONSISTENCY_LOCK_KEY,
       expect.any(String),
     );
+  });
+
+  it("[Slice 3] 落后墙钟的 serverNow 时 leaseUntil 仍晚于 Date.now()", async () => {
+    const lockRepository = makeLockRepository(true);
+    const syncLogs = {
+      insert: vi.fn(async () => undefined),
+      update: vi.fn(async () => undefined),
+    };
+    const source = { load: vi.fn(async () => emptyInput()) };
+    const staleNow = new Date(Date.now() - 15 * 60 * 1000);
+    const service = new DailyConsistencyService(
+      { jobLocks: lockRepository, syncLogs },
+      source,
+    );
+    const wallClockBefore = Date.now();
+
+    await service.run(staleNow);
+
+    const leaseUntil = lockRepository.acquire.mock.calls[0]?.[2] as Date;
+    expect(leaseUntil.getTime()).toBeGreaterThan(wallClockBefore);
+    expect(leaseUntil.getTime()).toBeGreaterThan(Date.now());
   });
 
   it("已有 daily consistency lease 时跳过本轮且不读取快照", async () => {
@@ -254,6 +282,59 @@ describe("DailyConsistencyService", () => {
       last_error_code: "DAILY_CONSISTENCY_MISMATCH",
       last_error_message: "career:user-1 [career_points,career_valid_predictions,career_wdl_hits]",
     }));
+  });
+
+  it("[D-S4-06] 发现差异时同步写非阻塞 anomalies，恢复后自动收敛", async () => {
+    const lockRepository = makeLockRepository(true);
+    const syncLogs = {
+      insert: vi.fn(async () => undefined),
+      update: vi.fn(async () => undefined),
+    };
+    const anomalies = new InMemoryRepository().anomalies;
+    const input = emptyInput();
+    input.career.push({
+      user_id: "user-1",
+      actual: {
+        career_points: 0,
+        career_valid_predictions: 0,
+        career_wdl_hits: 0,
+        career_exact_hits: 0,
+        career_level: 1,
+        career_best_level: 1,
+      },
+      expected: {
+        career_points: 3,
+        career_valid_predictions: 1,
+        career_wdl_hits: 1,
+        career_exact_hits: 0,
+        career_level: 1,
+        career_best_level: 1,
+      },
+    });
+    const source = { load: vi.fn(async () => input) };
+    const service = new DailyConsistencyService(
+      { jobLocks: lockRepository, syncLogs, anomalies },
+      source,
+    );
+    const anomalyKey = `${DAILY_CONSISTENCY_ANOMALY_MATCH_ID}:${AnomalyType.DailyConsistencyMismatch}`;
+
+    await service.run(NOW);
+    await expect(anomalies.findByKey(anomalyKey)).resolves.toMatchObject({
+      anomaly_key: anomalyKey,
+      match_id: DAILY_CONSISTENCY_ANOMALY_MATCH_ID,
+      type: AnomalyType.DailyConsistencyMismatch,
+      blocking: false,
+      status: "open",
+      occurrence_count: 1,
+      details: expect.objectContaining({ difference_count: 1 }),
+    });
+
+    input.career[0]!.actual = { ...input.career[0]!.expected };
+    await service.run(new Date(NOW.getTime() + 24 * 60 * 60_000));
+    await expect(anomalies.findByKey(anomalyKey)).resolves.toMatchObject({
+      status: "resolved",
+      resolution: "daily_consistency_clean",
+    });
   });
 
   it("跳过 active settlement 范围时在成功日志中记录可定位摘要", async () => {

@@ -107,6 +107,61 @@ async function setup(
   return repo;
 }
 
+const SETTLEMENT_FIELDS = ["settlement_status", "settled_result_version", "settled_at"] as const;
+
+function watchMatchPatch(repo: InMemoryRepository): {
+  repo: AppRepository;
+  calls: string[];
+  patches: Array<Partial<Match>>;
+} {
+  const calls: string[] = [];
+  const patches: Array<Partial<Match>> = [];
+  const guardedRepo = Object.create(repo) as AppRepository;
+  Object.defineProperty(guardedRepo, "withTransaction", {
+    value: <T>(fn: (tx: UnitOfWork) => Promise<T>) =>
+      repo.withTransaction((tx) => {
+        const guardedTx = Object.create(tx) as UnitOfWork;
+        Object.defineProperty(guardedTx, "matches", {
+          value: {
+            ...tx.matches,
+            findById: async (matchId: string) => {
+              calls.push("findById");
+              return tx.matches.findById(matchId);
+            },
+            findByIdForUpdate: async (matchId: string) => {
+              calls.push("findByIdForUpdate");
+              return tx.matches.findByIdForUpdate!(matchId);
+            },
+            update: async () => {
+              calls.push("update");
+              throw new Error("matches.update full document overwrite");
+            },
+            patchFields: async (matchId: string, fields: Partial<Match>) => {
+              calls.push("patchFields");
+              for (const key of SETTLEMENT_FIELDS) {
+                if (Object.prototype.hasOwnProperty.call(fields, key)) {
+                  throw new Error(`patch overwrote ${key}`);
+                }
+              }
+              patches.push(fields);
+              return tx.matches.patchFields!(matchId, fields);
+            },
+            updateSettlementStatus: async (
+              matchId: string,
+              status: Match["settlement_status"],
+              updatedAt: Date,
+            ) => {
+              calls.push("updateSettlementStatus");
+              return tx.matches.updateSettlementStatus(matchId, status, updatedAt);
+            },
+          },
+        });
+        return fn(guardedTx);
+      }),
+  });
+  return { repo: guardedRepo, calls, patches };
+}
+
 function withSettlementWriteGuard(
   repo: InMemoryRepository,
   writes: Array<{ kind: "update" | "updateSettlementStatus"; value: Partial<Match> }>,
@@ -397,6 +452,159 @@ describe("ProviderResultSyncService", () => {
     });
     expect(await repo.providerSnapshots.findByEntity("match", MATCH_ID)).toEqual([
       expect.objectContaining({ event_type: "provider_conflict", payload: { changed: true } }),
+    ]);
+  });
+
+  it("首次赛果先锁后读再局部写入，保留结算版本与职责外字段", async () => {
+    const repo = await setup({ extra_home_score: 4, penalty_home_score: 1 });
+    const watched = watchMatchPatch(repo);
+
+    const outcome = await new ProviderResultSyncService(watched.repo).applyFinishedFixture(
+      makeFixture(),
+      {},
+      NOW,
+    );
+
+    expect(outcome).toMatchObject({
+      kind: "applied",
+      result_version: 1,
+      settlement_status: SettlementStatus.Waiting,
+    });
+    expect(await repo.matches.findById(MATCH_ID)).toMatchObject({
+      match_status: MatchStatus.Finished,
+      settlement_status: SettlementStatus.Waiting,
+      settled_result_version: 0,
+      settled_at: null,
+      extra_home_score: 4,
+      penalty_home_score: 1,
+      regular_home_score: 2,
+      regular_away_score: 1,
+      result_version: 1,
+      prediction_closed_at: NOW,
+      finish_detected_at: NOW,
+    });
+    const lockAt = watched.calls.indexOf("findByIdForUpdate");
+    const readAt = watched.calls.indexOf("findById");
+    const statusAt = watched.calls.indexOf("updateSettlementStatus");
+    const patchAt = watched.calls.indexOf("patchFields");
+    expect(lockAt).toBe(0);
+    expect(readAt).toBeGreaterThan(lockAt);
+    expect(statusAt).toBeGreaterThan(readAt);
+    expect(patchAt).toBeGreaterThan(statusAt);
+    expect(watched.calls).not.toContain("update");
+    expect(Object.keys(watched.patches[0] ?? {}).sort()).toEqual([
+      "compared_providers",
+      "finish_detected_at",
+      "match_status",
+      "prediction_closed_at",
+      "regular_away_score",
+      "regular_home_score",
+      "result_provider",
+      "result_source",
+      "result_version",
+      "updated_at",
+    ]);
+  });
+
+  it("已结算赛果变化不覆写 settled_at 与 settled_result_version", async () => {
+    const settledAt = new Date("2026-08-08T18:00:00.000Z");
+    const repo = await setup(
+      {
+        match_status: MatchStatus.Finished,
+        settlement_status: SettlementStatus.Settled,
+        regular_home_score: 2,
+        regular_away_score: 1,
+        result_version: 1,
+        settled_result_version: 1,
+        result_source: ResultSource.Provider,
+        prediction_closed_at: NOW,
+        finish_detected_at: NOW,
+        period_anchor_at: new Date("2026-08-08T14:00:00.000Z"),
+        settled_at: settledAt,
+        extra_away_score: 3,
+      },
+      makeResult(),
+    );
+    const watched = watchMatchPatch(repo);
+
+    const outcome = await new ProviderResultSyncService(watched.repo).applyFinishedFixture(
+      makeFixture({ fulltime: { home: 1, away: 1 } }),
+      {},
+      new Date(NOW.getTime() + 60_000),
+    );
+
+    expect(outcome).toMatchObject({
+      kind: "applied",
+      result_version: 2,
+      settlement_status: SettlementStatus.Correcting,
+    });
+    expect(await repo.matches.findById(MATCH_ID)).toMatchObject({
+      settlement_status: SettlementStatus.Correcting,
+      settled_result_version: 1,
+      settled_at: settledAt,
+      extra_away_score: 3,
+      regular_home_score: 1,
+      regular_away_score: 1,
+      result_version: 2,
+      prediction_closed_at: NOW,
+      finish_detected_at: NOW,
+    });
+    expect(watched.calls[0]).toBe("findByIdForUpdate");
+    expect(watched.calls.indexOf("patchFields")).toBeGreaterThan(watched.calls.indexOf("updateSettlementStatus"));
+    expect(watched.calls).not.toContain("update");
+    expect(watched.patches[0]).not.toHaveProperty("settlement_status");
+    expect(watched.patches[0]).not.toHaveProperty("settled_result_version");
+    expect(watched.patches[0]).not.toHaveProperty("settled_at");
+    expect(watched.patches[0]).not.toHaveProperty("period_anchor_at");
+    expect(watched.patches[0]).not.toHaveProperty("extra_away_score");
+  });
+
+  it("相同比分只局部更新 compared_providers，不回写结算状态", async () => {
+    const settledAt = new Date("2026-08-08T18:00:00.000Z");
+    const repo = await setup(
+      {
+        match_status: MatchStatus.Finished,
+        settlement_status: SettlementStatus.Settling,
+        regular_home_score: 2,
+        regular_away_score: 1,
+        result_version: 1,
+        settled_result_version: 0,
+        result_source: ResultSource.Provider,
+        compared_providers: [Provider.ApiFootball],
+        prediction_closed_at: NOW,
+        finish_detected_at: NOW,
+        settled_at: settledAt,
+        extra_home_score: 5,
+      },
+      makeResult(),
+    );
+    const watched = watchMatchPatch(repo);
+    const later = new Date(NOW.getTime() + 60_000);
+
+    const outcome = await new ProviderResultSyncService(watched.repo).applyFinishedFixture(
+      { ...makeFixture(), comparedProviders: [Provider.ApiFootball, Provider.FootballData] },
+      {},
+      later,
+    );
+
+    expect(outcome).toMatchObject({
+      kind: "unchanged",
+      result_version: 1,
+      settlement_status: SettlementStatus.Settling,
+    });
+    expect(await repo.matches.findById(MATCH_ID)).toMatchObject({
+      settlement_status: SettlementStatus.Settling,
+      settled_result_version: 0,
+      settled_at: settledAt,
+      extra_home_score: 5,
+      result_version: 1,
+      compared_providers: [Provider.ApiFootball, Provider.FootballData],
+      updated_at: later,
+    });
+    expect(watched.calls).toEqual(["findByIdForUpdate", "patchFields"]);
+    expect(Object.keys(watched.patches[0] ?? {}).sort()).toEqual([
+      "compared_providers",
+      "updated_at",
     ]);
   });
 });

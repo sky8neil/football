@@ -23,6 +23,14 @@ export const RATE_LIMIT_DEFAULTS = {
     max_requests: 120,
     window_ms: ONE_MINUTE_MS,
   },
+  wechat_login: {
+    max_requests: 10,
+    window_ms: ONE_MINUTE_MS,
+  },
+  admin_login: {
+    max_requests: 5,
+    window_ms: ONE_MINUTE_MS,
+  },
   groups: {
     max_requests: 10,
     window_ms: ONE_MINUTE_MS,
@@ -47,6 +55,7 @@ interface WindowState {
 
 const PRUNE_SIZE_THRESHOLD = 1024;
 const PRUNE_COOLDOWN_MS = 10_000;
+export const IN_MEMORY_RATE_LIMIT_MAX_BUCKETS = 8192;
 
 /**
  * 进程内固定窗口实现，供 API middleware 和测试适配器使用。
@@ -64,7 +73,10 @@ export class InMemoryRateLimiter implements RateLimiter {
       }
     }
     this.lastPruneAt = nowMs;
-    this.nextPruneSize = Math.max(PRUNE_SIZE_THRESHOLD, this.windows.size * 2);
+    this.nextPruneSize = Math.min(
+      IN_MEMORY_RATE_LIMIT_MAX_BUCKETS,
+      Math.max(PRUNE_SIZE_THRESHOLD, this.windows.size * 2),
+    );
   }
 
   /** 仅用于诊断与单测观测当前内存桶数量。 */
@@ -93,6 +105,12 @@ export class InMemoryRateLimiter implements RateLimiter {
       Math.floor(nowMs / config.window_ms) * config.window_ms;
     const key = `${scope}\u0000${identity}`;
     const previous = this.windows.get(key);
+    if (previous === undefined && this.windows.size >= IN_MEMORY_RATE_LIMIT_MAX_BUCKETS) {
+      this.pruneExpired(nowMs);
+    }
+    if (previous === undefined && this.windows.size >= IN_MEMORY_RATE_LIMIT_MAX_BUCKETS) {
+      throw conflictError("RATE_LIMITED", "请求过于频繁");
+    }
     const requestCount =
       previous?.window_start === windowStart ? previous.request_count + 1 : 1;
     this.windows.set(key, {

@@ -1,9 +1,11 @@
 import { isDeepStrictEqual } from "node:util";
 import { describe, expect, it, vi } from "vitest";
 import { SyncJobType } from "../domain/enums.js";
-import { CloudBaseDocumentNotFoundError } from "./cloudbase-db.js";
+import { CloudBaseAppRepository } from "./cloudbase-app-repository.js";
+import { CloudBaseDocumentNotFoundError, cloudBaseCollectionName } from "./cloudbase-db.js";
 import { CloudBaseProviderLeagueStateStore } from "./cloudbase-provider-league-state.js";
 import { CloudBaseWxDb, type CloudBaseSdkDatabase } from "./cloudbase-wx-db.js";
+import { createCountingDb } from "./db-op-counter.js";
 
 function compareField(left: unknown, right: unknown): number {
   if (left instanceof Date && right instanceof Date) return left.getTime() - right.getTime();
@@ -14,6 +16,7 @@ function compareField(left: unknown, right: unknown): number {
 function fakeDatabase(format: "nested" | "top-level" = "nested") {
   const docs = new Map<string, Record<string, unknown>>();
   const getSizes: number[] = [];
+  const docGets: Array<{ collection: string; id: string; transaction: boolean }> = [];
   const queries: Array<{
     collection: string;
     filter: Record<string, unknown>;
@@ -123,6 +126,7 @@ function fakeDatabase(format: "nested" | "top-level" = "nested") {
         doc(id: string) {
           return {
             async get() {
+              docGets.push({ collection: name, id, transaction });
               const value = docs.get(`${name}/${id}`);
               if (!value) throw Object.assign(new Error("document not exist"), { errCode: -502005 });
               return { data: value };
@@ -180,7 +184,15 @@ function fakeDatabase(format: "nested" | "top-level" = "nested") {
       };
     },
   });
-  return { db: makeDatabase() as unknown as CloudBaseSdkDatabase, docs, getSizes, queries, committed: () => committed, rolledBack: () => rolledBack };
+  return {
+    db: makeDatabase() as unknown as CloudBaseSdkDatabase,
+    docs,
+    getSizes,
+    docGets,
+    queries,
+    committed: () => committed,
+    rolledBack: () => rolledBack,
+  };
 }
 
 describe("CloudBase wx-server-sdk database adapter", () => {
@@ -264,6 +276,94 @@ describe("CloudBase wx-server-sdk database adapter", () => {
     const withoutCommand = new CloudBaseWxDb(fake.db, "football_test");
     expect(withoutCommand.lteFilter("kickoff_at", bound)).toBeUndefined();
     expect(withoutCommand.gteFilter("kickoff_at", bound)).toBeUndefined();
+  });
+});
+
+describe("CloudBaseWxDb.getForUpdate", () => {
+  it("事务外拒绝且不调用 doc.get", async () => {
+    const fake = fakeDatabase();
+    const db = new CloudBaseWxDb(fake.db, "football_test");
+    await db.add("football_test_users", "u1", { _id: "u1", nickname: "A" });
+    fake.docGets.length = 0;
+    await expect(db.getForUpdate("football_test_users", "u1")).rejects.toThrow(/active transaction/);
+    expect(fake.docGets).toEqual([]);
+    await expect(db.get("football_test_users", "u1")).resolves.toMatchObject({ nickname: "A" });
+    expect(fake.docGets).toEqual([
+      { collection: "football_test_users", id: "u1", transaction: false },
+    ]);
+  });
+
+  it("事务内走事务 doc.get，缺失返回 null，嵌套事务不另起快照读", async () => {
+    const fake = fakeDatabase();
+    const db = new CloudBaseWxDb(fake.db, "football_test");
+    const createdAt = "2026-08-09T00:00:00.000Z";
+    await db.add("football_test_users", "u1", { _id: "u1", nickname: "Ada", created_at: createdAt });
+    fake.docGets.length = 0;
+    fake.queries.length = 0;
+
+    await db.transaction(async (tx) => {
+      await expect(tx.getForUpdate!("football_test_users", "u1")).resolves.toMatchObject({
+        _id: "u1",
+        nickname: "Ada",
+        created_at: createdAt,
+      });
+      await expect(tx.getForUpdate!("football_test_users", "missing")).resolves.toBeNull();
+      await tx.transaction(async (nested) => {
+        await expect(nested.getForUpdate!("football_test_users", "u1")).resolves.toMatchObject({ nickname: "Ada" });
+      });
+    });
+
+    expect(fake.docGets).toEqual([
+      { collection: "football_test_users", id: "u1", transaction: true },
+      { collection: "football_test_users", id: "missing", transaction: true },
+      { collection: "football_test_users", id: "u1", transaction: true },
+    ]);
+    expect(fake.queries).toEqual([]);
+    expect(fake.committed()).toBe(1);
+    expect(fake.rolledBack()).toBe(0);
+  });
+
+  it("仓储事务内 findByIdForUpdate 解码日期，计数包装也不退化为无锁 get", async () => {
+    const fake = fakeDatabase();
+    const wx = new CloudBaseWxDb(fake.db, "ft");
+    const counted = createCountingDb(wx);
+    const repo = new CloudBaseAppRepository(
+      { resource_namespace: "ft" },
+      counted.db,
+    );
+    const users = cloudBaseCollectionName("ft", "users");
+    const createdAt = "2026-08-09T00:00:00.000Z";
+    await wx.add(users, "u1", {
+      _id: "u1",
+      user_id: "u1",
+      openid: "openid-u1",
+      nickname: "Ada",
+      career_points: 4,
+      created_at: createdAt,
+      updated_at: createdAt,
+    });
+    fake.docGets.length = 0;
+
+    await expect(repo.users.findByIdForUpdate!("u1")).rejects.toThrow(/active transaction/);
+    expect(fake.docGets).toEqual([]);
+
+    counted.counter.begin();
+    await repo.withTransaction(async (tx) => {
+      const locked = await tx.users.findByIdForUpdate!("u1");
+      expect(locked?.created_at).toBeInstanceOf(Date);
+      expect((locked?.created_at as Date).toISOString()).toBe(createdAt);
+      expect(locked).toMatchObject({ openid: "openid-u1", nickname: "Ada", career_points: 4 });
+      await expect(tx.users.findByIdForUpdate!("missing")).resolves.toBeNull();
+    });
+
+    expect(fake.docGets).toEqual([
+      { collection: users, id: "u1", transaction: true },
+      { collection: users, id: "missing", transaction: true },
+    ]);
+    expect(counted.counter.end()).toMatchObject({
+      read: 2,
+      by_collection: [{ collection: users, read: 2, write: 0 }],
+    });
   });
 });
 

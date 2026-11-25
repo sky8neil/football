@@ -162,7 +162,9 @@ describe("loadGatewayRuntimeConfig", () => {
     const baseProdEnv = {
       FOOTBALL_ENVIRONMENT: "prod",
       FOOTBALL_MATCH_CURSOR_SECRET: "test-match-cursor-secret",
-      FOOTBALL_REPOSITORY_BACKEND: "memory",
+      FOOTBALL_REPOSITORY_BACKEND: "cloudbase",
+      FOOTBALL_CLOUD_ENVIRONMENT_ID: "env-prod",
+      FOOTBALL_RESOURCE_NAMESPACE: "football_prod",
     };
 
     expect(() => loadGatewayRuntimeConfig(baseProdEnv)).toThrow(
@@ -201,7 +203,9 @@ describe("loadGatewayRuntimeConfig", () => {
     const prodConfig = loadGatewayRuntimeConfig({
       FOOTBALL_ENVIRONMENT: "prod",
       FOOTBALL_MATCH_CURSOR_SECRET: "test-match-cursor-secret",
-      FOOTBALL_REPOSITORY_BACKEND: "memory",
+      FOOTBALL_REPOSITORY_BACKEND: "cloudbase",
+      FOOTBALL_CLOUD_ENVIRONMENT_ID: "env-prod",
+      FOOTBALL_RESOURCE_NAMESPACE: "football_prod",
       FOOTBALL_LEVEL_FIRST_EVAL_AS_OF: "2026-08-03T02:00:00.000Z",
       FOOTBALL_RANKING_FIRST_PERIOD_KEY: "2026-W31",
     });
@@ -228,7 +232,9 @@ describe("loadGatewayRuntimeConfig", () => {
     const baseProdEnv = {
       FOOTBALL_ENVIRONMENT: "prod",
       FOOTBALL_MATCH_CURSOR_SECRET: "test-match-cursor-secret",
-      FOOTBALL_REPOSITORY_BACKEND: "memory",
+      FOOTBALL_REPOSITORY_BACKEND: "cloudbase",
+      FOOTBALL_CLOUD_ENVIRONMENT_ID: "env-prod",
+      FOOTBALL_RESOURCE_NAMESPACE: "football_prod",
       FOOTBALL_LEVEL_FIRST_EVAL_AS_OF: "2026-08-03T02:00:00.000Z",
     };
 
@@ -283,6 +289,168 @@ describe("loadGatewayRuntimeConfig", () => {
       FOOTBALL_RANKING_FIRST_PERIOD_KEY: "2026-W40",
     });
     expect(explicitDev.ranking_first_period_key).toBe("2026-W40");
+  });
+
+  it("rejects prod + memory even when the other prod keys are valid", () => {
+    expect(() =>
+      loadGatewayRuntimeConfig({
+        FOOTBALL_ENVIRONMENT: "prod",
+        FOOTBALL_MATCH_CURSOR_SECRET: "test-match-cursor-secret",
+        FOOTBALL_REPOSITORY_BACKEND: "memory",
+        FOOTBALL_LEVEL_FIRST_EVAL_AS_OF: "2026-08-03T02:00:00.000Z",
+        FOOTBALL_RANKING_FIRST_PERIOD_KEY: "2026-W31",
+      }),
+    ).toThrow("FOOTBALL_REPOSITORY_BACKEND=memory is not allowed when FOOTBALL_ENVIRONMENT=prod");
+  });
+
+  it("rejects postgres schema or namespace that crosses dev, test, and prod", () => {
+    const base = {
+      FOOTBALL_MATCH_CURSOR_SECRET: "test-match-cursor-secret",
+      FOOTBALL_REPOSITORY_BACKEND: "postgres",
+      FOOTBALL_DATABASE_URL: "postgres://football:must-not-leak@127.0.0.1:5432/football",
+      FOOTBALL_WECHAT_APP_ID: "wx-test-appid",
+      FOOTBALL_WECHAT_APP_SECRET: "wx-test-secret",
+      FOOTBALL_SESSION_TTL_SECONDS: "604800",
+    };
+    expect(() =>
+      loadGatewayRuntimeConfig({
+        ...base,
+        FOOTBALL_ENVIRONMENT: "dev",
+        FOOTBALL_DATABASE_SCHEMA: "football_prod",
+        FOOTBALL_RESOURCE_NAMESPACE: "football_dev",
+      }),
+    ).toThrow("FOOTBALL_DATABASE_SCHEMA must not contain prod when FOOTBALL_ENVIRONMENT=dev");
+    expect(() =>
+      loadGatewayRuntimeConfig({
+        ...base,
+        FOOTBALL_ENVIRONMENT: "dev",
+        FOOTBALL_DATABASE_SCHEMA: "football_test",
+        FOOTBALL_RESOURCE_NAMESPACE: "football_dev",
+      }),
+    ).toThrow("FOOTBALL_DATABASE_SCHEMA must not contain test when FOOTBALL_ENVIRONMENT=dev");
+    expect(() =>
+      loadGatewayRuntimeConfig({
+        ...base,
+        FOOTBALL_ENVIRONMENT: "test",
+        FOOTBALL_DATABASE_SCHEMA: "football_test",
+        FOOTBALL_RESOURCE_NAMESPACE: "football_dev",
+      }),
+    ).toThrow("FOOTBALL_RESOURCE_NAMESPACE must not contain dev when FOOTBALL_ENVIRONMENT=test");
+    expect(() =>
+      loadGatewayRuntimeConfig({
+        ...base,
+        FOOTBALL_ENVIRONMENT: "test",
+        FOOTBALL_DATABASE_SCHEMA: "football_test",
+        FOOTBALL_RESOURCE_NAMESPACE: "Football_PROD",
+      }),
+    ).toThrow("FOOTBALL_RESOURCE_NAMESPACE must not contain prod when FOOTBALL_ENVIRONMENT=test");
+    expect(() =>
+      loadGatewayRuntimeConfig({
+        ...base,
+        FOOTBALL_ENVIRONMENT: "prod",
+        FOOTBALL_DATABASE_SCHEMA: "football_dev",
+        FOOTBALL_RESOURCE_NAMESPACE: "football_prod",
+        FOOTBALL_LEVEL_FIRST_EVAL_AS_OF: "2026-08-03T02:00:00.000Z",
+        FOOTBALL_RANKING_FIRST_PERIOD_KEY: "2026-W31",
+      }),
+    ).toThrow("FOOTBALL_DATABASE_SCHEMA must not contain dev when FOOTBALL_ENVIRONMENT=prod");
+    expect(() =>
+      loadGatewayRuntimeConfig({
+        ...base,
+        FOOTBALL_ENVIRONMENT: "prod",
+        FOOTBALL_DATABASE_SCHEMA: "football_prod",
+        FOOTBALL_RESOURCE_NAMESPACE: "football_test",
+        FOOTBALL_LEVEL_FIRST_EVAL_AS_OF: "2026-08-03T02:00:00.000Z",
+        FOOTBALL_RANKING_FIRST_PERIOD_KEY: "2026-W31",
+      }),
+    ).toThrow("FOOTBALL_RESOURCE_NAMESPACE must not contain test when FOOTBALL_ENVIRONMENT=prod");
+
+    const devConfig = loadGatewayRuntimeConfig({
+      ...base,
+      FOOTBALL_ENVIRONMENT: "dev",
+      FOOTBALL_DATABASE_SCHEMA: "football_dev",
+      FOOTBALL_RESOURCE_NAMESPACE: "football_dev",
+    });
+    expect(devConfig.postgres_repository).toEqual({
+      database_url: "postgres://football:must-not-leak@127.0.0.1:5432/football",
+      database_schema: "football_dev",
+      resource_namespace: "football_dev",
+    });
+    const testConfig = loadGatewayRuntimeConfig({
+      ...base,
+      FOOTBALL_ENVIRONMENT: "test",
+      FOOTBALL_DATABASE_SCHEMA: "football_test",
+      FOOTBALL_RESOURCE_NAMESPACE: "football_test",
+    });
+    expect(testConfig.postgres_repository?.database_schema).toBe("football_test");
+  });
+
+  it("rejects a non-postgres URL or illegal schema without echoing the URL", () => {
+    const secret = "must-not-leak-db-password";
+    try {
+      loadGatewayRuntimeConfig({
+        FOOTBALL_ENVIRONMENT: "dev",
+        FOOTBALL_MATCH_CURSOR_SECRET: "test-match-cursor-secret",
+        FOOTBALL_REPOSITORY_BACKEND: "postgres",
+        FOOTBALL_DATABASE_URL: `mysql://football:${secret}@127.0.0.1:3306/football`,
+        FOOTBALL_DATABASE_SCHEMA: "football_dev",
+        FOOTBALL_RESOURCE_NAMESPACE: "football_dev",
+      });
+      throw new Error("expected Fail Closed");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      expect(message).toBe("FOOTBALL_DATABASE_URL must use the postgres or postgresql protocol");
+      expect(message).not.toContain(secret);
+    }
+    try {
+      loadGatewayRuntimeConfig({
+        FOOTBALL_ENVIRONMENT: "dev",
+        FOOTBALL_MATCH_CURSOR_SECRET: "test-match-cursor-secret",
+        FOOTBALL_REPOSITORY_BACKEND: "postgres",
+        FOOTBALL_DATABASE_URL: "not a url",
+        FOOTBALL_DATABASE_SCHEMA: "football_dev",
+        FOOTBALL_RESOURCE_NAMESPACE: "football_dev",
+      });
+      throw new Error("expected Fail Closed");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      expect(message).toBe("FOOTBALL_DATABASE_URL must use the postgres or postgresql protocol");
+      expect(message).not.toContain("not a url");
+    }
+    expect(() =>
+      loadGatewayRuntimeConfig({
+        FOOTBALL_ENVIRONMENT: "dev",
+        FOOTBALL_MATCH_CURSOR_SECRET: "test-match-cursor-secret",
+        FOOTBALL_REPOSITORY_BACKEND: "postgres",
+        FOOTBALL_DATABASE_URL: "postgresql://football:secret@127.0.0.1:5432/football",
+        FOOTBALL_DATABASE_SCHEMA: "football dev",
+        FOOTBALL_RESOURCE_NAMESPACE: "football_dev",
+      }),
+    ).toThrow("FOOTBALL_DATABASE_SCHEMA must be a valid SQL identifier");
+    expect(() =>
+      loadGatewayRuntimeConfig({
+        FOOTBALL_ENVIRONMENT: "test",
+        FOOTBALL_MATCH_CURSOR_SECRET: "test-match-cursor-secret",
+        FOOTBALL_REPOSITORY_BACKEND: "postgres",
+        FOOTBALL_DATABASE_URL: "postgresql://football:secret@127.0.0.1:5432/football",
+        FOOTBALL_DATABASE_SCHEMA: "football_test",
+        FOOTBALL_RESOURCE_NAMESPACE: "football-test;drop",
+      }),
+    ).toThrow("FOOTBALL_RESOURCE_NAMESPACE must be a valid SQL identifier");
+    const config = loadGatewayRuntimeConfig({
+      FOOTBALL_ENVIRONMENT: "test",
+      FOOTBALL_MATCH_CURSOR_SECRET: "test-match-cursor-secret",
+      FOOTBALL_REPOSITORY_BACKEND: "postgres",
+      FOOTBALL_DATABASE_URL: "postgresql://football:secret@127.0.0.1:5432/football",
+      FOOTBALL_DATABASE_SCHEMA: "football_test",
+      FOOTBALL_RESOURCE_NAMESPACE: "football_test",
+      FOOTBALL_WECHAT_APP_ID: "wx-test-appid",
+      FOOTBALL_WECHAT_APP_SECRET: "wx-test-secret",
+      FOOTBALL_SESSION_TTL_SECONDS: "604800",
+    });
+    expect(config.postgres_repository?.database_url).toBe(
+      "postgresql://football:secret@127.0.0.1:5432/football",
+    );
   });
 });
 

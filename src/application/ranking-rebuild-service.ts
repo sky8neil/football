@@ -4,10 +4,10 @@ import {
   RankingBoard,
   SCHEMA_VERSION,
   SettlementItemStatus,
-  UserStatus,
 } from "../domain/enums.js";
 import { conflictError, internalError, validationError } from "../domain/errors.js";
 import { newUuid } from "../domain/ids.js";
+import { isDeletedForPeriod } from "../domain/ranking.js";
 import {
   calculatePeriodKey,
   isValidPeriodKey,
@@ -27,6 +27,10 @@ import { rankingPeriodLockKey } from "./settlement-item-application-service.js";
 import { writeBoardSnapshotInTransaction } from "./board-snapshot.js";
 
 const REBUILD_LEASE_MILLISECONDS = FIXED_CONFIG_V1.JOB_LEASE_MINUTES * 60 * 1000;
+
+function rebuildLeaseDeadline(serverNow: Date): Date {
+  return new Date(Math.max(serverNow.getTime(), Date.now()) + REBUILD_LEASE_MILLISECONDS);
+}
 
 export interface RebuildPeriodRankingsOutcome {
   rankings: RankingEntry[];
@@ -120,7 +124,7 @@ export class RebuildPeriodRankingsService {
     const acquired = await this.repo.jobLocks.acquire(
       lockKey,
       ownerId,
-      new Date(serverNow.getTime() + REBUILD_LEASE_MILLISECONDS),
+      rebuildLeaseDeadline(serverNow),
     );
     if (!acquired) {
       throw conflictError(
@@ -129,16 +133,32 @@ export class RebuildPeriodRankingsService {
       );
     }
 
+    const rankingLockKey = rankingPeriodLockKey(periodType, periodKey);
+    const rankingOwnerId = newUuid();
+    let rankingAcquired = false;
     try {
+      rankingAcquired = await this.repo.jobLocks.acquire(
+        rankingLockKey,
+        rankingOwnerId,
+        rebuildLeaseDeadline(serverNow),
+      );
+      if (!rankingAcquired) {
+        throw conflictError("SETTLEMENT_ALREADY_RUNNING", "周期排行榜重算锁被占用", {
+          lock_key: rankingLockKey,
+        });
+      }
       return await this.repo.withTransaction((tx) =>
         this.rebuildPeriodRankingsInTransaction(tx, periodType, periodKey, serverNow),
       );
     } finally {
+      if (rankingAcquired) {
+        await this.repo.jobLocks.release(rankingLockKey, rankingOwnerId).catch(() => undefined);
+      }
       await this.repo.jobLocks.release(lockKey, ownerId);
     }
   }
 
-  /** Caller must hold periodRankingsRebuildLockKey; 本方法内再获取第 15.8 节 ranking 周期锁。 */
+  /** Caller must hold periodRankingsRebuildLockKey 与 rankingPeriodLockKey，且二者都在 withTransaction 之外。 */
   async rebuildPeriodRankingsInTransaction(
     tx: UnitOfWork,
     periodType: PeriodType,
@@ -149,37 +169,12 @@ export class RebuildPeriodRankingsService {
     assertPeriodKey(periodType, periodKey);
     assertValidServerNow(serverNow);
     assertRankingPort(tx);
-
-    const jobLocks = tx.jobLocks;
-    if (jobLocks === undefined) {
-      throw internalError("排行榜 rebuild 缺少 jobLocks repository port");
-    }
-    const rankingLockKey = rankingPeriodLockKey(periodType, periodKey);
-    const rankingOwnerId = newUuid();
-    const rankingLeaseUntil = new Date(
-      serverNow.getTime() + FIXED_CONFIG_V1.JOB_LEASE_MINUTES * 60 * 1000,
+    return this.rebuildPeriodRankingsWhileHoldingRankingLock(
+      tx,
+      periodType,
+      periodKey,
+      serverNow,
     );
-    const rankingAcquired = await jobLocks.acquire(
-      rankingLockKey,
-      rankingOwnerId,
-      rankingLeaseUntil,
-    );
-    if (!rankingAcquired) {
-      throw conflictError("SETTLEMENT_ALREADY_RUNNING", "周期排行榜重算锁被占用", {
-        lock_key: rankingLockKey,
-      });
-    }
-
-    try {
-      return await this.rebuildPeriodRankingsWhileHoldingRankingLock(
-        tx,
-        periodType,
-        periodKey,
-        serverNow,
-      );
-    } finally {
-      await jobLocks.release(rankingLockKey, rankingOwnerId);
-    }
   }
 
   private async rebuildPeriodRankingsWhileHoldingRankingLock(
@@ -189,6 +184,17 @@ export class RebuildPeriodRankingsService {
     serverNow: Date,
   ): Promise<RebuildPeriodRankingsOutcome> {
     assertRankingPort(tx);
+    const findRankingForUpdate = tx.rankings.findByPeriodAndUserForUpdate;
+    const patchRankingFields = tx.rankings.patchFields;
+    const findMatchForUpdate = tx.matches.findByIdForUpdate;
+    if (
+      findRankingForUpdate === undefined ||
+      patchRankingFields === undefined ||
+      findMatchForUpdate === undefined
+    ) {
+      throw internalError("ranking rebuild 缺少 rankings/matches 行锁与局部更新端口");
+    }
+
     const supportedLeagueIds = new Set(SUPPORTED_LEAGUES.map((league) => league.league_id));
     const startAt = periodStartAt(periodType, periodKey);
     const endAt = periodEndAt(periodType, periodKey);
@@ -203,7 +209,41 @@ export class RebuildPeriodRankingsService {
         matchesById.set(match.match_id, match);
       }
     }
-    const selectedMatches = targetMatches([...matchesById.values()], periodType, periodKey);
+    const candidateMatches = targetMatches([...matchesById.values()], periodType, periodKey);
+    const existingRankings = await tx.rankings.findByPeriod(periodType, periodKey);
+    const candidateItems = candidateMatches.length === 0
+      ? []
+      : await selectTargetItems(
+          tx,
+          candidateMatches.map((match) => match.match_id),
+        );
+    const candidateUserIds = [
+      ...new Set([
+        ...existingRankings.map((entry) => entry.user_id),
+        ...candidateItems.map((item) => item.user_id),
+      ]),
+    ].sort((a, b) => a.localeCompare(b));
+
+    // 跨表锁序必须遵守 users → user_season_stats → rankings → matches → groups，避免与并发结算/封榜死锁。
+    const lockedRankingsByUser = new Map<string, RankingEntry | null>();
+    for (const userId of candidateUserIds) {
+      lockedRankingsByUser.set(
+        userId,
+        await findRankingForUpdate(periodType, periodKey, userId),
+      );
+    }
+
+    const lockedMatches: Match[] = [];
+    const sortedMatchIds = [...new Set(candidateMatches.map((match) => match.match_id))].sort((a, b) =>
+      a.localeCompare(b),
+    );
+    for (const matchId of sortedMatchIds) {
+      const lockedMatch = await findMatchForUpdate(matchId);
+      if (lockedMatch !== null) {
+        lockedMatches.push(lockedMatch);
+      }
+    }
+    const selectedMatches = targetMatches(lockedMatches, periodType, periodKey);
     for (const match of selectedMatches) {
       if (activeSettlement(match)) {
         throw conflictError(
@@ -232,20 +272,17 @@ export class RebuildPeriodRankingsService {
     const anchorByPrediction = new Map(
       facts.map((fact) => [fact.prediction.prediction_id, fact.match.period_anchor_at as Date]),
     );
-    const deletedUserIds = isHistoricalPeriod
-      ? new Set<string>()
-      : new Set(
-          (await tx.users.findAll())
-            .filter((user) => user.status === UserStatus.Deleted)
-            .map((user) => user.user_id),
-        );
-    const rebuildItems = isHistoricalPeriod
-      ? items
-      : items.filter((item) => !deletedUserIds.has(item.user_id));
+    // 注销用户保留账本周统计累加值（修正 delta 闭合），仅按周期结束时刻区分是否占名次。
+    const deletedUserIds = new Set(
+      (await tx.users.findAll())
+        .filter((user) => isDeletedForPeriod(user, endAt))
+        .map((user) => user.user_id),
+    );
     const rebuilt = rebuildPeriodRankings(
-      rebuildItems,
+      items,
       periodByPrediction,
       anchorByPrediction,
+      deletedUserIds,
     );
 
     const saved: RankingEntry[] = [];
@@ -253,11 +290,14 @@ export class RebuildPeriodRankingsService {
     let updatedCount = 0;
     const rebuiltUserIds = new Set(rebuilt.map((entry) => entry.user_id));
     for (const entry of rebuilt) {
-      const existing = await tx.rankings.findByPeriodAndUser(
-        periodType,
-        periodKey,
-        entry.user_id,
-      );
+      if (!lockedRankingsByUser.has(entry.user_id)) {
+        throw conflictError(
+          "SETTLEMENT_ALREADY_RUNNING",
+          "目标周期存在并发结算新增排行条目",
+          { user_id: entry.user_id },
+        );
+      }
+      const existing = lockedRankingsByUser.get(entry.user_id) ?? null;
       if (existing === null) {
         const created: RankingEntry = {
           schema_version: SCHEMA_VERSION,
@@ -270,7 +310,18 @@ export class RebuildPeriodRankingsService {
         saved.push(created);
         createdCount += 1;
       } else {
-        const updated: RankingEntry = {
+        const isFinal = isHistoricalPeriod || existing.is_final;
+        await patchRankingFields(periodType, periodKey, entry.user_id, {
+          period_score: entry.period_score,
+          valid_predictions: entry.valid_predictions,
+          wdl_hits: entry.wdl_hits,
+          exact_hits: entry.exact_hits,
+          last_scoring_match_at: entry.last_scoring_match_at,
+          global_rank: entry.global_rank,
+          is_final: isFinal,
+          updated_at: serverNow,
+        });
+        saved.push({
           ...existing,
           period_score: entry.period_score,
           valid_predictions: entry.valid_predictions,
@@ -278,21 +329,29 @@ export class RebuildPeriodRankingsService {
           exact_hits: entry.exact_hits,
           last_scoring_match_at: entry.last_scoring_match_at,
           global_rank: entry.global_rank,
-          is_final: isHistoricalPeriod || existing.is_final,
+          is_final: isFinal,
           updated_at: serverNow,
-        };
-        await tx.rankings.update(updated);
-        saved.push(updated);
+        });
         updatedCount += 1;
       }
     }
 
     // rankings 是可重建缓存，目标周期中没有事实账本的旧条目也必须被清零；历史封存标记保留。
-    const staleRankings = (await tx.rankings.findByPeriod(periodType, periodKey))
-      .filter((entry) => !rebuiltUserIds.has(entry.user_id))
-      .sort((a, b) => a.user_id.localeCompare(b.user_id));
-    for (const existing of staleRankings) {
-      const cleared: RankingEntry = {
+    const staleRankings = [...lockedRankingsByUser.entries()]
+      .filter(([userId, existing]) => existing !== null && !rebuiltUserIds.has(userId))
+      .sort(([a], [b]) => a.localeCompare(b));
+    for (const [, existing] of staleRankings) {
+      if (existing === null) continue;
+      await patchRankingFields(periodType, periodKey, existing.user_id, {
+        period_score: 0,
+        valid_predictions: 0,
+        wdl_hits: 0,
+        exact_hits: 0,
+        last_scoring_match_at: null,
+        global_rank: null,
+        updated_at: serverNow,
+      });
+      saved.push({
         ...existing,
         period_score: 0,
         valid_predictions: 0,
@@ -301,9 +360,7 @@ export class RebuildPeriodRankingsService {
         last_scoring_match_at: null,
         global_rank: null,
         updated_at: serverNow,
-      };
-      await tx.rankings.update(cleared);
-      saved.push(cleared);
+      });
       updatedCount += 1;
     }
 
@@ -340,7 +397,7 @@ export class RebuildPeriodRankingsService {
     const acquired = await this.repo.jobLocks.acquire(
       lockKey,
       ownerId,
-      new Date(serverNow.getTime() + REBUILD_LEASE_MILLISECONDS),
+      rebuildLeaseDeadline(serverNow),
     );
     if (!acquired) {
       throw conflictError("SETTLEMENT_ALREADY_RUNNING", "目标榜单存在并发 rebuild", {
@@ -378,7 +435,9 @@ export class RebuildPeriodRankingsService {
         }
       }
     }
-    const snapshots = await writeBoardSnapshotInTransaction(tx, board, serverNow);
+    const snapshots = await writeBoardSnapshotInTransaction(tx, board, serverNow, {
+      onExisting: "reject",
+    });
     return { snapshots, rebuilt_entry_count: snapshots.length };
   }
 }

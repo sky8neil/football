@@ -194,6 +194,7 @@ export const AnomalyType = {
   TeamChangeAfterPrediction: "TEAM_CHANGE_AFTER_PREDICTION",
   KickoffChangeAfterAnchor: "KICKOFF_CHANGE_AFTER_ANCHOR",
   AdminProviderResultConflict: "ADMIN_PROVIDER_RESULT_CONFLICT",
+  DailyConsistencyMismatch: "DAILY_CONSISTENCY_MISMATCH",
 } as const;
 export type AnomalyType = (typeof AnomalyType)[keyof typeof AnomalyType];
 
@@ -219,6 +220,10 @@ export const AdminAuditAction = {
   RetrySettlement: "retry_settlement",
   RebuildUserStats: "rebuild_user_stats",
   RebuildRankings: "rebuild_rankings",
+  GrantAdmin: "grant_admin",
+  ResolveAnomaly: "resolve_anomaly",
+  UpdateTeam: "update_team",
+  UpsertTeamMapping: "upsert_team_mapping",
 } as const;
 export type AdminAuditAction =
   (typeof AdminAuditAction)[keyof typeof AdminAuditAction];
@@ -228,6 +233,10 @@ export const AdminAuditEntityType = {
   Settlement: "settlement",
   User: "user",
   RankingPeriod: "ranking_period",
+  Admin: "admin",
+  Anomaly: "anomaly",
+  Team: "team",
+  TeamProviderMapping: "team_provider_mapping",
 } as const;
 export type AdminAuditEntityType =
   (typeof AdminAuditEntityType)[keyof typeof AdminAuditEntityType];
@@ -239,6 +248,10 @@ export const ADMIN_AUDIT_ENTITY_TYPE_BY_ACTION: Readonly<
   [AdminAuditAction.RetrySettlement]: AdminAuditEntityType.Settlement,
   [AdminAuditAction.RebuildUserStats]: AdminAuditEntityType.User,
   [AdminAuditAction.RebuildRankings]: AdminAuditEntityType.RankingPeriod,
+  [AdminAuditAction.GrantAdmin]: AdminAuditEntityType.Admin,
+  [AdminAuditAction.ResolveAnomaly]: AdminAuditEntityType.Anomaly,
+  [AdminAuditAction.UpdateTeam]: AdminAuditEntityType.Team,
+  [AdminAuditAction.UpsertTeamMapping]: AdminAuditEntityType.TeamProviderMapping,
 };
 
 /** 单场计分结果枚举：0 / 3 / 12（规范 9.2）。 */

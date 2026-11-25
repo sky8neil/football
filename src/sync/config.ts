@@ -67,6 +67,9 @@ export const SYNC_TASKS_V1: Partial<Record<SyncJobType, SyncTaskConfig>> & {
     intervalMinutesByProfile: { test: 5 },
     highFrequencyUntilFirstSettlement: true,
   },
+  provider_reconcile: {
+    intervalMinutes: 24 * 60,
+  },
   stale_recovery: { intervalMinutes: 60 },
   period_finalize: {
     intervalMinutes: 60,
@@ -77,7 +80,9 @@ export const SYNC_TASKS_V1: Partial<Record<SyncJobType, SyncTaskConfig>> & {
   weekly_level_eval: {
     cronExpression: "10 2 * * 1",
   },
-  level_correction_reeval: {},
+  level_correction_reeval: {
+    intervalMinutes: 15,
+  },
   board_snapshot_career: {
     intervalMinutes: FIXED_CONFIG_V1.CAREER_BOARD_SNAPSHOT_MINUTES,
   },
@@ -103,6 +108,9 @@ export function taskIntervalMinutes(jobType: SyncJobType, profile: ProviderJobPr
   }
   return minutes;
 }
+
+/** `league_seasons` 周期巡检默认间隔（分钟）；与 `sync:league_seasons` 分布式锁配合，不再每个 tick 无门控全扫。 */
+export const LEAGUE_SEASONS_MAINTENANCE_INTERVAL_MINUTES = 60;
 
 export const SYNC_RETRY_V1 = {
   retryDelaysMinutes: FIXED_CONFIG_V1.SYNC_RETRY_DELAYS_MINUTES,

@@ -250,7 +250,6 @@ export class RetrySettlementService {
           items,
           oldAuditValue,
         } = prepared;
-        const tx = this.repo;
         let processedCount = 0;
         let skippedAppliedCount = 0;
         let maxAppliedAtMs: number | null = null;
@@ -284,7 +283,9 @@ export class RetrySettlementService {
             });
           } catch (err) {
             const { code, message } = workerErrorInfo(err);
+            let auditLog: AdminAuditLog | undefined;
             await this.repo.withTransaction(async (tx) => {
+              await renewSettlementLockForFinalize(tx, lockKey, ownerId);
               await tx.settlementItems.update({
                 ...item,
                 status: SettlementItemStatus.Failed,
@@ -307,6 +308,15 @@ export class RetrySettlementService {
                 SettlementStatus.Failed,
                 serverNow,
               );
+              if (auditWriter !== undefined) {
+                auditLog = await auditWriter(
+                  tx,
+                  oldAuditValue ??
+                    (await snapshotSettlementForAudit(tx, settlementId)),
+                  await snapshotSettlementForAudit(tx, settlementId),
+                  serverNow,
+                );
+              }
             });
             const outcome: RetrySettlementOutcome = {
               kind: "failed",
@@ -314,18 +324,7 @@ export class RetrySettlementService {
               processed_count: processedCount,
               skipped_applied_count: skippedAppliedCount,
             };
-            return auditWriter === undefined
-              ? outcome
-              : {
-                  ...outcome,
-                  audit_log: await auditWriter(
-                    tx,
-                    oldAuditValue ??
-                      (await snapshotSettlementForAudit(tx, settlementId)),
-                    await snapshotSettlementForAudit(tx, settlementId),
-                    serverNow,
-                  ),
-                };
+            return auditLog === undefined ? outcome : { ...outcome, audit_log: auditLog };
           }
 
           lockRenewal.assertHealthy();
@@ -335,7 +334,7 @@ export class RetrySettlementService {
 
         const finalizedAt = resolveFinalizeTimestamp(serverNow, maxAppliedAtMs);
         lockRenewal.assertHealthy();
-        await tx.settlements.update({
+        await this.repo.settlements.update({
           ...runningSettlement,
           phase: SettlementPhase.RebuildRanks,
           updated_at: serverNow,
@@ -348,6 +347,7 @@ export class RetrySettlementService {
           );
         }
         lockRenewal.assertHealthy();
+        let auditLog: AdminAuditLog | undefined;
         await this.repo.withTransaction(async (tx) => {
           await renewSettlementLockForFinalize(tx, lockKey, ownerId);
           lockRenewal.assertHealthy();
@@ -390,6 +390,15 @@ export class RetrySettlementService {
               : SettlementStatus.Settled,
             finalizedAt,
           );
+          if (auditWriter !== undefined) {
+            auditLog = await auditWriter(
+              tx,
+              oldAuditValue ??
+                (await snapshotSettlementForAudit(tx, settlementId)),
+              await snapshotSettlementForAudit(tx, settlementId),
+              finalizedAt,
+            );
+          }
         });
 
         const outcome: RetrySettlementOutcome = {
@@ -398,18 +407,7 @@ export class RetrySettlementService {
           processed_count: processedCount,
           skipped_applied_count: skippedAppliedCount,
         };
-        return auditWriter === undefined
-          ? outcome
-          : {
-              ...outcome,
-              audit_log: await auditWriter(
-                tx,
-                oldAuditValue ??
-                  (await snapshotSettlementForAudit(tx, settlementId)),
-                await snapshotSettlementForAudit(tx, settlementId),
-                finalizedAt,
-              ),
-            };
+        return auditLog === undefined ? outcome : { ...outcome, audit_log: auditLog };
       })();
     } finally {
       lockRenewal.stop();

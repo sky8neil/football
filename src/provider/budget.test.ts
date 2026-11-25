@@ -152,6 +152,7 @@ describe("ProviderBudget", () => {
       allowed: false,
       reason: "provider_quota",
       key_id: "bsd#1",
+      retry_at: resetAt,
     });
     await expect(budget.acquire("bsd", SyncJobType.LiveMatch, resetAt)).resolves.toMatchObject({ allowed: true });
   });
@@ -166,6 +167,7 @@ describe("ProviderBudget", () => {
       allowed: false,
       reason: "provider_cooldown",
       key_id: "bsd#1",
+      retry_at: resetAt,
     });
     await expect(budget.acquire("bsd", SyncJobType.LiveMatch, resetAt)).resolves.toMatchObject({ allowed: true });
   });

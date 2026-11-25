@@ -110,9 +110,22 @@ export class OpenFootAdapter implements ProviderAdapter {
     query: Record<string, string>,
     options?: ProviderAdapterCallOptions,
   ): Promise<ApiFootballFixture[]> {
+    const MAX_PAGES = 100;
     const output: ApiFootballFixture[] = [];
+    const visitedCursors = new Set<string>();
     let cursor: string | null = null;
+    let pageCount = 0;
     do {
+      if (pageCount >= MAX_PAGES) {
+        throw new ProviderDataError("DIAG_PROVIDER_PAGINATION source_id=of reason=max_pages");
+      }
+      if (cursor !== null) {
+        if (visitedCursors.has(cursor)) {
+          throw new ProviderDataError("DIAG_PROVIDER_PAGINATION source_id=of reason=cursor_loop");
+        }
+        visitedCursors.add(cursor);
+      }
+      pageCount += 1;
       await options?.beforeRequest?.();
       const response = asRecord(await this.http.getJson(allowedPath("matches"), {
         ...query,

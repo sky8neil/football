@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { MVP_SEASON, SUPPORTED_LEAGUES } from "../domain/config.js";
-import { MatchStatus, Provider, SyncJobType } from "../domain/enums.js";
+import { MatchStatus, Provider, SCHEMA_VERSION, SyncJobType } from "../domain/enums.js";
 import { InMemoryRepository } from "../infrastructure/repositories.js";
 import { makeApiFixture } from "../provider/fixture-factory.js";
 import type { ApiFootballFixture } from "../provider/types.js";
@@ -107,5 +107,70 @@ describe("ProviderFutureScheduleService", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("[A-S7-01] probes nextSeason in June/Dec and open previousSeason in July/Jan while separating date-range fixtures by league.season", async () => {
+    const juneNow = new Date("2026-06-25T12:00:00.000Z");
+    const repo = new InMemoryRepository();
+    const prevFixture = makeApiFixture({
+      fixtureId: 1200501,
+      leagueId: 39,
+      season: "2025",
+      date: "2026-06-28T14:00:00.000Z",
+      timestamp: Date.parse("2026-06-28T14:00:00.000Z") / 1000,
+    });
+    const nextFixture = makeApiFixture({
+      fixtureId: 1200502,
+      leagueId: 39,
+      season: "2026",
+      date: "2026-07-20T14:00:00.000Z",
+      timestamp: Date.parse("2026-07-20T14:00:00.000Z") / 1000,
+    });
+    const calls: Array<{ leagueId: string; seasonId?: string }> = [];
+
+    const outcome = await new ProviderFutureScheduleService(repo, {
+      getTeams: async (q) => q.leagueId === "39"
+        ? [{ team: { id: 40, name: "Home FC" } }, { team: { id: 41, name: "Away FC" } }]
+        : [],
+      getFixtures: async (q) => {
+        calls.push({ leagueId: q.leagueId, ...(q.seasonId ? { seasonId: q.seasonId } : {}) });
+        // Date-range adapter (like FD) returns both seasons in overlapping June-July window
+        return q.leagueId === "39" ? [prevFixture, nextFixture] : [];
+      },
+    }).run(juneNow);
+
+    expect(outcome.kind).toBe("completed");
+    expect(calls.filter((c) => c.leagueId === "39").map((c) => c.seasonId)).toEqual(["2025_2026", "2026_2027"]);
+    const prevMap = await repo.matchProviderMappings.findByProviderAndExternalId(Provider.ApiFootball, "1200501");
+    const nextMap = await repo.matchProviderMappings.findByProviderAndExternalId(Provider.ApiFootball, "1200502");
+    expect((await repo.matches.findById(prevMap!.match_id))?.season_id).toBe("2025_2026");
+    expect((await repo.matches.findById(nextMap!.match_id))?.season_id).toBe("2026_2027");
+
+    // July with uncompleted 2025_2026 probes 2025_2026 alongside 2026_2027
+    const julyNow = new Date("2026-07-10T12:00:00.000Z");
+    await repo.leagueSeasons.insert({
+      schema_version: SCHEMA_VERSION,
+      league_id: "premier_league",
+      season_id: "2025_2026",
+      format: { kind: "double_round_robin", team_count: 20, round_count: 38 },
+      schedule_status: "locked",
+      completion_status: "open",
+      completion_confirmed_at: null,
+      reopened_at: null,
+      reopen_count: 0,
+      ended_at: null,
+      manual_override: null,
+      created_at: julyNow,
+      updated_at: julyNow,
+    });
+    const julyCalls: string[] = [];
+    await new ProviderFutureScheduleService(repo, {
+      getTeams: async () => [],
+      getFixtures: async (q) => {
+        if (q.leagueId === "39" && q.seasonId) julyCalls.push(q.seasonId);
+        return [];
+      },
+    }).run(julyNow, "premier_league");
+    expect(julyCalls).toEqual(["2026_2027", "2025_2026"]);
   });
 });

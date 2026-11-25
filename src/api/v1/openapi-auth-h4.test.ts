@@ -75,17 +75,33 @@ describe("H4 dual-deploy identity OpenAPI contract", () => {
     const specification = await readFile(new URL("./openapi.yaml", import.meta.url), "utf8");
     const authRequiredOperations = [
       ["/session/init", "post"],
+      ["/predictions/summary", "get"],
+      ["/matches/{match_id}/crowd", "get"],
       ["/predictions", "post"],
       ["/predictions/me", "get"],
       ["/predictions/me/{prediction_id}", "get"],
       ["/profile/me", "get"],
       ["/profile/me", "patch"],
+      ["/profile/me", "post"],
       ["/profile/me", "delete"],
       ["/levels/me", "get"],
       ["/unlocks/me", "get"],
       ["/share-card/me", "get"],
       ["/rankings", "get"],
+      ["/groups", "post"],
+      ["/groups/join", "post"],
+      ["/groups/{group_id}/leave", "post"],
+      ["/groups/me", "get"],
+      ["/groups/{group_id}", "get"],
+      ["/groups/{group_id}", "delete"],
+      ["/admin/auth/me", "get"],
+      ["/admin/auth/logout", "post"],
       ["/admin/anomalies", "get"],
+      ["/admin/anomalies/{anomaly_id}/resolve", "post"],
+      ["/admin/audit-logs", "get"],
+      ["/admin/teams", "get"],
+      ["/admin/teams/{team_id}", "patch"],
+      ["/admin/teams/{team_id}/mappings", "post"],
       ["/admin/matches/{match_id}/result-corrections", "post"],
       ["/admin/matches/{match_id}/retry-settlement", "post"],
       ["/admin/rebuild/users/{user_id}", "post"],
@@ -103,10 +119,13 @@ describe("H4 dual-deploy identity OpenAPI contract", () => {
     const specification = await readFile(new URL("./openapi.yaml", import.meta.url), "utf8");
     const publicReads = [
       ["/auth/wechat", "post"],
+      ["/admin/auth/login", "post"],
+      ["/leagues/status", "get"],
+      ["/league-seasons", "get"],
       ["/matches", "get"],
       ["/matches/{match_id}", "get"],
       ["/profiles/{user_id}", "get"],
-      ["/league-seasons", "get"],
+      ["/share-card/{user_id}", "get"],
     ] as const;
 
     for (const [path, method] of publicReads) {
@@ -125,6 +144,8 @@ describe("H4 dual-deploy identity OpenAPI contract", () => {
 
     expect(sessionInit).toContain("x-requires-trusted-openid: true");
     expect(sessionInit).toMatch(/'401':\n          \$ref: '#\/components\/responses\/Unauthorized'/);
+    expect(sessionInit).toMatch(/'500':\n          \$ref: '#\/components\/responses\/InternalError'/);
+    expect(sessionInit).not.toMatch(/'409':/);
     expect(sessionInitRequest).not.toMatch(/^        (?:openid|user_id):/m);
   });
 
@@ -137,10 +158,57 @@ describe("H4 dual-deploy identity OpenAPI contract", () => {
 
     expect(wechatAuth).not.toContain("security:");
     expect(wechatAuth).toMatch(/'401':\n          \$ref: '#\/components\/responses\/Unauthorized'/);
-    expect(wechatAuth).not.toMatch(/'429':/);
-    expect(wechatAuth).not.toMatch(/'422':/);
+    expect(wechatAuth).toMatch(/'422':\n          \$ref: '#\/components\/responses\/ValidationError'/);
+    expect(wechatAuth).toMatch(/'429':\n          \$ref: '#\/components\/responses\/RateLimited'/);
     expect(wechatAuthRequest).toMatch(/^        code:/m);
+    expect(wechatAuthRequest).toContain("pattern: '^[A-Za-z0-9_-]{1,128}$'");
     expect(wechatAuthRequest).not.toMatch(/^        (?:openid|user_id|token):/m);
     expect(wechatAuthRequest).toContain("additionalProperties: false");
+  });
+
+  it("declares 401 and 429 for public reads that pre-parse bearer or rate-limit", async () => {
+    const specification = await readFile(new URL("./openapi.yaml", import.meta.url), "utf8");
+    const bearerRejected = [
+      ["/leagues/status", "get"],
+      ["/league-seasons", "get"],
+      ["/matches", "get"],
+      ["/matches/{match_id}", "get"],
+      ["/profiles/{user_id}", "get"],
+      ["/share-card/{user_id}", "get"],
+    ] as const;
+    for (const [path, method] of bearerRejected) {
+      expect(operationBlock(specification, path, method)).toMatch(
+        /'401':\n          \$ref: '#\/components\/responses\/Unauthorized'/,
+      );
+    }
+    for (const path of ["/league-seasons", "/share-card/{user_id}"] as const) {
+      expect(operationBlock(specification, path, "get")).toMatch(
+        /'429':\n          \$ref: '#\/components\/responses\/RateLimited'/,
+      );
+    }
+  });
+
+  it("points GET /groups/me conflicts at group responses, not prediction history", async () => {
+    const specification = await readFile(new URL("./openapi.yaml", import.meta.url), "utf8");
+    const myGroups = operationBlock(specification, "/groups/me", "get");
+    expect(myGroups).toMatch(/'409':\n          \$ref: '#\/components\/responses\/Conflict'/);
+    expect(myGroups).not.toMatch(/'404':/);
+    expect(myGroups).not.toContain("PredictionHistory");
+  });
+
+  it("declares 405 on every registered operation", async () => {
+    const specification = await readFile(new URL("./openapi.yaml", import.meta.url), "utf8");
+    const paths = [...specification.matchAll(/^  (\/[^:\n]+):\n/gm)].map((match) => match[1] ?? "");
+    expect(paths.length).toBeGreaterThan(0);
+    for (const path of paths) {
+      const block = pathBlock(specification, path);
+      const methods = [...block.matchAll(/\n    (get|post|patch|delete):\n/g)].map((match) => match[1] ?? "");
+      expect(methods.length).toBeGreaterThan(0);
+      for (const method of methods) {
+        expect(operationBlock(specification, path, method as "get" | "post" | "patch" | "delete")).toContain(
+          "$ref: '#/components/responses/MethodNotAllowed'",
+        );
+      }
+    }
   });
 });

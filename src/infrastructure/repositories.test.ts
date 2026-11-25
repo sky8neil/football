@@ -1872,3 +1872,263 @@ describe("InMemoryRepository - S0 新集合端口", () => {
     });
   });
 });
+
+describe("InMemoryRepository 事务内行锁读取与局部 patch [Slice 2]", () => {
+  function makeGroup(id: string, invite: string): Group {
+    return {
+      schema_version: 1,
+      group_id: id,
+      owner_user_id: "owner",
+      invite_code: invite,
+      status: "active",
+      member_count: 1,
+      created_at: LOCK_NOW,
+      updated_at: LOCK_NOW,
+    };
+  }
+
+  it("事务外按 ID 锁读取拒绝，且不改已有文档", async () => {
+    const repo = new InMemoryRepository();
+    const user = makeUser({ career_points: 7, nickname: "old" });
+    const match = makeMatch({ match_id: "lock-match" });
+    const stats = makeSeasonStats({ user_id: user.user_id, points: 3 });
+    const ranking = makeRanking({ user_id: user.user_id, period_score: 8 });
+    const group = makeGroup("g-lock", "ABCD2345");
+    await repo.users.insert(user);
+    await repo.matches.insert(match);
+    await repo.userSeasonStats.insert(stats);
+    await repo.rankings.insert(ranking);
+    await repo.groups.insert(group);
+
+    await expect(repo.users.findByIdForUpdate!(user.user_id)).rejects.toThrow(/active transaction/);
+    await expect(repo.matches.findByIdForUpdate!(match.match_id)).rejects.toThrow(/active transaction/);
+    await expect(repo.userSeasonStats.findByUserAndSeasonForUpdate!(user.user_id, stats.level_season_id))
+      .rejects.toThrow(/active transaction/);
+    await expect(repo.rankings.findByPeriodAndUserForUpdate!(ranking.period_type, ranking.period_key, ranking.user_id))
+      .rejects.toThrow(/active transaction/);
+    await expect(repo.groups.findByIdForUpdate!(group.group_id)).rejects.toThrow(/active transaction/);
+
+    await expect(repo.users.findById(user.user_id)).resolves.toMatchObject({ career_points: 7, nickname: "old" });
+    await expect(repo.matches.findById(match.match_id)).resolves.toMatchObject({ settlement_status: "pending" });
+  });
+
+  it("事务内锁读并局部更新，保留未提及字段，失败整笔回滚", async () => {
+    const repo = new InMemoryRepository();
+    const user = makeUser({ user_id: "lock-user", openid: "openid-lock", career_points: 4, nickname: "Ada" });
+    const match = makeMatch({
+      match_id: "lock-match",
+      settlement_status: "settling",
+      settled_result_version: 1,
+      result_version: 1,
+    });
+    const stats = makeSeasonStats({
+      user_id: "lock-user",
+      points: 9,
+      valid_predictions: 20,
+      level: 2,
+      best_level: 3,
+    });
+    const ranking = makeRanking({
+      user_id: "lock-user",
+      period_score: 11,
+      valid_predictions: 3,
+      is_final: false,
+      global_rank: 5,
+      wdl_hits: 2,
+    });
+    const group = makeGroup("g-lock", "ABCD2345");
+    await repo.users.insert(user);
+    await repo.matches.insert(match);
+    await repo.userSeasonStats.insert(stats);
+    await repo.rankings.insert(ranking);
+    await repo.groups.insert(group);
+    const updatedAt = new Date("2026-08-10T00:00:00.000Z");
+
+    await repo.withTransaction(async (tx) => {
+      await expect(tx.users.findByIdForUpdate!(user.user_id)).resolves.toMatchObject({
+        nickname: "Ada",
+        career_points: 4,
+      });
+      await expect(tx.users.findByIdForUpdate!("missing-user")).resolves.toBeNull();
+      await tx.users.patchFields!(user.user_id, { nickname: "Moon", updated_at: updatedAt });
+
+      await expect(tx.matches.findByIdForUpdate!(match.match_id)).resolves.toMatchObject({
+        settlement_status: "settling",
+      });
+      await expect(tx.matches.findByIdForUpdate!("missing-match")).resolves.toBeNull();
+      await tx.matches.patchFields!(match.match_id, {
+        regular_home_score: 2,
+        regular_away_score: 1,
+        updated_at: updatedAt,
+      });
+
+      await expect(tx.userSeasonStats!.findByUserAndSeasonForUpdate!("lock-user", "2026_2027"))
+        .resolves.toMatchObject({ points: 9, level: 2 });
+      await expect(tx.userSeasonStats!.findByUserAndSeasonForUpdate!("missing", "2026_2027")).resolves.toBeNull();
+      await tx.userSeasonStats!.patchFields!("lock-user", "2026_2027", { points: 15, updated_at: updatedAt });
+
+      await expect(tx.rankings!.findByPeriodAndUserForUpdate!("week", "2026-W32", "lock-user"))
+        .resolves.toMatchObject({ period_score: 11, is_final: false });
+      await expect(tx.rankings!.findByPeriodAndUserForUpdate!("week", "2026-W32", "missing")).resolves.toBeNull();
+      await tx.rankings!.patchFields!("week", "2026-W32", "lock-user", { is_final: true, updated_at: updatedAt });
+
+      await expect(tx.groups!.findByIdForUpdate!(group.group_id)).resolves.toMatchObject({
+        member_count: 1,
+        status: "active",
+      });
+      await expect(tx.groups!.findByIdForUpdate!("missing-group")).resolves.toBeNull();
+      await tx.groups!.patchFields!(group.group_id, { member_count: 2, updated_at: updatedAt });
+    });
+
+    await expect(repo.users.findById(user.user_id)).resolves.toMatchObject({
+      nickname: "Moon",
+      career_points: 4,
+      updated_at: updatedAt,
+    });
+    await expect(repo.matches.findById(match.match_id)).resolves.toMatchObject({
+      regular_home_score: 2,
+      regular_away_score: 1,
+      settlement_status: "settling",
+      settled_result_version: 1,
+    });
+    await expect(repo.userSeasonStats.findByUserAndSeason("lock-user", "2026_2027")).resolves.toMatchObject({
+      points: 15,
+      level: 2,
+      best_level: 3,
+    });
+    await expect(repo.rankings.findByPeriodAndUser("week", "2026-W32", "lock-user")).resolves.toMatchObject({
+      is_final: true,
+      period_score: 11,
+      global_rank: 5,
+      wdl_hits: 2,
+    });
+    await expect(repo.groups.findById(group.group_id)).resolves.toMatchObject({
+      member_count: 2,
+      status: "active",
+      invite_code: "ABCD2345",
+    });
+
+    await expect(repo.withTransaction(async (tx) => {
+      await tx.users.patchFields!(user.user_id, { career_points: 99 });
+      await tx.matches.patchFields!(match.match_id, { settlement_status: "waiting" });
+      await tx.userSeasonStats!.patchFields!("lock-user", "2026_2027", { level: 9 });
+      await tx.rankings!.patchFields!("week", "2026-W32", "lock-user", { period_score: 0 });
+      await tx.groups!.patchFields!(group.group_id, { status: "dissolved", member_count: 0 });
+      throw new Error("patch rollback");
+    })).rejects.toThrow("patch rollback");
+
+    await expect(repo.users.findById(user.user_id)).resolves.toMatchObject({ nickname: "Moon", career_points: 4 });
+    await expect(repo.matches.findById(match.match_id)).resolves.toMatchObject({
+      settlement_status: "settling",
+      regular_home_score: 2,
+    });
+    await expect(repo.userSeasonStats.findByUserAndSeason("lock-user", "2026_2027")).resolves.toMatchObject({
+      points: 15,
+      level: 2,
+    });
+    await expect(repo.rankings.findByPeriodAndUser("week", "2026-W32", "lock-user")).resolves.toMatchObject({
+      period_score: 11,
+      is_final: true,
+    });
+    await expect(repo.groups.findById(group.group_id)).resolves.toMatchObject({
+      status: "active",
+      member_count: 2,
+    });
+  });
+
+  it("patch 缺失文档抛 DocumentNotFoundError，改主键拒绝且不落库", async () => {
+    const repo = new InMemoryRepository();
+    const user = makeUser({ user_id: "patch-user", nickname: "Ada", career_points: 4 });
+    const match = makeMatch({ match_id: "patch-match" });
+    const stats = makeSeasonStats({ user_id: "patch-user", points: 9 });
+    const ranking = makeRanking({ user_id: "patch-user", period_score: 11 });
+    const group = makeGroup("patch-group", "WXYZ6789");
+    await repo.users.insert(user);
+    await repo.matches.insert(match);
+    await repo.userSeasonStats.insert(stats);
+    await repo.rankings.insert(ranking);
+    await repo.groups.insert(group);
+
+    await expect(repo.users.patchFields!("missing", { nickname: "x" })).rejects.toBeInstanceOf(DocumentNotFoundError);
+    await expect(repo.matches.patchFields!("missing", { regular_home_score: 1 })).rejects.toMatchObject({
+      collection: "matches",
+    });
+    await expect(repo.userSeasonStats.patchFields!("missing", "2026_2027", { points: 1 })).rejects.toMatchObject({
+      collection: "user_season_stats",
+    });
+    await expect(repo.rankings.patchFields!("week", "2026-W32", "missing", { is_final: true })).rejects.toMatchObject({
+      collection: "rankings",
+    });
+    await expect(repo.groups.patchFields!("missing", { member_count: 3 })).rejects.toMatchObject({
+      collection: "groups",
+    });
+
+    await expect(repo.users.patchFields!(user.user_id, { user_id: "other" })).rejects.toMatchObject({
+      code: "INTERNAL_ERROR",
+    });
+    await expect(repo.matches.patchFields!(match.match_id, { match_id: "other" })).rejects.toMatchObject({
+      code: "INTERNAL_ERROR",
+    });
+    await expect(repo.userSeasonStats.patchFields!(stats.user_id, stats.level_season_id, {
+      level_season_id: "other",
+    })).rejects.toMatchObject({ code: "INTERNAL_ERROR" });
+    await expect(repo.rankings.patchFields!(ranking.period_type, ranking.period_key, ranking.user_id, {
+      period_key: "2026-W99",
+    })).rejects.toMatchObject({ code: "INTERNAL_ERROR" });
+    await expect(repo.groups.patchFields!(group.group_id, { group_id: "other" })).rejects.toMatchObject({
+      code: "INTERNAL_ERROR",
+    });
+
+    await expect(repo.users.findById(user.user_id)).resolves.toMatchObject({ nickname: "Ada", career_points: 4 });
+    await expect(repo.matches.findById(match.match_id)).resolves.toMatchObject({ match_id: "patch-match" });
+    await expect(repo.userSeasonStats.findByUserAndSeason(stats.user_id, stats.level_season_id)).resolves.toMatchObject({
+      points: 9,
+      level_season_id: "2026_2027",
+    });
+    await expect(repo.rankings.findByPeriodAndUser(ranking.period_type, ranking.period_key, ranking.user_id))
+      .resolves.toMatchObject({ period_score: 11, period_key: "2026-W32" });
+    await expect(repo.groups.findById(group.group_id)).resolves.toMatchObject({ member_count: 1, group_id: "patch-group" });
+  });
+
+  it("users.openid 与 groups.invite_code 局部更新维护唯一索引，并随事务回滚", async () => {
+    const repo = new InMemoryRepository();
+    const user = makeUser({ user_id: "u-idx", openid: "openid-a", nickname: "Ada" });
+    const other = makeUser({ user_id: "u-other", openid: "openid-b" });
+    await repo.users.insert(user);
+    await repo.users.insert(other);
+    await repo.groups.insert(makeGroup("g1", "INVITE01"));
+    await repo.groups.insert(makeGroup("g2", "INVITE02"));
+
+    await expect(repo.users.patchFields!("u-idx", { openid: "openid-b" })).rejects.toMatchObject({
+      collection: "users",
+      indexName: "uk_openid",
+    });
+    await expect(repo.users.findByOpenid("openid-a")).resolves.toMatchObject({ user_id: "u-idx", nickname: "Ada" });
+
+    await repo.users.patchFields!("u-idx", { openid: "openid-c" });
+    await expect(repo.users.findByOpenid("openid-a")).resolves.toBeNull();
+    await expect(repo.users.findByOpenid("openid-c")).resolves.toMatchObject({ user_id: "u-idx", nickname: "Ada" });
+
+    await expect(repo.groups.patchFields!("g1", { invite_code: "INVITE02" })).rejects.toMatchObject({
+      collection: "groups",
+      indexName: "uk_invite_code",
+    });
+    await repo.groups.patchFields!("g1", { invite_code: "INVITE03", member_count: 4 });
+    await expect(repo.groups.findByInviteCode("INVITE01")).resolves.toBeNull();
+    await expect(repo.groups.findByInviteCode("INVITE03")).resolves.toMatchObject({
+      group_id: "g1",
+      member_count: 4,
+      status: "active",
+    });
+
+    await expect(repo.withTransaction(async (tx) => {
+      await tx.users.patchFields!("u-idx", { openid: "openid-d" });
+      await tx.groups!.patchFields!("g1", { invite_code: "INVITE04" });
+      throw new Error("index rollback");
+    })).rejects.toThrow("index rollback");
+    await expect(repo.users.findByOpenid("openid-c")).resolves.toMatchObject({ user_id: "u-idx" });
+    await expect(repo.users.findByOpenid("openid-d")).resolves.toBeNull();
+    await expect(repo.groups.findByInviteCode("INVITE03")).resolves.toMatchObject({ group_id: "g1" });
+    await expect(repo.groups.findByInviteCode("INVITE04")).resolves.toBeNull();
+  });
+});

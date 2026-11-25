@@ -90,14 +90,19 @@ function installWxStub() {
   return { navs };
 }
 
-function loadUnlocksPage({ unlocksResult, profileResult } = {}) {
+function loadUnlocksPage({ unlocksResult, profileResult, getMyUnlocks, getMyProfile, getLoginGeneration } = {}) {
   const wxStub = installWxStub();
+  const unlocksFn = getMyUnlocks || (() => Promise.resolve(unlocksResult));
+  const profileFn = getMyProfile || (() => Promise.resolve(profileResult));
   const config = capturePageConfig(UNLOCKS_JS, (id) => {
     if (id === "../../services/unlocks.js") {
-      return { getMyUnlocks: () => Promise.resolve(unlocksResult) };
+      return { getMyUnlocks: unlocksFn };
     }
     if (id === "../../services/profile.js") {
-      return { getMyProfile: () => Promise.resolve(profileResult) };
+      return { getMyProfile: profileFn };
+    }
+    if (id === "../../services/auth.js" && getLoginGeneration) {
+      return { getLoginGeneration };
     }
     throw new Error(`Unexpected require: ${id}`);
   });
@@ -197,5 +202,59 @@ describe("unlocks empty state (UI-02)", () => {
     expect(wxml).toMatch(/\{\{item\.threshold_points\}\}/);
     expect(wxml).toMatch(/\{\{item\.unlockedText\}\}/);
     expect(wxml).toMatch(/\{\{item\.progressText\}\}/);
+  });
+
+  it("[A-S6-06][A-S6-08] uses Chinese 重试, adds 去登录 for unauthorized, guards requestSerial, and refreshes on onShow", async () => {
+    const wxml = readFileSync(UNLOCKS_WXML, "utf8");
+    expect(wxml).not.toMatch(/>\s*retry\s*</);
+    expect(wxml.match(/bindtap="onRetry">重试<\/button>/g)).toHaveLength(3);
+    const unauthBlock = wxml.match(/state === 'unauthorized'[\s\S]*?(?=<view wx:elif)/)[0];
+    expect(unauthBlock).toContain('bindtap="onLoginTap"');
+    expect(unauthBlock).toContain("去登录");
+
+    let finishFirst;
+    let generation = 0;
+    let calls = 0;
+    const getMyUnlocks = () => {
+      calls += 1;
+      if (calls === 1) {
+        return new Promise((resolve) => { finishFirst = resolve; });
+      }
+      if (calls === 2) {
+        return Promise.resolve({ statusCode: 401, code: "UNAUTHORIZED", message: "请先登录" });
+      }
+      return Promise.resolve({ statusCode: 200, data: { unlocked: [] } });
+    };
+    const getMyProfile = () => Promise.resolve({ statusCode: 200, data: { career_points: 0 } });
+    const { page, navs } = loadUnlocksPage({
+      getMyUnlocks,
+      getMyProfile,
+      getLoginGeneration: () => generation,
+    });
+
+    const first = page.onLoad();
+    await page.onRetry();
+    expect(page.data.state).toBe("unauthorized");
+
+    finishFirst({
+      statusCode: 200,
+      data: { unlocked: [{ unlock_code: "profile_card_style_1", threshold_points: 30, unlocked_at: "2026-11-06T19:50:00.000Z" }] },
+    });
+    await first;
+    expect(page.data.state).toBe("unauthorized");
+
+    page.onLoginTap();
+    expect(navs).toContainEqual(["navigateTo", "/pages/session/session?return_to=unlocks"]);
+
+    await page.onShow();
+    expect(page.data.state).toBe("empty");
+    expect(calls).toBe(3);
+
+    await page.onShow();
+    expect(calls).toBe(3);
+
+    generation = 1;
+    await page.onShow();
+    expect(calls).toBe(4);
   });
 });

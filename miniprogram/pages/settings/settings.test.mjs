@@ -8,7 +8,7 @@ const TEAM_REGISTRY = {
   "bayern-id": { league_id: "bundesliga", source_name: "FC Bayern München", name_zh: "拜仁慕尼黑" },
 };
 
-function load({ transport = "http", profile } = {}) {
+function load({ transport = "http", profile, getLoginGeneration } = {}) {
   let definition;
   const findTeam = vi.fn((id) => (id && TEAM_REGISTRY[id]) || null);
   const presentTeam = vi.fn((team) => {
@@ -25,20 +25,21 @@ function load({ transport = "http", profile } = {}) {
     data: profile || { nickname: "球友", favorite_team_id: null },
   }));
   const updateMyProfile = vi.fn(async () => ({ statusCode: 200, data: { nickname: "新昵称" } }));
+  const deleteMyProfile = vi.fn(async () => ({ statusCode: 204 }));
   const listMatches = vi.fn(async () => ({ statusCode: 200, data: { items: [], page: {} } }));
   const storeNickname = vi.fn();
   const clearNickname = vi.fn();
   const clearAuth = vi.fn();
   const required = [];
-  const wx = { getStorageSync: vi.fn(), setStorageSync: vi.fn(), removeStorageSync: vi.fn(), navigateBack: vi.fn(), showToast: vi.fn(), showModal: vi.fn(), reLaunch: vi.fn() };
+  const wx = { getStorageSync: vi.fn(), setStorageSync: vi.fn(), removeStorageSync: vi.fn(), navigateTo: vi.fn(), navigateBack: vi.fn(), switchTab: vi.fn(), showToast: vi.fn(), showModal: vi.fn(), reLaunch: vi.fn() };
   runInNewContext(readFileSync(new URL("./settings.js", import.meta.url), "utf8"), {
     Page: value => { definition = value; }, wx,
     require: (name) => {
       required.push(name);
-      if (name.includes("profile")) return { getMyProfile, updateMyProfile };
+      if (name.includes("profile")) return { getMyProfile, updateMyProfile, deleteMyProfile };
       if (name.includes("matches")) return { listMatches };
       if (name.includes("nickname")) return { storeNickname, clearNickname };
-      if (name.includes("auth")) return { clearAuth };
+      if (name.includes("auth")) return { clearAuth, ...(getLoginGeneration ? { getLoginGeneration } : {}) };
       if (name.includes("config")) return { transport };
       if (name.includes("team-presentation")) return { presentTeam };
       if (name.includes("team-registry")) return { findTeam, TEAM_REGISTRY };
@@ -47,7 +48,7 @@ function load({ transport = "http", profile } = {}) {
     },
   });
   const page = { ...definition, data: structuredClone(definition.data), setData(value) { Object.assign(this.data, value); } };
-  return { page, getMyProfile, updateMyProfile, listMatches, storeNickname, clearNickname, clearAuth, wx, required, findTeam, presentTeam };
+  return { page, getMyProfile, updateMyProfile, deleteMyProfile, listMatches, storeNickname, clearNickname, clearAuth, wx, required, findTeam, presentTeam };
 }
 
 describe("personal profile settings", () => {
@@ -221,5 +222,140 @@ describe("personal profile settings", () => {
     expect(wx.showModal).not.toHaveBeenCalled();
     expect(clearAuth).not.toHaveBeenCalled();
     expect(wx.reLaunch).not.toHaveBeenCalled();
+  });
+
+  it("[A-S6-02] confirms account deletion, prevents double submit, clears caches, and reLaunches to session", async () => {
+    const wxml = readFileSync(new URL("./settings.wxml", import.meta.url), "utf8");
+    expect(wxml).toContain('bindtap="onDeleteAccount"');
+    expect(wxml).toContain("注销账号");
+
+    let finishDelete;
+    const { page, deleteMyProfile, clearAuth, clearNickname, wx } = load();
+    deleteMyProfile.mockImplementationOnce(() => new Promise((resolve) => { finishDelete = resolve; }));
+    await page.loadProfile();
+
+    wx.showModal.mockImplementationOnce((options) => options.success({ confirm: false }));
+    page.onDeleteAccount();
+    expect(wx.showModal).toHaveBeenCalledWith(expect.objectContaining({
+      title: "确认注销账号？",
+      content: expect.stringContaining("不可恢复"),
+    }));
+    expect(deleteMyProfile).not.toHaveBeenCalled();
+
+    let modalPromise;
+    wx.showModal.mockImplementationOnce((options) => { modalPromise = options.success({ confirm: true }); });
+    page.onDeleteAccount();
+    expect(page.data.deleting).toBe(true);
+    expect(deleteMyProfile).toHaveBeenCalledTimes(1);
+
+    // Re-entrancy guard while deleting is true
+    page.onDeleteAccount();
+    expect(wx.showModal).toHaveBeenCalledTimes(2);
+
+    finishDelete({ statusCode: 204 });
+    await modalPromise;
+    expect(page.data.deleting).toBe(false);
+    expect(clearAuth).toHaveBeenCalledTimes(1);
+    expect(clearNickname).toHaveBeenCalledTimes(1);
+    expect(wx.removeStorageSync).toHaveBeenCalledWith("pending_ranking_group_id");
+    expect(wx.removeStorageSync).toHaveBeenCalledWith("pending_ranking_target");
+    expect(wx.removeStorageSync).toHaveBeenCalledWith("pending_group_invite_code");
+    expect(wx.removeStorageSync).toHaveBeenCalledWith("my_predictions_dirty");
+    expect(wx.reLaunch).toHaveBeenCalledWith(expect.objectContaining({ url: "/pages/session/session" }));
+  });
+
+  it("[A-S6-02] resets deleting on rejection, reLaunch fail, or 401/409 during deleteMyProfile", async () => {
+    const { page, deleteMyProfile, clearAuth, wx } = load();
+    await page.loadProfile();
+
+    deleteMyProfile.mockRejectedValueOnce(new Error("network"));
+    await page.performDeleteAccount();
+    expect(page.data.deleting).toBe(false);
+    expect(page.data.saveErrorMessage).toBe("network");
+
+    deleteMyProfile.mockResolvedValueOnce({ statusCode: 401, code: "UNAUTHORIZED", message: "请先登录" });
+    await page.performDeleteAccount();
+    expect(page.data.deleting).toBe(false);
+    expect(page.data.errorKind).toBe("unauthorized");
+    expect(clearAuth).toHaveBeenCalledTimes(1);
+
+    deleteMyProfile.mockResolvedValueOnce({ statusCode: 409, code: "USER_DELETED", message: "已注销" });
+    await page.performDeleteAccount();
+    expect(page.data.deleting).toBe(false);
+    expect(page.data.errorKind).toBe("userDeleted");
+
+    wx.reLaunch.mockImplementationOnce((options) => options.fail());
+    deleteMyProfile.mockResolvedValueOnce({ statusCode: 204 });
+    await page.performDeleteAccount();
+    expect(page.data.deleting).toBe(false);
+    expect(page.data.saveErrorMessage).toContain("跳转失败");
+  });
+
+  it("[A-S6-05][A-S6-08] distinguishes 401 vs 409 USER_DELETED in loadProfile/onSave and guards loadProfile with requestSerial", async () => {
+    const wxml = readFileSync(new URL("./settings.wxml", import.meta.url), "utf8");
+    expect(wxml).toContain("errorKind === 'unauthorized'");
+    expect(wxml).toContain('bindtap="onLoginTap"');
+    expect(wxml).toContain("去登录");
+    expect(wxml).toContain("errorKind === 'userDeleted'");
+    const deletedBlock = wxml.match(/errorKind === 'userDeleted'[\s\S]*?<\/view>/)[0];
+    expect(deletedBlock).not.toContain("重新加载");
+
+    let finishFirst;
+    const { page, getMyProfile, updateMyProfile, clearAuth, wx } = load();
+    getMyProfile
+      .mockImplementationOnce(() => new Promise((resolve) => { finishFirst = resolve; }))
+      .mockResolvedValueOnce({ statusCode: 401, code: "UNAUTHORIZED", message: "请先登录" })
+      .mockResolvedValueOnce({ statusCode: 200, data: { nickname: "新登录用户", favorite_team_id: null } })
+      .mockResolvedValueOnce({ statusCode: 409, code: "USER_DELETED", message: "账号已注销" });
+
+    const first = page.loadProfile();
+    await page.loadProfile();
+    expect(page.data.errorKind).toBe("unauthorized");
+    expect(page.data.loading).toBe(false);
+
+    finishFirst({ statusCode: 200, data: { nickname: "陈旧用户", favorite_team_id: null } });
+    await first;
+    expect(page.data.errorKind).toBe("unauthorized");
+    expect(page.data.nickname).toBe("");
+
+    page.onLoginTap();
+    expect(wx.navigateTo).toHaveBeenCalledWith({ url: "/pages/session/session?return_to=settings" });
+
+    await page.onShow();
+    expect(page.data.errorKind).toBe("");
+    expect(page.data.nickname).toBe("新登录用户");
+
+    page.onNicknameInput({ detail: { value: "修改" } });
+    updateMyProfile.mockResolvedValueOnce({ statusCode: 401, code: "UNAUTHORIZED", message: "登录失效" });
+    await page.onSave();
+    expect(page.data.errorKind).toBe("unauthorized");
+    expect(page.data.errorMessage).toBe("登录失效");
+
+    await page.loadProfile();
+    expect(page.data.errorKind).toBe("userDeleted");
+    expect(page.data.errorMessage).toBe("账号已注销");
+    expect(clearAuth).toHaveBeenCalled();
+
+    page.setData({ errorKind: "", errorMessage: "", nickname: "修改2", originalNickname: "新登录用户" });
+    updateMyProfile.mockResolvedValueOnce({ statusCode: 409, code: "USER_DELETED", message: "已注销" });
+    await page.onSave();
+    expect(page.data.errorKind).toBe("userDeleted");
+  });
+
+  it("[CR-24][CR-27] onLogout 清理跨页缓存，onSave 单页栈 navigateBack 失败兜底回 profile tab", async () => {
+    const { page, clearAuth, clearNickname, wx } = load();
+    wx.showModal.mockImplementationOnce((options) => options.success({ confirm: true }));
+    page.onLogout();
+    expect(clearAuth).toHaveBeenCalledTimes(1);
+    expect(clearNickname).toHaveBeenCalledTimes(1);
+    expect(wx.removeStorageSync).toHaveBeenCalledWith("pending_ranking_group_id");
+    expect(wx.removeStorageSync).toHaveBeenCalledWith("pending_ranking_target");
+    expect(wx.removeStorageSync).toHaveBeenCalledWith("pending_group_invite_code");
+    expect(wx.removeStorageSync).toHaveBeenCalledWith("my_predictions_dirty");
+
+    await page.loadProfile();
+    wx.navigateBack.mockImplementationOnce((opts) => opts?.fail?.());
+    await page.onSave();
+    expect(wx.switchTab).toHaveBeenCalledWith({ url: "/pages/profile/profile" });
   });
 });

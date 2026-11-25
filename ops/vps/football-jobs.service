@@ -8,5 +8,6 @@ Type=oneshot
 User=neilxu
 WorkingDirectory=/home/neilxu/football/current
 EnvironmentFile=/home/neilxu/football/shared/football.env
+Environment=FOOTBALL_PG_POOL_MAX=5
 ExecStart=/usr/bin/node /home/neilxu/football/current/dist/jobs/tick.js --mode=realtime
-TimeoutStartSec=1800
+TimeoutStartSec=150

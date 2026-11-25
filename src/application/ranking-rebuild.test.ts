@@ -8,9 +8,10 @@ import {
   SettlementItemStatus,
   SettlementPhase,
   SettlementStatus,
+  UserStatus,
 } from "../domain/enums.js";
 import { newUuid } from "../domain/ids.js";
-import { calculatePeriodKey } from "../domain/time.js";
+import { calculatePeriodKey, periodEndAt } from "../domain/time.js";
 import type {
   Match,
   MatchResult,
@@ -18,13 +19,16 @@ import type {
   RankingEntry,
   SettlementDoc,
   SettlementItem,
+  User,
 } from "../domain/types.js";
-import { InMemoryRepository } from "../infrastructure/repositories.js";
+import { defaultLevelState } from "../domain/types.js";
+import { InMemoryRepository, type AppRepository, type UnitOfWork } from "../infrastructure/repositories.js";
 import {
   rebuildPeriodRankings,
   type PeriodRef,
 } from "./ranking-rebuild.js";
 import { RebuildPeriodRankingsService } from "./ranking-rebuild-service.js";
+import { rankingPeriodLockKey } from "./settlement-item-application-service.js";
 
 const { Miss, WdlHit, ExactHit } = MatchScoreValue;
 
@@ -310,6 +314,130 @@ describe("RebuildPeriodRankingsService", () => {
       ),
     ).resolves.toBe(true);
   });
+
+  it("A-S5-03 ranking 周期锁在 withTransaction 之前已持有，结束后在事务外释放", async () => {
+    const repo = new InMemoryRepository();
+    const serverNow = new Date("2026-08-09T00:00:00.000Z");
+    const rankingLockKey = rankingPeriodLockKey(PeriodType.Week, "2026-W32");
+    let lockHeldAtTransactionStart = false;
+    const repoProxy = new Proxy(repo, {
+      get(target, prop, receiver) {
+        if (prop === "withTransaction") {
+          return (fn: (tx: UnitOfWork) => Promise<unknown>) =>
+            target.withTransaction(async (tx) => {
+              lockHeldAtTransactionStart = await target.jobLocks.isHeld(rankingLockKey, serverNow);
+              return fn(tx);
+            });
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+
+    await new RebuildPeriodRankingsService(repoProxy).rebuildPeriodRankings(
+      PeriodType.Week,
+      "2026-W32",
+      serverNow,
+    );
+
+    expect(lockHeldAtTransactionStart).toBe(true);
+    await expect(repo.jobLocks.isHeld(rankingLockKey, serverNow)).resolves.toBe(false);
+  });
+
+  it("A-S5-03 事务中止后 tx.jobLocks.release 的 25P02 不掩盖原始错误", async () => {
+    const repo = new InMemoryRepository();
+    const originalBoom = new Error("rank original boom");
+    const aborted = Object.assign(new Error("current transaction is aborted"), { code: "25P02" });
+    const repoProxy = new Proxy(repo, {
+      get(target, prop, receiver) {
+        if (prop === "withTransaction") {
+          return (fn: (tx: UnitOfWork) => Promise<unknown>) =>
+            target.withTransaction((tx) => {
+              const failingTx = new Proxy(tx, {
+                get(txTarget, txProp, txReceiver) {
+                  if (txProp === "users") {
+                    const users = Reflect.get(txTarget, txProp, txReceiver) as UnitOfWork["users"];
+                    return {
+                      ...users,
+                      findAll: async () => {
+                        throw originalBoom;
+                      },
+                    };
+                  }
+                  if (txProp === "jobLocks") {
+                    const locks = Reflect.get(txTarget, txProp, txReceiver) as NonNullable<UnitOfWork["jobLocks"]>;
+                    return {
+                      ...locks,
+                      release: async () => {
+                        throw aborted;
+                      },
+                    };
+                  }
+                  return Reflect.get(txTarget, txProp, txReceiver);
+                },
+              });
+              return fn(failingTx);
+            });
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+
+    await expect(
+      new RebuildPeriodRankingsService(repoProxy).rebuildPeriodRankings(
+        PeriodType.Week,
+        "2026-W32",
+        new Date("2026-08-09T00:00:00.000Z"),
+      ),
+    ).rejects.toBe(originalBoom);
+  });
+
+  it("A-S5-03 ranking 锁在事务外释放失败时不掩盖原始错误", async () => {
+    const repo = new InMemoryRepository();
+    const originalBoom = new Error("rank original boom");
+    const repoProxy = new Proxy(repo, {
+      get(target, prop, receiver) {
+        if (prop === "jobLocks") {
+          const locks = target.jobLocks;
+          return {
+            ...locks,
+            release: async (lockKey: string, ownerId: string) => {
+              if (lockKey.startsWith("ranking:")) throw new Error("release boom");
+              return locks.release(lockKey, ownerId);
+            },
+          };
+        }
+        if (prop === "withTransaction") {
+          return (fn: (tx: UnitOfWork) => Promise<unknown>) =>
+            target.withTransaction((tx) => {
+              const failingTx = new Proxy(tx, {
+                get(txTarget, txProp, txReceiver) {
+                  if (txProp === "users") {
+                    const users = Reflect.get(txTarget, txProp, txReceiver) as UnitOfWork["users"];
+                    return {
+                      ...users,
+                      findAll: async () => {
+                        throw originalBoom;
+                      },
+                    };
+                  }
+                  return Reflect.get(txTarget, txProp, txReceiver);
+                },
+              });
+              return fn(failingTx);
+            });
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+
+    await expect(
+      new RebuildPeriodRankingsService(repoProxy).rebuildPeriodRankings(
+        PeriodType.Week,
+        "2026-W32",
+        new Date("2026-08-09T00:00:00.000Z"),
+      ),
+    ).rejects.toBe(originalBoom);
+  });
 });
 
 describe("rebuildPeriodRankings - last_scoring_match_at", () => {
@@ -548,6 +676,34 @@ describe("rebuildPeriodRankings - 排序与 global_rank", () => {
     expect(result.map((e) => e.user_id)).toEqual(["bob", "alice"]);
     expect(result[0]!.global_rank).toBe(1);
     expect(result[1]!.global_rank).toBe(2);
+  });
+
+  it("周期内注销用户保留累加值但 global_rank=null，且不占用其他用户名次", () => {
+    const result = rebuildPeriodRankings(
+      [exactItem("d1", "u_deleted"), wdlItem("a1", "u_active")],
+      periodMap([
+        ["d1", WEEK],
+        ["a1", WEEK],
+      ]),
+      anchorMap([
+        ["d1", t("2026-08-01T20:00:00Z")],
+        ["a1", t("2026-08-02T20:00:00Z")],
+      ]),
+      new Set(["u_deleted"]),
+    );
+    expect(result).toEqual([
+      expect.objectContaining({
+        user_id: "u_deleted",
+        period_score: 12,
+        valid_predictions: 1,
+        global_rank: null,
+      }),
+      expect.objectContaining({
+        user_id: "u_active",
+        period_score: 3,
+        global_rank: 1,
+      }),
+    ]);
   });
 });
 
@@ -918,6 +1074,30 @@ async function seedAppliedMatch(
   await repo.settlementItems.insert(item);
 }
 
+function makeServiceUser(userId: string, overrides: Partial<User> = {}): User {
+  return {
+    schema_version: 1,
+    user_id: userId,
+    openid: `openid-${userId}`,
+    unionid: null,
+    nickname: userId,
+    favorite_team_id: null,
+    status: UserStatus.Active,
+    career_points: 0,
+    career_valid_predictions: 0,
+    career_wdl_hits: 0,
+    career_exact_hits: 0,
+    career_level: 1,
+    career_best_level: 1,
+    career_last_scoring_match_at: null,
+    career_level_state: defaultLevelState(),
+    deleted_at: null,
+    created_at: new Date("2026-09-01T00:00:00.000Z"),
+    updated_at: new Date("2026-09-01T00:00:00.000Z"),
+    ...overrides,
+  };
+}
+
 function makeServiceRanking(userId: string, periodKey: string, score: number): RankingEntry {
   return {
     schema_version: 1,
@@ -1022,5 +1202,140 @@ describe("RebuildPeriodRankingsService - Slice 2 历史周榜选赛", () => {
         global_rank: null,
       }),
     ]));
+  });
+
+  it("[A-S4-04/A-S5-04] 历史周重建仅取消周期结束前注销用户的名次，保留累加值", async () => {
+    const repo = new InMemoryRepository();
+    const anchor = new Date("2026-08-26T12:00:00.000Z");
+    const periodKey = calculatePeriodKey(PeriodType.Week, anchor);
+    const endAt = periodEndAt(PeriodType.Week, periodKey);
+    await seedAppliedMatch(repo, {
+      matchId: "m-before",
+      userId: "u-before",
+      leagueId: "premier_league",
+      seasonId: "2026_2027",
+      anchor,
+      score: MatchScoreValue.ExactHit,
+    });
+    await seedAppliedMatch(repo, {
+      matchId: "m-after",
+      userId: "u-after",
+      leagueId: "premier_league",
+      seasonId: "2026_2027",
+      anchor: new Date(anchor.getTime() + 60 * 60_000),
+      score: MatchScoreValue.WdlHit,
+    });
+    await repo.users.insert(makeServiceUser("u-before", {
+      status: UserStatus.Deleted,
+      deleted_at: new Date(endAt.getTime() - 24 * 60 * 60_000),
+    }));
+    await repo.users.insert(makeServiceUser("u-after", {
+      status: UserStatus.Deleted,
+      deleted_at: new Date(endAt.getTime() + 24 * 60 * 60_000),
+    }));
+
+    await new RebuildPeriodRankingsService(repo).rebuild(
+      PeriodType.Week,
+      periodKey,
+      new Date("2028-02-15T00:00:00.000Z"),
+    );
+
+    const rows = await repo.rankings.findByPeriod(PeriodType.Week, periodKey);
+    expect(rows).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        user_id: "u-before",
+        period_score: 12,
+        valid_predictions: 1,
+        global_rank: null,
+      }),
+      expect.objectContaining({
+        user_id: "u-after",
+        period_score: 3,
+        valid_predictions: 1,
+        global_rank: 1,
+      }),
+    ]));
+  });
+
+  it("[CR-07] rebuildPeriodRankings 按 rankings → matches 锁序加行锁并用 patchFields 局部更新", async () => {
+    const repo = new InMemoryRepository();
+    const anchor = new Date("2026-08-26T12:00:00.000Z");
+    const periodKey = calculatePeriodKey(PeriodType.Week, anchor);
+    await seedAppliedMatch(repo, {
+      matchId: "m-2",
+      userId: "u-b",
+      leagueId: "premier_league",
+      seasonId: "2026_2027",
+      anchor,
+      score: MatchScoreValue.ExactHit,
+    });
+    await repo.users.insert(makeServiceUser("u-b"));
+    await repo.rankings.insert({
+      schema_version: 1,
+      period_type: PeriodType.Week,
+      period_key: periodKey,
+      user_id: "u-b",
+      period_score: 0,
+      valid_predictions: 0,
+      wdl_hits: 0,
+      exact_hits: 0,
+      last_scoring_match_at: null,
+      global_rank: null,
+      is_final: false,
+      created_at: anchor,
+      updated_at: anchor,
+    });
+
+    const ops: string[] = [];
+    const originalWithTx = repo.withTransaction.bind(repo);
+    repo.withTransaction = (async (fn: (tx: UnitOfWork) => Promise<unknown>) =>
+      originalWithTx(async (tx) => {
+        const rankings = tx.rankings!;
+        const matches = tx.matches;
+        const wrapped = new Proxy(tx, {
+          get(target, prop, receiver) {
+            if (prop === "rankings") {
+              return {
+                ...rankings,
+                findByPeriodAndUserForUpdate: async (...args: Parameters<NonNullable<typeof rankings.findByPeriodAndUserForUpdate>>) => {
+                  ops.push(`rankings.lock:${args[2]}`);
+                  return rankings.findByPeriodAndUserForUpdate!(...args);
+                },
+                patchFields: async (...args: Parameters<NonNullable<typeof rankings.patchFields>>) => {
+                  ops.push(`rankings.patch:${args[2]}`);
+                  return rankings.patchFields!(...args);
+                },
+                update: async () => {
+                  ops.push("rankings.update");
+                },
+              };
+            }
+            if (prop === "matches") {
+              return {
+                ...matches,
+                findByIdForUpdate: async (id: string) => {
+                  ops.push(`matches.lock:${id}`);
+                  return matches.findByIdForUpdate!(id);
+                },
+              };
+            }
+            return Reflect.get(target, prop, receiver);
+          },
+        });
+        return fn(wrapped);
+      })) as AppRepository["withTransaction"];
+
+    await new RebuildPeriodRankingsService(repo).rebuildPeriodRankings(
+      PeriodType.Week,
+      periodKey,
+      new Date("2026-08-27T00:00:00.000Z"),
+    );
+
+    expect(ops).toEqual([
+      "rankings.lock:u-b",
+      "matches.lock:m-2",
+      "rankings.patch:u-b",
+    ]);
+    expect(ops).not.toContain("rankings.update");
   });
 });

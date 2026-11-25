@@ -4,10 +4,16 @@ import type { Match } from "../domain/types.js";
 const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
 
+export interface ActiveWindowOptions {
+  /** 仅用于 post_finish_verify 超 24h 每日兜底：由持久化调度状态按 UTC 日决定是否到期。 */
+  includeOverdueDailyFallback?: boolean;
+}
+
 export function activeWindow(
   matches: readonly Match[],
   now: Date,
   jobType: SyncJobType,
+  options?: ActiveWindowOptions,
 ): Match[] {
   const current = now.getTime();
   return matches.filter((match) => {
@@ -32,7 +38,9 @@ export function activeWindow(
       const postFinishDue = match.match_status === MatchStatus.Finished ||
         match.finish_detected_at !== null || elapsed >= 105 * MINUTE_MS;
       const withinHighFrequencyWindow = elapsed <= 24 * HOUR_MS;
-      const dailyFallbackTick = elapsed > 24 * HOUR_MS && now.getUTCHours() === 0 && now.getUTCMinutes() === 0;
+      const dailyFallbackDue = options?.includeOverdueDailyFallback ??
+        (now.getUTCHours() === 0 && now.getUTCMinutes() === 0);
+      const dailyFallbackTick = elapsed > 24 * HOUR_MS && dailyFallbackDue;
       return awaitingFirstSettlement && postFinishDue && (withinHighFrequencyWindow || dailyFallbackTick);
     }
     if (jobType === "stale_recovery") {

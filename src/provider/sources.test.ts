@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { findSupportedLeagueById, findSupportedLeagueByProviderId, providerSeasonRef } from "../domain/config.js";
 import { loadProviderSources } from "./sources.js";
@@ -119,5 +121,22 @@ describe("loadProviderSources", () => {
       result: "secondary",
       reconcile: "historical",
     });
+  });
+
+  it("ops/vps env templates enable fd,5d,of,bsd,sp and declare all matching keys (D-S3-01)", () => {
+    for (const relPath of ["ops/vps/football.env.example", "ops/vps/cloudbase.env.example"]) {
+      const content = readFileSync(resolve(process.cwd(), relPath), "utf8");
+      const env: Record<string, string> = {};
+      for (const rawLine of content.split(/\r?\n/)) {
+        const line = rawLine.trim();
+        if (line.length === 0 || line.startsWith("#")) continue;
+        const eq = line.indexOf("=");
+        if (eq === -1) continue;
+        env[line.slice(0, eq)] = line.slice(eq + 1);
+      }
+      expect(env.FOOTBALL_PROVIDER_SOURCES).toBe("fd,5d,of,bsd,sp");
+      const loaded = loadProviderSources(env);
+      expect(loaded.sources.map((s) => s.source_id)).toEqual(["fd", "5d", "of", "bsd", "sp"]);
+    }
   });
 });

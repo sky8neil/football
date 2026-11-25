@@ -1,4 +1,3 @@
-import { resolveEffectiveMatch } from "./match-identity.js";
 import {
   AnomalyType,
   MatchStatus,
@@ -163,6 +162,56 @@ async function resolveInvalidFinalScoreAnomaly(
   );
 }
 
+function requireMatchPatchPorts(matches: UnitOfWork["matches"]): {
+  findByIdForUpdate: (matchId: string) => Promise<Match | null>;
+  patchFields: (matchId: string, fields: Partial<Match>) => Promise<void>;
+} {
+  const { findByIdForUpdate, patchFields } = matches;
+  if (findByIdForUpdate === undefined || patchFields === undefined) {
+    throw internalError("matches 行锁与局部更新端口未配置");
+  }
+  return { findByIdForUpdate, patchFields };
+}
+
+async function lockEffectiveMatch(
+  findByIdForUpdate: (matchId: string) => Promise<Match | null>,
+  matchId: string,
+): Promise<Match | null> {
+  const visited = new Set<string>();
+  let currentId = matchId;
+  for (let hops = 0; hops <= 3; hops += 1) {
+    if (visited.has(currentId)) throw internalError("比赛取代关系存在环");
+    visited.add(currentId);
+    const match = await findByIdForUpdate(currentId);
+    if (match === null || match.superseded_by === null) return match;
+    if (hops === 3) throw internalError("比赛取代关系超过三跳");
+    currentId = match.superseded_by;
+  }
+  throw internalError("比赛取代关系异常");
+}
+
+function providerResultFields(
+  match: Match,
+  result: MatchResult,
+  fixture: ProviderResultFixture,
+  serverNow: Date,
+): Partial<Match> {
+  const fields: Partial<Match> = {
+    match_status: MatchStatus.Finished,
+    regular_home_score: result.regular_home_score,
+    regular_away_score: result.regular_away_score,
+    result_version: result.result_version,
+    result_source: ResultSource.Provider,
+    result_provider: fixture.resultProvider ?? (fixture.provider as Provider | undefined) ?? null,
+    compared_providers: fixture.comparedProviders ?? [(fixture.provider as Provider | undefined) ?? "api_football"],
+    updated_at: serverNow,
+  };
+  if (match.period_anchor_at === null) fields.period_anchor_at = match.kickoff_at;
+  if (match.prediction_closed_at === null) fields.prediction_closed_at = serverNow;
+  if (match.finish_detected_at === null) fields.finish_detected_at = serverNow;
+  return fields;
+}
+
 function settlementStatusAfterProviderResult(match: Match): SettlementStatus {
   if (match.settled_result_version > 0) {
     if (match.settlement_status === SettlementStatus.Correcting) {
@@ -214,7 +263,8 @@ export class ProviderResultSyncService {
       if (mapping === null) {
         throw notFoundError("MATCH");
       }
-      const match = await resolveEffectiveMatch(tx, mapping.match_id);
+      const { findByIdForUpdate, patchFields } = requireMatchPatchPorts(tx.matches);
+      const match = await lockEffectiveMatch(findByIdForUpdate, mapping.match_id);
       if (match === null) {
         throw internalError("Provider match mapping 指向不存在的 match");
       }
@@ -250,7 +300,10 @@ export class ProviderResultSyncService {
       if (sameScore) {
         if (match.result_source === ResultSource.Provider && fixture.comparedProviders !== undefined &&
           JSON.stringify(match.compared_providers ?? []) !== JSON.stringify(fixture.comparedProviders)) {
-          await tx.matches.update({ ...match, compared_providers: fixture.comparedProviders, updated_at: serverNow });
+          await patchFields(match.match_id, {
+            compared_providers: fixture.comparedProviders,
+            updated_at: serverNow,
+          });
         }
         await saveSnapshot(tx, match.match_id, fixture, "result_observed", payload, serverNow);
         return {
@@ -302,25 +355,13 @@ export class ProviderResultSyncService {
         settlementStatus,
         serverNow,
       );
-      const transitionedMatch = await tx.matches.findById(match.match_id);
-      if (transitionedMatch === null) {
-        throw internalError("Provider 赛果同步状态转移后比赛不存在");
-      }
-      await tx.matches.update({
-        ...transitionedMatch,
-        match_status: MatchStatus.Finished,
-        regular_home_score: result.regular_home_score,
-        regular_away_score: result.regular_away_score,
-        result_version: resultVersion,
-        result_source: ResultSource.Provider,
-        result_provider: fixture.resultProvider ?? (fixture.provider as Provider | undefined) ?? null,
-        compared_providers: fixture.comparedProviders ?? [(fixture.provider as Provider | undefined) ?? "api_football"],
-        // 轮询错过 live 时，首次发现 finished 也必须冻结周期锚点。
-        period_anchor_at: match.period_anchor_at ?? match.kickoff_at,
-        prediction_closed_at: match.prediction_closed_at ?? serverNow,
-        finish_detected_at: match.finish_detected_at ?? serverNow,
-        updated_at: serverNow,
+      const fields = providerResultFields(match, result, fixture, serverNow);
+      assertMatchResultVersionInvariants({
+        ...match,
+        ...fields,
+        settlement_status: settlementStatus,
       });
+      await patchFields(match.match_id, fields);
       await saveSnapshot(
         tx,
         match.match_id,

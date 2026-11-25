@@ -10,9 +10,9 @@ describe("PersonalLeagueSummaryService", () => {
     await repo.leagueSeasons.insert(season("2025_2026"));
     await repo.matches.insert(match("game"));
     const service = new PersonalLeagueSummaryService(repo);
-    expect(await service.get("user", "premier_league", undefined, now)).toMatchObject({ availability: "not_available", season_id: "2025_2026", reason: "not_available", summary: null });
-    expect(await service.get("user", "premier_league", "2024_2025", now)).toMatchObject({ availability: "not_available", season_id: "2024_2025" });
-    expect(await service.get("user", "la_liga", undefined, now)).toMatchObject({ availability: "not_available", season_id: null });
+    expect(await service.get("user", "premier_league", undefined, now)).toMatchObject({ availability: "not_available", season_id: "2025_2026", reason: "season_not_completed", summary: null });
+    expect(await service.get("user", "premier_league", "2024_2025", now)).toMatchObject({ availability: "not_available", season_id: "2024_2025", reason: "no_eligible_season" });
+    expect(await service.get("user", "la_liga", undefined, now)).toMatchObject({ availability: "not_available", season_id: null, reason: "no_eligible_season" });
   });
   it("returns the completed season until the new season starts and supports explicit history", async () => {
     const repo = new InMemoryRepository();
@@ -44,9 +44,9 @@ describe("PersonalLeagueSummaryService", () => {
     const repo = new InMemoryRepository();
     await repo.users.insert(user());
     const service = new PersonalLeagueSummaryService(repo);
-    await expect(service.get("missing", "missing", undefined, now)).rejects.toMatchObject({ code: "user_NOT_FOUND", message: expect.stringContaining("user") });
+    await expect(service.get("missing", "missing", undefined, now)).rejects.toMatchObject({ code: "USER_NOT_FOUND", message: expect.stringContaining("USER") });
     await expect(service.get("user", "missing", undefined, now)).rejects.toMatchObject({ code: "VALIDATION_ERROR", message: "league_id" });
-    for (const id of ["2026", "2026_27", "bad"]) {
+    for (const id of ["2026", "2026_27", "2026_2030", "2027_2026", "bad"]) {
       await expect(service.get("user", "premier_league", id, now)).rejects.toMatchObject({ code: "VALIDATION_ERROR", message: "season_id" });
     }
     await expect(service.get("user", "chinese_super_league", "2025_2026", now)).rejects.toMatchObject({ code: "VALIDATION_ERROR", message: "season_id" });

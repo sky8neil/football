@@ -24,6 +24,7 @@ export class CloudBaseProviderKeyStateStore implements ProviderKeyStateStore {
       cooldown_until: state.cooldown_until,
       network_errors: state.network_errors,
       last_error_code: state.last_error_code,
+      ...(state.key_fingerprint !== undefined ? { key_fingerprint: state.key_fingerprint } : {}),
       updated_at: state.updated_at,
       schema_version: 1,
     };
@@ -41,13 +42,23 @@ function stateId(keyId: string): string {
   return `provider_key_state_${keyId.replace(/[^a-zA-Z0-9]/g, "")}`;
 }
 
+function toDateOrNull(value: unknown): Date | null {
+  if (value instanceof Date) return Number.isFinite(value.getTime()) ? value : null;
+  if (typeof value === "string" || typeof value === "number") {
+    const parsed = new Date(value);
+    return Number.isFinite(parsed.getTime()) ? parsed : null;
+  }
+  return null;
+}
+
 function deserialize(row: CloudBaseDocument): ProviderKeyState {
   return {
     key_id: String(row.key_id),
     status: row.status === "invalid" || row.status === "cooldown" ? row.status : "healthy",
-    cooldown_until: row.cooldown_until instanceof Date ? row.cooldown_until : null,
+    cooldown_until: toDateOrNull(row.cooldown_until),
     network_errors: typeof row.network_errors === "number" ? row.network_errors : 0,
     last_error_code: typeof row.last_error_code === "string" ? row.last_error_code : null,
-    updated_at: row.updated_at instanceof Date ? row.updated_at : new Date(String(row.updated_at)),
+    ...(typeof row.key_fingerprint === "string" ? { key_fingerprint: row.key_fingerprint } : {}),
+    updated_at: toDateOrNull(row.updated_at) ?? new Date(0),
   };
 }

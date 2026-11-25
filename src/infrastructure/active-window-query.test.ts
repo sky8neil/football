@@ -249,12 +249,14 @@ describe("buildActiveWindowFilters", () => {
     }
   });
 
-  it("stale_recovery：两种状态从六小时前查询", () => {
+  it("stale_recovery：两种状态从六小时前查询并下推 superseded_by: null", () => {
     const fragments = buildActiveWindowFilters(query("stale_recovery"));
     expect(fragments.map((fragment) => fragment.equals)).toEqual([
       { match_status: MatchStatus.Scheduled }, { match_status: MatchStatus.Live },
     ]);
+    expect(fragments.every((fragment) => fragment.supersededByNull === true)).toBe(true);
     expect(fragments.every((fragment) => fragment.kickoffAtLte?.getTime() === at(-6 * HOUR_MS).getTime())).toBe(true);
+    expect(buildActiveWindowFilters(query("live_match")).every((f) => f.supersededByNull === undefined)).toBe(true);
   });
 });
 

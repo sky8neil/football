@@ -256,8 +256,14 @@ function getTeamLogo(leagueId, team) {
   return lookupLeagueLogo(leagueId, name) || PLACEHOLDER;
 }
 
+function isPlaceholderLogo(logo) {
+  if (typeof logo !== "string") return true;
+  const trimmed = logo.trim();
+  return !trimmed || trimmed === PLACEHOLDER || trimmed.endsWith("/team-placeholder.png") || trimmed === "placeholder.png";
+}
+
 function getLeagueLogo(leagueId) {
   return MANIFEST[leagueId] ? MANIFEST[leagueId].logo : PLACEHOLDER;
 }
 
-module.exports = { getTeamLogo, getLeagueLogo, PLACEHOLDER, MANIFEST, normalizeTeamName, TEAM_ALIASES };
+module.exports = { getTeamLogo, getLeagueLogo, isPlaceholderLogo, PLACEHOLDER, MANIFEST, normalizeTeamName, TEAM_ALIASES };

@@ -353,7 +353,7 @@ describe("N. Rebuild 与一致性（规范 44-N / 49.5）", () => {
     expect(byUser["u3"]).toBeUndefined();
   });
 
-  it("按周期结束边界封存新行，并仅在未结束周过滤注销用户", async () => {
+  it("按周期结束边界封存新行，周期内注销用户保留累加值但仅清名次", async () => {
     const seed = async () => {
       const repo = new InMemoryRepository();
       await repo.users.insert(makeUser("u-active"));
@@ -379,14 +379,28 @@ describe("N. Rebuild 与一致性（规范 44-N / 49.5）", () => {
     const currentWeek = await seed();
     const currentOutcome = await new RebuildPeriodRankingsService(currentWeek)
       .rebuildPeriodRankings(PeriodType.Week, WEEK_KEY, new Date("2026-08-09T12:00:00.000Z"));
-    expect(currentOutcome.rankings.map((entry) => [entry.user_id, entry.global_rank, entry.is_final]))
-      .toEqual([["u-active", 1, false]]);
+    expect(currentOutcome.rankings.map((entry) => ({
+      user_id: entry.user_id,
+      period_score: entry.period_score,
+      global_rank: entry.global_rank,
+      is_final: entry.is_final,
+    }))).toEqual([
+      { user_id: "u-active", period_score: 12, global_rank: 1, is_final: false },
+      { user_id: "u-deleted", period_score: 12, global_rank: null, is_final: false },
+    ]);
 
     const historicalWeek = await seed();
     const historicalOutcome = await new RebuildPeriodRankingsService(historicalWeek)
       .rebuildPeriodRankings(PeriodType.Week, WEEK_KEY, new Date("2026-08-09T16:00:00.000Z"));
-    expect(historicalOutcome.rankings.map((entry) => [entry.user_id, entry.global_rank, entry.is_final]))
-      .toEqual([["u-active", 1, true], ["u-deleted", 2, true]]);
+    expect(historicalOutcome.rankings.map((entry) => ({
+      user_id: entry.user_id,
+      period_score: entry.period_score,
+      global_rank: entry.global_rank,
+      is_final: entry.is_final,
+    }))).toEqual([
+      { user_id: "u-active", period_score: 12, global_rank: 1, is_final: true },
+      { user_id: "u-deleted", period_score: 12, global_rank: null, is_final: true },
+    ]);
   });
 
   it("N125 daily consistency 发现差异只报警，不自动修改账本", async () => {

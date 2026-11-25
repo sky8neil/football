@@ -63,6 +63,10 @@ class MemoryCloudBaseDb implements CloudBaseDb {
     return document === undefined ? null : cloneValue(document);
   }
 
+  async getForUpdate(collection: string, id: string): Promise<CloudBaseDocument | null> {
+    return this.get(collection, id);
+  }
+
   async add(collection: string, id: string, document: CloudBaseDocument): Promise<void> {
     if (this.documents.has(`${collection}/${id}`)) {
       throw new CloudBaseDuplicateKeyError(collection, "pk_document", { _id: id });
@@ -79,6 +83,10 @@ class MemoryCloudBaseDb implements CloudBaseDb {
     const merged = { ...this.documents.get(storageKey)!, ...document, _id: id };
     this.assertUnique(collection, merged, id);
     this.documents.set(storageKey, cloneValue(merged));
+  }
+
+  async patch(collection: string, id: string, fields: Record<string, unknown>): Promise<void> {
+    await this.update(collection, id, fields as CloudBaseDocument);
   }
 
   async query(

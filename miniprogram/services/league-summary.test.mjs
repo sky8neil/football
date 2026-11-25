@@ -13,10 +13,10 @@ function loadService(name, request) {
 }
 
 describe("league status and summary services", () => {
-  it("gets league status without a query", () => {
+  it("[A-S1-06] gets league status without a query and marks auth optional", () => {
     const request = vi.fn();
     loadService("leagues.js", request).getLeagueStatus();
-    expect(request).toHaveBeenCalledWith({ method: "GET", path: "/v1/leagues/status" });
+    expect(request).toHaveBeenCalledWith({ method: "GET", path: "/v1/leagues/status", auth: "optional" });
   });
 
   it("includes only nonempty league and season parameters", () => {

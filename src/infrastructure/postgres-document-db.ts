@@ -6,6 +6,8 @@ import {
   CloudBaseDocumentNotFoundError,
   CloudBaseDuplicateKeyError,
   logicalCollectionFromPhysical,
+  type CloudBaseAnomalyPageQuery,
+  type CloudBaseAuditLogPageQuery,
   type CloudBaseDb,
   type CloudBaseDocument,
   type CloudBasePredictionHistoryPage,
@@ -13,6 +15,11 @@ import {
 } from "./cloudbase-db.js";
 import { decodeDocument, encodeDocument, encodeQueryValue } from "./document-codec.js";
 import {
+  createPostgresAuthSessionStore,
+  type AuthSessionStore,
+} from "./postgres-auth-sessions.js";
+import {
+  JSONB_UTC_TIMESTAMPTZ_FUNCTION,
   postgresDocumentFieldExpr,
   qualifiedTable,
   quoteIdent,
@@ -267,10 +274,26 @@ export function parseDocumentFilter(filter: Record<string, unknown>): FilterOp[]
 
 function comparisonType(logical: string, field: string, value: unknown): FieldType | "text" {
   const declared = documentFieldType(logical, field);
-  if (declared === "date" || value instanceof Date) return "date";
-  if (declared === "int" || typeof value === "number") return "int";
-  if (declared === "bool" || typeof value === "boolean") return "bool";
-  return declared ?? "text";
+  if (declared !== undefined) return declared;
+  if (value instanceof Date) return "date";
+  if (typeof value === "number") return "int";
+  if (typeof value === "boolean") return "bool";
+  return "text";
+}
+
+function comparisonExpr(
+  schema: string,
+  logical: string,
+  field: string,
+  type: FieldType | "text",
+): string {
+  if (field === "_id") return "_id";
+  const expr = postgresDocumentFieldExpr(schema, logical, field);
+  if (documentFieldType(logical, field) !== undefined) return expr;
+  if (type === "date") return `${qualifiedTable(schema, JSONB_UTC_TIMESTAMPTZ_FUNCTION)}(${expr})`;
+  if (type === "int") return `(${expr})::numeric`;
+  if (type === "bool") return `(${expr})::boolean`;
+  return expr;
 }
 
 function compileOps(
@@ -282,7 +305,8 @@ function compileOps(
   const params: unknown[] = [];
   for (const op of ops) {
     if (op.kind === "null") {
-      clauses.push(`(document -> ${jsonKey(op.field)}) = 'null'::jsonb`);
+      const expr = op.field === "_id" ? "_id" : postgresDocumentFieldExpr(schema, logical, op.field);
+      clauses.push(`(${expr}) IS NULL`);
       continue;
     }
     if (op.kind === "in") {
@@ -293,7 +317,7 @@ function compileOps(
     }
     const value = op.value;
     const type = comparisonType(logical, op.field, value);
-    const expr = op.field === "_id" ? "_id" : postgresDocumentFieldExpr(schema, logical, op.field);
+    const expr = comparisonExpr(schema, logical, op.field, type);
     params.push(type === "date" ? encodeQueryValue(value) : value);
     const placeholder = `$${params.length}`;
     if (op.kind === "ne") {
@@ -339,6 +363,15 @@ export function compilePostgresDocumentGet(
     sql: `SELECT document FROM ${qualifiedCollection(config.schema, collection)} WHERE _id = $1`,
     params: [id],
   };
+}
+
+export function compilePostgresDocumentGetForUpdate(
+  config: PostgresDocumentDbConfig,
+  collection: string,
+  id: string,
+): CompiledSql {
+  const compiled = compilePostgresDocumentGet(config, collection, id);
+  return { sql: `${compiled.sql} FOR UPDATE`, params: compiled.params };
 }
 
 export function compilePostgresDocumentAdd(
@@ -607,6 +640,93 @@ export function compileSettlementFallbackPage(
   };
 }
 
+export function compileAnomalyPage(
+  config: PostgresDocumentDbConfig,
+  params: CloudBaseAnomalyPageQuery,
+): CompiledSql {
+  const table = qualifiedCollection(config.schema, params.collection);
+  const statusExpr = postgresDocumentFieldExpr(config.schema, "anomalies", "status");
+  const blockingExpr = postgresDocumentFieldExpr(config.schema, "anomalies", "blocking");
+  const lastSeenExpr = postgresDocumentFieldExpr(config.schema, "anomalies", "last_seen_at");
+  const anomalyIdExpr = postgresDocumentFieldExpr(config.schema, "anomalies", "anomaly_id");
+  const queryParams: unknown[] = [];
+  const clauses: string[] = [];
+  if (params.status !== null) {
+    queryParams.push(params.status);
+    clauses.push(`${statusExpr} = $${queryParams.length}`);
+  }
+  if (params.blocking !== null) {
+    queryParams.push(params.blocking);
+    clauses.push(`${blockingExpr} = $${queryParams.length}`);
+  }
+  if (params.after != null) {
+    queryParams.push(encodeQueryValue(params.after.last_seen_at), params.after.anomaly_id);
+    clauses.push(
+      `(${lastSeenExpr}, ${anomalyIdExpr}) < ($${queryParams.length - 1}::timestamptz, $${queryParams.length})`,
+    );
+  }
+  queryParams.push(Math.max(0, params.limit));
+  const where = clauses.length === 0 ? "TRUE" : clauses.join(" AND ");
+  return {
+    sql: `SELECT document FROM ${table} WHERE ${where} ORDER BY ${lastSeenExpr} DESC, ${anomalyIdExpr} DESC LIMIT $${queryParams.length}`,
+    params: queryParams,
+  };
+}
+
+export function compileAuditLogPage(
+  config: PostgresDocumentDbConfig,
+  params: CloudBaseAuditLogPageQuery,
+): CompiledSql {
+  const table = qualifiedCollection(config.schema, params.collection);
+  const actionExpr = postgresDocumentFieldExpr(config.schema, "admin_audit_logs", "action");
+  const entityTypeExpr = postgresDocumentFieldExpr(config.schema, "admin_audit_logs", "entity_type");
+  const entityIdExpr = postgresDocumentFieldExpr(config.schema, "admin_audit_logs", "entity_id");
+  const createdAtExpr = postgresDocumentFieldExpr(config.schema, "admin_audit_logs", "created_at");
+  const auditIdExpr = postgresDocumentFieldExpr(config.schema, "admin_audit_logs", "audit_id");
+  const queryParams: unknown[] = [];
+  const clauses: string[] = [];
+  if (params.action !== null) {
+    queryParams.push(params.action);
+    clauses.push(`${actionExpr} = $${queryParams.length}`);
+  }
+  if (params.entity_type !== null) {
+    queryParams.push(params.entity_type);
+    clauses.push(`${entityTypeExpr} = $${queryParams.length}`);
+  }
+  if (params.entity_id !== null) {
+    queryParams.push(params.entity_id);
+    clauses.push(`${entityIdExpr} = $${queryParams.length}`);
+  }
+  if (params.after != null) {
+    queryParams.push(encodeQueryValue(params.after.created_at), params.after.audit_id);
+    clauses.push(
+      `(${createdAtExpr}, ${auditIdExpr}) < ($${queryParams.length - 1}::timestamptz, $${queryParams.length})`,
+    );
+  }
+  queryParams.push(Math.max(0, params.limit));
+  const where = clauses.length === 0 ? "TRUE" : clauses.join(" AND ");
+  return {
+    sql: `SELECT document FROM ${table} WHERE ${where} ORDER BY ${createdAtExpr} DESC, ${auditIdExpr} DESC LIMIT $${queryParams.length}`,
+    params: queryParams,
+  };
+}
+
+export function compileCountPredictionsByMatchGroupedByResult(
+  config: PostgresDocumentDbConfig,
+  params: {
+    collection: string;
+    canonical_match_id: string;
+  },
+): CompiledSql {
+  const table = qualifiedCollection(config.schema, params.collection);
+  const canonicalExpr = postgresDocumentFieldExpr(config.schema, "predictions", "canonical_match_id");
+  const resultExpr = postgresDocumentFieldExpr(config.schema, "predictions", "derived_result");
+  return {
+    sql: `SELECT ${resultExpr} AS derived_result, COUNT(*)::int AS count FROM ${table} WHERE ${canonicalExpr} = $1 GROUP BY ${resultExpr}`,
+    params: [params.canonical_match_id],
+  };
+}
+
 export function compilePostgresDistinctQuery(
   config: PostgresDocumentDbConfig,
   collection: string,
@@ -729,6 +849,7 @@ export class PostgresDocumentDb implements CloudBaseDb {
   private readonly scopeQueue: ScopeQueue | undefined;
   private readonly rawQueryFn: PostgresQueryFn;
   private readonly queryFn: PostgresQueryFn;
+  readonly authSessions: AuthSessionStore;
 
   constructor(
     queryFn: PostgresQueryFn,
@@ -742,6 +863,7 @@ export class PostgresDocumentDb implements CloudBaseDb {
     this.scopeQueue = options.scopeQueue;
     this.rawQueryFn = queryFn;
     this.queryFn = this.bindQuery(queryFn);
+    this.authSessions = createPostgresAuthSessionStore(this.queryFn, config.schema);
   }
 
   inFilter(field: string, values: readonly string[]): Record<string, unknown> | undefined {
@@ -768,9 +890,21 @@ export class PostgresDocumentDb implements CloudBaseDb {
   async get(collection: string, id: string): Promise<CloudBaseDocument | null> {
     const compiled = compilePostgresDocumentGet(this.config, collection, id);
     const result = await this.queryFn(compiled.sql, compiled.params);
-    const document = asDocument(result.rows[0]?.document);
-    if (document === null) return null;
-    return decodeDocument(collection, document._id === undefined ? { ...document, _id: id } : document);
+    return this.decodeRow(collection, id, result.rows[0]?.document);
+  }
+
+  async getForUpdate(collection: string, id: string): Promise<CloudBaseDocument | null> {
+    if (!this.inTransaction) {
+      throw new Error("getForUpdate requires an active transaction");
+    }
+    const compiled = compilePostgresDocumentGetForUpdate(this.config, collection, id);
+    const work = async (): Promise<CloudBaseDocument | null> => {
+      const result = await this.execTracked(this.rawQueryFn, compiled.sql, compiled.params);
+      return this.decodeRow(collection, id, result.rows[0]?.document);
+    };
+    const queue = this.scopeQueue;
+    if (queue === undefined) return work();
+    return queue.run(work);
   }
 
   async add(collection: string, id: string, document: CloudBaseDocument): Promise<void> {
@@ -867,6 +1001,40 @@ export class PostgresDocumentDb implements CloudBaseDb {
       const document = asDocument(row.document);
       return document === null ? [] : [decodeDocument(params.collection, document)];
     });
+  }
+
+  async findAnomalyPage(params: CloudBaseAnomalyPageQuery): Promise<CloudBaseDocument[]> {
+    const compiled = compileAnomalyPage(this.config, params);
+    const result = await this.queryFn(compiled.sql, compiled.params);
+    return result.rows.flatMap((row) => {
+      const document = asDocument(row.document);
+      return document === null ? [] : [decodeDocument(params.collection, document)];
+    });
+  }
+
+  async findAuditLogPage(params: CloudBaseAuditLogPageQuery): Promise<CloudBaseDocument[]> {
+    const compiled = compileAuditLogPage(this.config, params);
+    const result = await this.queryFn(compiled.sql, compiled.params);
+    return result.rows.flatMap((row) => {
+      const document = asDocument(row.document);
+      return document === null ? [] : [decodeDocument(params.collection, document)];
+    });
+  }
+
+  async countPredictionsByMatchGroupedByResult(params: {
+    collection: string;
+    canonical_match_id: string;
+  }): Promise<{ HOME: number; DRAW: number; AWAY: number }> {
+    const compiled = compileCountPredictionsByMatchGroupedByResult(this.config, params);
+    const result = await this.queryFn(compiled.sql, compiled.params);
+    const counts = { HOME: 0, DRAW: 0, AWAY: 0 };
+    for (const row of result.rows) {
+      const derived = row.derived_result;
+      if (derived === "HOME" || derived === "DRAW" || derived === "AWAY") {
+        counts[derived] = Number(row.count ?? 0);
+      }
+    }
+    return counts;
   }
 
   async count(collection: string, filter: Record<string, unknown> = {}): Promise<number> {
@@ -994,6 +1162,12 @@ export class PostgresDocumentDb implements CloudBaseDb {
       return queue.run(() => this.runSavepoint(work));
     }
     return this.runOuterTransaction(work);
+  }
+
+  private decodeRow(collection: string, id: string, value: unknown): CloudBaseDocument | null {
+    const document = asDocument(value);
+    if (document === null) return null;
+    return decodeDocument(collection, document._id === undefined ? { ...document, _id: id } : document);
   }
 
   private bindQuery(queryFn: PostgresQueryFn): PostgresQueryFn {
@@ -1226,14 +1400,18 @@ export class PostgresDocumentDb implements CloudBaseDb {
   }
 }
 
-export function createPostgresQueryFn(client: {
+type PostgresClientQuery = {
   query: (sql: string, params?: unknown[]) => Promise<{
     rows: Array<Record<string, unknown>>;
     command?: string;
     rowCount?: number | null;
   }>;
-}): PostgresQueryFn {
-  return async (sql, params) => {
+  release?: () => unknown;
+  connect?: (() => Promise<unknown>) | ((callback: (err: Error) => void) => void);
+};
+
+export function createPostgresQueryFn(client: PostgresClientQuery): PostgresQueryFn {
+  const queryFn: PostgresQueryFn = async (sql, params) => {
     const result = await client.query(sql, params);
     const mapped: PostgresQueryResult = { rows: result.rows };
     const command = queryCommand(result);
@@ -1241,6 +1419,18 @@ export function createPostgresQueryFn(client: {
     if (typeof result.rowCount === "number") Object.assign(mapped, { rowCount: result.rowCount });
     return mapped;
   };
+  if (typeof client.connect === "function" && typeof client.release !== "function") {
+    const poolConnect = (client as { connect: () => Promise<PostgresClientQuery> }).connect.bind(client);
+    queryFn.withSession = async <T>(fn: (query: PostgresQueryFn) => Promise<T>): Promise<T> => {
+      const sessionClient = await poolConnect();
+      try {
+        return await fn(createPostgresQueryFn(sessionClient));
+      } finally {
+        await sessionClient.release?.();
+      }
+    };
+  }
+  return queryFn;
 }
 
 export function createPostgresDocumentDb(

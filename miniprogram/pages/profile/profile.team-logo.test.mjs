@@ -202,4 +202,36 @@ describe("profile favorite team emblem", () => {
       resultText: "比赛取消 · 不计分",
     });
   });
+
+  it("[CR-23] loadFavoriteTeam 优先使用服务端下发的 name_zh 与 logo_url", async () => {
+    const teamMod = { exports: {} };
+    runInNewContext(readFileSync(new URL("../../utils/team-presentation.js", import.meta.url), "utf8"), {
+      module: teamMod,
+      exports: teamMod.exports,
+      require: (id) => id.includes("team-registry")
+        ? { findTeam: () => null }
+        : { PLACEHOLDER: "placeholder.png", getTeamLogo: () => "placeholder.png" },
+    });
+    const { page, listMatches, cache } = load({}, null, () => "placeholder.png", { presentTeam: teamMod.exports.presentTeam });
+    listMatches.mockResolvedValueOnce({
+      statusCode: 200,
+      data: {
+        items: [{
+          league_id: "premier_league",
+          home_team: {
+            team_id: "promoted-1",
+            name: "Ipswich Town",
+            name_zh: "伊普斯威奇",
+            logo_url: "https://cdn.example.com/ipswich.png",
+          },
+        }],
+      },
+    });
+
+    await page.loadFavoriteTeam("promoted-1");
+    expect(page.data.favoriteTeamText).toBe("伊普斯威奇");
+    expect(page.data.favoriteTeamLogo).toBe("https://cdn.example.com/ipswich.png");
+    expect(cache["team_name:promoted-1"]).toBe("伊普斯威奇");
+    expect(cache["team_logo:promoted-1"]).toBe("https://cdn.example.com/ipswich.png");
+  });
 });

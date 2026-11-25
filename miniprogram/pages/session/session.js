@@ -5,10 +5,18 @@ const { storeNickname, normalizeNickname, NICKNAME_STORAGE_KEY } = require("../.
 // tabBar 页面只能用 wx.switchTab 跳转；wx.redirectTo / wx.navigateTo 不被受理，
 // 且是静默失败（不报错、不跳转），用错会让用户卡在会话页出不去。
 const HOME_URL = "/pages/matches/matches";
-const RETURN_TARGETS = ["match-detail", "share-card", "my-predictions"];
+const RETURN_TARGETS = [
+  "match-detail",
+  "share-card",
+  "my-predictions",
+  "groups",
+  "group-detail",
+  "settings",
+  "unlocks",
+];
 
-// 与服务端一致：1～32 个字符（src/application/session.ts 的 validateNickname）。
-// 前端只做前置拦截，最终以服务端校验结果为准。
+// 与服务端一致：1～32 个 Unicode grapheme（src/application/session.ts 的 validateNickname）。
+// 仅 Intl.Segmenter 可用时做前置拦截；不可用时不因本地长度拒绝，最终以服务端为准。
 const NICKNAME_MAX_CHARS = 32;
 
 // 隐私协议的兜底名称：getPrivacySetting 拿不到时用它，避免弹窗出现空书名号。
@@ -16,9 +24,19 @@ const PRIVACY_CONTRACT_FALLBACK = "《小程序用户隐私保护指引》";
 // 同意按钮的 id 必须与 WXML 一致：resolve 时要把 buttonId 回传给微信。
 const PRIVACY_AGREE_BUTTON_ID = "privacy-agree-btn";
 
-function charCount(value) {
-  // 按 code point 计数，避免 emoji 被算成两个字符（与 utils/nickname.js 的截断口径一致）。
-  return Array.from(value).length;
+/** 有 Intl.Segmenter 时返回 grapheme 数；没有时返回 null，调用方不得据此拒绝提交。 */
+function graphemeCount(value) {
+  if (typeof Intl === "undefined" || typeof Intl.Segmenter !== "function") return null;
+  return [...new Intl.Segmenter("und", { granularity: "grapheme" }).segment(value)].length;
+}
+
+function lengthFeedback(value) {
+  const count = graphemeCount(value);
+  if (count === null) return { overflow: false, lengthText: "" };
+  return {
+    overflow: count > NICKNAME_MAX_CHARS,
+    lengthText: count === 0 ? "" : `${count}/${NICKNAME_MAX_CHARS}`,
+  };
 }
 
 /** 回填上次用过的昵称；缓存缺失或脏数据一律当空。 */
@@ -55,10 +73,10 @@ Page({
     // 只在缓存里有可用昵称时回填，避免把用户已输入的内容清空。
     const nickname = cachedNickname();
     if (nickname) {
-      const count = charCount(nickname);
+      const feedback = lengthFeedback(nickname);
       patch.nickname = nickname;
-      patch.overflow = count > NICKNAME_MAX_CHARS;
-      patch.lengthText = `${count}/${NICKNAME_MAX_CHARS}`;
+      patch.overflow = feedback.overflow;
+      patch.lengthText = feedback.lengthText;
     }
     this.setData(patch);
     this.initPrivacy();
@@ -144,11 +162,11 @@ Page({
   },
 
   updateNickname(value) {
-    const count = charCount(value);
+    const feedback = lengthFeedback(value);
     this.setData({
       nickname: value,
-      overflow: count > NICKNAME_MAX_CHARS,
-      lengthText: count === 0 ? "" : `${count}/${NICKNAME_MAX_CHARS}`,
+      overflow: feedback.overflow,
+      lengthText: feedback.lengthText,
       errorMessage: "",
     });
   },
@@ -164,38 +182,56 @@ Page({
       this.setData({ errorMessage: "先填个昵称，球友们才好认出你" });
       return;
     }
-    if (charCount(nickname) > NICKNAME_MAX_CHARS) {
+    const count = graphemeCount(nickname);
+    if (count !== null && count > NICKNAME_MAX_CHARS) {
       this.setData({ errorMessage: `昵称最多 ${NICKNAME_MAX_CHARS} 个字符` });
       return;
     }
     this.setData({ loading: true, errorMessage: "", canSkip: false, canRetry: false });
-    initSession(nickname).then((result) => {
+    let pending;
+    try {
+      pending = Promise.resolve(initSession(nickname));
+    } catch (error) {
+      pending = Promise.reject(error);
+    }
+    return pending.then((result) => {
+      if (!result || typeof result !== "object") {
+        this.setData({
+          loading: false,
+          errorMessage: "网络异常，请稍后重试",
+          canSkip: false,
+          canRetry: true,
+        });
+        return;
+      }
       const ok = result.statusCode === 200 || result.statusCode === 201;
       if (ok) {
         // 昵称取服务端校验并 trim 后的值（MVP §24.1 Response data 含 nickname），
         // 写入本地缓存，供首页第一行展示。
         const payload = result.data && typeof result.data === "object" ? result.data : {};
         storeNickname(payload.nickname);
+        const onNavFail = () => {
+          this.setData({ loading: false, canRetry: true });
+        };
         if (RETURN_TARGETS.indexOf(this.data.returnTo) !== -1) {
-          wx.navigateBack({ delta: 1 });
+          wx.navigateBack({
+            delta: 1,
+            fail: () => {
+              wx.switchTab({ url: HOME_URL, fail: onNavFail });
+            },
+          });
           return;
         }
         const pendingInviteCode = wx.getStorageSync("pending_group_invite_code");
         if (pendingInviteCode) {
           wx.removeStorageSync("pending_group_invite_code");
-          wx.reLaunch({ url: `/pages/groups/join?code=${encodeURIComponent(pendingInviteCode)}` });
+          wx.reLaunch({
+            url: `/pages/groups/join?code=${encodeURIComponent(pendingInviteCode)}`,
+            fail: onNavFail,
+          });
           return;
         }
-        wx.switchTab({ url: HOME_URL });
-        return;
-      }
-      if (result.statusCode === 409 && result.code === "USER_DELETED") {
-        this.setData({
-          loading: false,
-          errorMessage: "账号已注销",
-          canSkip: true,
-          canRetry: false,
-        });
+        wx.switchTab({ url: HOME_URL, fail: onNavFail });
         return;
       }
       const unauthorized = result.statusCode === 401 && result.code === "UNAUTHORIZED";
@@ -208,6 +244,13 @@ Page({
             ? "请稍后重试"
             : result.message || String(result.code || result.statusCode),
         canSkip: unauthorized,
+        canRetry: true,
+      });
+    }).catch((error) => {
+      this.setData({
+        loading: false,
+        errorMessage: (error && error.message) || "网络异常，请稍后重试",
+        canSkip: false,
         canRetry: true,
       });
     });

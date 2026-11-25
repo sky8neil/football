@@ -1037,3 +1037,104 @@ describe("Slice 1 finalize 事务锁围栏", () => {
       .not.toBe(SettlementStatus.Settled);
   });
 });
+
+describe("RetrySettlementService.retry - 失败写回锁围栏与审计原子性", () => {
+  it("DB 锁已被接管时失败收尾不提交 Failed", async () => {
+    const { repo, match } = await setup();
+    const settlement = makeFailedSettlement({
+      match_id: match.match_id,
+      result_version: 1,
+    });
+    await repo.settlements.insert(settlement);
+    await repo.settlementItems.insert(
+      makeItem({ settlement_id: settlement.settlement_id, prediction_id: "p_fail" }),
+    );
+    const repoProxy = new Proxy(repo, {
+      get(target, prop, receiver) {
+        if (prop === "withTransaction") {
+          return async (fn: Parameters<AppRepository["withTransaction"]>[0]) =>
+            target.withTransaction((tx) => {
+              const fencedTx = new Proxy(tx, {
+                get(txTarget, txProp, txReceiver) {
+                  if (txProp === "jobLocks") {
+                    return { ...target.jobLocks, renew: async () => false };
+                  }
+                  return Reflect.get(txTarget, txProp, txReceiver);
+                },
+              });
+              return fn(fencedTx);
+            });
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+
+    await expect(
+      new RetrySettlementService(repoProxy as unknown as AppRepository, async () => {
+        throw new Error("worker boom");
+      }).retry(settlement.settlement_id, NOW),
+    ).rejects.toMatchObject({ code: FirstSettlementCode.AlreadyRunning });
+
+    const after = await repo.settlements.findById(settlement.settlement_id);
+    expect(after?.status).toBe(SettlementDocStatus.Running);
+    expect(after?.phase).toBe(SettlementPhase.ApplyItems);
+    expect((await repo.matches.findById(match.match_id))?.settlement_status)
+      .not.toBe(SettlementStatus.Failed);
+  });
+
+  it("失败审计写入抛错时失败写回随事务回滚", async () => {
+    const { repo, match } = await setup();
+    const settlement = makeFailedSettlement({
+      match_id: match.match_id,
+      result_version: 1,
+    });
+    await repo.settlements.insert(settlement);
+    await repo.settlementItems.insert(
+      makeItem({ settlement_id: settlement.settlement_id, prediction_id: "p_fail" }),
+    );
+    const service = new RetrySettlementService(repo, async () => {
+      throw new Error("worker boom");
+    });
+
+    await expect(
+      service.retry(settlement.settlement_id, NOW, async () => {
+        throw new Error("audit boom");
+      }),
+    ).rejects.toThrow("audit boom");
+
+    const after = await repo.settlements.findById(settlement.settlement_id);
+    expect(after?.status).toBe(SettlementDocStatus.Running);
+    expect(after?.phase).toBe(SettlementPhase.ApplyItems);
+    expect(
+      (await repo.settlementItems.findBySettlementAndPrediction(
+        settlement.settlement_id,
+        "p_fail",
+      ))?.status,
+    ).toBe(SettlementItemStatus.Pending);
+    expect((await repo.matches.findById(match.match_id))?.settlement_status)
+      .not.toBe(SettlementStatus.Failed);
+  });
+
+  it("完成审计写入抛错时不提交 Settled/Done", async () => {
+    const { repo, match } = await setup();
+    const settlement = makeFailedSettlement({
+      match_id: match.match_id,
+      result_version: 1,
+    });
+    await repo.settlements.insert(settlement);
+    const service = new RetrySettlementService(repo);
+
+    await expect(
+      service.retry(settlement.settlement_id, NOW, async () => {
+        throw new Error("audit boom");
+      }),
+    ).rejects.toThrow("audit boom");
+
+    const after = await repo.settlements.findById(settlement.settlement_id);
+    expect(after?.status).toBe(SettlementDocStatus.Running);
+    expect(after?.phase).toBe(SettlementPhase.RebuildRanks);
+    const matchAfter = await repo.matches.findById(match.match_id);
+    expect(matchAfter?.settlement_status).not.toBe(SettlementStatus.Settled);
+    expect(matchAfter?.settled_result_version).toBe(0);
+  });
+});

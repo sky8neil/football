@@ -7,7 +7,7 @@ import {
   UserStatus,
 } from "../domain/enums.js";
 import { FIXED_CONFIG_V1 } from "../domain/config.js";
-import { conflictError, notFoundError } from "../domain/errors.js";
+import { conflictError, internalError, notFoundError } from "../domain/errors.js";
 import { newUuid } from "../domain/ids.js";
 import { assertSeasonStatsInvariants, assertUserCareerInvariants } from "../domain/invariants.js";
 import {
@@ -294,17 +294,12 @@ export class RebuildUserStatsService {
     serverNow: Date,
   ): Promise<RebuildUserStatsOutcome> {
     assertValidServerNow(serverNow);
-    const currentUser = await this.repo.users.findById(userId);
-    if (currentUser === null) {
-      throw notFoundError("USER");
-    }
-
     const lockKey = userStatsRebuildLockKey(userId);
     const ownerId = newUuid();
     const acquired = await this.repo.jobLocks.acquire(
       lockKey,
       ownerId,
-      new Date(serverNow.getTime() + REBUILD_LEASE_MILLISECONDS),
+      new Date(Math.max(serverNow.getTime(), Date.now()) + REBUILD_LEASE_MILLISECONDS),
     );
     if (!acquired) {
       throw conflictError(
@@ -329,7 +324,12 @@ export class RebuildUserStatsService {
     serverNow: Date,
   ): Promise<RebuildUserStatsOutcome> {
     assertStatsAggregationPorts(tx);
-    const user = await tx.users.findById(userId);
+    const findUserForUpdate = tx.users.findByIdForUpdate;
+    const patchUser = tx.users.patchFields;
+    if (findUserForUpdate === undefined || patchUser === undefined) {
+      throw internalError("users 锁读或 patch port 未配置");
+    }
+    const user = await findUserForUpdate(userId);
     if (user === null) {
       throw notFoundError("USER");
     }
@@ -450,27 +450,38 @@ export class RebuildUserStatsService {
       updated_at: serverNow,
     };
     assertUserCareerInvariants(updatedUser);
-    await tx.users.update(updatedUser);
+    await patchUser(userId, {
+      career_points: updatedUser.career_points,
+      career_valid_predictions: updatedUser.career_valid_predictions,
+      career_wdl_hits: updatedUser.career_wdl_hits,
+      career_exact_hits: updatedUser.career_exact_hits,
+      career_last_scoring_match_at: updatedUser.career_last_scoring_match_at,
+      career_level: updatedUser.career_level,
+      career_best_level: updatedUser.career_best_level,
+      career_level_state: updatedUser.career_level_state,
+      updated_at: updatedUser.updated_at,
+    });
 
+    const findSeasonForUpdate = tx.userSeasonStats.findByUserAndSeasonForUpdate;
+    const patchSeasonStats = tx.userSeasonStats.patchFields;
+    if (findSeasonForUpdate === undefined || patchSeasonStats === undefined) {
+      throw internalError("user_season_stats 锁读或 patch port 未配置");
+    }
     const existingSeasonStats = await tx.userSeasonStats.findByUser(userId);
-    const existingSeasonIds = new Set(existingSeasonStats.map((stats) => stats.level_season_id));
-    const bySeason = new Map(
-      existingSeasonStats.map((stats) => [stats.level_season_id, stats]),
-    );
+    const seasonIds = new Set(existingSeasonStats.map((stats) => stats.level_season_id));
     for (const season of rebuilt.seasons) {
-      bySeason.set(season.level_season_id, bySeason.get(season.level_season_id) ?? emptySeasonStats(
-        userId,
-        season.level_season_id,
-        serverNow,
-      ));
+      seasonIds.add(season.level_season_id);
     }
     for (const entry of history) {
       if (entry.scope === LevelScope.Season && entry.level_season_id) {
-        bySeason.set(entry.level_season_id, bySeason.get(entry.level_season_id) ?? emptySeasonStats(
-          userId,
-          entry.level_season_id,
-          serverNow,
-        ));
+        seasonIds.add(entry.level_season_id);
+      }
+    }
+    const lockedSeasonStats = new Map<string, UserSeasonStats>();
+    for (const seasonId of [...seasonIds].sort((a, b) => a.localeCompare(b))) {
+      const locked = await findSeasonForUpdate(userId, seasonId);
+      if (locked !== null) {
+        lockedSeasonStats.set(seasonId, locked);
       }
     }
 
@@ -479,11 +490,9 @@ export class RebuildUserStatsService {
       user.career_level !== updatedUser.career_level ||
       user.career_best_level !== updatedUser.career_best_level ||
       !levelStatesEqual(user.career_level_state, careerLevel.levelState);
-    for (const seasonId of [...bySeason.keys()].sort((a, b) => a.localeCompare(b))) {
-      const oldStats = bySeason.get(seasonId);
-      if (oldStats === undefined) {
-        throw invalidLedger(`无法读取 season stats（season_id=${seasonId}）`);
-      }
+    for (const seasonId of [...seasonIds].sort((a, b) => a.localeCompare(b))) {
+      const existingStats = lockedSeasonStats.get(seasonId);
+      const oldStats = existingStats ?? emptySeasonStats(userId, seasonId, serverNow);
       const target = statsForSeason(rebuilt.seasons, seasonId);
       const bestFloor = Math.max(
         oldStats.best_level,
@@ -556,8 +565,18 @@ export class RebuildUserStatsService {
         oldStats.best_level !== updated.best_level ||
         !levelStatesEqual(oldStats.level_state, nextLevelState);
       assertSeasonStatsInvariants(updated);
-      if (existingSeasonIds.has(seasonId)) {
-        await tx.userSeasonStats.update(updated);
+      if (existingStats !== undefined) {
+        await patchSeasonStats(userId, seasonId, {
+          points: updated.points,
+          valid_predictions: updated.valid_predictions,
+          wdl_hits: updated.wdl_hits,
+          exact_hits: updated.exact_hits,
+          last_scoring_match_at: updated.last_scoring_match_at,
+          level: updated.level,
+          best_level: updated.best_level,
+          level_state: updated.level_state,
+          updated_at: updated.updated_at,
+        });
       } else {
         await tx.userSeasonStats.insert(updated);
       }

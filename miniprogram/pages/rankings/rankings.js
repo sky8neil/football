@@ -22,11 +22,13 @@ function displayTeamId(value) {
 }
 
 function presentItem(item, board) {
+  const displayName = typeof item.display_name === "string" ? item.display_name : "";
   const displayed = {
     user_id: item.user_id,
     rank: item.rank,
     rankText: String(item.rank).padStart(2, "0"),
     display_name: item.display_name,
+    avatarInitial: Array.from(displayName)[0] || "",
     favoriteTeamText: displayTeamId(item.favorite_team_id),
     career_level: item.career_level,
     exact_hits: null,
@@ -87,6 +89,10 @@ function applyAuthOrDeletedState(page, result) {
       nickname: "",
       avatarText: "球",
       currentUserId: "",
+      scopeSheetOpen: false,
+      items: [],
+      listItems: [],
+      podiumItems: [],
       loadingMore: false,
     });
     return true;
@@ -98,6 +104,10 @@ function applyAuthOrDeletedState(page, result) {
       nickname: "",
       avatarText: "球",
       currentUserId: "",
+      scopeSheetOpen: false,
+      items: [],
+      listItems: [],
+      podiumItems: [],
       loadingMore: false,
     });
     return true;
@@ -517,8 +527,9 @@ Page({
   onWeekChange(event) {
     const index = Number(event.detail.value);
     const option = this.data.weekOptions[index];
-    if (!option || option.key === this.data.selectedPeriodKey) return;
-    this.userSelectedWeek = index !== 0;
+    if (!option) return;
+    this.userSelectedWeek = true;
+    if (option.key === this.data.selectedPeriodKey) return;
     return this.queueLoadFirstPage({ selectedPeriodKey: option.key });
   },
 
@@ -574,9 +585,17 @@ Page({
 
   onLoginTap() { wx.navigateTo({ url: "/pages/session/session" }); },
 
+  onUserTap(event) {
+    const userId = event && event.currentTarget && event.currentTarget.dataset && event.currentTarget.dataset.userId;
+    if (!userId) return;
+    wx.navigateTo({
+      url: `/pages/public-profile/public-profile?user_id=${encodeURIComponent(String(userId))}`,
+    });
+  },
+
   onInviteTap() {
     if (this.data.scope === "group" && this.data.groupId) {
-      wx.navigateTo({ url: `/pages/groups/detail?group_id=${this.data.groupId}` });
+      wx.navigateTo({ url: `/pages/groups/detail?group_id=${encodeURIComponent(this.data.groupId)}` });
       return;
     }
     wx.navigateTo({ url: "/pages/groups/groups" });

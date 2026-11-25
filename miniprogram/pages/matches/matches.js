@@ -49,23 +49,42 @@ function beijingParts(iso) {
   return { year, month, day, hour, minute, key: `${year}-${pad(month)}-${pad(day)}` };
 }
 
-// 日期条开放范围：今天起共 11 个日期（今天 … 今天+10）。
-// 2026-09-26 决策：移除日历入口、日期条铺满整行，开放 n+10 天以内的选择（n = 今天，含今天）。
-// 要改开放范围只需改这一个常量；verify-home-migration.py 会校验它等于 11。
-const DATE_SPAN_DAYS = 11;
+// 日期条开放范围：今天 - 11 天 到 今天 + 11 天（共 23 个日期），默认选中并定位到今天。
+// 要改开放范围只需改这三个常量；verify-home-migration.py 会校验 DATE_SPAN_DAYS 等于 23。
+const DATE_PAST_DAYS = 11;
+const DATE_FUTURE_DAYS = 11;
+const DATE_SPAN_DAYS = 23;
 
 function buildDates(anchor) {
   const dates = [];
   const parts = beijingParts(anchor);
   if (!parts) return dates;
   const start = Date.UTC(parts.year, parts.month - 1, parts.day, 4, 0, 0);
-  for (let i = 0; i < DATE_SPAN_DAYS; i += 1) {
-    const date = new Date(start + i * 24 * 60 * 60 * 1000);
+  for (let offset = -DATE_PAST_DAYS; offset <= DATE_FUTURE_DAYS; offset += 1) {
+    const date = new Date(start + offset * DAY_MS);
     const shifted = new Date(date.getTime() + 8 * 60 * 60 * 1000);
     const key = `${shifted.getUTCFullYear()}-${pad(shifted.getUTCMonth() + 1)}-${pad(shifted.getUTCDate())}`;
-    dates.push({ key, label: i === 0 ? "今天" : i === 1 ? "明天" : WEEKDAYS[shifted.getUTCDay()], day: key.slice(-2) });
+    const label = offset === -1 ? "昨天" : offset === 0 ? "今天" : offset === 1 ? "明天" : WEEKDAYS[shifted.getUTCDay()];
+    dates.push({ key, label, day: key.slice(-2) });
   }
   return dates;
+}
+
+function todayKeyFromDates(dates, fallbackAnchor) {
+  const todayItem = Array.isArray(dates) ? dates.find((item) => item.label === "今天") : null;
+  if (todayItem && todayItem.key) return todayItem.key;
+  const parts = beijingParts(fallbackAnchor);
+  return parts ? parts.key : "";
+}
+
+function markMyPredictionsDirty() {
+  try {
+    if (typeof wx !== "undefined" && typeof wx.setStorageSync === "function") {
+      wx.setStorageSync("my_predictions_dirty", true);
+    }
+  } catch (_error) {
+    /* 存储不可用时不阻断主流程 */
+  }
 }
 
 function dayBounds(key) {
@@ -142,15 +161,25 @@ Page({
     headerHeight: headerHeight(),
     avatarText: "球",
     state: "loading", items: [], errorMessage: "", hasMore: false, nextCursor: null, loadingMore: false, nickname: "",
-    leagues: [], activeLeagueIds: [], leagueStatusById: {}, selectedLeague: "premier_league", dates: [], selectedDate: "", nextMatch: null, offseasonInfo: null, emptyIsBreak: false, summaryState: "loading", summarySeasonId: null, summarySeasonLabel: "", summaryReason: null, leagueSummary: null, openCount: 0, doneCount: 0, hintText: "", recentScore: null, levelSeasonLabel: "", submitErrors: {},
+    leagues: [], activeLeagueIds: [], leagueStatusById: {}, selectedLeague: "premier_league", dates: [], selectedDate: "", dateScrollIntoView: "", nextMatch: null, offseasonInfo: null, emptyIsBreak: false, summaryState: "loading", summarySeasonId: null, summarySeasonLabel: "", summaryReason: null, leagueSummary: null, openCount: 0, doneCount: 0, hintText: "", recentScore: null, levelSeasonLabel: "", submitErrors: {},
     scrollIntoView: "", resultsTransition: "results-enter",
   },
   drafts: {}, uiStates: {}, submittedMap: {}, idempotencyKeys: {}, lastPayloads: {}, requestSerial: 0, statusSerial: 0, summarySerial: 0, loginGeneration: undefined, reloadTimer: null, scrollTimer: null,
 
   onLoad() {
-    const dates = buildDates(new Date());
-    const levelSeasonLabel = formatLevelSeasonLabel(currentSeasonId(new Date().toISOString()));
-    this.setData({ dates, selectedDate: dates[0].key, leagues: LEAGUES.map((item) => ({ ...item, logo: getLeagueLogo(item.id) })), nickname: truncateNickname(resolveNickname()), avatarText: Array.from(resolveNickname())[0] || "球", levelSeasonLabel });
+    const now = new Date();
+    const dates = buildDates(now);
+    const todayKey = todayKeyFromDates(dates, now);
+    const levelSeasonLabel = formatLevelSeasonLabel(currentSeasonId(now.toISOString()));
+    this.setData({
+      dates,
+      selectedDate: todayKey,
+      dateScrollIntoView: todayKey ? `date-${todayKey}` : "",
+      leagues: LEAGUES.map((item) => ({ ...item, logo: getLeagueLogo(item.id) })),
+      nickname: truncateNickname(resolveNickname()),
+      avatarText: Array.from(resolveNickname())[0] || "球",
+      levelSeasonLabel,
+    });
     this.initialized = true;
     this.hasShown = false;
     this.needsDefaultLeague = true;
@@ -162,15 +191,18 @@ Page({
     const today = beijingParts(now);
     const nextSeasonLabel = formatLevelSeasonLabel(currentSeasonId(now.toISOString()));
     const currentDates = Array.isArray(this.data.dates) ? this.data.dates : [];
+    const currentToday = currentDates.find((item) => item.label === "今天");
+    const previousTodayKey = currentToday ? currentToday.key : "";
     const patch = {};
-    if (today && (currentDates.length === 0 || currentDates[0].key !== today.key)) {
+    if (today && (currentDates.length === 0 || previousTodayKey !== today.key)) {
       const dates = buildDates(now);
-      const previousTodayKey = currentDates.length > 0 ? currentDates[0].key : "";
+      const nextTodayKey = todayKeyFromDates(dates, now);
       const currentSelected = this.data.selectedDate;
       const stillValid = dates.some((item) => item.key === currentSelected);
       patch.dates = dates;
       if (!currentSelected || currentSelected === previousTodayKey || !stillValid) {
-        patch.selectedDate = dates[0] ? dates[0].key : "";
+        patch.selectedDate = nextTodayKey;
+        patch.dateScrollIntoView = nextTodayKey ? `date-${nextTodayKey}` : "";
       }
     }
     if (nextSeasonLabel !== this.data.levelSeasonLabel) {
@@ -276,7 +308,7 @@ Page({
     this.requestSerial += 1;
     this.statusSerial += 1;
     this.summarySerial += 1;
-    this.setData({ selectedDate: date, state: "loading", items: [], nextMatch: null, offseasonInfo: null, leagueSummary: null, summarySeasonId: null, summarySeasonLabel: "", summaryReason: null, summaryState: "loading", hasMore: false, nextCursor: null, openCount: 0, doneCount: 0, hintText: "", scrollIntoView: "", resultsTransition: "results-exit" });
+    this.setData({ selectedDate: date, dateScrollIntoView: "", state: "loading", items: [], nextMatch: null, offseasonInfo: null, leagueSummary: null, summarySeasonId: null, summarySeasonLabel: "", summaryReason: null, summaryState: "loading", hasMore: false, nextCursor: null, openCount: 0, doneCount: 0, hintText: "", scrollIntoView: "", resultsTransition: "results-exit" });
     this.reloadTimer = setTimeout(() => {
       this.reloadTimer = null;
       this.loadFirstPage();
@@ -292,16 +324,19 @@ Page({
     this.requestSerial += 1;
     this.statusSerial += 1;
     this.summarySerial += 1;
-    this.setData({ selectedDate: date, state: "loading", items: [], nextMatch: null, offseasonInfo: null, leagueSummary: null, summarySeasonId: null, summarySeasonLabel: "", summaryReason: null, summaryState: "loading", hasMore: false, nextCursor: null, openCount: 0, doneCount: 0, hintText: "", scrollIntoView: "", resultsTransition: "results-exit" });
+    this.setData({ selectedDate: date, dateScrollIntoView: `date-${date}`, state: "loading", items: [], nextMatch: null, offseasonInfo: null, leagueSummary: null, summarySeasonId: null, summarySeasonLabel: "", summaryReason: null, summaryState: "loading", hasMore: false, nextCursor: null, openCount: 0, doneCount: 0, hintText: "", scrollIntoView: "", resultsTransition: "results-exit" });
     return this.loadFirstPage();
   },
 
   onRankingsTap() {
     wx.setStorageSync("pending_ranking_target", {
       board: "season",
-      levelSeasonId: currentSeasonId(new Date().toISOString()),
     });
     wx.switchTab({ url: "/pages/rankings/rankings" });
+  },
+
+  onSummaryLoginTap() {
+    wx.navigateTo({ url: "/pages/session/session" });
   },
 
   onRetry() { this.loadFirstPage(); },
@@ -327,21 +362,35 @@ Page({
     if (serial !== this.requestSerial || statusSerial !== this.statusSerial || leagueId !== this.data.selectedLeague) return;
     const staleAfterStatus = this.handleStaleLoginGeneration(loginGeneration);
     if (staleAfterStatus) return staleAfterStatus;
-    const statuses = statusResult && statusResult.statusCode === 200 ? statusResult.data.items : [];
+    const statusOk = Boolean(statusResult && statusResult.statusCode === 200 && statusResult.data && Array.isArray(statusResult.data.items));
+    const statuses = statusOk ? statusResult.data.items : [];
     const leagueStatusById = {};
     statuses.forEach((item) => { leagueStatusById[item.league_id] = item; });
     const activeLeagueIds = statuses.filter((item) => item.phase === "in_season" || item.phase === "break").map((item) => item.league_id);
     this.setData({ leagueStatusById, activeLeagueIds, leagues: this.data.leagues.map((league) => ({ ...league, offSeason: !!leagueStatusById[league.id] && ["completed", "between_seasons"].includes(leagueStatusById[league.id].phase) })) });
     if ((chooseDefault || this.needsDefaultLeague) && !this.userChangedLeague) {
-      const selection = resolveDefaultLeagueFromStatus(statuses);
-      if (serial !== this.requestSerial || statusSerial !== this.statusSerial || leagueId !== this.data.selectedLeague) return;
-      const staleAfterSelect = this.handleStaleLoginGeneration(loginGeneration);
-      if (staleAfterSelect) return staleAfterSelect;
-      this.setData({ selectedLeague: selection.leagueId });
-      this.needsDefaultLeague = false;
+      if (statusOk) {
+        const selection = resolveDefaultLeagueFromStatus(statuses);
+        if (serial !== this.requestSerial || statusSerial !== this.statusSerial || leagueId !== this.data.selectedLeague) return;
+        const staleAfterSelect = this.handleStaleLoginGeneration(loginGeneration);
+        if (staleAfterSelect) return staleAfterSelect;
+        this.setData({ selectedLeague: selection.leagueId });
+        this.needsDefaultLeague = false;
+      } else {
+        this.needsDefaultLeague = true;
+      }
     }
     const selectedLeague = this.data.selectedLeague;
-    const result = await listMatches({ ...dayBounds(this.data.selectedDate), league_id: selectedLeague, limit: 100 });
+    let result;
+    try {
+      result = await listMatches({ ...dayBounds(this.data.selectedDate), league_id: selectedLeague, limit: 100 });
+    } catch (error) {
+      if (serial !== this.requestSerial || selectedLeague !== this.data.selectedLeague) return;
+      const staleAfterError = this.handleStaleLoginGeneration(loginGeneration);
+      if (staleAfterError) return staleAfterError;
+      this.setData({ state: "error", errorMessage: (error && error.message) || "加载失败，请重试", loadingMore: false, nextMatch: null, offseasonInfo: null, openCount: 0, doneCount: 0, hintText: "" });
+      return;
+    }
     if (serial !== this.requestSerial || selectedLeague !== this.data.selectedLeague) return;
     const staleAfterList = this.handleStaleLoginGeneration(loginGeneration);
     if (staleAfterList) return staleAfterList;
@@ -377,7 +426,11 @@ Page({
       if (serial !== this.requestSerial || summarySerial !== this.summarySerial || leagueId !== this.data.selectedLeague) return;
       const stale = this.handleStaleLoginGeneration(generation);
       if (stale) return stale;
-      if (result.statusCode !== 200) { this.setData({ summaryState: "error" }); return; }
+      if (result && (result.statusCode === 401 || (result.statusCode === 409 && result.code === "USER_DELETED"))) {
+        this.setData({ summaryState: "guest", leagueSummary: null, summarySeasonId: null, summarySeasonLabel: "", summaryReason: null });
+        return;
+      }
+      if (!result || result.statusCode !== 200) { this.setData({ summaryState: "error" }); return; }
       const data = result.data;
       this.setData({ summaryState: "ready", summarySeasonId: data.season_id, summarySeasonLabel: formatSummarySeasonLabel(data.season_id), leagueSummary: data.availability === "available" ? data.summary : null, summaryReason: data.availability === "available" ? null : data.reason });
     } catch (error) {
@@ -395,12 +448,13 @@ Page({
       const stale = this.handleStaleLoginGeneration(loginGeneration);
       if (stale) return stale;
     }
-    if (result.statusCode !== 200) {
+    if (!result || typeof result !== "object" || result.statusCode !== 200) {
+      const errMsg = result && (result.message || (result.code || result.statusCode ? String(result.code || result.statusCode) : "")) || "加载失败，请重试";
       if (replace === false && this.data.items.length > 0) {
-        this.setData({ errorMessage: result.message || String(result.code || result.statusCode), loadingMore: false });
+        this.setData({ errorMessage: errMsg, loadingMore: false });
         return;
       }
-      this.setData({ state: "error", errorMessage: result.message || String(result.code || result.statusCode), loadingMore: false, nextMatch: null, offseasonInfo: null, openCount: 0, doneCount: 0, hintText: "" });
+      this.setData({ state: "error", errorMessage: errMsg, loadingMore: false, nextMatch: null, offseasonInfo: null, openCount: 0, doneCount: 0, hintText: "" });
       return;
     }
     const payload = result.data || {};
@@ -461,8 +515,12 @@ Page({
     const leagueId = item.league_id || this.data.selectedLeague;
     const homePresented = presentTeam(item.home_team, leagueId);
     const awayPresented = presentTeam(item.away_team, leagueId);
+    const showCrowdLink = item.match_status === "live" ||
+      item.match_status === "finished" ||
+      (item.match_status === "scheduled" && (item.is_prediction_closed === true || item.can_predict_reason === "CLOSED"));
     return Object.assign({}, item, cardState, {
       key, uiState, editorVisible: uiState !== "collapsed", draft,
+      showCrowdLink,
       crowdLinkText: CROWD_COPY.homeLink,
       homeLogo: homePresented.logo,
       awayLogo: awayPresented.logo,
@@ -556,14 +614,28 @@ Page({
     if (previousGeneration !== undefined && previousGeneration !== this.loginGeneration) {
       return this.loadFirstPage();
     }
-    submitPrediction({
-      idempotencyKey: this.idempotencyKeys[key],
-      matchId,
-      homeScore: draft.home,
-      awayScore: draft.away,
-    }).then((result) => {
+    let pending;
+    try {
+      pending = Promise.resolve(submitPrediction({
+        idempotencyKey: this.idempotencyKeys[key],
+        matchId,
+        homeScore: draft.home,
+        awayScore: draft.away,
+      }));
+    } catch (error) {
+      pending = Promise.reject(error);
+    }
+    return pending.then((result) => {
       const stale = this.handleStaleLoginGeneration(loginGeneration);
       if (stale) return stale;
+      if (!result || typeof result !== "object") {
+        this.uiStates[key] = "editing";
+        const errors = { ...(this.data.submitErrors || {}) };
+        errors[key] = "提交失败，请重试";
+        this.setData({ submitErrors: errors });
+        this.refreshItems();
+        return;
+      }
       if (result.statusCode === 200 || result.statusCode === 201) {
         this.clearSubmitError(key);
         this.submittedMap[key] = { ...draft, generation: loginGeneration };
@@ -571,28 +643,93 @@ Page({
         delete this.drafts[key];
         delete this.idempotencyKeys[key];
         delete this.lastPayloads[key];
+        markMyPredictionsDirty();
         this.refreshItems();
-        this.loadFirstPage();
-        return;
+        return this.silentRefreshAfterSubmit(loginGeneration);
       }
       if (result.statusCode === 409 && result.code === "PREDICTION_ALREADY_SUBMITTED") {
         this.clearSubmitError(key);
         this.uiStates[key] = "submitted_locked";
         delete this.drafts[key];
-        this.loadFirstPage();
-        return;
+        delete this.idempotencyKeys[key];
+        delete this.lastPayloads[key];
+        markMyPredictionsDirty();
+        this.refreshItems();
+        return this.silentRefreshAfterSubmit(loginGeneration);
       }
       if (result.statusCode === 409 && ["MATCH_NOT_PREDICTABLE", "PREDICTION_LOCKED"].includes(result.code)) {
         this.clearSubmitError(key);
         this.uiStates[key] = "collapsed";
-        this.loadFirstPage();
-        return;
+        delete this.drafts[key];
+        delete this.idempotencyKeys[key];
+        delete this.lastPayloads[key];
+        this.refreshItems();
+        return this.silentRefreshAfterSubmit(loginGeneration);
+      }
+      if (result.statusCode === 409 && result.code === "IDEMPOTENCY_KEY_REUSED") {
+        delete this.idempotencyKeys[key];
+        delete this.lastPayloads[key];
       }
       this.uiStates[key] = "editing";
       const errors = { ...(this.data.submitErrors || {}) };
       errors[key] = result.message || String(result.code || result.statusCode);
       this.setData({ submitErrors: errors });
       this.refreshItems();
+    }).catch((error) => {
+      const stale = this.handleStaleLoginGeneration(loginGeneration);
+      if (stale) return stale;
+      this.uiStates[key] = "editing";
+      const errors = { ...(this.data.submitErrors || {}) };
+      errors[key] = (error && error.message) || "提交失败，请重试";
+      this.setData({ submitErrors: errors });
+      this.refreshItems();
+    });
+  },
+
+  async silentRefreshAfterSubmit(loginGeneration) {
+    const serial = this.requestSerial;
+    const selectedLeague = this.data.selectedLeague;
+    const selectedDate = this.data.selectedDate;
+    let result;
+    try {
+      result = await listMatches({ ...dayBounds(selectedDate), league_id: selectedLeague, limit: 100 });
+    } catch (_error) {
+      return;
+    }
+    if (
+      serial !== this.requestSerial ||
+      selectedLeague !== this.data.selectedLeague ||
+      selectedDate !== this.data.selectedDate
+    ) return;
+    if (loginGeneration !== undefined) {
+      const stale = this.handleStaleLoginGeneration(loginGeneration);
+      if (stale) return stale;
+    }
+    if (!result || result.statusCode !== 200 || !result.data || !Array.isArray(result.data.items)) return;
+    const freshById = new Map();
+    result.data.items.forEach((entry) => {
+      if (entry && entry.match_id) freshById.set(entry.match_id, entry);
+    });
+    const currentItems = Array.isArray(this.data.items) && this.data.items.length > 0
+      ? this.data.items
+      : result.data.items;
+    const nextItems = currentItems.map((entry) => {
+      const fresh = entry && entry.match_id ? freshById.get(entry.match_id) : null;
+      return this.decorateItem(fresh || entry);
+    });
+    const { openCount, doneCount } = listCounts(nextItems);
+    const today = beijingParts();
+    this.setData({
+      items: nextItems,
+      openCount,
+      doneCount,
+      hintText: buildHintText({
+        selectedDate: this.data.selectedDate,
+        todayKey: today ? today.key : "",
+        openCount,
+        doneCount,
+        hasMore: this.data.hasMore,
+      }),
     });
   },
 
@@ -604,18 +741,26 @@ Page({
     if (previousGeneration !== undefined && previousGeneration !== loginGeneration) {
       return this.loadFirstPage();
     }
-    this.setData({ loadingMore: true });
-    listMatches({
-      ...dayBounds(this.data.selectedDate),
-      league_id: this.data.selectedLeague,
-      limit: 100,
-      cursor: this.data.nextCursor,
-    }).then((result) => {
+    this.setData({ loadingMore: true, errorMessage: "" });
+    let pending;
+    try {
+      pending = Promise.resolve(listMatches({
+        ...dayBounds(this.data.selectedDate),
+        league_id: this.data.selectedLeague,
+        limit: 100,
+        cursor: this.data.nextCursor,
+      }));
+    } catch (error) {
+      pending = Promise.reject(error);
+    }
+    return pending.then((result) => {
       if (serial !== this.requestSerial) return;
       return this.applyListResult(result, false, loginGeneration);
-    }).catch(() => {
+    }).catch((error) => {
       if (serial !== this.requestSerial) return;
-      this.setData({ loadingMore: false });
+      const stale = this.handleStaleLoginGeneration(loginGeneration);
+      if (stale) return stale;
+      this.setData({ loadingMore: false, errorMessage: (error && error.message) || "加载更多失败，请重试" });
     });
   },
 });

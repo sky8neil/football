@@ -126,7 +126,7 @@ export class AdminRebuildUserStatsService implements AdminRebuildUserStatsComman
     const acquired = await this.repo.jobLocks.acquire(
       lockKey,
       ownerId,
-      new Date(serverNow.getTime() + REBUILD_LEASE_MILLISECONDS),
+      new Date(Math.max(serverNow.getTime(), Date.now()) + REBUILD_LEASE_MILLISECONDS),
     );
     if (!acquired) {
       throw conflictError("USER_STATS_REBUILD_ALREADY_RUNNING", "目标用户存在并发用户统计重建");

@@ -5,21 +5,24 @@
     <view class="empty-copy">解锁按生涯积分达标后自动记录；已解锁记录不会因赛果修正而回收。</view>
     <button bindtap="onGoPredict">去预测</button>
   </view>
-  <view wx:elif="{{state === 'unauthorized'}}" class="error">{{errorMessage}}</view>
+  <view wx:elif="{{state === 'unauthorized'}}" class="error">
+    <view>{{errorMessage}}</view>
+    <button bindtap="onLoginTap">去登录</button>
+  </view>
   <view wx:elif="{{state === 'userNotFound'}}" class="error">{{errorMessage}}</view>
   <view wx:elif="{{state === 'userDeleted'}}" class="error">{{errorMessage}}</view>
   <view wx:elif="{{state === 'validationError'}}" class="error">
     <view>{{errorMessage}}</view>
-    <button bindtap="onRetry">retry</button>
+    <button bindtap="onRetry">重试</button>
   </view>
   <view wx:elif="{{state === 'rateLimited'}}" class="error">{{errorMessage}}</view>
   <view wx:elif="{{state === 'serverError'}}" class="error">
     <view>{{errorMessage}}</view>
-    <button bindtap="onRetry">retry</button>
+    <button bindtap="onRetry">重试</button>
   </view>
   <view wx:elif="{{state === 'error'}}" class="error">
     <view>{{errorMessage}}</view>
-    <button bindtap="onRetry">retry</button>
+    <button bindtap="onRetry">重试</button>
   </view>
   <view wx:elif="{{state === 'list'}}">
     <view wx:for="{{items}}" wx:key="unlock_code" class="card">

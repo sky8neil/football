@@ -16,11 +16,15 @@ import { getMyUnlocks } from "../api/v1/unlocks.js";
 import { getRankings } from "../api/v1/rankings.js";
 import {
   getAdminAnomalies,
+  getAdminMatchDetail,
   postAdminRebuildRankings,
   postAdminRebuildUserStats,
+  postAdminResolveAnomaly,
   postAdminResultCorrection,
   postAdminRetrySettlement,
 } from "../api/v1/admin.js";
+import { getAdminAuditLogs } from "../api/v1/admin-audit-logs.js";
+import { getAdminTeams, patchAdminTeam, postAdminTeamMapping } from "../api/v1/admin-teams.js";
 import {
   createGroup,
   dissolveGroup,
@@ -48,14 +52,28 @@ import { RankingQueryService } from "../application/ranking-query.js";
 import { ShareCardQueryService } from "../application/share-card.js";
 import { GroupsService } from "../application/groups.js";
 import { AdminAnomaliesService } from "../application/admin-anomalies.js";
+import { AdminAuditLogsService } from "../application/admin-audit-logs.js";
+import { AdminMatchDetailService } from "../application/admin-match-detail.js";
+import { AdminResolveAnomalyService } from "../application/admin-resolve-anomaly.js";
 import { AdminResultCorrectionService } from "../application/admin-result-correction.js";
 import { AdminRetrySettlementService } from "../application/admin-retry-settlement.js";
 import { AdminRebuildUserStatsService } from "../application/admin-rebuild-user-stats.js";
 import { AdminRebuildRankingsService } from "../application/admin-rebuild-rankings.js";
+import { AdminTeamsService } from "../application/admin-teams.js";
 import { UserStatus } from "../domain/enums.js";
 import { DomainError, conflictError, validationError } from "../domain/errors.js";
 import type { AppRepository } from "../infrastructure/repositories.js";
-import type { AuthSessionStore } from "../infrastructure/postgres-auth-sessions.js";
+import {
+  createInMemoryAdminConsumedJtiStore,
+  type AdminConsumedJtiStore,
+  type AuthSessionStore,
+} from "../infrastructure/postgres-auth-sessions.js";
+import {
+  getAdminAuthMe,
+  loginAdminSession,
+  logoutAdminSession,
+  validateAdminLoginPayload,
+} from "./admin-auth.js";
 import { issueWechatSession } from "./auth.js";
 import type { GatewayRuntimeConfig } from "./config.js";
 import { resolveRequestTrustedOpenid } from "./identity.js";
@@ -76,6 +94,7 @@ export interface GatewayRequestInput {
   request_id?: string;
   authorization?: unknown;
   sessions?: AuthSessionStore;
+  admin_consumed_jtis?: AdminConsumedJtiStore | Map<string, number>;
   wechat_http?: WechatCode2SessionHttp;
   services: {
     session: Pick<SessionService, "init">;
@@ -245,6 +264,105 @@ function singlePathParameter(path: string, prefix: string): string | null {
   return value.length === 0 || value.includes("/") ? null : value;
 }
 
+const EXACT_ALLOWED_METHODS: Readonly<Record<string, readonly string[]>> = {
+  "/v1/auth/wechat": ["POST"],
+  "/v1/session/init": ["POST"],
+  "/v1/matches": ["GET"],
+  "/v1/leagues/status": ["GET"],
+  "/v1/league-seasons": ["GET"],
+  "/v1/predictions": ["POST"],
+  "/v1/predictions/summary": ["GET"],
+  "/v1/predictions/me": ["GET"],
+  "/v1/profile/me": ["GET", "POST", "PATCH", "DELETE"],
+  "/v1/levels/me": ["GET"],
+  "/v1/unlocks/me": ["GET"],
+  "/v1/rankings": ["GET"],
+  "/v1/share-card/me": ["GET"],
+  "/v1/admin/auth/login": ["POST"],
+  "/v1/admin/auth/me": ["GET"],
+  "/v1/admin/auth/logout": ["POST"],
+  "/v1/admin/anomalies": ["GET"],
+  "/v1/admin/audit-logs": ["GET"],
+  "/v1/admin/teams": ["GET"],
+  "/v1/admin/rebuild/rankings": ["POST"],
+  "/v1/groups": ["POST"],
+  "/v1/groups/join": ["POST"],
+  "/v1/groups/me": ["GET"],
+};
+
+function allowedMethods(path: string): readonly string[] | null {
+  const exact = EXACT_ALLOWED_METHODS[path];
+  if (exact !== undefined) {
+    return exact;
+  }
+  if (matchCrowdIdFromPath(path) !== null) {
+    return ["GET"];
+  }
+  if (matchIdFromPath(path) !== null) {
+    return ["GET"];
+  }
+  if (singlePathParameter(path, "/v1/predictions/me/") !== null) {
+    return ["GET"];
+  }
+  if (singlePathParameter(path, "/v1/profiles/") !== null) {
+    return ["GET"];
+  }
+  if (singlePathParameter(path, "/v1/share-card/") !== null) {
+    return ["GET"];
+  }
+  if (/^\/v1\/admin\/anomalies\/[^/]+\/resolve$/.test(path)) {
+    return ["POST"];
+  }
+  if (/^\/v1\/admin\/teams\/[^/]+\/mappings$/.test(path)) {
+    return ["POST"];
+  }
+  if (singlePathParameter(path, "/v1/admin/teams/") !== null) {
+    return ["PATCH"];
+  }
+  if (/^\/v1\/admin\/matches\/[^/]+\/result-corrections$/.test(path)) {
+    return ["POST"];
+  }
+  if (/^\/v1\/admin\/matches\/[^/]+\/retry-settlement$/.test(path)) {
+    return ["POST"];
+  }
+  if (singlePathParameter(path, "/v1/admin/matches/") !== null) {
+    return ["GET"];
+  }
+  if (singlePathParameter(path, "/v1/admin/rebuild/users/") !== null) {
+    return ["POST"];
+  }
+  if (/^\/v1\/groups\/[^/]+\/leave$/.test(path)) {
+    return ["POST"];
+  }
+  if (singlePathParameter(path, "/v1/groups/") !== null) {
+    return ["GET", "DELETE"];
+  }
+  return null;
+}
+
+function assertMethodAllowed(path: string, method: string): void {
+  const allowed = allowedMethods(path);
+  if (allowed !== null && !allowed.includes(method)) {
+    throw conflictError("METHOD_NOT_ALLOWED", "方法不允许");
+  }
+}
+
+const WECHAT_LOGIN_CODE_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
+
+function assertWechatLoginCode(code: unknown): string {
+  if (typeof code !== "string" || !WECHAT_LOGIN_CODE_PATTERN.test(code)) {
+    throw validationError("code 格式无效", { field: "code" });
+  }
+  return code;
+}
+
+function resolveAnonymousIpRateKey(clientIp: string | undefined, fallback: string): string {
+  if (typeof clientIp === "string" && clientIp.trim().length > 0) {
+    return `ip:${clientIp.trim()}`;
+  }
+  return fallback;
+}
+
 function responseCode(body: unknown): string | undefined {
   if (typeof body === "object" && body !== null && "code" in body) {
     const code = (body as { code: unknown }).code;
@@ -266,6 +384,8 @@ function logGateway(
   console.log(`${requestId} ${path} ${status} ${code}`);
 }
 
+const DEFAULT_ADMIN_CONSUMED_JTIS = createInMemoryAdminConsumedJtiStore();
+
 export async function handleGatewayRequest(
   input: GatewayRequestInput,
 ): Promise<GatewayResponse> {
@@ -273,17 +393,53 @@ export async function handleGatewayRequest(
   const path = normalizePath(input.path);
   const method = normalizeMethod(input.method);
   try {
+    assertMethodAllowed(path, method);
+    if (method === "POST" && path === "/v1/admin/auth/login") {
+      assertUnknownFields(input.query, new Set());
+      const body = resolveJsonObjectBody(input.body);
+      const credential = validateAdminLoginPayload(body);
+      const sessions = input.sessions;
+      if (sessions === undefined) {
+        throw conflictError("UNAUTHORIZED", "需要重新登录");
+      }
+      await input.rate_limiter.check(
+        "admin_login",
+        resolveAnonymousIpRateKey(input.client_ip, input.config.public_source),
+        input.server_now,
+      );
+      const issued = await loginAdminSession({
+        credential,
+        config: input.config,
+        repo: input.repo,
+        sessions,
+        now: input.server_now,
+        consumedJtis: input.admin_consumed_jtis ?? DEFAULT_ADMIN_CONSUMED_JTIS,
+      });
+      logGateway(requestId, path, 200, undefined);
+      return {
+        status: 200,
+        body: { data: issued, request_id: requestId },
+      };
+    }
+
     if (method === "POST" && path === "/v1/auth/wechat") {
+      assertUnknownFields(input.query, new Set());
       const body = resolveJsonObjectBody(input.body);
       assertUnknownFields(body, new Set(["code"]));
+      const code = assertWechatLoginCode(body.code);
       const auth = input.config.vps_auth;
       const sessions = input.sessions;
       const wechatHttp = input.wechat_http;
       if (auth === null || sessions === undefined || wechatHttp === undefined) {
         throw conflictError("UNAUTHORIZED", "需要重新登录");
       }
+      await input.rate_limiter.check(
+        "wechat_login",
+        resolveAnonymousIpRateKey(input.client_ip, input.config.public_source),
+        input.server_now,
+      );
       const issued = await issueWechatSession({
-        code: typeof body.code === "string" ? body.code : "",
+        code,
         auth,
         http: wechatHttp,
         sessions,
@@ -305,6 +461,7 @@ export async function handleGatewayRequest(
     });
 
     if (method === "POST" && path === "/v1/session/init") {
+      assertUnknownFields(input.query, new Set());
       const body = resolveJsonObjectBody(input.body);
       const result = await postSessionInit(input.services.session, {
         trusted_openid: trustedOpenid,
@@ -349,6 +506,12 @@ export async function handleGatewayRequest(
       if (method !== "GET") {
         throw conflictError("METHOD_NOT_ALLOWED", "方法不允许");
       }
+      const identity = await resolveIdentity(trustedOpenid, input.repo);
+      await input.rate_limiter.check(
+        "public_reads",
+        resolvePublicReadRateKey(identity, input.client_ip, input.config.public_source),
+        input.server_now,
+      );
       const result = await getLeagueSeasons(input.repo, {
         query: input.query,
         request_id: requestId,
@@ -390,6 +553,7 @@ export async function handleGatewayRequest(
     }
 
     if (method === "POST" && path === "/v1/predictions") {
+      assertUnknownFields(input.query, new Set());
       const identity = await resolveIdentity(trustedOpenid, input.repo);
       const body = resolveJsonObjectBody(input.body);
       const predictions =
@@ -420,6 +584,7 @@ export async function handleGatewayRequest(
 
     const predictionId = singlePathParameter(path, "/v1/predictions/me/");
     if (method === "GET" && predictionId !== null) {
+      assertUnknownFields(input.query, new Set());
       const identity = await resolveIdentity(trustedOpenid, input.repo);
       const provided = input.services.predictions;
       const predictions = provided?.getMyPrediction !== undefined
@@ -428,6 +593,7 @@ export async function handleGatewayRequest(
       const result = await getMyPrediction(predictions, {
         authenticated_user_id: authenticatedReadUserId(identity),
         prediction_id: predictionId,
+        query: input.query,
         server_now: input.server_now,
         request_id: requestId,
         rate_limiter: input.rate_limiter,
@@ -474,6 +640,7 @@ export async function handleGatewayRequest(
 
     // POST is the WeChat-compatible alias; both methods use the same validation and auth.
     if ((method === "PATCH" || method === "POST") && path === "/v1/profile/me") {
+      assertUnknownFields(input.query, new Set());
       const identity = await resolveIdentity(trustedOpenid, input.repo);
       const body = resolveJsonObjectBody(input.body);
       const profileMutation =
@@ -490,9 +657,13 @@ export async function handleGatewayRequest(
     }
 
     if (method === "DELETE" && path === "/v1/profile/me") {
+      assertUnknownFields(input.query, new Set());
       const identity = await resolveIdentity(trustedOpenid, input.repo);
-      const profileMutation =
-        input.services.profileMutation ?? new ProfileMutationService(input.repo);
+      const profileMutation = input.services.profileMutation ??
+        new ProfileMutationService(
+          input.repo,
+          input.sessions !== undefined ? { authSessions: input.sessions } : {},
+        );
       const result = await deleteMyProfile(profileMutation, {
         authenticated_user_id: authenticatedReadUserId(identity),
         server_now: input.server_now,
@@ -505,6 +676,7 @@ export async function handleGatewayRequest(
 
     const publicProfileUserId = singlePathParameter(path, "/v1/profiles/");
     if (method === "GET" && publicProfileUserId !== null) {
+      assertUnknownFields(input.query, new Set());
       const identity = await resolveIdentity(trustedOpenid, input.repo);
       const profile = new ProfileQueryService(input.repo);
       const result = await getPublicProfile(profile, {
@@ -568,7 +740,7 @@ export async function handleGatewayRequest(
 
     if (method === "GET" && path === "/v1/share-card/me") {
       const identity = await resolveIdentity(trustedOpenid, input.repo);
-      const shareCard = new ShareCardQueryService(input.repo);
+      const shareCard = new ShareCardQueryService(input.repo, input.config.match_cursor_secret);
       const result = await getShareCardMe(shareCard, {
         authenticated_user_id: authenticatedReadUserId(identity),
         query: input.query,
@@ -585,14 +757,53 @@ export async function handleGatewayRequest(
       if (method !== "GET") {
         throw conflictError("METHOD_NOT_ALLOWED", "方法不允许");
       }
-      const result = await getShareCardForUser(new ShareCardQueryService(input.repo), {
-        user_id: shareCardUserId,
-        query: input.query,
-        server_now: input.server_now,
-        request_id: requestId,
-      });
+      const identity = await resolveIdentity(trustedOpenid, input.repo);
+      await input.rate_limiter.check(
+        "public_reads",
+        resolvePublicReadRateKey(identity, input.client_ip, input.config.public_source),
+        input.server_now,
+      );
+      const result = await getShareCardForUser(
+        new ShareCardQueryService(input.repo, input.config.match_cursor_secret),
+        {
+          user_id: shareCardUserId,
+          authenticated_user_id: identity.kind === "active" ? identity.user_id : null,
+          query: input.query,
+          server_now: input.server_now,
+          request_id: requestId,
+        },
+      );
       logGateway(requestId, path, result.status, undefined);
       return result;
+    }
+
+    if (method === "GET" && path === "/v1/admin/auth/me") {
+      assertUnknownFields(input.query, new Set());
+      const me = await getAdminAuthMe({
+        repo: input.repo,
+        trusted_openid: trustedOpenid,
+      });
+      await input.rate_limiter.check("admin_apis", trustedOpenid!, input.server_now);
+      logGateway(requestId, path, 200, undefined);
+      return {
+        status: 200,
+        body: { data: me, request_id: requestId },
+      };
+    }
+
+    if (method === "POST" && path === "/v1/admin/auth/logout") {
+      assertUnknownFields(input.query, new Set());
+      assertUnknownFields(resolveJsonObjectBody(input.body), new Set());
+      if (typeof trustedOpenid === "string" && trustedOpenid.length > 0) {
+        await input.rate_limiter.check("admin_apis", trustedOpenid, input.server_now);
+      }
+      await logoutAdminSession({
+        authorization: input.authorization,
+        sessions: input.sessions,
+        now: input.server_now,
+      });
+      logGateway(requestId, path, 204, undefined);
+      return { status: 204 };
     }
 
     if (method === "GET" && path === "/v1/admin/anomalies") {
@@ -610,6 +821,94 @@ export async function handleGatewayRequest(
       return result;
     }
 
+    const resolveAnomalyId = path.match(
+      /^\/v1\/admin\/anomalies\/([^/]+)\/resolve$/,
+    )?.[1];
+    if (method === "POST" && resolveAnomalyId !== undefined) {
+      const result = await postAdminResolveAnomaly(new AdminResolveAnomalyService(input.repo), {
+        trusted_openid: trustedOpenid,
+        anomaly_id: resolveAnomalyId,
+        query: input.query,
+        body: input.body,
+        server_now: input.server_now,
+        request_id: requestId,
+        rate_limiter: input.rate_limiter,
+      });
+      logGateway(requestId, path, result.status, undefined);
+      return result;
+    }
+
+    if (method === "GET" && path === "/v1/admin/audit-logs") {
+      const result = await getAdminAuditLogs(
+        new AdminAuditLogsService(input.repo, input.config.match_cursor_secret),
+        {
+          trusted_openid: trustedOpenid,
+          query: input.query,
+          server_now: input.server_now,
+          request_id: requestId,
+          rate_limiter: input.rate_limiter,
+        },
+      );
+      logGateway(requestId, path, result.status, undefined);
+      return result;
+    }
+
+    if (method === "GET" && path === "/v1/admin/teams") {
+      const result = await getAdminTeams(new AdminTeamsService(input.repo), {
+        trusted_openid: trustedOpenid,
+        query: input.query,
+        server_now: input.server_now,
+        request_id: requestId,
+        rate_limiter: input.rate_limiter,
+      });
+      logGateway(requestId, path, result.status, undefined);
+      return result;
+    }
+
+    const mappingTeamId = path.match(/^\/v1\/admin\/teams\/([^/]+)\/mappings$/)?.[1];
+    if (method === "POST" && mappingTeamId !== undefined) {
+      const result = await postAdminTeamMapping(new AdminTeamsService(input.repo), {
+        trusted_openid: trustedOpenid,
+        team_id: mappingTeamId,
+        query: input.query,
+        body: input.body,
+        server_now: input.server_now,
+        request_id: requestId,
+        rate_limiter: input.rate_limiter,
+      });
+      logGateway(requestId, path, result.status, undefined);
+      return result;
+    }
+
+    const updateTeamId = singlePathParameter(path, "/v1/admin/teams/");
+    if (method === "PATCH" && updateTeamId !== null) {
+      const result = await patchAdminTeam(new AdminTeamsService(input.repo), {
+        trusted_openid: trustedOpenid,
+        team_id: updateTeamId,
+        query: input.query,
+        body: input.body,
+        server_now: input.server_now,
+        request_id: requestId,
+        rate_limiter: input.rate_limiter,
+      });
+      logGateway(requestId, path, result.status, undefined);
+      return result;
+    }
+
+    const detailMatchId = singlePathParameter(path, "/v1/admin/matches/");
+    if (method === "GET" && detailMatchId !== null) {
+      const result = await getAdminMatchDetail(new AdminMatchDetailService(input.repo), {
+        trusted_openid: trustedOpenid,
+        match_id: detailMatchId,
+        query: input.query,
+        server_now: input.server_now,
+        request_id: requestId,
+        rate_limiter: input.rate_limiter,
+      });
+      logGateway(requestId, path, result.status, undefined);
+      return result;
+    }
+
     const resultCorrectionMatchId = path.match(
       /^\/v1\/admin\/matches\/([^/]+)\/result-corrections$/,
     )?.[1];
@@ -617,6 +916,7 @@ export async function handleGatewayRequest(
       const result = await postAdminResultCorrection(new AdminResultCorrectionService(input.repo), {
         trusted_openid: trustedOpenid,
         match_id: resultCorrectionMatchId,
+        query: input.query,
         body: input.body,
         server_now: input.server_now,
         request_id: requestId,
@@ -635,6 +935,7 @@ export async function handleGatewayRequest(
         {
           trusted_openid: trustedOpenid,
           match_id: retrySettlementMatchId,
+          query: input.query,
           body: input.body,
           server_now: input.server_now,
           request_id: requestId,
@@ -652,6 +953,7 @@ export async function handleGatewayRequest(
         {
           trusted_openid: trustedOpenid,
           user_id: rebuildUserId,
+          query: input.query,
           body: input.body,
           server_now: input.server_now,
           request_id: requestId,
@@ -665,6 +967,7 @@ export async function handleGatewayRequest(
     if (method === "POST" && path === "/v1/admin/rebuild/rankings") {
       const result = await postAdminRebuildRankings(new AdminRebuildRankingsService(input.repo), {
         trusted_openid: trustedOpenid,
+        query: input.query,
         body: input.body,
         server_now: input.server_now,
         request_id: requestId,
@@ -678,6 +981,7 @@ export async function handleGatewayRequest(
       cursorSecret: input.config.match_cursor_secret,
     });
     if (method === "POST" && path === "/v1/groups") {
+      assertUnknownFields(input.query, new Set());
       const result = await createGroup(groups, {
         authenticated_user_id: authenticatedReadUserId(await resolveIdentity(trustedOpenid, input.repo)),
         body: resolveJsonObjectBody(input.body),
@@ -690,6 +994,7 @@ export async function handleGatewayRequest(
     }
 
     if (method === "POST" && path === "/v1/groups/join") {
+      assertUnknownFields(input.query, new Set());
       const result = await joinGroup(groups, {
         authenticated_user_id: authenticatedReadUserId(await resolveIdentity(trustedOpenid, input.repo)),
         body: resolveJsonObjectBody(input.body),
@@ -704,6 +1009,7 @@ export async function handleGatewayRequest(
     if (method === "POST") {
       const groupId = path.match(/^\/v1\/groups\/([^/]+)\/leave$/)?.[1];
       if (groupId !== undefined) {
+        assertUnknownFields(input.query, new Set());
         const result = await leaveGroup(groups, {
           authenticated_user_id: authenticatedReadUserId(await resolveIdentity(trustedOpenid, input.repo)),
           group_id: groupId,
@@ -730,6 +1036,7 @@ export async function handleGatewayRequest(
     }
 
     if (method === "GET" && groupId !== null) {
+      assertUnknownFields(input.query, new Set());
       const result = await getGroup(groups, {
         authenticated_user_id: authenticatedReadUserId(await resolveIdentity(trustedOpenid, input.repo)),
         group_id: groupId,
@@ -742,6 +1049,7 @@ export async function handleGatewayRequest(
     }
 
     if (method === "DELETE" && groupId !== null) {
+      assertUnknownFields(input.query, new Set());
       const result = await dissolveGroup(groups, {
         authenticated_user_id: authenticatedReadUserId(await resolveIdentity(trustedOpenid, input.repo)),
         group_id: groupId,

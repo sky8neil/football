@@ -16,6 +16,7 @@ describe("VPS09 templates match compiled entries", () => {
   const periodicUnit = read("ops/vps/football-periodic.service");
   const periodicTimer = read("ops/vps/football-periodic.timer");
   const caddy = read("ops/vps/Caddyfile");
+  const vpsReadme = read("ops/vps/README.md");
   const vpsEnv = read("ops/vps/football.env.example");
   const cloudEnv = read("ops/vps/cloudbase.env.example");
   const pkg = JSON.parse(read("package.json"));
@@ -32,11 +33,19 @@ describe("VPS09 templates match compiled entries", () => {
     expect(pkg.scripts.build).toBe("tsc -p tsconfig.build.json");
     expect(httpSrc).toContain('export const GATEWAY_LISTEN_HOST = "127.0.0.1"');
     expect(httpSrc).toContain("export const GATEWAY_LISTEN_PORT = 8787");
-    expect(httpSrc).toContain('process.once("SIGTERM"');
-    expect(httpSrc).toContain("server.close()");
+    expect(httpSrc).toContain('deps.onceSignal("SIGTERM", onSignal)');
+    expect(httpSrc).toContain("process.once(signal, listener)");
+    expect(httpSrc).toContain("server.close((err) =>");
+    expect(apiUnit).toContain("After=network-online.target postgresql.service");
+    expect(apiUnit).toContain("Wants=network-online.target");
     expect(apiUnit).toContain("ExecStart=/usr/bin/node /home/neilxu/football/current/dist/gateway/http.js");
     expect(apiUnit).toContain("EnvironmentFile=/home/neilxu/football/shared/football.env");
     expect(apiUnit).toContain("Type=simple");
+    expect(apiUnit).toContain("LimitNOFILE=65536");
+    expect(apiUnit).toContain("MemoryMax=512M");
+    expect(apiUnit).toContain("TimeoutStopSec=30");
+    expect(apiUnit).toContain("NoNewPrivileges=true");
+    expect(apiUnit).toContain("PrivateTmp=true");
     expect(apiUnit).not.toMatch(/\bPORT=/);
   });
 
@@ -46,18 +55,29 @@ describe("VPS09 templates match compiled entries", () => {
     expect(tickSrc).toContain("void runJobsTick()");
     expect(jobsUnit).toContain("ExecStart=/usr/bin/node /home/neilxu/football/current/dist/jobs/tick.js --mode=realtime");
     expect(jobsUnit).toContain("Type=oneshot");
-    expect(jobsUnit).toContain("TimeoutStartSec=1800");
+    expect(jobsUnit).toContain("Environment=FOOTBALL_PG_POOL_MAX=5");
+    expect(jobsUnit).toContain("TimeoutStartSec=150");
     expect(jobsTimer).toContain("OnCalendar=*-*-* *:00/3:00");
     expect(jobsTimer).toContain("Persistent=true");
     expect(jobsTimer).toContain("Unit=football-jobs.service");
     expect(jobsTimer).toContain("AccuracySec=10s");
     expect(periodicUnit).toContain("ExecStart=/usr/bin/node /home/neilxu/football/current/dist/jobs/tick.js --mode=periodic");
     expect(periodicUnit).toContain("Type=oneshot");
-    expect(periodicUnit).toContain("TimeoutStartSec=1800");
-    expect(periodicTimer).toContain("OnCalendar=*-*-* *:00/15:00");
+    expect(periodicUnit).toContain("Environment=FOOTBALL_PG_POOL_MAX=5");
+    expect(periodicUnit).toContain("TimeoutStartSec=600");
+    expect(periodicTimer).toContain("OnCalendar=*-*-* *:01/15:00");
     expect(periodicTimer).toContain("Persistent=true");
     expect(periodicTimer).toContain("Unit=football-periodic.service");
     expect(periodicTimer).toContain("AccuracySec=10s");
+  });
+
+  it("ops/vps/README.md documents periodic timer, chmod 600, /admin/ and --issue-login", () => {
+    expect(vpsReadme).toContain("football-periodic.service");
+    expect(vpsReadme).toContain("football-periodic.timer");
+    expect(vpsReadme).toContain("*:01/15:00");
+    expect(vpsReadme).toContain("chmod 600");
+    expect(vpsReadme).toContain("/admin/");
+    expect(vpsReadme).toContain("--issue-login");
   });
 
   it("Caddy fragment proxies the compiled listen address", () => {

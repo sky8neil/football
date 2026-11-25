@@ -7,14 +7,23 @@ import type { Match } from "../domain/types.js";
 
 const now = new Date("2026-05-01T00:00:00Z");
 const later = new Date(now.getTime() + 60_000);
-const makeMatch = (id: string, home: string, away: string, status: Match["match_status"] = MatchStatus.Finished): Match => ({
+const makeMatch = (
+  id: string,
+  home: string,
+  away: string,
+  status: Match["match_status"] = MatchStatus.Finished,
+  overrides: Partial<Match> = {},
+): Match => ({
   schema_version: 1, match_id: id, canonical_match_id: id, superseded_by: null,
   league_id: "chinese_super_league", season_id: "2026", round_id: id, home_team_id: home, away_team_id: away,
   kickoff_at: now, kickoff_confirmed: true, prediction_deadline_at: now, prediction_closed_at: null, period_anchor_at: null,
-  match_status: status, settlement_status: SettlementStatus.Pending, regular_home_score: null, regular_away_score: null,
+  match_status: status, settlement_status: SettlementStatus.Pending,
+  regular_home_score: status === MatchStatus.Finished ? 1 : null,
+  regular_away_score: status === MatchStatus.Finished ? 0 : null,
   extra_home_score: null, extra_away_score: null, penalty_home_score: null, penalty_away_score: null,
   result_version: 0, settled_result_version: 0, result_source: null, scoring_rule_version: "scoring_v1",
   finish_detected_at: null, settled_at: null, created_at: now, updated_at: now,
+  ...overrides,
 });
 
 const teamIds = Array.from({ length: 16 }, (_, index) => `team${index}`);
@@ -43,15 +52,19 @@ describe("league season maintenance", () => {
   it("leaves an empty roster uninitialized and logs the number of effective matches without writing teams", async () => {
     const repo = new InMemoryRepository();
     await repo.matches.insert(makeMatch("1", "a", "b", MatchStatus.Scheduled));
-    const findMatches = repo.matches.findBySeason.bind(repo.matches);
-    vi.spyOn(repo.matches, "findBySeason").mockImplementation(async (seasonId) => [
-      ...await findMatches(seasonId),
-      ...(seasonId === "2026" ? [{ ...makeMatch("old", "c", "d"), superseded_by: "1" }] : []),
+    const matchesPort = repo.matches;
+    const findBySeasonSpy = vi.spyOn(matchesPort, "findBySeason");
+    const findByLeagueSeason = matchesPort.findByLeagueSeason.bind(matchesPort);
+    vi.spyOn(matchesPort, "findByLeagueSeason").mockImplementation(async (leagueId, seasonId) => [
+      ...await findByLeagueSeason(leagueId, seasonId),
+      ...(leagueId === "chinese_super_league" && seasonId === "2026" ? [{ ...makeMatch("old", "c", "d"), superseded_by: "1" }] : []),
     ]);
+    vi.spyOn(repo, "matches", "get").mockReturnValue(matchesPort);
     const writeTeams = vi.spyOn(repo.seasonTeams, "upsertMany");
     const log = vi.fn();
     const service = new LeagueSeasonMaintenanceService(repo, log);
     expect(await service.run(now)).toEqual({ seasons_checked: 6, completed: 0, reopened: 0 });
+    expect(findBySeasonSpy).not.toHaveBeenCalled();
     const season = await repo.leagueSeasons.findByKey("chinese_super_league", "2026");
     expect(season).toMatchObject({ format: { team_count: 16, round_count: 30 }, schedule_status: "uninitialized", completion_status: "open", ended_at: null, updated_at: now });
     expect(writeTeams).not.toHaveBeenCalled();
@@ -116,10 +129,56 @@ describe("league season maintenance", () => {
     await repo.matches.insert(extra);
     expect((await service.run(later)).reopened).toBe(1);
     expect(await repo.leagueSeasons.findByKey("chinese_super_league", "2026")).toMatchObject({ completion_status: "open", completion_confirmed_at: now, reopened_at: later, reopen_count: 1, ended_at: null });
-    await repo.matches.update({ ...extra, match_status: MatchStatus.Finished });
+    await repo.matches.update({ ...extra, match_status: MatchStatus.Finished, regular_home_score: 2, regular_away_score: 1, finish_detected_at: later });
     expect((await service.run(new Date(later.getTime() + 60_000))).completed).toBe(1);
-    expect(await repo.leagueSeasons.findByKey("chinese_super_league", "2026")).toMatchObject({ completion_status: "completed", completion_confirmed_at: now, reopened_at: later, reopen_count: 1, ended_at: null });
+    expect(await repo.leagueSeasons.findByKey("chinese_super_league", "2026")).toMatchObject({ completion_status: "completed", completion_confirmed_at: now, reopened_at: later, reopen_count: 1, ended_at: later });
     expect(log.mock.calls.filter(([event]) => event.event === "league_season_transition").map(([event]) => [event.from, event.to])).toEqual([["open", "completed"], ["completed", "open"], ["open", "completed"]]);
+  });
+  it("[A-S7-03 / A-S7-09] rejects abandoned or scoreless finished matches from completion, populates ended_at from latest finish_detected_at ?? kickoff_at, and backfills null ended_at", async () => {
+    const repo = new InMemoryRepository();
+    await seedRoster(repo);
+    const finishT1 = new Date("2026-05-01T15:00:00Z");
+    const finishT2 = new Date("2026-05-02T18:30:00Z");
+    for (let home = 0; home < 16; home++) {
+      for (let away = 0; away < 16; away++) {
+        if (home === away) continue;
+        const isLast = home === 15 && away === 14;
+        await repo.matches.insert(makeMatch(
+          `${home}-${away}`,
+          `team${home}`,
+          `team${away}`,
+          isLast ? MatchStatus.Abandoned : MatchStatus.Finished,
+          isLast ? {} : { finish_detected_at: home === 15 ? finishT2 : finishT1 },
+        ));
+      }
+    }
+    const service = new LeagueSeasonMaintenanceService(repo);
+    await service.run(now);
+    expect(await repo.leagueSeasons.findByKey("chinese_super_league", "2026")).toMatchObject({
+      completion_status: "open",
+      ended_at: null,
+    });
+
+    // Finished without score still keeps open
+    const target = (await repo.matches.findById("15-14"))!;
+    await repo.matches.update({ ...target, match_status: MatchStatus.Finished, regular_home_score: null, regular_away_score: null });
+    await service.run(now);
+    expect((await repo.leagueSeasons.findByKey("chinese_super_league", "2026"))?.completion_status).toBe("open");
+
+    // Once regular score arrives, season completes with latest terminal finish_detected_at ?? kickoff_at
+    const finalEnd = new Date("2026-05-03T20:00:00Z");
+    await repo.matches.update({ ...target, match_status: MatchStatus.Finished, regular_home_score: 2, regular_away_score: 1, finish_detected_at: finalEnd });
+    expect((await service.run(now)).completed).toBe(1);
+    expect(await repo.leagueSeasons.findByKey("chinese_super_league", "2026")).toMatchObject({
+      completion_status: "completed",
+      ended_at: finalEnd,
+    });
+
+    // Backfills already completed doc whose ended_at is null
+    const existing = (await repo.leagueSeasons.findByKey("chinese_super_league", "2026"))!;
+    await repo.leagueSeasons.update({ ...existing, ended_at: null });
+    await service.run(later);
+    expect((await repo.leagueSeasons.findByKey("chinese_super_league", "2026"))?.ended_at).toEqual(finalEnd);
   });
   it("honors manual confirmation without reopening or changing the actual end date", async () => {
     const repo = new InMemoryRepository();

@@ -62,7 +62,8 @@ describe("matches date strip", () => {
       const keysByZone = zones.map((timezone) => {
         vi.stubEnv("TZ", timezone);
         const dates = buildDates(anchor);
-        expect(dates[0].key).toBe(expectedKey);
+        expect(dates).toHaveLength(23);
+        expect(dates[11]).toEqual({ key: expectedKey, label: "今天", day: expectedKey.slice(-2) });
         return dates.map(({ key }) => key);
       });
       expect(keysByZone[1]).toEqual(keysByZone[0]);
@@ -70,18 +71,19 @@ describe("matches date strip", () => {
     }
   });
 
-  it("builds eleven consecutive Beijing dates with the expected labels and two-digit days", () => {
+  it("[Q-PLAN-4] builds 23 consecutive Beijing dates (-11..+11) with yesterday, today centered at index 11, tomorrow, and weekdays", () => {
     const dates = buildDates(new Date("2026-11-15T16:30:00.000Z"));
     const weekdays = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
 
-    expect(dates).toHaveLength(11);
-    expect(dates[0].label).toBe("今天");
-    expect(dates[1].label).toBe("明天");
+    expect(dates).toHaveLength(23);
+    expect(dates[10].label).toBe("昨天");
+    expect(dates[11].label).toBe("今天");
+    expect(dates[12].label).toBe("明天");
     dates.forEach((date, index) => {
       expect(date.key).toMatch(/^\d{4}-\d{2}-\d{2}$/);
       expect(date.day).toMatch(/^\d{2}$/);
       expect(date.day).toBe(date.key.slice(-2));
-      if (index > 1) {
+      if (index < 10 || index > 12) {
         const beijingNoon = new Date(`${date.key}T04:00:00.000Z`);
         expect(date.label).toBe(weekdays[beijingNoon.getUTCDay()]);
       }
@@ -138,56 +140,41 @@ describe("beijingParts arithmetic", () => {
       vi.stubEnv("TZ", timezone);
       for (const { iso, key } of cases) {
         expect(beijingParts(iso).key).toBe(key);
-        expect(buildDates(iso)[0].key).toBe(key);
+        const dates = buildDates(iso);
+        expect(dates).toHaveLength(23);
+        expect(dates[11]).toEqual({ key, label: "今天", day: key.slice(-2) });
       }
     }
   });
 });
 
 describe("buildDates arithmetic", () => {
-  it("returns eleven consecutive Beijing dates with today, tomorrow, and weekday labels", () => {
-    expect(buildDates("2026-11-15T16:30:00.000Z")).toEqual([
-      { key: "2026-11-16", label: "今天", day: "16" },
-      { key: "2026-11-17", label: "明天", day: "17" },
-      { key: "2026-11-18", label: "周三", day: "18" },
-      { key: "2026-11-19", label: "周四", day: "19" },
-      { key: "2026-11-20", label: "周五", day: "20" },
-      { key: "2026-11-21", label: "周六", day: "21" },
-      { key: "2026-11-22", label: "周日", day: "22" },
-      { key: "2026-11-23", label: "周一", day: "23" },
-      { key: "2026-11-24", label: "周二", day: "24" },
-      { key: "2026-11-25", label: "周三", day: "25" },
-      { key: "2026-11-26", label: "周四", day: "26" },
-    ]);
+  it("[Q-PLAN-4] returns 23 consecutive Beijing dates (-11..+11) with yesterday, today centered, tomorrow, and weekday labels", () => {
+    const dates = buildDates("2026-11-15T16:30:00.000Z");
+    expect(dates).toHaveLength(23);
+    expect(dates[0]).toEqual({ key: "2026-11-05", label: "周四", day: "05" });
+    expect(dates[10]).toEqual({ key: "2026-11-15", label: "昨天", day: "15" });
+    expect(dates[11]).toEqual({ key: "2026-11-16", label: "今天", day: "16" });
+    expect(dates[12]).toEqual({ key: "2026-11-17", label: "明天", day: "17" });
+    expect(dates[22]).toEqual({ key: "2026-11-27", label: "周五", day: "27" });
   });
 
-  it("crosses leap day, month, and year with independent keys", () => {
-    expect(buildDates("2024-02-28T20:00:00.000Z").map(({ key, label, day }) => ({ key, label, day }))).toEqual([
-      { key: "2024-02-29", label: "今天", day: "29" },
-      { key: "2024-03-01", label: "明天", day: "01" },
-      { key: "2024-03-02", label: "周六", day: "02" },
-      { key: "2024-03-03", label: "周日", day: "03" },
-      { key: "2024-03-04", label: "周一", day: "04" },
-      { key: "2024-03-05", label: "周二", day: "05" },
-      { key: "2024-03-06", label: "周三", day: "06" },
-      { key: "2024-03-07", label: "周四", day: "07" },
-      { key: "2024-03-08", label: "周五", day: "08" },
-      { key: "2024-03-09", label: "周六", day: "09" },
-      { key: "2024-03-10", label: "周日", day: "10" },
-    ]);
-    expect(buildDates("2026-12-31T16:00:00.000Z").map(({ key, label, day }) => ({ key, label, day }))).toEqual([
-      { key: "2027-01-01", label: "今天", day: "01" },
-      { key: "2027-01-02", label: "明天", day: "02" },
-      { key: "2027-01-03", label: "周日", day: "03" },
-      { key: "2027-01-04", label: "周一", day: "04" },
-      { key: "2027-01-05", label: "周二", day: "05" },
-      { key: "2027-01-06", label: "周三", day: "06" },
-      { key: "2027-01-07", label: "周四", day: "07" },
-      { key: "2027-01-08", label: "周五", day: "08" },
-      { key: "2027-01-09", label: "周六", day: "09" },
-      { key: "2027-01-10", label: "周日", day: "10" },
-      { key: "2027-01-11", label: "周一", day: "11" },
-    ]);
+  it("crosses leap day, month, and year with independent keys across the 23-day window", () => {
+    const leapDates = buildDates("2024-02-28T20:00:00.000Z").map(({ key, label, day }) => ({ key, label, day }));
+    expect(leapDates).toHaveLength(23);
+    expect(leapDates[0]).toEqual({ key: "2024-02-18", label: "周日", day: "18" });
+    expect(leapDates[10]).toEqual({ key: "2024-02-28", label: "昨天", day: "28" });
+    expect(leapDates[11]).toEqual({ key: "2024-02-29", label: "今天", day: "29" });
+    expect(leapDates[12]).toEqual({ key: "2024-03-01", label: "明天", day: "01" });
+    expect(leapDates[22]).toEqual({ key: "2024-03-11", label: "周一", day: "11" });
+
+    const newYearDates = buildDates("2026-12-31T16:00:00.000Z").map(({ key, label, day }) => ({ key, label, day }));
+    expect(newYearDates).toHaveLength(23);
+    expect(newYearDates[0]).toEqual({ key: "2026-12-21", label: "周一", day: "21" });
+    expect(newYearDates[10]).toEqual({ key: "2026-12-31", label: "昨天", day: "31" });
+    expect(newYearDates[11]).toEqual({ key: "2027-01-01", label: "今天", day: "01" });
+    expect(newYearDates[12]).toEqual({ key: "2027-01-02", label: "明天", day: "02" });
+    expect(newYearDates[22]).toEqual({ key: "2027-01-12", label: "周二", day: "12" });
   });
 });
 
@@ -205,23 +192,18 @@ describe("locale independence", () => {
       expect(beijingParts("2026-11-15T16:00:00.000Z")).toEqual({
         year: 2026, month: 11, day: 16, hour: 0, minute: 0, key: "2026-11-16",
       });
-      expect(buildDates("2026-11-15T16:00:00.000Z")).toEqual([
+      const built = buildDates("2026-11-15T16:00:00.000Z");
+      expect(built).toHaveLength(23);
+      expect(built.slice(10, 14)).toEqual([
+        { key: "2026-11-15", label: "昨天", day: "15" },
         { key: "2026-11-16", label: "今天", day: "16" },
         { key: "2026-11-17", label: "明天", day: "17" },
         { key: "2026-11-18", label: "周三", day: "18" },
-        { key: "2026-11-19", label: "周四", day: "19" },
-        { key: "2026-11-20", label: "周五", day: "20" },
-        { key: "2026-11-21", label: "周六", day: "21" },
-        { key: "2026-11-22", label: "周日", day: "22" },
-        { key: "2026-11-23", label: "周一", day: "23" },
-        { key: "2026-11-24", label: "周二", day: "24" },
-        { key: "2026-11-25", label: "周三", day: "25" },
-        { key: "2026-11-26", label: "周四", day: "26" },
       ]);
       expect(upcomingMatchInfo(
         { kickoff_at: "2026-11-20T12:00:00+08:00" },
         "2026-11-16T00:00:00+08:00",
-        buildDates("2026-11-15T16:00:00.000Z"),
+        built,
       )).toEqual({
         date: "2026-11-20",
         label: "11月20日（周五）",

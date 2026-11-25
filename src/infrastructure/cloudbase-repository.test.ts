@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  AnomalyStatus,
+  AnomalyType,
   GroupStatus,
   MatchScoreValue,
   MatchStatus,
@@ -9,9 +11,10 @@ import {
   SettlementStatus,
   UserStatus,
 } from "../domain/enums.js";
-import type { BoardSnapshot, Group, LeagueSeason, Match, Prediction, ProviderReconcileTodo, SeasonTeam, SettlementDoc, User } from "../domain/types.js";
+import type { Anomaly, BoardSnapshot, Group, LeagueSeason, Match, Prediction, ProviderReconcileTodo, SeasonTeam, SettlementDoc, User } from "../domain/types.js";
 import { defaultLevelState } from "../domain/types.js";
 import { GroupsService } from "../application/groups.js";
+import { PersonalLeagueSummaryService } from "../application/personal-league-summary-service.js";
 import { RebuildUserStatsService } from "../application/stats-rebuild-service.js";
 import { COLLECTION_DEFINITIONS } from "../schema/collections.js";
 import { UNIQUE_INDEXES } from "../schema/indexes.js";
@@ -82,6 +85,11 @@ class MemoryCloudBaseDb implements CloudBaseDb {
   async get(collection: string, id: string): Promise<CloudBaseDocument | null> {
     const document = this.documents.get(`${collection}/${id}`);
     return document === undefined ? null : cloneValue(document);
+  }
+
+  async getForUpdate(collection: string, id: string): Promise<CloudBaseDocument | null> {
+    if (!this.transactionView) throw new Error("getForUpdate requires an active transaction");
+    return this.get(collection, id);
   }
 
   seed(collection: string, id: string, document: CloudBaseDocument): void {
@@ -645,6 +653,27 @@ function makeHistoryPrediction(overrides: Partial<Prediction> = {}): Prediction 
   };
 }
 
+function makeAnomaly(overrides: Partial<Anomaly> = {}): Anomaly {
+  const anomalyId = overrides.anomaly_id ?? "00000000-0000-4000-8000-000000000010";
+  const lastSeenAt = overrides.last_seen_at ?? NOW;
+  return {
+    schema_version: 1,
+    anomaly_id: anomalyId,
+    anomaly_key: overrides.anomaly_key ?? `${anomalyId}:LIVE_SYNC_STALE`,
+    match_id: "00000000-0000-4000-8000-000000000011",
+    type: AnomalyType.LiveSyncStale,
+    blocking: false,
+    status: AnomalyStatus.Open,
+    first_seen_at: lastSeenAt,
+    last_seen_at: lastSeenAt,
+    occurrence_count: 1,
+    details: {},
+    resolved_at: null,
+    resolution: null,
+    ...overrides,
+  };
+}
+
 describe("CloudBase repository configuration", () => {
   it("loads only the repository environment keys and trims values", () => {
     expect(loadCloudBaseRepositoryConfig({
@@ -683,7 +712,7 @@ describe("CloudBaseAppRepository", () => {
     await expect(repo.users.findById(USER_ID)).resolves.toEqual(user);
     await expect(repo.users.findByOpenid(user.openid)).resolves.toEqual(user);
     expect(Object.keys(repo).sort()).toEqual([
-      "adminAuditLogs", "admins", "anomalies", "boardSnapshots", "config", "db", "deletedOpenidMappings",
+      "adminAuditLogs", "admins", "anomalies", "authSessions", "boardSnapshots", "config", "db", "deletedOpenidMappings",
       "groupMembers", "groups", "jobLocks", "leagueSeasons", "levelHistory", "matchProviderMappings",
       "matchResults", "matches", "predictions", "providerReconcileTodos", "providerSnapshots", "rankings",
       "seasonTeams", "settlementItems", "settlements", "syncLogs", "teamProviderMappings", "teams",
@@ -853,6 +882,129 @@ describe("CloudBaseAppRepository", () => {
     expect(new Set(rows.map((row) => row.prediction_id)).size).toBe(ids.length);
     expect(query).toHaveBeenCalledTimes(4);
     expect(query.mock.calls.every((call) => call[1] && !("prediction_id" in (call[1] as object)))).toBe(true);
+  });
+
+  it("[A-S7-04] findByUserAndCanonicalMatchIds indexes by prediction_id and preserves duplicate predictions for PersonalLeagueSummary data_conflict", async () => {
+    const db = new MemoryCloudBaseDb();
+    const repo = createCloudBaseRepository(db);
+    const predCol = cloudBaseCollectionName(CONFIG.resource_namespace, "predictions");
+    const matchId = "00000000-0000-4000-8000-000000000701";
+
+    // Case 1: two canonical-indexed duplicate dirty predictions under same (user_id, canonical_match_id)
+    await db.add(predCol, "dup-1", {
+      ...makeHistoryPrediction({
+        prediction_id: "dup-1",
+        user_id: USER_ID,
+        match_id: "old-m1",
+        canonical_match_id: matchId,
+        idempotency_key: "k-dup-1",
+      }),
+      _id: "dup-1",
+    });
+    db.seed(predCol, "dup-2", {
+      ...makeHistoryPrediction({
+        prediction_id: "dup-2",
+        user_id: USER_ID,
+        match_id: matchId,
+        canonical_match_id: matchId,
+        idempotency_key: "k-dup-2",
+      }),
+      _id: "dup-2",
+    });
+
+    const dupCanonical = await repo.predictions.findByUserAndCanonicalMatchIds(USER_ID, [matchId]);
+    expect(dupCanonical.map((row) => row.prediction_id).sort()).toEqual(["dup-1", "dup-2"]);
+
+    // Case 2: two legacy duplicate predictions lacking canonical_match_id field
+    const legacyMatchId = "00000000-0000-4000-8000-000000000702";
+    const { canonical_match_id: _c1, ...legacyOne } = makeHistoryPrediction({
+      prediction_id: "leg-1",
+      user_id: USER_ID,
+      match_id: legacyMatchId,
+      idempotency_key: "k-leg-1",
+    });
+    const { canonical_match_id: _c2, ...legacyTwo } = makeHistoryPrediction({
+      prediction_id: "leg-2",
+      user_id: USER_ID,
+      match_id: legacyMatchId,
+      idempotency_key: "k-leg-2",
+    });
+    db.seed(predCol, "leg-1", { ...legacyOne, _id: "leg-1" });
+    db.seed(predCol, "leg-2", { ...legacyTwo, _id: "leg-2" });
+
+    const dupLegacy = await repo.predictions.findByUserAndCanonicalMatchIds(USER_ID, [legacyMatchId]);
+    expect(dupLegacy.map((row) => row.prediction_id).sort()).toEqual(["leg-1", "leg-2"]);
+
+    // Case 3: End-to-end summarizePersonalLeague sees duplicate rows -> reason: "data_conflict"
+    await repo.users.insert(makeUser(USER_ID));
+    await repo.leagueSeasons.insert({
+      schema_version: 1,
+      league_id: "premier_league",
+      season_id: "2025_2026",
+      format: { kind: "double_round_robin", team_count: 20, round_count: 38 },
+      schedule_status: "locked",
+      completion_status: "completed",
+      completion_confirmed_at: NOW,
+      reopened_at: null,
+      reopen_count: 0,
+      ended_at: NOW,
+      manual_override: null,
+      created_at: NOW,
+      updated_at: NOW,
+    });
+    await repo.matches.insert(makeWindowMatch({
+      match_id: matchId,
+      canonical_match_id: matchId,
+      league_id: "premier_league",
+      season_id: "2025_2026",
+      match_status: MatchStatus.Finished,
+      settlement_status: SettlementStatus.Settled,
+      regular_home_score: 2,
+      regular_away_score: 1,
+    }));
+
+    const summary = await new PersonalLeagueSummaryService(repo).get(USER_ID, "premier_league", "2025_2026", NOW);
+    expect(summary).toMatchObject({
+      availability: "not_available",
+      reason: "data_conflict",
+      summary: null,
+    });
+  });
+
+  it("[Q-PLAN-2] teams backward-decodes legacy documents without name_zh/logo_url and supports patchFields/update", async () => {
+    const db = new MemoryCloudBaseDb();
+    const repo = createCloudBaseRepository(db);
+    const teamCol = cloudBaseCollectionName(CONFIG.resource_namespace, "teams");
+    db.seed(teamCol, "t-legacy", {
+      _id: "t-legacy",
+      schema_version: 1,
+      team_id: "t-legacy",
+      league_id: "premier_league",
+      name: "Legacy Promoted FC",
+      short_name: null,
+      primary_color: null,
+      secondary_color: null,
+      status: "active",
+      created_at: NOW,
+      updated_at: NOW,
+    });
+    expect(await repo.teams.findById("t-legacy")).toMatchObject({
+      team_id: "t-legacy",
+      name: "Legacy Promoted FC",
+      name_zh: null,
+      logo_url: null,
+    });
+
+    await repo.teams.patchFields!("t-legacy", {
+      name_zh: "升班马联",
+      logo_url: "https://cdn.example.com/t-legacy.png",
+      updated_at: NOW,
+    });
+    expect(await repo.teams.findById("t-legacy")).toMatchObject({
+      team_id: "t-legacy",
+      name_zh: "升班马联",
+      logo_url: "https://cdn.example.com/t-legacy.png",
+    });
   });
 
   it("findByCanonicalMatch merges backfilled and legacy predictions and deduplicates by prediction_id", async () => {
@@ -1057,8 +1209,17 @@ describe("CloudBaseAppRepository", () => {
       idempotency_key: "k-legacy-draw", derived_result: "DRAW",
     });
     await db.add(col, "p-legacy-draw", { ...legacyDraw, _id: "p-legacy-draw" });
+    await db.add(col, "p-null-canonical-away", {
+      ...legacyDraw,
+      prediction_id: "p-null-canonical-away",
+      user_id: "u-null-canonical-away",
+      canonical_match_id: null,
+      idempotency_key: "k-null-canonical-away",
+      derived_result: "AWAY",
+      _id: "p-null-canonical-away",
+    });
     await expect(repo.predictions.countByMatchGroupedByResult("match-id"))
-      .resolves.toEqual({ HOME: 1, DRAW: 1, AWAY: 0 });
+      .resolves.toEqual({ HOME: 1, DRAW: 1, AWAY: 1 });
   });
 
   it("matches in-memory crowd counts on mixed canonical and legacy predictions", async () => {
@@ -1355,6 +1516,36 @@ describe("CloudBaseAppRepository.findActiveWindow", () => {
     await createCloudBaseRepository(db).matches.findActiveWindow({ jobType: "live_match", now: NOW, limit: 50 });
     expect(and).toHaveBeenCalledTimes(2);
     expect(and).toHaveBeenCalledWith({ __lte: new Date(NOW.getTime() + 2 * hour) });
+  });
+
+  it("stale_recovery 下推 superseded_by: null，存在 >=10 条历史取代旧记录时不饿死滞留比赛 (A-S3-08)", async () => {
+    const db = new RangeAwareMemoryCloudBaseDb();
+    const repo = createCloudBaseRepository(db);
+    for (let index = 0; index < 12; index += 1) {
+      const replacement = makeWindowMatch({
+        match_id: `rep-${index}`,
+        kickoff_at: new Date(NOW.getTime() + (index + 24) * hour),
+      });
+      const old = makeWindowMatch({
+        match_id: `old-${index}`,
+        kickoff_at: new Date(NOW.getTime() - (index + 20) * hour),
+      });
+      await repo.matches.insert(replacement);
+      await repo.matches.insert(old);
+      await repo.matches.update({ ...old, canonical_match_id: replacement.match_id, superseded_by: replacement.match_id });
+    }
+    const realStale = makeWindowMatch({
+      match_id: "real-stale",
+      kickoff_at: new Date(NOW.getTime() - 8 * hour),
+    });
+    await repo.matches.insert(realStale);
+    const querySpy = vi.spyOn(db, "query");
+
+    const found = await repo.matches.findActiveWindow({ jobType: "stale_recovery", now: NOW, limit: 10 });
+    expect(found.map((match) => match.match_id)).toEqual(["real-stale"]);
+    for (const call of querySpy.mock.calls) {
+      expect(call[1]).toMatchObject({ superseded_by: null });
+    }
   });
 
   it("[Slice 4] board_snapshots 多时间截面下 findLatestByBoard/findLatestBySeason 只查最新非终榜截面", async () => {
@@ -2100,6 +2291,85 @@ describe("CloudBaseAppRepository Slice 3.3 batch & pushdown methods", () => {
       after: { kickoff_at: first[1]!.kickoff_at, match_id: first[1]!.match_id },
     });
     expect(second.map((match) => match.match_id)).toEqual(["m-c"]);
+  });
+});
+
+describe("CloudBaseAppRepository anomaly page [A-S8-13]", () => {
+  it("下推 status/blocking/keyset，并按 limit+1 计算 has_more", async () => {
+    const db = new MemoryCloudBaseDb();
+    const after = {
+      last_seen_at: NOW,
+      anomaly_id: "00000000-0000-4000-8000-000000000001",
+    };
+    const docs = [
+      makeAnomaly({ anomaly_id: "00000000-0000-4000-8000-000000000003" }),
+      makeAnomaly({ anomaly_id: "00000000-0000-4000-8000-000000000002" }),
+      makeAnomaly({ anomaly_id: "00000000-0000-4000-8000-000000000001" }),
+    ].map((anomaly) => ({ ...anomaly, _id: anomaly.anomaly_id }));
+    const findAnomalyPage = vi.fn(async () => docs);
+    (db as CloudBaseDb).findAnomalyPage = findAnomalyPage;
+    const querySpy = vi.spyOn(db, "query");
+    const repo = new CloudBaseAppRepository(CONFIG, db);
+
+    const page = await repo.anomalies.findPage({
+      status: AnomalyStatus.Open,
+      blocking: false,
+      after,
+      limit: 2,
+    });
+
+    expect(findAnomalyPage).toHaveBeenCalledWith({
+      collection: cloudBaseCollectionName(CONFIG.resource_namespace, "anomalies"),
+      status: AnomalyStatus.Open,
+      blocking: false,
+      after,
+      limit: 3,
+    });
+    expect(page.items.map((item) => item.anomaly_id)).toEqual([
+      "00000000-0000-4000-8000-000000000003",
+      "00000000-0000-4000-8000-000000000002",
+    ]);
+    expect(page.has_more).toBe(true);
+    expect(querySpy).not.toHaveBeenCalled();
+  });
+
+  it("适配器无下推时保持原内存筛选与 keyset 游标语义", async () => {
+    const repo = createCloudBaseRepository();
+    const sharedLastSeenAt = new Date("2026-08-09T10:00:00.000Z");
+    for (const anomalyId of [
+      "00000000-0000-4000-8000-000000000001",
+      "00000000-0000-4000-8000-000000000002",
+      "00000000-0000-4000-8000-000000000003",
+    ]) {
+      await repo.anomalies.insert(makeAnomaly({
+        anomaly_id: anomalyId,
+        last_seen_at: sharedLastSeenAt,
+      }));
+    }
+
+    const first = await repo.anomalies.findPage({
+      status: AnomalyStatus.Open,
+      blocking: false,
+      after: null,
+      limit: 2,
+    });
+    expect(first.items.map((item) => item.anomaly_id)).toEqual([
+      "00000000-0000-4000-8000-000000000003",
+      "00000000-0000-4000-8000-000000000002",
+    ]);
+    expect(first.has_more).toBe(true);
+
+    const last = first.items.at(-1)!;
+    const second = await repo.anomalies.findPage({
+      status: AnomalyStatus.Open,
+      blocking: false,
+      after: { last_seen_at: last.last_seen_at, anomaly_id: last.anomaly_id },
+      limit: 2,
+    });
+    expect(second.items.map((item) => item.anomaly_id)).toEqual([
+      "00000000-0000-4000-8000-000000000001",
+    ]);
+    expect(second.has_more).toBe(false);
   });
 });
 

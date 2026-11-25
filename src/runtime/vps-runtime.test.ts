@@ -41,6 +41,7 @@ describe("createVpsRuntime", () => {
     expect(runtime.sessions).toEqual(expect.objectContaining({
       create: expect.any(Function),
       findActiveByToken: expect.any(Function),
+      deleteByOpenid: expect.any(Function),
     }));
     await expect(runtime.healthCheck()).resolves.toBe(false);
     await runtime.close();
@@ -150,5 +151,90 @@ describe("createVpsRuntime", () => {
       message: "idle client connection terminated",
     });
     await runtime.close();
+  });
+
+  it("coalesces concurrent health checks and caches the result for 1.5s", async () => {
+    const captured = capturePools();
+    const runtime = createVpsRuntime({ postgres: POSTGRES, env: {} });
+    const pool = captured.instances[0]!;
+    let now = 1_700_000_000_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    let calls = 0;
+    let release = (): void => {};
+    let gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    vi.spyOn(pool, "query").mockImplementation((() => {
+      calls += 1;
+      return gate.then(() => ({ rows: [] }));
+    }) as unknown as typeof pool.query);
+
+    const first = runtime.healthCheck();
+    const second = runtime.healthCheck();
+    expect(calls).toBe(1);
+    release();
+    await expect(Promise.all([first, second])).resolves.toEqual([true, true]);
+    await expect(runtime.healthCheck()).resolves.toBe(true);
+    expect(calls).toBe(1);
+
+    now += 1_499;
+    await expect(runtime.healthCheck()).resolves.toBe(true);
+    expect(calls).toBe(1);
+
+    now += 1;
+    gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const third = runtime.healthCheck();
+    const fourth = runtime.healthCheck();
+    expect(calls).toBe(2);
+    release();
+    await expect(Promise.all([third, fourth])).resolves.toEqual([true, true]);
+    expect(calls).toBe(2);
+
+    await runtime.close();
+    await expect(runtime.healthCheck()).resolves.toBe(false);
+    expect(calls).toBe(2);
+  });
+
+  it("caches a failed health check for 1.5s", async () => {
+    const captured = capturePools();
+    const runtime = createVpsRuntime({ postgres: POSTGRES, env: {} });
+    const pool = captured.instances[0]!;
+    let now = 1_700_000_000_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    let calls = 0;
+    vi.spyOn(pool, "query").mockImplementation((() => {
+      calls += 1;
+      return Promise.reject(new Error("down"));
+    }) as unknown as typeof pool.query);
+
+    await expect(runtime.healthCheck()).resolves.toBe(false);
+    await expect(runtime.healthCheck()).resolves.toBe(false);
+    expect(calls).toBe(1);
+    now += 1_500;
+    await expect(runtime.healthCheck()).resolves.toBe(false);
+    expect(calls).toBe(2);
+    await runtime.close();
+  });
+
+  it("does not publish an in-flight success after close", async () => {
+    const captured = capturePools();
+    const runtime = createVpsRuntime({ postgres: POSTGRES, env: {} });
+    const pool = captured.instances[0]!;
+    let release = (): void => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    vi.spyOn(pool, "query").mockImplementation((() => {
+      return gate.then(() => ({ rows: [] }));
+    }) as unknown as typeof pool.query);
+
+    const pending = runtime.healthCheck();
+    const closing = runtime.close();
+    await expect(runtime.healthCheck()).resolves.toBe(false);
+    release();
+    await expect(pending).resolves.toBe(false);
+    await closing;
   });
 });

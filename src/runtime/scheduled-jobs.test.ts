@@ -1,12 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
 import { PeriodType, RankingBoard, SyncJobType } from "../domain/enums.js";
+import { conflictError } from "../domain/errors.js";
 import { defaultLevelState, type RankingEntry, type User, type UserSeasonStats } from "../domain/types.js";
 import { InMemorySchedulerStateStore } from "../infrastructure/cloudbase-scheduler-state.js";
 import { InMemoryRepository } from "../infrastructure/repositories.js";
 import { BoardSnapshotService } from "../application/board-snapshot.js";
 import { PeriodFinalizeService } from "../application/period-finalize-service.js";
+import { rankingPeriodLockKey } from "../application/settlement-item-application-service.js";
 import { weeklyEvalAsOf, WeeklyLevelEvalService } from "../application/weekly-level-eval.js";
 import {
+  LEAGUE_SEASONS_CYCLE_KEY,
+  LEAGUE_SEASONS_LOCK_KEY,
   MAINTENANCE_CLEANUP_CYCLE_KEY,
   MAINTENANCE_CLEANUP_LOCK_KEY,
   TIMER_TASK_TYPES,
@@ -134,6 +138,14 @@ function runtimeStub(overrides: Record<string, unknown> = {}): ApplicationRuntim
         skipped_count: 0,
       })),
     },
+    levelCorrectionReeval: {
+      runPendingCompensation: vi.fn(async () => ({
+        kind: "completed" as const,
+        scanned_count: 0,
+        completed_count: 0,
+        pending_count: 0,
+      })),
+    },
     boardSnapshot: {
       generate: vi.fn(async () => []),
       generateSeasonFinal: vi.fn(async () => []),
@@ -171,6 +183,7 @@ describe("UNWIRED_PERIODIC_TASKS", () => {
       SyncJobType.PeriodFinalize,
       SyncJobType.DailyConsistency,
       SyncJobType.WeeklyLevelEval,
+      SyncJobType.LevelCorrectionReeval,
       SyncJobType.BoardSnapshotCareer,
       SyncJobType.BoardSnapshotStrength,
       SyncJobType.BoardSnapshotSeason,
@@ -593,6 +606,64 @@ describe("wired period_finalize and daily_consistency", () => {
       SyncJobType.DailyConsistency,
     ]));
     expect(await repo.rankings.findByPeriod(PeriodType.Week, "2026-W33")).toEqual(week33);
+  });
+
+  it("[A-S5-12] does not advance the period_finalize cycle when any due week is lock-held", async () => {
+    const repo = new InMemoryRepository();
+    await repo.rankings.insert(makeWeekRanking());
+    await repo.rankings.insert(makeWeekRanking({
+      user_id: "00000000-0000-4000-8000-000000000095",
+      period_key: "2026-W31",
+      is_final: false,
+    }));
+    const schedulerState = new InMemorySchedulerStateStore();
+    const runtime = runtimeStub({
+      repo,
+      schedulerState,
+      periodFinalize: new PeriodFinalizeService(repo),
+      dailyConsistency: {
+        run: vi.fn(async () => ({
+          kind: "completed",
+          checked_at: FINALIZE_NOW,
+          differences: [],
+          skipped_active_settlement: [],
+        })),
+      },
+    });
+    const blockedPeriodKey = "2026-W32";
+    const blockedLockKey = rankingPeriodLockKey(PeriodType.Week, blockedPeriodKey);
+    await repo.jobLocks.acquire(
+      blockedLockKey,
+      "other-owner",
+      new Date(Date.now() + 60 * 60_000),
+    );
+
+    try {
+      const first = await runScheduledJobs({ runtime, serverNow: FINALIZE_NOW });
+      expect(first.providerData.jobs_run ?? []).not.toContain(SyncJobType.PeriodFinalize);
+      expect(first.providerData.skipped).toEqual(expect.arrayContaining([
+        { task: SyncJobType.PeriodFinalize, reason: "lock_held" },
+      ]));
+      expect(await repo.rankings.findByPeriod(PeriodType.Week, "2026-W31")).toEqual([
+        expect.objectContaining({ is_final: true }),
+      ]);
+      expect(await repo.rankings.findByPeriod(PeriodType.Week, blockedPeriodKey)).toEqual([
+        expect.objectContaining({ is_final: false }),
+      ]);
+      expect(await schedulerState.getPeriodicJobCycle(SyncJobType.PeriodFinalize)).toBeNull();
+    } finally {
+      await repo.jobLocks.release(blockedLockKey, "other-owner");
+    }
+
+    const retryAt = new Date(FINALIZE_NOW.getTime() + 15 * 60_000);
+    const retry = await runScheduledJobs({ runtime, serverNow: retryAt });
+    expect(retry.providerData.jobs_run).toEqual(expect.arrayContaining([SyncJobType.PeriodFinalize]));
+    expect(await repo.rankings.findByPeriod(PeriodType.Week, blockedPeriodKey)).toEqual([
+      expect.objectContaining({ is_final: true }),
+    ]);
+    expect(await schedulerState.getPeriodicJobCycle(SyncJobType.PeriodFinalize)).toEqual(
+      expect.objectContaining({ completed_cycle_at: retryAt }),
+    );
   });
 
   it("alerts daily_consistency mismatches without rewriting caches", async () => {
@@ -1240,6 +1311,66 @@ describe("wired board_snapshot_season_final event", () => {
     expect(await repo.boardSnapshots.findByBoardAndSnapshotAt(RankingBoard.Season, SEASON_FINAL_AS_OF)).toEqual([]);
   });
 
+  it("[A-S5-12] does not advance the season-final cycle when any due season is lock-held", async () => {
+    const repo = new InMemoryRepository();
+    const schedulerState = new InMemorySchedulerStateStore();
+    const user = makeSnapshotUser("00000000-0000-4000-8000-000000000205");
+    await repo.users.insert(user);
+    await repo.userSeasonStats.insert(makeSnapshotSeasonStats(user.user_id, {
+      level_season_id: "2024_2025",
+      is_level_frozen: true,
+    }));
+    await repo.userSeasonStats.insert(makeSnapshotSeasonStats(user.user_id, {
+      level_season_id: "2025_2026",
+      is_level_frozen: true,
+    }));
+    await schedulerState.upsertPeriodicJobCycle({
+      job_type: SyncJobType.WeeklyLevelEval,
+      completed_cycle_at: weeklyEvalAsOf(SEASON_FINAL_CATCHUP),
+      updated_at: SEASON_FINAL_CATCHUP,
+    });
+    const generateSeasonFinal = vi.fn(async (levelSeasonId: string) => {
+      if (levelSeasonId === "2025_2026") {
+        throw conflictError("SETTLEMENT_ALREADY_RUNNING", "season final lock held");
+      }
+      return [];
+    });
+    const runtime = runtimeStub({
+      repo,
+      schedulerState,
+      boardSnapshot: { generate: vi.fn(async () => []), generateSeasonFinal },
+      weeklyLevelEval: { run: vi.fn(async (serverNow: Date) => new WeeklyLevelEvalService(repo).run(serverNow)) },
+      periodFinalize: new PeriodFinalizeService(repo),
+      dailyConsistency: {
+        run: vi.fn(async () => ({
+          kind: "completed",
+          checked_at: SEASON_FINAL_CATCHUP,
+          differences: [],
+          skipped_active_settlement: [],
+        })),
+      },
+    });
+
+    const first = await runScheduledJobs({ runtime, serverNow: SEASON_FINAL_CATCHUP });
+    expect(generateSeasonFinal).toHaveBeenCalledWith("2024_2025", SEASON_FINAL_CATCHUP);
+    expect(generateSeasonFinal).toHaveBeenCalledWith("2025_2026", SEASON_FINAL_CATCHUP);
+    expect(first.providerData.jobs_run ?? []).not.toContain(SyncJobType.BoardSnapshotSeasonFinal);
+    expect(first.providerData.skipped).toEqual(expect.arrayContaining([
+      { task: SyncJobType.BoardSnapshotSeasonFinal, reason: "lock_held" },
+    ]));
+    expect(await schedulerState.getPeriodicJobCycle(SyncJobType.BoardSnapshotSeasonFinal)).toBeNull();
+
+    generateSeasonFinal.mockImplementation(async () => []);
+    const retryAt = new Date(SEASON_FINAL_CATCHUP.getTime() + 15 * 60_000);
+    const retry = await runScheduledJobs({ runtime, serverNow: retryAt });
+    expect(retry.providerData.jobs_run).toEqual(expect.arrayContaining([
+      SyncJobType.BoardSnapshotSeasonFinal,
+    ]));
+    expect(await schedulerState.getPeriodicJobCycle(SyncJobType.BoardSnapshotSeasonFinal)).toEqual(
+      expect.objectContaining({ completed_cycle_at: retryAt }),
+    );
+  });
+
   it("does not catch-up an immutable season final when that season's final eval has not frozen levels", async () => {
     const repo = new InMemoryRepository();
     const schedulerState = new InMemorySchedulerStateStore();
@@ -1551,5 +1682,220 @@ describe("wired board_snapshot_season_final event", () => {
       { task: SyncJobType.WeeklyLevelEval, reason: "user_lock_held" },
     ]));
     expect(generateSpy).not.toHaveBeenCalled();
+  });
+
+  it("[Slice 3] 周期补偿扫描 pending 改判重评，撞锁不推进周期", async () => {
+    const schedulerState = new InMemorySchedulerStateStore();
+    const runPendingCompensation = vi.fn(
+      async (
+        _serverNow: Date,
+        _completedWeeklyAsOf: Date | null,
+      ): Promise<{
+        kind: "completed" | "skipped" | "deferred";
+        scanned_count: number;
+        completed_count: number;
+        pending_count: number;
+      }> => ({
+        kind: "completed",
+        scanned_count: 1,
+        completed_count: 1,
+        pending_count: 0,
+      }),
+    );
+    const runtime = runtimeStub({
+      schedulerState,
+      levelCorrectionReeval: { runPendingCompensation },
+    });
+
+    const first = await runDuePeriodicJobs({ runtime, serverNow: NOW });
+
+    expect(runPendingCompensation).toHaveBeenCalledTimes(1);
+    expect(runPendingCompensation.mock.calls[0]?.[0]).toBe(NOW);
+    expect(first.jobs_run).toContain(SyncJobType.LevelCorrectionReeval);
+    expect(await schedulerState.getPeriodicJobCycle(SyncJobType.LevelCorrectionReeval))
+      .toMatchObject({ completed_cycle_at: NOW });
+
+    const withinInterval = await runDuePeriodicJobs({
+      runtime,
+      serverNow: new Date(NOW.getTime() + 10 * 60_000),
+    });
+    expect(withinInterval.skipped).toEqual(expect.arrayContaining([
+      { task: SyncJobType.LevelCorrectionReeval, reason: "interval_not_due" },
+    ]));
+    expect(runPendingCompensation).toHaveBeenCalledTimes(1);
+
+    runPendingCompensation.mockResolvedValueOnce({
+      kind: "skipped",
+      scanned_count: 1,
+      completed_count: 0,
+      pending_count: 1,
+    });
+    const blocked = await runDuePeriodicJobs({
+      runtime,
+      serverNow: new Date(NOW.getTime() + 20 * 60_000),
+    });
+    expect(blocked.skipped).toEqual(expect.arrayContaining([
+      { task: SyncJobType.LevelCorrectionReeval, reason: "lock_held" },
+    ]));
+    expect(await schedulerState.getPeriodicJobCycle(SyncJobType.LevelCorrectionReeval))
+      .toMatchObject({ completed_cycle_at: NOW });
+  });
+
+  it("[Slice 3] 周期补偿 deferred 按实际原因上报，不误报 weekly_eval_incomplete", async () => {
+    const schedulerState = new InMemorySchedulerStateStore();
+    let reason: "user_lock_held" | "weekly_eval_incomplete" = "user_lock_held";
+    const runPendingCompensation = vi.fn(async () => ({
+      kind: "deferred" as const,
+      scanned_count: 1,
+      completed_count: 0,
+      pending_count: 1,
+      deferred_reason: reason,
+    }));
+    const runtime = runtimeStub({
+      schedulerState,
+      levelCorrectionReeval: { runPendingCompensation },
+    });
+
+    const userLocked = await runDuePeriodicJobs({ runtime, serverNow: NOW });
+
+    expect(userLocked.skipped).toEqual(expect.arrayContaining([
+      { task: SyncJobType.LevelCorrectionReeval, reason: "user_lock_held" },
+    ]));
+    expect(userLocked.skipped).not.toEqual(expect.arrayContaining([
+      { task: SyncJobType.LevelCorrectionReeval, reason: "weekly_eval_incomplete" },
+    ]));
+    expect(await schedulerState.getPeriodicJobCycle(SyncJobType.LevelCorrectionReeval)).toBeNull();
+
+    reason = "weekly_eval_incomplete";
+    const weeklyIncomplete = await runDuePeriodicJobs({
+      runtime,
+      serverNow: new Date(NOW.getTime() + 60_000),
+    });
+
+    expect(weeklyIncomplete.skipped).toEqual(expect.arrayContaining([
+      { task: SyncJobType.LevelCorrectionReeval, reason: "weekly_eval_incomplete" },
+    ]));
+    expect(await schedulerState.getPeriodicJobCycle(SyncJobType.LevelCorrectionReeval)).toBeNull();
+  });
+
+  it("僵死 running 日志超出租约按失败冷却收敛；provider_reconcile 享 60m 短冷却；leagueSeasons 受分布式锁保护 (A-S3-10)", async () => {
+    const query = vi.fn(async (_col: string, filter: { job_type?: string }) => {
+      if (filter.job_type === SyncJobType.ProviderReconcile) {
+        return [{ job_type: SyncJobType.ProviderReconcile, status: "running", started_at: new Date(NOW.getTime() - 15 * 60_000) }];
+      }
+      if (filter.job_type === SyncJobType.StaleRecovery) {
+        return [{ job_type: SyncJobType.StaleRecovery, status: "running", started_at: new Date(NOW.getTime() - 60 * 60_000) }];
+      }
+      if (filter.job_type === SyncJobType.LiveMatch) {
+        return [{ job_type: SyncJobType.LiveMatch, status: "running", started_at: new Date(NOW.getTime() - 1 * 60_000) }];
+      }
+      return [{ job_type: filter.job_type, status: "success", started_at: NOW }];
+    });
+    const decisions = await planDueProviderJobs({
+      cloudDb: { query } as never,
+      namespace: "ft",
+      providerRegistry: { dueLeagues: vi.fn(async () => []) } as never,
+      syncLeagueIds: [],
+      sourceIds: ["fd"],
+      profile: "prod",
+      serverNow: NOW,
+    });
+    expect(decisions.find((d) => d.task === SyncJobType.ProviderReconcile)).toEqual({
+      task: SyncJobType.ProviderReconcile,
+      action: "skip",
+      reason: "failed_cooldown",
+    });
+    expect(decisions.find((d) => d.task === SyncJobType.StaleRecovery)).toEqual({
+      task: SyncJobType.StaleRecovery,
+      action: "run",
+      reason: "due",
+    });
+    expect(decisions.find((d) => d.task === SyncJobType.LiveMatch)).toEqual({
+      task: SyncJobType.LiveMatch,
+      action: "skip",
+      reason: "interval_not_due",
+    });
+
+    // 超 60m 后 provider_reconcile 从 failed/僵死 running 恢复放行
+    const afterCooldown = await planDueProviderJobs({
+      cloudDb: {
+        query: vi.fn(async (_col: string, filter: { job_type?: string }) => (
+          filter.job_type === SyncJobType.ProviderReconcile
+            ? [{ job_type: SyncJobType.ProviderReconcile, status: "failed", started_at: new Date(NOW.getTime() - 60 * 60_000) }]
+            : [{ job_type: filter.job_type, status: "success", started_at: NOW }]
+        )),
+      } as never,
+      namespace: "ft",
+      providerRegistry: { dueLeagues: vi.fn(async () => []) } as never,
+      syncLeagueIds: [],
+      sourceIds: ["fd"],
+      profile: "prod",
+      serverNow: NOW,
+    });
+    expect(afterCooldown.find((d) => d.task === SyncJobType.ProviderReconcile)).toEqual({
+      task: SyncJobType.ProviderReconcile,
+      action: "run",
+      reason: "due",
+    });
+
+    // leagueSeasons 受 sync:league_seasons 分布式锁保护
+    const repo = new InMemoryRepository();
+    const schedulerState = new InMemorySchedulerStateStore();
+    await schedulerState.upsertPeriodicJobCycle({ job_type: SyncJobType.PeriodFinalize, completed_cycle_at: NOW, updated_at: NOW });
+    await schedulerState.upsertPeriodicJobCycle({ job_type: SyncJobType.DailyConsistency, completed_cycle_at: NOW, updated_at: NOW });
+    await schedulerState.upsertPeriodicJobCycle({ job_type: SyncJobType.LevelCorrectionReeval, completed_cycle_at: NOW, updated_at: NOW });
+    await schedulerState.upsertPeriodicJobCycle({ job_type: SyncJobType.BoardSnapshotCareer, completed_cycle_at: NOW, updated_at: NOW });
+    await schedulerState.upsertPeriodicJobCycle({ job_type: SyncJobType.BoardSnapshotStrength, completed_cycle_at: NOW, updated_at: NOW });
+    await schedulerState.upsertPeriodicJobCycle({ job_type: SyncJobType.BoardSnapshotSeason, completed_cycle_at: NOW, updated_at: NOW });
+
+    const leagueSeasonsRun = vi.fn(async () => ({ seasons_checked: 6, completed: 0, reopened: 0 }));
+    const log = vi.fn();
+    const runtime = runtimeStub({
+      repo,
+      schedulerState,
+      leagueSeasons: { run: leagueSeasonsRun },
+      weeklyLevelEval: { run: vi.fn(async (now: Date) => ({ kind: "skipped" as const, as_of: weeklyEvalAsOf(now), evaluated_count: 0, changed_count: 0, skipped_count: 0 })) },
+      log,
+    });
+    await repo.jobLocks.acquire(LEAGUE_SEASONS_LOCK_KEY, "other-worker", new Date(Math.max(Date.now(), NOW.getTime()) + 60_000));
+    const lockedRes = await runScheduledJobs({ runtime, serverNow: NOW, mode: "periodic" });
+    expect(leagueSeasonsRun).not.toHaveBeenCalled();
+    expect(lockedRes.leagueSeasons).toBeNull();
+    expect(lockedRes.errors).toEqual([]);
+    expect(log).toHaveBeenCalledWith({ event: "league_seasons_maintenance_skipped", reason: "lock_held" });
+
+    await repo.jobLocks.release(LEAGUE_SEASONS_LOCK_KEY, "other-worker");
+    const freeRes = await runScheduledJobs({ runtime, serverNow: NOW, mode: "periodic" });
+    expect(leagueSeasonsRun).toHaveBeenCalledTimes(1);
+    expect(freeRes.leagueSeasons).toEqual({ seasons_checked: 6, completed: 0, reopened: 0 });
+    expect(await repo.jobLocks.isHeld(LEAGUE_SEASONS_LOCK_KEY, new Date())).toBe(false);
+    expect(await schedulerState.getPeriodicJobCycle(LEAGUE_SEASONS_CYCLE_KEY)).toMatchObject({
+      completed_cycle_at: NOW,
+    });
+
+    // 30 分钟内再次执行应命中周期门控跳过，60 分钟后重新执行
+    const withinIntervalPlan = await planScheduledJobs({
+      runtime,
+      serverNow: new Date(NOW.getTime() + 30 * 60_000),
+      mode: "periodic",
+    });
+    expect(withinIntervalPlan.tasks).toEqual(expect.arrayContaining([
+      { task: LEAGUE_SEASONS_CYCLE_KEY, action: "skip", reason: "interval_not_due" },
+    ]));
+    const skippedRes = await runScheduledJobs({
+      runtime,
+      serverNow: new Date(NOW.getTime() + 30 * 60_000),
+      mode: "periodic",
+    });
+    expect(leagueSeasonsRun).toHaveBeenCalledTimes(1);
+    expect(skippedRes.leagueSeasons).toBeNull();
+
+    const afterIntervalRes = await runScheduledJobs({
+      runtime,
+      serverNow: new Date(NOW.getTime() + 60 * 60_000),
+      mode: "periodic",
+    });
+    expect(leagueSeasonsRun).toHaveBeenCalledTimes(2);
+    expect(afterIntervalRes.leagueSeasons).toEqual({ seasons_checked: 6, completed: 0, reopened: 0 });
   });
 });

@@ -2,7 +2,7 @@
 Description=Run Football periodic maintenance jobs every 15 minutes (VPS)
 
 [Timer]
-OnCalendar=*-*-* *:00/15:00
+OnCalendar=*-*-* *:01/15:00
 Persistent=true
 AccuracySec=10s
 Unit=football-periodic.service

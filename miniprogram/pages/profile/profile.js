@@ -22,10 +22,14 @@ function currentLoginGeneration() {
 
 function clearIdentityPatch(page) {
   page.recentRequestSerial = (page.recentRequestSerial || 0) + 1;
+  page.favoriteTeamRequestId = (page.favoriteTeamRequestId || 0) + 1;
   return {
     userId: "",
     nickname: "",
     avatarText: "球",
+    favoriteTeamId: null,
+    favoriteTeamText: "",
+    favoriteTeamLogo: PLACEHOLDER,
     recentState: "loading",
     recentPredictions: [],
   };
@@ -303,15 +307,19 @@ Page({
         for (const match of payload.items || []) {
           const team = [match.home_team, match.away_team].find(item => item && item.team_id === teamId);
           if (!team) continue;
-          const teamLogo = getTeamLogo(match.league_id, team);
-          wx.setStorageSync("team_name:" + teamId, team.name);
+          const presented = presentTeam(team, match.league_id);
+          const teamName = (presented && presented.nameZh && presented.nameZh !== "球队资料待补全")
+            ? presented.nameZh
+            : (team.name_zh || (findTeam(teamId) || {}).name_zh || team.name);
+          const teamLogo = (presented && presented.logo) || getTeamLogo(match.league_id, team);
+          wx.setStorageSync("team_name:" + teamId, teamName);
           if (teamLogo && teamLogo !== PLACEHOLDER) {
             wx.setStorageSync("team_logo:" + teamId, teamLogo);
           } else if (typeof wx.removeStorageSync === "function") {
             wx.removeStorageSync("team_logo:" + teamId);
           }
           this.setData({
-            favoriteTeamText: (findTeam(teamId) || {}).name_zh || team.name,
+            favoriteTeamText: teamName,
             favoriteTeamLogo: teamLogo || PLACEHOLDER,
           });
           return;
@@ -408,20 +416,41 @@ Page({
     if (this.data.state !== "ready" || this.data.groupCreating) {
       return;
     }
+    const generation = currentLoginGeneration();
     this.setData({ groupCreating: true, errorMessage: "" });
     return createGroup().then((result) => {
-      if (result.statusCode !== 201 || !result.data || !result.data.group_id) {
-        this.setData({
-          groupCreating: false,
-          errorMessage: result.code === "GROUP_OWNED_LIMIT_REACHED"
-            ? COPY.groupCreateLimitReached
-            : result.message || COPY.groupActionFailed,
-        });
+      if (generation !== currentLoginGeneration()) {
+        this.setData({ groupCreating: false });
         return;
       }
-      this.setData({ groupCreating: false });
-      wx.navigateTo({ url: `/pages/groups/detail?group_id=${result.data.group_id}&created=1&owned_count=${this.data.ownedCount + 1}` });
+      if (result.statusCode === 201 && result.data && result.data.group_id) {
+        this.setData({ groupCreating: false });
+        wx.navigateTo({ url: `/pages/groups/detail?group_id=${result.data.group_id}&created=1&owned_count=${this.data.ownedCount + 1}` });
+        return;
+      }
+      if (
+        (result.statusCode === 401 && result.code === "UNAUTHORIZED") ||
+        (result.statusCode === 409 && result.code === "USER_DELETED") ||
+        (result.statusCode === 404 && result.code === "USER_NOT_FOUND") ||
+        (result.statusCode === 429 && result.code === "RATE_LIMITED")
+      ) {
+        this.setData({ groupCreating: false });
+        applyErrorState(this, result);
+        return;
+      }
+      this.setData({
+        groupCreating: false,
+        errorMessage: result.code === "GROUP_OWNED_LIMIT_REACHED"
+          ? COPY.groupCreateLimitReached
+          : result.code === "GROUP_JOIN_LIMIT_REACHED"
+            ? COPY.groupJoinErrors.GROUP_JOIN_LIMIT_REACHED
+            : result.message || COPY.groupActionFailed,
+      });
     }).catch(() => {
+      if (generation !== currentLoginGeneration()) {
+        this.setData({ groupCreating: false });
+        return;
+      }
       this.setData({ groupCreating: false, errorMessage: COPY.groupActionFailed });
     });
   },

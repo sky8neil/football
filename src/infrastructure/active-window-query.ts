@@ -10,11 +10,15 @@ export interface ActiveWindowQuery {
   now: Date;
   /** 合并去重后返回的最大条数；按 kickoff_at 升序取前 N。 */
   limit: number;
+  /** 仅 post_finish_verify 使用：是否由持久化状态允许当日超 24h 每日兜底。 */
+  includeOverdueDailyFallback?: boolean;
 }
 
 /** 单个数据库查询片段：等值条件和可选 kickoff_at 上下界。 */
 export interface ActiveWindowFilterFragment {
   equals: Record<string, string>;
+  /** 为 true 时在数据库侧下推 superseded_by = null 过滤，防止历史改期记录占满分页上限。 */
+  supersededByNull?: boolean;
   kickoffAtGte?: Date;
   /** 上界（含），作用于 kickoff_at；缺省表示不限。 */
   kickoffAtLte?: Date;
@@ -78,7 +82,9 @@ export function buildActiveWindowFilters(query: ActiveWindowQuery): ActiveWindow
   if (query.jobType === "stale_recovery") {
     const kickoffAtLte = new Date(nowMs - 6 * HOUR_MS);
     return [MatchStatus.Scheduled, MatchStatus.Live].map((status) => ({
-      equals: { match_status: status }, kickoffAtLte,
+      equals: { match_status: status },
+      supersededByNull: true,
+      kickoffAtLte,
     }));
   }
   return [];
@@ -126,7 +132,14 @@ export function selectActiveWindow(
       });
     }
   }
-  const filtered = activeWindow(coerced, query.now, query.jobType);
+  const filtered = activeWindow(
+    coerced,
+    query.now,
+    query.jobType,
+    query.includeOverdueDailyFallback === undefined
+      ? undefined
+      : { includeOverdueDailyFallback: query.includeOverdueDailyFallback },
+  );
   const seen = new Set<string>();
   const unique: Match[] = [];
   for (const match of filtered.sort(compareActiveWindow)) {

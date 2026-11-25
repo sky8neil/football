@@ -32,8 +32,10 @@ import { BoardSnapshotService } from "./board-snapshot.js";
 import { buildLevelInputs } from "../domain/levels.js";
 import {
   RebuildPeriodRankingsService,
+  boardSnapshotRebuildLockKey,
   periodRankingsRebuildLockKey,
 } from "./ranking-rebuild-service.js";
+import { rankingPeriodLockKey } from "./settlement-item-application-service.js";
 import {
   buildReplayFacts,
   loadAppliedSettlementFacts,
@@ -562,6 +564,28 @@ describe("RebuildUserStatsService", () => {
     await repo.jobLocks.release(key, owner);
   });
 
+  it("[Slice 3] 落后墙钟的 serverNow 时 maintenance lock 租约仍晚于 Date.now()", async () => {
+    const repo = new InMemoryRepository();
+    await repo.users.insert(makeUser("u1"));
+    const key = userStatsRebuildLockKey("u1");
+    const jobLocks = repo.jobLocks;
+    const acquireSpy = vi.spyOn(jobLocks, "acquire");
+    const repoProxy = new Proxy(repo, {
+      get(target, prop, receiver) {
+        if (prop === "jobLocks") return jobLocks;
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const staleNow = new Date(Date.now() - 15 * 60 * 1000);
+    const wallClockBefore = Date.now();
+
+    await new RebuildUserStatsService(repoProxy).rebuildUserStats("u1", staleNow);
+
+    const leaseUntil = acquireSpy.mock.calls.find(([lockKey]) => lockKey === key)?.[2] as Date;
+    expect(leaseUntil.getTime()).toBeGreaterThan(wallClockBefore);
+    expect(leaseUntil.getTime()).toBeGreaterThan(Date.now());
+  });
+
   it("cancelled 比赛仍带 applied item 时参与 rebuild，不被误杀", async () => {
     const repo = new InMemoryRepository();
     await repo.users.insert(makeUser("u1"));
@@ -784,6 +808,228 @@ describe("RebuildUserStatsService", () => {
     expect(await repo.levelHistory.findByUser(userId)).toEqual([]);
     expect(outcome.level_state_changed).toBe(false);
   });
+
+  it("[Slice 3] 事务锁读取用户并只 patch 重建字段，不复活读取后已注销的账号", async () => {
+    const repo = new InMemoryRepository();
+    const userId = "deleted-during-rebuild";
+    await repo.users.insert(makeUser(userId, {
+      nickname: "Sky",
+      career_points: 99,
+      career_valid_predictions: 20,
+      career_wdl_hits: 9,
+      career_exact_hits: 9,
+      career_level: 2,
+      career_best_level: 3,
+    }));
+    await repo.userSeasonStats.insert(makeSeasonStats(userId, "2026_2027", {
+      points: 88,
+      valid_predictions: 20,
+      wdl_hits: 10,
+      exact_hits: 5,
+      level: 1,
+      best_level: 3,
+      is_level_frozen: false,
+    }));
+    const lastScoring = await insertExactHitFacts(repo, userId, 20, "deleted-during-rebuild");
+    const staleUser = (await repo.users.findById(userId))!;
+    const staleSeason = (await repo.userSeasonStats.findByUserAndSeason(userId, "2026_2027"))!;
+    const deletedUser: User = {
+      ...staleUser,
+      status: UserStatus.Deleted,
+      openid: `deleted:${userId}`,
+      nickname: null,
+      deleted_at: NOW,
+      career_level: 5,
+      career_best_level: 6,
+      updated_at: NOW,
+    };
+    const frozenSeason: UserSeasonStats = {
+      ...staleSeason,
+      level: 4,
+      best_level: 5,
+      is_level_frozen: true,
+      updated_at: NOW,
+    };
+    const events: string[] = [];
+    let userPatch: Partial<User> | undefined;
+    let seasonPatch: Partial<UserSeasonStats> | undefined;
+    const originalWithTransaction = repo.withTransaction.bind(repo);
+    repo.withTransaction = ((work) => (async () => {
+      await repo.users.update(deletedUser);
+      await repo.userSeasonStats.update(frozenSeason);
+      return originalWithTransaction((tx) => work(new Proxy(tx, {
+        get(target, prop, receiver) {
+          if (prop === "users") {
+            const users = target.users;
+            if (users.findByIdForUpdate === undefined || users.patchFields === undefined) {
+              throw new Error("users lock/patch ports missing");
+            }
+            return {
+              ...users,
+              findById: async () => staleUser,
+              findByIdForUpdate: async (id: string) => {
+                events.push(`user-lock:${id}`);
+                return users.findByIdForUpdate!(id);
+              },
+              patchFields: async (id: string, fields: Partial<User>) => {
+                events.push(`user-patch:${Object.keys(fields).sort().join("+")}`);
+                userPatch = fields;
+                return users.patchFields!(id, fields);
+              },
+              update: async (user: User) => {
+                events.push(`user-update:${user.user_id}`);
+                return users.update(user);
+              },
+            };
+          }
+          if (prop === "userSeasonStats") {
+            const stats = target.userSeasonStats!;
+            if (
+              stats.findByUserAndSeasonForUpdate === undefined ||
+              stats.patchFields === undefined
+            ) {
+              throw new Error("season lock/patch ports missing");
+            }
+            return {
+              ...stats,
+              findByUser: async (id: string) =>
+                id === userId ? [staleSeason] : stats.findByUser(id),
+              findByUserAndSeasonForUpdate: async (id: string, seasonId: string) => {
+                events.push(`season-lock:${seasonId}`);
+                return stats.findByUserAndSeasonForUpdate!(id, seasonId);
+              },
+              patchFields: async (
+                id: string,
+                seasonId: string,
+                fields: Partial<UserSeasonStats>,
+              ) => {
+                events.push(`season-patch:${seasonId}`);
+                seasonPatch = fields;
+                return stats.patchFields!(id, seasonId, fields);
+              },
+              update: async (value: UserSeasonStats) => {
+                events.push(`season-update:${value.level_season_id}`);
+                return stats.update(value);
+              },
+            };
+          }
+          return Reflect.get(target, prop, receiver);
+        },
+      })));
+    })()) as typeof repo.withTransaction;
+
+    const outcome = await new RebuildUserStatsService(repo).rebuildUserStats(userId, NOW);
+
+    expect(events[0]).toBe(`user-lock:${userId}`);
+    expect(events).toContain("season-lock:2026_2027");
+    expect(events.some((event) => event.startsWith("user-update:") || event.startsWith("season-update:")))
+      .toBe(false);
+    expect(Object.keys(userPatch!).sort()).toEqual([
+      "career_best_level",
+      "career_exact_hits",
+      "career_last_scoring_match_at",
+      "career_level",
+      "career_level_state",
+      "career_points",
+      "career_valid_predictions",
+      "career_wdl_hits",
+      "updated_at",
+    ]);
+    expect(Object.keys(seasonPatch!).sort()).toEqual([
+      "best_level",
+      "exact_hits",
+      "last_scoring_match_at",
+      "level",
+      "level_state",
+      "points",
+      "updated_at",
+      "valid_predictions",
+      "wdl_hits",
+    ]);
+    expect(userPatch).toMatchObject({
+      career_points: 240,
+      career_valid_predictions: 20,
+      career_wdl_hits: 20,
+      career_exact_hits: 20,
+      career_last_scoring_match_at: lastScoring,
+      career_level: 5,
+      career_best_level: 6,
+      updated_at: NOW,
+    });
+    expect(seasonPatch).toMatchObject({
+      points: 240,
+      valid_predictions: 20,
+      wdl_hits: 20,
+      exact_hits: 20,
+      last_scoring_match_at: lastScoring,
+      level: 4,
+      best_level: 5,
+      updated_at: NOW,
+    });
+    expect(outcome.user.status).toBe(UserStatus.Deleted);
+    expect(await repo.users.findById(userId)).toMatchObject({
+      status: UserStatus.Deleted,
+      openid: `deleted:${userId}`,
+      nickname: null,
+      deleted_at: NOW,
+      career_points: 240,
+      career_level: 5,
+      career_best_level: 6,
+    });
+    expect(await repo.userSeasonStats.findByUserAndSeason(userId, "2026_2027")).toMatchObject({
+      points: 240,
+      level: 4,
+      best_level: 5,
+      is_level_frozen: true,
+    });
+  });
+
+  it("[Slice 3] rebuild 先锁用户再按 season_id 升序锁赛季统计", async () => {
+    const repo = new InMemoryRepository();
+    const userId = "lock-order-rebuild";
+    await repo.users.insert(makeUser(userId));
+    await repo.userSeasonStats.insert(makeSeasonStats(userId, "2026_2027"));
+    await repo.userSeasonStats.insert(makeSeasonStats(userId, "2025_2026"));
+    const events: string[] = [];
+    const originalWithTransaction = repo.withTransaction.bind(repo);
+    repo.withTransaction = ((work) => originalWithTransaction((tx) => work(new Proxy(tx, {
+      get(target, prop, receiver) {
+        if (prop === "users") {
+          const users = target.users;
+          if (users.findByIdForUpdate === undefined) throw new Error("users lock port missing");
+          return {
+            ...users,
+            findByIdForUpdate: async (id: string) => {
+              events.push(`user-lock:${id}`);
+              return users.findByIdForUpdate!(id);
+            },
+          };
+        }
+        if (prop === "userSeasonStats") {
+          const stats = target.userSeasonStats!;
+          if (stats.findByUserAndSeasonForUpdate === undefined) {
+            throw new Error("season lock port missing");
+          }
+          return {
+            ...stats,
+            findByUserAndSeasonForUpdate: async (id: string, seasonId: string) => {
+              events.push(`season-lock:${seasonId}`);
+              return stats.findByUserAndSeasonForUpdate!(id, seasonId);
+            },
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    })))) as typeof repo.withTransaction;
+
+    await new RebuildUserStatsService(repo).rebuildUserStats(userId, NOW);
+
+    expect(events[0]).toBe(`user-lock:${userId}`);
+    expect(events.filter((event) => event.startsWith("season-lock:"))).toEqual([
+      "season-lock:2025_2026",
+      "season-lock:2026_2027",
+    ]);
+  });
 });
 
 describe("loadAppliedSettlementFacts 回放输入排序", () => {
@@ -828,6 +1074,44 @@ describe("loadAppliedSettlementFacts 回放输入排序", () => {
 
     expect(sequential).toEqual(shuffled);
     expect(sequential).toEqual({ n: 1, S: 3, b_points: 3, valid_total: 1 });
+  });
+
+  it("[A-S4-06] failed 修正单的 applied item 不进入回放事实且不抛 INVALID_LEDGER", async () => {
+    const repo = new InMemoryRepository();
+    const match = makeMatch("failed-correction-match", WEEK_ANCHOR, {
+      result_version: 2,
+      settled_result_version: 1,
+      settlement_status: SettlementStatus.Failed,
+    });
+    const prediction = makePrediction("failed-correction-prediction", "u1", match.match_id);
+    const v1 = makeItem("failed-correction-v1", prediction.prediction_id, "u1", 1);
+    const v2 = makeItem("failed-correction-v2", prediction.prediction_id, "u1", 2, {
+      old_score: MatchScoreValue.ExactHit,
+      new_score: MatchScoreValue.WdlHit,
+      score_delta: -9,
+      old_wdl_hit: true,
+      new_wdl_hit: true,
+      old_exact_hit: true,
+      new_exact_hit: false,
+      valid_prediction_delta: 0,
+    });
+    await repo.matches.insert(match);
+    await repo.predictions.insert(prediction);
+    await repo.matchResults.insert(makeResult(match.match_id, 1));
+    await repo.matchResults.insert(makeResult(match.match_id, 2));
+    await repo.settlements.insert(makeSettlement(v1.settlement_id, match.match_id, 1));
+    await repo.settlements.insert({
+      ...makeSettlement(v2.settlement_id, match.match_id, 2),
+      status: SettlementDocStatus.Failed,
+      settled_at: null,
+    });
+    await repo.settlementItems.insert(v1);
+    await repo.settlementItems.insert(v2);
+
+    const replay = buildReplayFacts(await loadAppliedSettlementFacts(repo, [v1, v2]));
+    expect(replay.facts).toHaveLength(1);
+    expect(replay.facts[0]!.applied_items.map((item) => item.source_result_version)).toEqual([1]);
+    expect(replay.correctionSettledAts).toEqual([]);
   });
 
   it("[Slice 5.2] 同一 settlement/match/result 的多条 item 只查库一次（命中调用级缓存）", async () => {
@@ -1176,6 +1460,31 @@ describe("RebuildPeriodRankingsService", () => {
       .resolves.toHaveLength(1);
   });
 
+  it("[A-S5-12] rebuildBoardSnapshot rejects a same-timestamp rebuild instead of silently reusing old rows", async () => {
+    const repo = new InMemoryRepository();
+    const user = makeUser("u1", {
+      career_points: 24,
+      career_wdl_hits: 2,
+      career_exact_hits: 2,
+      career_valid_predictions: 3,
+    });
+    await repo.users.insert(user);
+    const service = new RebuildPeriodRankingsService(repo);
+    const first = await service.rebuildBoardSnapshot(RankingBoard.Career, NOW);
+    await repo.users.update({
+      ...user,
+      career_points: 36,
+      updated_at: new Date(NOW.getTime() + 1),
+    });
+
+    await expect(service.rebuildBoardSnapshot(RankingBoard.Career, NOW)).rejects.toMatchObject({
+      code: "BOARD_SNAPSHOT_ALREADY_EXISTS",
+      details: { board: RankingBoard.Career, snapshot_at: NOW.toISOString() },
+    });
+    await expect(repo.boardSnapshots.findByBoardAndSnapshotAt(RankingBoard.Career, NOW))
+      .resolves.toEqual(first.snapshots);
+  });
+
   it("rebuildBoardSnapshot writes a new season snapshot version", async () => {
     const repo = new InMemoryRepository();
     await repo.users.insert(makeUser("u1"));
@@ -1213,5 +1522,59 @@ describe("RebuildPeriodRankingsService", () => {
 
     expect(rebuilt.snapshots[0]).toMatchObject({ level_season_id: "2026_2027", is_final: false });
     expect(await repo.boardSnapshots.findFinalBySeason("2025_2026")).toEqual(frozen);
+  });
+
+  it("[Slice 3] A-S4-08 落后墙钟的 serverNow 时周期 rebuild 两层锁租约仍晚于 Date.now()", async () => {
+    const repo = new InMemoryRepository();
+    const jobLocks = repo.jobLocks;
+    const acquireSpy = vi.spyOn(jobLocks, "acquire");
+    const repoProxy = new Proxy(repo, {
+      get(target, prop, receiver) {
+        if (prop === "jobLocks") return jobLocks;
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const staleNow = new Date(Date.now() - 15 * 60 * 1000);
+    const wallClockBefore = Date.now();
+
+    await new RebuildPeriodRankingsService(repoProxy).rebuildPeriodRankings(
+      PeriodType.Week,
+      "2026-W32",
+      staleNow,
+    );
+
+    for (const key of [
+      periodRankingsRebuildLockKey(PeriodType.Week, "2026-W32"),
+      rankingPeriodLockKey(PeriodType.Week, "2026-W32"),
+    ]) {
+      const leaseUntil = acquireSpy.mock.calls.find(([lockKey]) => lockKey === key)?.[2] as Date;
+      expect(leaseUntil.getTime()).toBeGreaterThan(wallClockBefore);
+      expect(leaseUntil.getTime()).toBeGreaterThan(Date.now());
+    }
+  });
+
+  it("[Slice 3] A-S4-08 落后墙钟的 serverNow 时榜单快照 rebuild 锁租约仍晚于 Date.now()", async () => {
+    const repo = new InMemoryRepository();
+    await repo.users.insert(makeUser("u1", { career_points: 24 }));
+    const key = boardSnapshotRebuildLockKey(RankingBoard.Career);
+    const jobLocks = repo.jobLocks;
+    const acquireSpy = vi.spyOn(jobLocks, "acquire");
+    const repoProxy = new Proxy(repo, {
+      get(target, prop, receiver) {
+        if (prop === "jobLocks") return jobLocks;
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const staleNow = new Date(Date.now() - 15 * 60 * 1000);
+    const wallClockBefore = Date.now();
+
+    await new RebuildPeriodRankingsService(repoProxy).rebuildBoardSnapshot(
+      RankingBoard.Career,
+      staleNow,
+    );
+
+    const leaseUntil = acquireSpy.mock.calls.find(([lockKey]) => lockKey === key)?.[2] as Date;
+    expect(leaseUntil.getTime()).toBeGreaterThan(wallClockBefore);
+    expect(leaseUntil.getTime()).toBeGreaterThan(Date.now());
   });
 });

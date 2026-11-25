@@ -1,4 +1,6 @@
 import { readFile } from "node:fs/promises";
+import Ajv from "ajv";
+import YAML from "yaml";
 import { describe, expect, it } from "vitest";
 
 const pathBlock = (specification: string, path: string): string => {
@@ -115,8 +117,44 @@ describe("S7 OpenAPI baseline", () => {
     expect(myGroups).toContain("name: cursor");
     expect(myGroups).toContain("'422':");
     expect(myGroups).toContain("'409':");
-    expect(myGroups).toContain("'404':");
+    expect(myGroups).toContain("#/components/responses/Conflict");
+    expect(myGroups).not.toContain("'404':");
+    expect(myGroups).not.toContain("PredictionHistory");
     expect(myGroups).toContain("opaque keyset");
     expect(myGroups).not.toContain("一次返回完整列表");
+  });
+
+  it("[Q-PLAN-2 / A-S7-10] validates nullable name_zh/logo_url on MatchTeam and documented PersonalLeagueSummary reasons", async () => {
+    const raw = await readFile(new URL("./openapi.yaml", import.meta.url), "utf8");
+    const spec = YAML.parse(raw) as { components: { schemas: Record<string, unknown> } };
+    const ajv = new Ajv({ nullable: false, allErrors: true });
+    ajv.addSchema({ $id: "https://football.local/openapi.json", components: spec.components });
+    const validateTeam = ajv.compile({ $ref: "https://football.local/openapi.json#/components/schemas/MatchTeam" });
+
+    expect(validateTeam({
+      team_id: "00000000-0000-4000-8000-000000000031",
+      name: "Promoted FC",
+      name_zh: "升班马 FC",
+      logo_url: "https://cdn.example.com/logo.png",
+    })).toBe(true);
+    expect(validateTeam({
+      team_id: "00000000-0000-4000-8000-000000000031",
+      name: "Promoted FC",
+      name_zh: null,
+      logo_url: null,
+    })).toBe(true);
+    expect(validateTeam({
+      team_id: "00000000-0000-4000-8000-000000000031",
+      name: "Promoted FC",
+    })).toBe(false);
+    expect(validateTeam({
+      team_id: "00000000-0000-4000-8000-000000000031",
+      name: "Promoted FC",
+      name_zh: 123,
+      logo_url: null,
+    })).toBe(false);
+
+    expect(raw).toContain("no_eligible_season");
+    expect(raw).toContain("season_not_completed");
   });
 });

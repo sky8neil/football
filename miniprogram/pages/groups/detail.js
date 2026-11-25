@@ -1,7 +1,20 @@
 const { getGroup, leaveGroup, dissolveGroup } = require("../../services/groups.js");
 const COPY = require("../../utils/rankings-copy.js");
 
+let authService = null;
+try {
+  authService = require("../../services/auth.js");
+} catch (_error) {
+  authService = null;
+}
+
 const SHARE_MENUS = ["shareAppMessage", "shareTimeline"];
+
+function currentLoginGeneration() {
+  if (!authService || typeof authService.getLoginGeneration !== "function") return 0;
+  const value = authService.getLoginGeneration();
+  return Number.isFinite(value) ? value : 0;
+}
 
 function setShareMenuEnabled(enabled) {
   if (enabled) {
@@ -40,29 +53,73 @@ Page({
     ownedLabel: COPY.groupOwnedLabel,
   },
 
+  requestSerial: 0,
+  loginGeneration: null,
+
   onLoad(options) {
     const groupId = options && typeof options.group_id === "string" ? options.group_id : "";
     const isCreationSuccess = options && options.created === "1";
     const ownedCount = Number(options && options.owned_count) || 1;
     this.groupId = groupId;
+    this.loginGeneration = currentLoginGeneration();
     this.setData({
       isCreationSuccess,
       title: isCreationSuccess ? COPY.groupCreateSuccess : COPY.groupDetailTitle,
       subtitle: isCreationSuccess ? COPY.groupCreateSubtitle : "",
       ownedCountText: `${ownedCount} / 5`,
     });
-    this.loadGroup();
+    return this.loadGroup();
+  },
+
+  onShow() {
+    const generation = currentLoginGeneration();
+    const generationChanged = this.loginGeneration !== null && generation !== this.loginGeneration;
+    this.loginGeneration = generation;
+    if (generationChanged) {
+      this.setData({ group: null, loadingAction: false, errorMessage: "" });
+      return this.loadGroup();
+    }
+    if (this.data.state === "unauthorized") {
+      return this.loadGroup();
+    }
   },
 
   loadGroup() {
+    const requestSerial = (this.requestSerial || 0) + 1;
+    this.requestSerial = requestSerial;
+    const generation = currentLoginGeneration();
+    this.loginGeneration = generation;
+    const isCurrent = () => this.requestSerial === requestSerial && currentLoginGeneration() === generation;
+
     if (!this.groupId) {
       setShareMenuEnabled(false);
-      this.setData({ state: "error", errorMessage: COPY.groupLoadFailed });
-      return;
+      this.setData({ state: "error", group: null, errorMessage: COPY.groupLoadFailed });
+      return Promise.resolve();
     }
     setShareMenuEnabled(false);
     this.setData({ state: "loading", errorMessage: "" });
     return getGroup(this.groupId).then((result) => {
+      if (!isCurrent()) return;
+      if (result.statusCode === 401 && result.code === "UNAUTHORIZED") {
+        setShareMenuEnabled(false);
+        this.setData({
+          state: "unauthorized",
+          group: null,
+          loadingAction: false,
+          errorMessage: result.message || "请先登录后查看群详情",
+        });
+        return;
+      }
+      if (result.statusCode === 409 && result.code === "USER_DELETED") {
+        setShareMenuEnabled(false);
+        this.setData({
+          state: "userDeleted",
+          group: null,
+          loadingAction: false,
+          errorMessage: result.message || "该账号已被注销",
+        });
+        return;
+      }
       if (result.statusCode !== 200 || !result.data) {
         setShareMenuEnabled(false);
         this.setData({ state: "error", errorMessage: result.message || COPY.groupLoadFailed });
@@ -80,9 +137,14 @@ Page({
         errorMessage: "",
       });
     }).catch(() => {
+      if (!isCurrent()) return;
       setShareMenuEnabled(false);
       this.setData({ state: "error", errorMessage: COPY.groupLoadFailed });
     });
+  },
+
+  onLoginTap() {
+    wx.navigateTo({ url: "/pages/session/session?return_to=group-detail" });
   },
 
   onShareAppMessage() {
@@ -118,15 +180,45 @@ Page({
 
   confirmAction(content, action) {
     if (this.data.loadingAction || !this.groupId) return;
+    const generation = currentLoginGeneration();
     wx.showModal({
       title: this.data.title,
       content,
       success: (result) => {
         if (!result.confirm) return;
+        if (currentLoginGeneration() !== generation) return;
         this.setData({ loadingAction: true, errorMessage: "" });
         return action(this.groupId).then((response) => {
+          if (currentLoginGeneration() !== generation) {
+            this.setData({ loadingAction: false });
+            return;
+          }
           if (response.statusCode === 204) {
-            wx.navigateBack({ delta: 1 });
+            this.setData({ loadingAction: false });
+            wx.navigateBack({
+              delta: 1,
+              fail: () => wx.redirectTo({ url: "/pages/groups/groups" }),
+            });
+            return;
+          }
+          if (response.statusCode === 401 && response.code === "UNAUTHORIZED") {
+            setShareMenuEnabled(false);
+            this.setData({
+              state: "unauthorized",
+              group: null,
+              loadingAction: false,
+              errorMessage: response.message || "请先登录后操作",
+            });
+            return;
+          }
+          if (response.statusCode === 409 && response.code === "USER_DELETED") {
+            setShareMenuEnabled(false);
+            this.setData({
+              state: "userDeleted",
+              group: null,
+              loadingAction: false,
+              errorMessage: response.message || "该账号已被注销",
+            });
             return;
           }
           this.setData({
@@ -144,6 +236,6 @@ Page({
   },
 
   onRetry() {
-    this.loadGroup();
+    return this.loadGroup();
   },
 });

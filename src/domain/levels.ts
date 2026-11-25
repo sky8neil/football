@@ -420,10 +420,10 @@ export function replayLevel(params: ReplayLevelParams): ReplayLevelResult {
 
   const initialState = params.initialState ?? { level: 1, best_level: 1, below_count: 0 };
   if (firstEvalAsOf === null) {
-    // 未登记首评时没有评估事件，返回尚未定级的基线。
+    // 未登记首评时没有评估事件，返回调用方给定的基线。
     return {
-      level: 1, best_level: 1, below_count: 0,
-      week_base: { level: 1, best_level: 1, below_count: 0 },
+      ...initialState,
+      week_base: { ...initialState },
       week_base_as_of: null,
       last_inputs: null,
       last_eval_as_of: null,
@@ -453,8 +453,8 @@ export function replayLevel(params: ReplayLevelParams): ReplayLevelResult {
     return a.kind === "weekly" ? -1 : 1;
   });
 
-  let state: LevelEvalState = { level: 1, best_level: 1, below_count: 0 };
-  let weekBase: LevelEvalState = { level: 1, best_level: 1, below_count: 0 };
+  let state: LevelEvalState = { ...initialState };
+  let weekBase: LevelEvalState = { ...initialState };
   let weekBaseAsOf: Date | null = null;
   let lastInputs: LevelInputs | null = null;
   let lastEvalAsOf: Date | null = null;

@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import http from "node:http";
 import type { Server } from "node:http";
@@ -103,7 +104,19 @@ describe.skipIf(!ENABLED)("HTTP wechat login over isolated postgres", () => {
     const apiModule = { exports: {} as { request: (input: unknown) => Promise<{ statusCode: number; data: unknown }> } };
     runInNewContext(readFileSync(new URL("../../miniprogram/services/api.js", import.meta.url), "utf8"), {
       module: apiModule,
-      require: () => ({ gatewayOrigin: origin }),
+      require: (id: string) => {
+        if (id.includes("cloud-diagnostics")) {
+          return { classifyCloudClientError: (err: unknown) => err };
+        }
+        if (id.includes("auth-storage")) {
+          return {
+            clearAuthSession: () => undefined,
+            isAuthSessionActive: () => false,
+            readAuthSession: () => null,
+          };
+        }
+        return { gatewayOrigin: origin };
+      },
       wx: {
         request(options: {
           url: string;
@@ -350,10 +363,11 @@ describe.skipIf(!ENABLED)("HTTP wechat login over isolated postgres", () => {
     });
     expect((aliceAgain.body.data as { nickname: string }).nickname).toBe("Alice");
 
-    await pool.query(
+    const expiredUpdate = await pool.query(
       `UPDATE ${qualifiedTable(SCHEMA, AUTH_SESSIONS_TABLE)} SET expires_at = '2020-01-01T00:00:00.000Z' WHERE token = $1`,
-      [aliceData.access_token],
+      [createHash("sha256").update(aliceData.access_token).digest("hex")],
     );
+    expect(expiredUpdate.rowCount).toBe(1);
     const expired = await json("/v1/profile/me", {
       headers: { authorization: `Bearer ${aliceData.access_token}` },
     });

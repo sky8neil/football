@@ -104,6 +104,7 @@ export async function postPrediction(
 export interface GetMyPredictionInput {
   authenticated_user_id?: string | null;
   prediction_id: unknown;
+  query?: Record<string, unknown>;
   server_now: Date;
   request_id: string;
   rate_limiter?: RateLimiter;
@@ -135,6 +136,9 @@ export async function getMyPrediction(
   service: Pick<PredictionQueryService, "getMyPrediction">,
   input: GetMyPredictionInput,
 ): Promise<GetMyPredictionSuccessResponse> {
+  if (input.query !== undefined) {
+    assertUnknownFields(input.query, new Set());
+  }
   const userId = requireAuthenticatedUserIdForRead(input.authenticated_user_id);
   await (input.rate_limiter ?? defaultApiRateLimiter).check(
     "authenticated_reads",
@@ -222,6 +226,17 @@ export function validateMyPredictionsQuery(
   };
 }
 
+function toPublicPredictionTeam(
+  team: PredictionHistoryItem["home_team"],
+): PredictionHistoryItem["home_team"] {
+  return {
+    team_id: team.team_id,
+    name: team.name,
+    name_zh: team.name_zh ?? null,
+    logo_url: team.logo_url ?? null,
+  };
+}
+
 function toPublicPredictionHistoryItem(item: PredictionHistoryItem): PredictionHistoryItem {
   return {
     prediction_id: item.prediction_id,
@@ -231,8 +246,8 @@ function toPublicPredictionHistoryItem(item: PredictionHistoryItem): PredictionH
     round_id: item.round_id,
     home_team_id: item.home_team_id,
     away_team_id: item.away_team_id,
-    home_team: item.home_team,
-    away_team: item.away_team,
+    home_team: toPublicPredictionTeam(item.home_team),
+    away_team: toPublicPredictionTeam(item.away_team),
     kickoff_at: item.kickoff_at,
     pred_home_score: item.pred_home_score,
     pred_away_score: item.pred_away_score,
@@ -240,6 +255,7 @@ function toPublicPredictionHistoryItem(item: PredictionHistoryItem): PredictionH
     submitted_at: item.submitted_at,
     scoring_rule_version: item.scoring_rule_version,
     match_status: item.match_status,
+    settlement_status: item.settlement_status,
     regular_home_score: item.regular_home_score,
     regular_away_score: item.regular_away_score,
     match_score: item.match_score,

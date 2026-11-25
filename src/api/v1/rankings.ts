@@ -133,8 +133,8 @@ export async function getRankings(
   service: Pick<RankingQueryService, "list">,
   input: GetRankingsInput,
 ): Promise<GetRankingsSuccessResponse> {
-  const query = validateRankingsQuery(input.query);
   const userId = requireAuthenticatedUserId(input.authenticated_user_id);
+  const query = validateRankingsQuery(input.query);
   const limiter = input.rate_limiter ?? defaultApiRateLimiter;
   await limiter.check("authenticated_reads", userId, input.server_now);
   const result = await service.list({

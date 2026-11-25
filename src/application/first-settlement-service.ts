@@ -432,6 +432,7 @@ export class FirstSettlementService {
             workerError = err;
             const { code, message } = workerErrorInfo(err);
             await this.repo.withTransaction(async (tx) => {
+              await renewSettlementLockForFinalize(tx, lockKey, ownerId);
               await tx.settlementItems.update({
                 ...item,
                 status: SettlementItemStatus.Failed,

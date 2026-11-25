@@ -38,7 +38,7 @@ function makeUser(userId: string, status: User["status"] = UserStatus.Active): U
   };
 }
 
-function makeTeam(teamId: string, name: string): Team {
+function makeTeam(teamId: string, name: string, overrides: Partial<Team> = {}): Team {
   return {
     schema_version: 1,
     team_id: teamId,
@@ -50,6 +50,7 @@ function makeTeam(teamId: string, name: string): Team {
     status: "active",
     created_at: NOW,
     updated_at: NOW,
+    ...overrides,
   };
 }
 
@@ -786,5 +787,88 @@ describe("MatchQueryService", () => {
     expect(result.items).toHaveLength(2);
     expect(findByIdsSpy).toHaveBeenCalledTimes(1);
     expect(findByIdSpy).not.toHaveBeenCalled();
+  });
+
+  it("[Q-PLAN-2] returns server team name_zh and logo_url (with null fallback) on list and detail", async () => {
+    const repo = await seedRepository();
+    const promotedHome = makeTeam(HOME_TEAM_ID, "Promoted United", {
+      name_zh: " 升班马联 ",
+      logo_url: " https://cdn.example.com/promoted-united.png ",
+    });
+    const plainAway = makeTeam(AWAY_TEAM_ID, "Legacy City");
+    await repo.teams.update!(promotedHome);
+    await repo.teams.update!(plainAway);
+    const m = makeMatch(MATCH_A, new Date("2026-08-09T13:00:00.000Z"));
+    await repo.matches.insert(m);
+
+    const service = new MatchQueryService(repo, "test-match-cursor-secret");
+    const listed = await service.list({
+      from: null,
+      to: null,
+      status: null,
+      limit: 10,
+      cursor: null,
+      server_now: NOW,
+      authenticated_user_id: null,
+    });
+    expect(listed.items[0]?.home_team).toEqual({
+      team_id: HOME_TEAM_ID,
+      name: "Promoted United",
+      name_zh: "升班马联",
+      logo_url: "https://cdn.example.com/promoted-united.png",
+    });
+    expect(listed.items[0]?.away_team).toEqual({
+      team_id: AWAY_TEAM_ID,
+      name: "Legacy City",
+      name_zh: null,
+      logo_url: null,
+    });
+
+    const detail = await service.get(MATCH_A, null, NOW);
+    expect(detail.home_team).toEqual(listed.items[0]?.home_team);
+    expect(detail.away_team).toEqual(listed.items[0]?.away_team);
+  });
+
+  it("[A-S2-04] degrades missing or blank team metadata with structured warning instead of crashing the whole schedule page", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const repo = await seedRepository();
+      await repo.matches.insert(makeMatch(MATCH_A, new Date("2026-08-09T13:00:00.000Z")));
+      const brokenAwayTeamId = "00000000-0000-4000-8000-000000000098";
+      const blankHomeTeamId = "00000000-0000-4000-8000-000000000097";
+      await repo.teams.insert(makeTeam(blankHomeTeamId, ""));
+      await repo.matches.insert(makeMatch(MATCH_B, new Date("2026-08-09T14:00:00.000Z"), {
+        home_team_id: blankHomeTeamId,
+        away_team_id: brokenAwayTeamId,
+      }));
+
+      const service = new MatchQueryService(repo, "test-match-cursor-secret");
+      const listed = await service.list({
+        from: null,
+        to: null,
+        status: null,
+        limit: 20,
+        cursor: null,
+        server_now: NOW,
+        authenticated_user_id: null,
+      });
+
+      expect(listed.items.map((item) => item.match_id)).toEqual([MATCH_A, MATCH_B]);
+      expect(listed.items[0]?.home_team).toEqual({ team_id: HOME_TEAM_ID, name: "Arsenal", name_zh: null, logo_url: null });
+      expect(listed.items[1]?.home_team).toEqual({ team_id: blankHomeTeamId, name: "", name_zh: null, logo_url: null });
+      expect(listed.items[1]?.away_team).toEqual({ team_id: brokenAwayTeamId, name: "", name_zh: null, logo_url: null });
+
+      const detail = await service.get(MATCH_B, null, NOW);
+      expect(detail.home_team).toEqual({ team_id: blankHomeTeamId, name: "", name_zh: null, logo_url: null });
+      expect(detail.away_team).toEqual({ team_id: brokenAwayTeamId, name: "", name_zh: null, logo_url: null });
+      expect(warnSpy).toHaveBeenCalled();
+      const warnings = warnSpy.mock.calls.map(([payload]) => JSON.parse(String(payload)));
+      expect(warnings).toEqual(expect.arrayContaining([
+        expect.objectContaining({ event: "match_query_team_missing", match_id: MATCH_B, team_id: blankHomeTeamId, reason: "empty_name" }),
+        expect.objectContaining({ event: "match_query_team_missing", match_id: MATCH_B, team_id: brokenAwayTeamId, reason: "missing_team" }),
+      ]));
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });

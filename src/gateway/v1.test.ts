@@ -118,6 +118,21 @@ describe("GET /v1/matches/{match_id}", () => {
       request_id: expect.any(String),
     }));
   });
+
+  it("[A-S2-07] rejects impossible Gregorian calendar dates on GET /v1/matches", async () => {
+    const harness = makeHarness();
+    const response = await request(harness, {
+      method: "GET",
+      path: "/v1/matches",
+      query: { from: "2026-02-30T00:00:00.000Z" },
+    });
+
+    expect(response.status).toBe(422);
+    expect(response.body).toEqual(expect.objectContaining({
+      code: "VALIDATION_ERROR",
+      request_id: expect.any(String),
+    }));
+  });
 });
 
 describe("GET /v1/matches/{match_id}/crowd", () => {

@@ -40,6 +40,8 @@ describe("GET /v1/matches", () => {
     for (const query of [
       { from: "2026-08-09" },
       { from: "2026-08-09T00:00:00+08:00" },
+      { from: "2026-02-30T00:00:00.000Z" },
+      { to: "2026-04-31T23:59:59.000Z" },
       { to: "not-a-date" },
       { status: "pending" },
       { limit: "0" },

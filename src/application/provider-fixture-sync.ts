@@ -3,8 +3,10 @@ import {
   AnomalyType,
   MatchStatus,
   Provider,
+  ResultSource,
   SCHEMA_VERSION,
   SettlementStatus,
+  SyncJobType,
 } from "../domain/enums.js";
 import { internalError } from "../domain/errors.js";
 import { newUuid } from "../domain/ids.js";
@@ -23,7 +25,8 @@ import {
   type ProviderTeamChangeOutcome,
   type ProviderStatusSyncOutcome,
 } from "./provider-status-sync.js";
-import { ProviderScheduleSyncService } from "./provider-schedule-sync.js";import { transitionMatchSettlementStatus } from "./first-settlement-service.js";
+import { ProviderScheduleSyncService } from "./provider-schedule-sync.js";
+import { transitionMatchSettlementStatus } from "./first-settlement-service.js";
 import { persistAnomalyInTransaction } from "./anomaly-persistence.js";
 import { AnomalyEvaluationService } from "./anomaly-evaluation.js";
 import { assertValidServerNow } from "./period-finalize.js";
@@ -42,11 +45,26 @@ export interface ProviderFixtureFailure {
   anomaly_types: AnomalyType[];
 }
 
+export interface ProviderFixturePending {
+  kind: "pending";
+  match_id: string;
+  anomaly_types: AnomalyType[];
+}
+
+export interface ProviderFixtureIgnored {
+  kind: "unchanged";
+  match_id: string;
+  match_status: MatchStatus;
+  ignored: true;
+}
+
 export type ProviderFixtureSyncOutcome =
   | ProviderStatusSyncOutcome
   | ProviderTeamChangeOutcome
   | ProviderResultSyncOutcome
-  | ProviderFixtureFailure;
+  | ProviderFixtureFailure
+  | ProviderFixturePending
+  | ProviderFixtureIgnored;
 
 type MapperFailureUnitOfWork = UnitOfWork & {
   matchProviderMappings: NonNullable<UnitOfWork["matchProviderMappings"]>;
@@ -104,6 +122,7 @@ async function persistMapperFailure(
   payload: Record<string, unknown>,
   serverNow: Date,
   provider: NormalizedFixture["provider"] = Provider.ApiFootball,
+  isScheduleAuthority = true,
 ): Promise<ProviderFixtureFailure> {
   return repo.withTransaction(async (tx) => {
     requireMapperFailurePorts(tx);
@@ -130,6 +149,21 @@ async function persistMapperFailure(
     await tx.providerSnapshots.insert(snapshot);
 
     const uniqueAnomalies = groupedAnomalies(anomalies);
+    if (!isScheduleAuthority) {
+      console.warn("[provider_secondary_mapper_failed]", {
+        provider,
+        provider_match_id: providerMatchId,
+        match_id: match?.match_id ?? null,
+        raw_status: rawStatus,
+        anomalies: uniqueAnomalies.map((anomaly) => anomaly.type),
+      });
+      return {
+        kind: "failed",
+        match_id: match?.match_id ?? null,
+        anomaly_types: uniqueAnomalies.map((anomaly) => anomaly.type),
+      };
+    }
+
     if (match !== null) {
       for (const anomaly of uniqueAnomalies) {
         await persistAnomalyInTransaction(
@@ -318,16 +352,29 @@ export class ProviderFixtureSyncService {
     });
   }
 
+  applyFixtureForJob(
+    rawFixture: ApiFootballFixture,
+    payload: Record<string, unknown>,
+    serverNow: Date,
+    seasonId: string | undefined,
+    jobType: SyncJobType,
+  ): Promise<ProviderFixtureSyncOutcome> {
+    return this.applyFixture(rawFixture, payload, serverNow, seasonId, { jobType });
+  }
+
   async applyFixture(
     rawFixture: ApiFootballFixture,
     payload: Record<string, unknown>,
     serverNow: Date,
     seasonId?: string,
+    options?: { jobType?: SyncJobType },
   ): Promise<ProviderFixtureSyncOutcome> {
     assertValidServerNow(serverNow);
     const league = findSupportedLeagueByProviderId(String(rawFixture?.league?.id ?? ""), rawFixture?.provider ?? Provider.ApiFootball, this.providerLeagueRefs);
     const targetSeasonId = seasonId ?? (league === undefined ? undefined : activeLeagueSeason(league, serverNow).season_id);
     const normalized = normalizeFixture(rawFixture, this.providerLeagueRefs, serverNow, targetSeasonId);
+    const provider = normalized.fixture.provider ?? Provider.ApiFootball;
+    const isScheduleAuthority = SCHEDULE_AUTHORITY_PROVIDERS.has(provider);
     if (normalized.entityFailed) {
       const outcome = await persistMapperFailure(
         this.repo,
@@ -337,18 +384,30 @@ export class ProviderFixtureSyncService {
         payload,
         serverNow,
         normalized.fixture.provider,
+        isScheduleAuthority,
       );
-      await this.evaluateAfterFixture(
-        outcome,
-        normalized.fixture.providerMatchId,
-        normalized.fixture.provider,
-        serverNow,
-      );
+      if (isScheduleAuthority) {
+        await this.evaluateAfterFixture(
+          outcome,
+          normalized.fixture.providerMatchId,
+          normalized.fixture.provider,
+          serverNow,
+        );
+      }
       return outcome;
     }
 
-    const provider = normalized.fixture.provider ?? Provider.ApiFootball;
-    if (["5dollar", "openfoot", "sportapi"].includes(provider)) {
+    if (normalized.anomalies.length > 0) {
+      console.warn("[provider_fixture_mapper_warning]", {
+        provider,
+        provider_match_id: normalized.fixture.providerMatchId,
+        league_id: normalized.fixture.leagueProviderId,
+        anomalies: normalized.anomalies.map((item) => ({ type: item.type, details: item.details })),
+      });
+    }
+
+    let mappedMatchId: string | null = null;
+    if (!isScheduleAuthority && ["5dollar", "openfoot", "sportapi"].includes(provider)) {
       const mapping = await ensureCrossSourceMatchMapping(
         this.repo,
         normalized.fixture,
@@ -358,11 +417,15 @@ export class ProviderFixtureSyncService {
         targetSeasonId,
       );
       if (mapping.match_id === null) {
+        if (normalized.anomalies.length > 0) {
+          await this.persistMapperWarnings(normalized.fixture, normalized.anomalies, payload, serverNow, null);
+        }
         return { kind: "failed", match_id: null, anomaly_types: [AnomalyType.ProviderDataInvalid] };
       }
+      mappedMatchId = mapping.match_id;
     }
 
-    if (SCHEDULE_AUTHORITY_PROVIDERS.has(provider)) {
+    if (isScheduleAuthority) {
       const mappings = this.repo.matchProviderMappings;
       if (mappings !== undefined) {
         const existing = await mappings.findByProviderAndExternalId(
@@ -383,28 +446,58 @@ export class ProviderFixtureSyncService {
               normalized.fixture.provider,
               serverNow,
             );
+            if (normalized.anomalies.length > 0) {
+              await this.persistMapperWarnings(normalized.fixture, normalized.anomalies, payload, serverNow, outcome.match_id);
+            }
             return outcome;
           }
         }
       }
-    }
 
-    const teamChange = await this.applyMappedTeamChange(
-      normalized.fixture,
-      payload,
-      serverNow,
-    );
-    if (teamChange?.kind === "conflict") {
-      await this.evaluateAfterFixture(
-        teamChange,
-        normalized.fixture.providerMatchId,
-        normalized.fixture.provider,
+      const teamChange = await this.applyMappedTeamChange(
+        normalized.fixture,
+        payload,
         serverNow,
       );
-      return teamChange;
+      if (teamChange?.kind === "conflict") {
+        await this.evaluateAfterFixture(
+          teamChange,
+          normalized.fixture.providerMatchId,
+          normalized.fixture.provider,
+          serverNow,
+        );
+        if (normalized.anomalies.length > 0) {
+          await this.persistMapperWarnings(normalized.fixture, normalized.anomalies, payload, serverNow, teamChange.match_id);
+        }
+        return teamChange;
+      }
     }
 
+    let ignoredSecondaryObservation = false;
     const outcome = await (async (): Promise<ProviderFixtureSyncOutcome> => {
+      if (!isScheduleAuthority) {
+        const effective = await this.resolveMappedMatch(provider, normalized.fixture.providerMatchId, mappedMatchId);
+        if (normalized.fixture.status.kind === MatchStatus.Finished) {
+          return this.applyAdoptableResult(normalized.fixture, payload, serverNow);
+        }
+        const canApplyFiveDollarLive =
+          provider === Provider.FiveDollar &&
+          normalized.fixture.status.kind === MatchStatus.Live &&
+          (options?.jobType === undefined || options.jobType === SyncJobType.LiveMatch) &&
+          effective !== null &&
+          (effective.match_status === MatchStatus.Scheduled || effective.match_status === MatchStatus.Live);
+        if (canApplyFiveDollarLive) {
+          return this.statusSync.applyLiveFixture(normalized.fixture, payload, serverNow);
+        }
+        // 非赛程/状态权威副源禁止写状态转移、作废比赛或因滞后 LIVE/HT 打开阻塞冲突。
+        ignoredSecondaryObservation = true;
+        return {
+          kind: "unchanged",
+          match_id: effective?.match_id ?? mappedMatchId ?? "",
+          match_status: effective?.match_status ?? MatchStatus.Scheduled,
+          ignored: true,
+        };
+      }
       switch (normalized.fixture.status.kind) {
       case MatchStatus.Scheduled:
         return this.statusSync.applyScheduledFixture(
@@ -438,25 +531,94 @@ export class ProviderFixtureSyncService {
         throw internalError("Provider fixture 状态未通过 mapper 校验");
       }
     })();
-    await this.evaluateAfterFixture(
-      outcome,
-      normalized.fixture.providerMatchId,
-      normalized.fixture.provider,
-      serverNow,
-    );
+    if (!ignoredSecondaryObservation) {
+      await this.evaluateAfterFixture(
+        outcome,
+        normalized.fixture.providerMatchId,
+        normalized.fixture.provider,
+        serverNow,
+      );
+    }
+    if (normalized.anomalies.length > 0) {
+      await this.persistMapperWarnings(
+        normalized.fixture,
+        normalized.anomalies,
+        payload,
+        serverNow,
+        outcome.match_id || mappedMatchId || null,
+      );
+    }
     return outcome;
+  }
+
+  private async resolveMappedMatch(
+    provider: Provider,
+    providerMatchId: string,
+    fallbackMatchId: string | null,
+  ) {
+    const matchId = fallbackMatchId ??
+      (await this.repo.matchProviderMappings?.findByProviderAndExternalId(provider, providerMatchId))?.match_id ??
+      null;
+    if (matchId === null) return null;
+    return resolveEffectiveMatch(this.repo, matchId);
+  }
+
+  private async persistMapperWarnings(
+    fixture: NormalizedFixture,
+    anomalies: readonly MapperAnomaly[],
+    payload: Record<string, unknown>,
+    serverNow: Date,
+    matchId: string | null,
+  ): Promise<void> {
+    const uniqueAnomalies = groupedAnomalies(anomalies);
+    await this.repo.withTransaction(async (tx) => {
+      await tx.providerSnapshots?.insert({
+        schema_version: SCHEMA_VERSION,
+        snapshot_id: newUuid(),
+        provider: fixture.provider ?? Provider.ApiFootball,
+        entity_type: "match",
+        entity_id: matchId,
+        provider_entity_id: fixture.providerMatchId,
+        event_type: "provider_error",
+        payload: {
+          ...payload,
+          mapper_warnings: uniqueAnomalies.map((item) => ({
+            type: item.type,
+            details: item.details,
+          })),
+        },
+        created_at: serverNow,
+      });
+      if (matchId !== null && tx.anomalies !== undefined) {
+        for (const anomaly of uniqueAnomalies) {
+          await persistAnomalyInTransaction(
+            tx,
+            matchId,
+            anomaly.type,
+            { open: true, blocking: anomaly.blocking },
+            anomalyDetails(fixture.providerMatchId, fixture.rawStatus, anomaly),
+            serverNow,
+          );
+        }
+      }
+    });
   }
 
   private async applyAdoptableResult(
     fixture: NormalizedFixture,
     payload: Record<string, unknown>,
     serverNow: Date,
-  ): Promise<ProviderResultSyncOutcome | ProviderFixtureFailure> {
+  ): Promise<ProviderResultSyncOutcome | ProviderFixtureFailure | ProviderFixturePending> {
     const provider = (fixture.provider ?? Provider.ApiFootball) as Provider;
     const matchMapping = await this.repo.matchProviderMappings?.findByProviderAndExternalId(provider, fixture.providerMatchId);
     if (!matchMapping) return { kind: "failed", match_id: null, anomaly_types: [AnomalyType.ProviderDataInvalid] };
     const match = await resolveEffectiveMatch(this.repo, matchMapping.match_id);
     if (!match) return { kind: "failed", match_id: matchMapping.match_id, anomaly_types: [AnomalyType.ProviderDataInvalid] };
+    if (match.result_source === ResultSource.Admin) {
+      // 管理员人工终果优先：不打开阻塞性 ProviderResultConflict，直接收敛为非阻塞 ADMIN_PROVIDER_RESULT_CONFLICT（或一致 unchanged）。
+      await this.resolveResultAdoptionAnomaly(match.match_id, serverNow);
+      return this.resultSync.applyFinishedFixture(fixture, payload, serverNow);
+    }
     const observation = toResultObservation(fixture, provider, serverNow);
     await this.persistResultObservation(match.match_id, fixture.providerMatchId, observation, serverNow);
     const snapshots = await this.repo.providerSnapshots?.findByEntity("match", match.match_id) ?? [];
@@ -470,11 +632,21 @@ export class ProviderFixtureSyncService {
         reason: decision.reason,
         compared_providers: observations.map((item) => item.provider),
       }, serverNow);
-      return { kind: "failed", match_id: match.match_id, anomaly_types: [AnomalyType.ProviderResultPending] };
+      return { kind: "pending", match_id: match.match_id, anomaly_types: [AnomalyType.ProviderResultPending] };
     }
     if (decision.kind === "anomaly") {
       if ((match.compared_providers?.length ?? 0) >= 2) {
-        await this.repo.matches.update({ ...match, compared_providers: [], updated_at: serverNow });
+        await this.repo.withTransaction(async (tx) => {
+          const findByIdForUpdate = tx.matches.findByIdForUpdate;
+          const patchFields = tx.matches.patchFields;
+          if (findByIdForUpdate === undefined || patchFields === undefined) {
+            throw internalError("applyAdoptableResult 缺少 matches 行锁与局部更新端口");
+          }
+          const locked = await findByIdForUpdate(match.match_id);
+          if (locked !== null && (locked.compared_providers?.length ?? 0) >= 2) {
+            await patchFields(locked.match_id, { compared_providers: [], updated_at: serverNow });
+          }
+        });
       }
       await this.persistResultAdoptionAnomaly(match.match_id, AnomalyType.ProviderResultConflict, true, {
         reason: decision.reason,

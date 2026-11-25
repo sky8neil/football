@@ -1,9 +1,9 @@
 <view class="page">
-  <image class="stadium-background" src="/assets/images/home-pitch-bg.webp" mode="aspectFill" />
+  <image class="stadium-background" src="/assets/images/baseline-pitch.webp" mode="aspectFill" />
   <view class="stadium-overlay"></view>
   <view class="secondary-content">
-    <view class="page-title">预测成绩单</view>
-    <view class="page-subtitle">分享你某一轮的预测战绩</view>
+    <view class="page-title">{{state === 'card' && card ? card.cardTitle : '预测分享卡'}}</view>
+    <view class="page-subtitle">{{state === 'card' && card ? (card.showFullSummary ? '本轮预测战绩汇总' : '看看我本轮的预测选择') : '分享你某一轮的预测与战绩'}}</view>
 
     <view wx:if="{{catalogError}}" class="filter-error">
       <text>{{catalogError}}</text>
@@ -37,50 +37,103 @@
     </view>
 
     <view wx:elif="{{state === 'card' && card}}" class="share-card glass-card">
+      <view class="card-mode-row">
+        <text class="card-mode-title">{{card.cardTitle}}</text>
+        <text class="now-tag">Lv.{{card.seasonLevel}}</text>
+      </view>
       <view class="identity-row">
         <text class="display-name">{{card.displayName}}</text>
-        <text class="now-tag">当前</text>
+      </view>
+      <view wx:if="{{card.isDeleted}}" class="deleted-note">该账号已注销，仅保留历史公开统计</view>
+      <view wx:elif="{{card.hasFavoriteTeam}}" class="favorite-team-row">
+        <image class="team-crest-mini" src="{{card.favoriteTeamLogo}}" mode="aspectFit" />
+        <text>主队 · {{card.favoriteTeamText}}</text>
       </view>
       <view class="card-meta">{{card.leagueName}} · {{card.seasonLabel}} · {{card.roundText}}</view>
 
-      <view class="score-block">
-        <text class="round-score">{{card.roundScore}}</text>
-        <text class="score-label">本轮积分</text>
+      <block wx:if="{{card.showFullSummary}}">
+        <view class="score-block">
+          <text class="round-score">{{card.roundScore}}</text>
+          <text class="score-label">本轮积分</text>
+        </view>
+
+        <view class="stats-row">
+          <view class="stat">
+            <text class="stat-value">{{card.settledCount}}</text>
+            <text class="stat-label">已结算</text>
+          </view>
+          <view class="stat">
+            <text class="stat-value">{{card.wdlHits}}</text>
+            <text class="stat-label">胜平负命中</text>
+          </view>
+          <view class="stat">
+            <text class="stat-value">{{card.exactHits}}</text>
+            <text class="stat-label">精确命中</text>
+          </view>
+        </view>
+
+        <view class="current-row">
+          <view class="current-item">
+            <text>等级 Lv.{{card.seasonLevel}}</text>
+            <text class="now-tag">当前</text>
+          </view>
+          <view class="current-item">
+            <text>生涯积分 {{card.careerPoints}}</text>
+            <text class="now-tag">当前</text>
+          </view>
+        </view>
+        <view class="level-season">等级赛季 {{card.levelSeasonText}}</view>
+      </block>
+
+      <view class="matches-section">
+        <view class="matches-heading">单场预测明细</view>
+        <view wx:if="{{card.matches.length === 0}}" class="empty-matches">本轮暂无可展示的单场预测明细</view>
+        <view
+          wx:for="{{card.matches}}"
+          wx:key="matchId"
+          class="match-item"
+          data-match-id="{{item.matchId}}"
+          data-can-follow="{{item.canFollow}}"
+          data-prefill-home="{{item.predHomeScore}}"
+          data-prefill-away="{{item.predAwayScore}}"
+          bindtap="onMatchTap"
+        >
+          <view class="match-item-head">
+            <text class="match-kickoff">{{item.kickoffText}}</text>
+            <text class="match-status {{item.statusClass}}">{{item.statusText}}</text>
+          </view>
+          <view class="match-teams-row">
+            <view class="match-team">
+              <image class="team-crest" src="{{item.homeLogo}}" mode="aspectFit" />
+              <text class="team-name">{{item.homeNameZh}}</text>
+            </view>
+            <text class="match-vs">vs</text>
+            <view class="match-team away">
+              <image class="team-crest" src="{{item.awayLogo}}" mode="aspectFit" />
+              <text class="team-name">{{item.awayNameZh}}</text>
+            </view>
+          </view>
+          <view class="match-item-foot">
+            <view class="match-scores">
+              <text class="pred-score">预测 {{item.predictionText}}</text>
+              <text wx:if="{{item.actualText}}" class="actual-score">实际 {{item.actualText}}</text>
+            </view>
+            <button
+              wx:if="{{item.canFollow}}"
+              class="follow-button"
+              data-match-id="{{item.matchId}}"
+              data-prefill-home="{{item.predHomeScore}}"
+              data-prefill-away="{{item.predAwayScore}}"
+              catchtap="onFollowTap"
+            >{{item.followText}}</button>
+            <text wx:else class="match-points">{{item.pointsText || item.detailText}}</text>
+          </view>
+        </view>
       </view>
 
-      <view class="stats-row">
-        <view class="stat">
-          <text class="stat-value">{{card.settledCount}}</text>
-          <text class="stat-label">已结算</text>
-        </view>
-        <view class="stat">
-          <text class="stat-value">{{card.wdlHits}}</text>
-          <text class="stat-label">赛果命中</text>
-        </view>
-        <view class="stat">
-          <text class="stat-value">{{card.exactHits}}</text>
-          <text class="stat-label">精确命中</text>
-        </view>
-      </view>
-
-      <view class="current-row">
-        <view class="current-item">
-          <text>等级 Lv.{{card.seasonLevel}}</text>
-          <text class="now-tag">当前</text>
-        </view>
-        <view class="current-item">
-          <text>生涯积分 {{card.careerPoints}}</text>
-          <text class="now-tag">当前</text>
-        </view>
-      </view>
-      <view class="level-season">等级赛季 {{card.levelSeasonText}}</view>
-
-      <view wx:if="{{card.pendingCount > 0}}" class="pending-note">
-        还有 {{card.pendingCount}} 场没有结算，本次只统计已结算的 {{card.settledCount}} 场
-      </view>
       <view class="generated">数据读取于 {{card.generatedAtText}}</view>
 
-      <button class="share-button" open-type="share">分享成绩单</button>
+      <button class="share-button" open-type="share">{{card.showFullSummary ? '分享战绩单' : '晒出我的预测'}}</button>
     </view>
 
     <button class="back-button" bindtap="onBackToPredictions">返回我的预测</button>

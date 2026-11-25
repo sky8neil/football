@@ -40,6 +40,10 @@ export interface GatewayRuntimeConfig {
   level_first_eval_as_of?: Date | null;
   /** 周榜可选周的最早一周（ISO 周编号）；prod 必填，非 prod 可回落 RANKING_FIRST_PERIOD_KEY。 */
   ranking_first_period_key: string;
+  /** 可选：Web 管理端签发登录令牌的独立密钥；未配置时回落 match_cursor_secret。 */
+  admin_login_secret?: string | null;
+  /** 可选：Web 管理端独立口令；未配置时仅允许签名登录令牌登录。 */
+  admin_web_passcode?: string | null;
 }
 
 const ISO_TIMESTAMP_WITH_TZ_PATTERN =
@@ -117,21 +121,87 @@ function requiredTrimmed(
   return value.trim();
 }
 
+const SQL_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_-]*$/;
+
+function assertSqlIdentifier(value: string, key: string): void {
+  if (!SQL_IDENTIFIER.test(value)) {
+    throw new Error(`${key} must be a valid SQL identifier`);
+  }
+}
+
+function assertPostgresDatabaseUrl(databaseUrl: string): void {
+  let protocol = "";
+  try {
+    protocol = new URL(databaseUrl).protocol;
+  } catch {
+    throw new Error("FOOTBALL_DATABASE_URL must use the postgres or postgresql protocol");
+  }
+  if (protocol !== "postgres:" && protocol !== "postgresql:") {
+    throw new Error("FOOTBALL_DATABASE_URL must use the postgres or postgresql protocol");
+  }
+}
+
+function assertNoEnvironmentMarker(
+  value: string,
+  key: string,
+  marker: "dev" | "test" | "prod",
+  environment: EnvironmentName,
+): void {
+  if (value.toLowerCase().includes(marker)) {
+    throw new Error(
+      `${key} must not contain ${marker} when FOOTBALL_ENVIRONMENT=${environment}`,
+    );
+  }
+}
+
+function assertPostgresEnvironmentIsolation(
+  environment: EnvironmentName,
+  databaseSchema: string,
+  resourceNamespace: string,
+): void {
+  const fields: Array<[string, string]> = [
+    ["FOOTBALL_DATABASE_SCHEMA", databaseSchema],
+    ["FOOTBALL_RESOURCE_NAMESPACE", resourceNamespace],
+  ];
+  const forbiddenByEnv: Record<EnvironmentName, ReadonlyArray<"dev" | "test" | "prod">> = {
+    prod: ["dev", "test"],
+    dev: ["test", "prod"],
+    test: ["dev", "prod"],
+  };
+  for (const [key, value] of fields) {
+    for (const marker of forbiddenByEnv[environment]) {
+      assertNoEnvironmentMarker(value, key, marker, environment);
+    }
+  }
+}
+
 function loadPostgresRepositoryConfig(
   env: Record<string, string | undefined>,
+  environment: EnvironmentName,
 ): PostgresRepositoryConfig {
+  const databaseUrl = requiredTrimmed(
+    env,
+    "FOOTBALL_DATABASE_URL",
+    "FOOTBALL_DATABASE_URL is required",
+  );
+  const databaseSchema = requiredTrimmed(
+    env,
+    "FOOTBALL_DATABASE_SCHEMA",
+    "FOOTBALL_DATABASE_SCHEMA is required",
+  );
+  const resourceNamespace = requiredTrimmed(
+    env,
+    "FOOTBALL_RESOURCE_NAMESPACE",
+    "FOOTBALL_RESOURCE_NAMESPACE is required",
+  );
+  assertPostgresDatabaseUrl(databaseUrl);
+  assertSqlIdentifier(databaseSchema, "FOOTBALL_DATABASE_SCHEMA");
+  assertSqlIdentifier(resourceNamespace, "FOOTBALL_RESOURCE_NAMESPACE");
+  assertPostgresEnvironmentIsolation(environment, databaseSchema, resourceNamespace);
   return {
-    database_url: requiredTrimmed(env, "FOOTBALL_DATABASE_URL", "FOOTBALL_DATABASE_URL is required"),
-    database_schema: requiredTrimmed(
-      env,
-      "FOOTBALL_DATABASE_SCHEMA",
-      "FOOTBALL_DATABASE_SCHEMA is required",
-    ),
-    resource_namespace: requiredTrimmed(
-      env,
-      "FOOTBALL_RESOURCE_NAMESPACE",
-      "FOOTBALL_RESOURCE_NAMESPACE is required",
-    ),
+    database_url: databaseUrl,
+    database_schema: databaseSchema,
+    resource_namespace: resourceNamespace,
   };
 }
 
@@ -177,12 +247,17 @@ export function loadGatewayRuntimeConfig(
   ) {
     throw new Error("FOOTBALL_REPOSITORY_BACKEND must be memory, cloudbase, or postgres");
   }
+  if (rawEnvironment === "prod" && repositoryBackend === "memory") {
+    throw new Error(
+      "FOOTBALL_REPOSITORY_BACKEND=memory is not allowed when FOOTBALL_ENVIRONMENT=prod",
+    );
+  }
 
   const cloudbaseRepository = repositoryBackend === "cloudbase"
     ? loadCloudBaseRepositoryConfig(env)
     : null;
   const postgresRepository = repositoryBackend === "postgres"
-    ? loadPostgresRepositoryConfig(env)
+    ? loadPostgresRepositoryConfig(env, rawEnvironment)
     : null;
   const vpsAuth = repositoryBackend === "postgres" ? loadVpsAuthConfig(env) : null;
 
@@ -197,6 +272,20 @@ export function loadGatewayRuntimeConfig(
 
   const levelFirstEvalAsOf = parseLevelFirstEvalAsOf(env, rawEnvironment);
   const rankingFirstPeriodKey = parseRankingFirstPeriodKey(env, rawEnvironment);
+  const rawAdminLoginSecret = env.FOOTBALL_ADMIN_LOGIN_SECRET?.trim();
+  const adminLoginSecret = rawAdminLoginSecret && rawAdminLoginSecret.length > 0
+    ? rawAdminLoginSecret
+    : null;
+  const rawAdminWebPasscode = env.FOOTBALL_ADMIN_WEB_PASSCODE?.trim();
+  let adminWebPasscode: string | null = null;
+  if (rawAdminWebPasscode && rawAdminWebPasscode.length > 0) {
+    if (rawEnvironment === "prod" && rawAdminWebPasscode.length < 12) {
+      throw new Error(
+        "FOOTBALL_ADMIN_WEB_PASSCODE must be at least 12 characters when FOOTBALL_ENVIRONMENT=prod",
+      );
+    }
+    adminWebPasscode = rawAdminWebPasscode;
+  }
 
   return {
     environment: rawEnvironment,
@@ -210,5 +299,7 @@ export function loadGatewayRuntimeConfig(
     deploy_target: resolveDeployTarget(env),
     level_first_eval_as_of: levelFirstEvalAsOf,
     ranking_first_period_key: rankingFirstPeriodKey,
+    ...(adminLoginSecret !== null ? { admin_login_secret: adminLoginSecret } : {}),
+    ...(adminWebPasscode !== null ? { admin_web_passcode: adminWebPasscode } : {}),
   };
 }

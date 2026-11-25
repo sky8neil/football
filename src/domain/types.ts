@@ -156,6 +156,8 @@ export interface Team extends BaseDoc {
   team_id: string;
   league_id: LeagueId;
   name: string;
+  name_zh?: string | null;
+  logo_url?: string | null;
   short_name: string | null;
   primary_color: string | null;
   secondary_color: string | null;

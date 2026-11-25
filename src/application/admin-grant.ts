@@ -1,12 +1,25 @@
-import { AdminRole, AdminStatus, SCHEMA_VERSION } from "../domain/enums.js";
+import {
+  AdminAuditAction,
+  AdminAuditEntityType,
+  AdminRole,
+  AdminStatus,
+  SCHEMA_VERSION,
+} from "../domain/enums.js";
 import { newUuid } from "../domain/ids.js";
-import type { Admin } from "../domain/types.js";
-import type { AdminRepository } from "../infrastructure/repositories.js";
+import type { Admin, AdminAuditLog } from "../domain/types.js";
+import type {
+  AdminAuditLogRepository,
+  AdminRepository,
+} from "../infrastructure/repositories.js";
+
+export const ADMIN_GRANT_AUDIT_ACTION = AdminAuditAction.GrantAdmin;
+const DEFAULT_GRANT_REASON = "vps-admin provision";
 
 export interface AdminGrantInput {
   openid: string;
   now: Date;
   status?: AdminStatus;
+  reason?: string;
 }
 
 export type AdminGrantAction = "create" | "unchanged" | "update";
@@ -22,6 +35,8 @@ export interface AdminGrantPlan {
 
 export interface AdminGrantStore {
   admins?: AdminRepository;
+  adminAuditLogs?: AdminAuditLogRepository;
+  withTransaction?<T>(fn: (tx: AdminGrantStore) => Promise<T>): Promise<T>;
 }
 
 function requiredAdmins(store: AdminGrantStore): AdminRepository {
@@ -37,6 +52,49 @@ function requiredOpenid(value: string): string {
 
 function grantStatus(input: AdminGrantInput): AdminStatus {
   return input.status ?? AdminStatus.Active;
+}
+
+function grantReason(input: AdminGrantInput): string {
+  const reason = (input.reason ?? DEFAULT_GRANT_REASON).trim();
+  if (reason.length < 1 || reason.length > 500) {
+    throw new Error("admin grant reason must be 1..500 characters");
+  }
+  return reason;
+}
+
+function requiredAuditLogs(store: AdminGrantStore): AdminAuditLogRepository {
+  if (store.adminAuditLogs === undefined) throw new Error("admin_audit_logs repository is required");
+  return store.adminAuditLogs;
+}
+
+function auditFromGrant(
+  document: Admin,
+  existing: Admin | null,
+  now: Date,
+  reason: string,
+): AdminAuditLog {
+  return {
+    schema_version: SCHEMA_VERSION,
+    audit_id: newUuid(),
+    admin_id: document.admin_id,
+    action: ADMIN_GRANT_AUDIT_ACTION,
+    entity_type: AdminAuditEntityType.Admin,
+    entity_id: document.admin_id,
+    old_value: existing === null
+      ? null
+      : {
+          openid: existing.openid,
+          status: existing.status,
+          role: existing.role,
+        },
+    new_value: {
+      openid: document.openid,
+      status: document.status,
+      role: document.role,
+    },
+    reason,
+    created_at: now,
+  };
 }
 
 export function planFromExisting(existing: Admin | null, input: AdminGrantInput): AdminGrantPlan {
@@ -83,13 +141,19 @@ export async function planAdminGrant(store: AdminGrantStore, input: AdminGrantIn
 }
 
 export async function applyAdminGrant(store: AdminGrantStore, input: AdminGrantInput): Promise<AdminGrantPlan> {
-  const admins = requiredAdmins(store);
   const openid = requiredOpenid(input.openid);
-  const existing = await admins.findByOpenid(openid);
-  const plan = planFromExisting(existing, { ...input, openid });
-  if (plan.action === "unchanged") return plan;
-  const document = adminDocumentFromPlan(plan, input.now, existing);
-  if (plan.action === "create") await admins.insert(document);
-  else await admins.update(document);
-  return { ...plan, admin_id: document.admin_id };
+  const reason = grantReason(input);
+  if (store.withTransaction === undefined) throw new Error("transaction support is required");
+  return store.withTransaction(async (tx) => {
+    const admins = requiredAdmins(tx);
+    const existing = await admins.findByOpenid(openid);
+    const plan = planFromExisting(existing, { ...input, openid });
+    if (plan.action === "unchanged") return plan;
+    const auditLogs = requiredAuditLogs(tx);
+    const document = adminDocumentFromPlan(plan, input.now, existing);
+    if (plan.action === "create") await admins.insert(document);
+    else await admins.update(document);
+    await auditLogs.insert(auditFromGrant(document, existing, input.now, reason));
+    return { ...plan, admin_id: document.admin_id };
+  });
 }

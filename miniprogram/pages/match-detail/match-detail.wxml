@@ -19,7 +19,7 @@
         <view class="score">
           <text wx:if="{{match.regular_home_score !== null && match.regular_home_score !== undefined}}">{{match.regular_home_score}} : {{match.regular_away_score}}</text>
           <text wx:else>VS</text>
-          <text class="score-caption">{{match.match_status === 'live' ? '进行中' : match.match_status === 'finished' ? '全场比分' : '开球时间'}}</text>
+          <text class="score-caption">{{scoreCaption}}</text>
         </view>
         <view class="team away">
           <image src="{{awayLogo}}" mode="aspectFit"></image>
@@ -80,7 +80,7 @@
     <view wx:elif="{{userDeleted || (!canSubmit && submitDisabledReason)}}" class="status-panel">
       <text>{{submitDisabledReason}}</text>
     </view>
-    <view wx:if="{{formError}}" class="error-message">{{formError}}</view>
+    <view wx:if="{{formError && !identityMissing && !userDeleted && (canSubmit || !submitDisabledReason)}}" class="error-message">{{formError}}</view>
 
     <view wx:if="{{crowdKind !== 'hidden' && crowdState !== 'idle'}}" class="crowd-card">
       <view class="section-title">{{crowdTitle}}</view>

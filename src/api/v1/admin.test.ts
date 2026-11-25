@@ -49,10 +49,12 @@ describe("validateAdminResultCorrectionPayload", () => {
     ).toThrowError(expect.objectContaining({ code: "VALIDATION_ERROR" }));
   });
 
-  it("拒绝空 reason、超长 reason 和错误字段类型", () => {
-    expect(() =>
-      validateAdminResultCorrectionPayload({ ...VALID_REQUEST, reason: "" }),
-    ).toThrowError(expect.objectContaining({ code: "VALIDATION_ERROR" }));
+  it("拒绝空/纯空白 reason、超长 reason 和错误字段类型", () => {
+    for (const reason of ["", "   ", "\n\t"]) {
+      expect(() =>
+        validateAdminResultCorrectionPayload({ ...VALID_REQUEST, reason }),
+      ).toThrowError(expect.objectContaining({ code: "VALIDATION_ERROR" }));
+    }
     expect(() =>
       validateAdminResultCorrectionPayload({
         ...VALID_REQUEST,

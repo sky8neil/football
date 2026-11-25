@@ -13,18 +13,30 @@ describe("admin_audit_logs contract", () => {
       RetrySettlement: "retry_settlement",
       RebuildUserStats: "rebuild_user_stats",
       RebuildRankings: "rebuild_rankings",
+      GrantAdmin: "grant_admin",
+      ResolveAnomaly: "resolve_anomaly",
+      UpdateTeam: "update_team",
+      UpsertTeamMapping: "upsert_team_mapping",
     });
     expect(AdminAuditEntityType).toEqual({
       Match: "match",
       Settlement: "settlement",
       User: "user",
       RankingPeriod: "ranking_period",
+      Admin: "admin",
+      Anomaly: "anomaly",
+      Team: "team",
+      TeamProviderMapping: "team_provider_mapping",
     });
     expect(ADMIN_AUDIT_ENTITY_TYPE_BY_ACTION).toEqual({
       result_correction: "match",
       retry_settlement: "settlement",
       rebuild_user_stats: "user",
       rebuild_rankings: "ranking_period",
+      grant_admin: "admin",
+      resolve_anomaly: "anomaly",
+      update_team: "team",
+      upsert_team_mapping: "team_provider_mapping",
     });
   });
 
@@ -40,12 +52,20 @@ describe("admin_audit_logs contract", () => {
       "retry_settlement",
       "rebuild_user_stats",
       "rebuild_rankings",
+      "grant_admin",
+      "resolve_anomaly",
+      "update_team",
+      "upsert_team_mapping",
     ]);
     expect(fields.entity_type?.enum).toEqual([
       "match",
       "settlement",
       "user",
       "ranking_period",
+      "admin",
+      "anomaly",
+      "team",
+      "team_provider_mapping",
     ]);
   });
 });

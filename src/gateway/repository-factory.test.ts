@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import pg from "pg";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CloudBaseAppRepository } from "../infrastructure/cloudbase-app-repository.js";
@@ -26,6 +27,22 @@ const base: GatewayRuntimeConfig = {
 };
 
 const OriginalPool = pg.Pool;
+
+const POSTGRES_REPOSITORY = {
+  database_url: "postgres://football:secret@127.0.0.1:1/football",
+  database_schema: "football_test",
+  resource_namespace: "ft",
+};
+
+function fakePoolClient(methods: {
+  query: (sql: string) => Promise<{ rows: unknown[]; command?: string }>;
+  release: (err?: Error) => void;
+}): EventEmitter & {
+  query: (sql: string) => Promise<{ rows: unknown[]; command?: string }>;
+  release: (err?: Error) => void;
+} {
+  return Object.assign(new EventEmitter(), methods);
+}
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -110,7 +127,7 @@ describe("createGatewayRepository", () => {
   it("passes ROLLBACK errors to pool client.release so the client is discarded", async () => {
     const released: Array<Error | undefined> = [];
     const rollbackError = new Error("rollback failed");
-    const fakeClient = {
+    const fakeClient = fakePoolClient({
       query: async (sql: string) => {
         if (sql === "ROLLBACK") throw rollbackError;
         return { rows: [] };
@@ -118,7 +135,7 @@ describe("createGatewayRepository", () => {
       release: (err?: Error) => {
         released.push(err);
       },
-    };
+    });
     const fakePool = { connect: async () => fakeClient } as unknown as pg.Pool;
     const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const db = createPostgresDocumentDbFromPool(fakePool, {
@@ -139,7 +156,7 @@ describe("createGatewayRepository", () => {
   it("passes BEGIN errors to pool client.release and preserves the original exception", async () => {
     const released: Array<Error | undefined> = [];
     const beginError = new Error("begin failed");
-    const fakeClient = {
+    const fakeClient = fakePoolClient({
       query: async (sql: string) => {
         if (sql === "BEGIN") throw beginError;
         return { rows: [] };
@@ -147,7 +164,7 @@ describe("createGatewayRepository", () => {
       release: (err?: Error) => {
         released.push(err);
       },
-    };
+    });
     const fakePool = { connect: async () => fakeClient } as unknown as pg.Pool;
     const db = createPostgresDocumentDbFromPool(fakePool, {
       database_url: "postgres://football:secret@127.0.0.1:1/football",
@@ -161,7 +178,7 @@ describe("createGatewayRepository", () => {
   it("factory path rejects COMMIT command ROLLBACK after a swallowed SQL error", async () => {
     const released: Array<Error | undefined> = [];
     const statements: string[] = [];
-    const fakeClient = {
+    const fakeClient = fakePoolClient({
       query: async (sql: string) => {
         statements.push(sql);
         if (sql === "BEGIN") return { rows: [], command: "BEGIN" };
@@ -172,7 +189,7 @@ describe("createGatewayRepository", () => {
       release: (err?: Error) => {
         released.push(err);
       },
-    };
+    });
     const fakePool = { connect: async () => fakeClient } as unknown as pg.Pool;
     const db = createPostgresDocumentDbFromPool(fakePool, {
       database_url: "postgres://football:secret@127.0.0.1:1/football",
@@ -190,6 +207,78 @@ describe("createGatewayRepository", () => {
     expect(statements).toContain("COMMIT");
     expect(statements).toContain("ROLLBACK");
     expect(released).toHaveLength(1);
+  });
+
+  it("returns a healthy checked-out client to the pool and detaches the error listener", async () => {
+    const released: Array<Error | undefined> = [];
+    const fakeClient = fakePoolClient({
+      query: async () => ({ rows: [] }),
+      release: (err?: Error) => {
+        released.push(err);
+      },
+    });
+    const fakePool = { connect: async () => fakeClient } as unknown as pg.Pool;
+    const db = createPostgresDocumentDbFromPool(fakePool, POSTGRES_REPOSITORY);
+    await expect(db.transaction(async () => "ok")).resolves.toBe("ok");
+    expect(released).toEqual([undefined]);
+    expect(fakeClient.listenerCount("error")).toBe(0);
+  });
+
+  it("logs a checked-out client error, survives the follow-up error, and discards the connection", async () => {
+    const released: Array<Error | undefined> = [];
+    const fakeClient = fakePoolClient({
+      query: async () => ({ rows: [] }),
+      release: (err?: Error) => {
+        released.push(err);
+      },
+    });
+    const fakePool = { connect: async () => fakeClient } as unknown as pg.Pool;
+    const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const db = createPostgresDocumentDbFromPool(fakePool, POSTGRES_REPOSITORY);
+    const disconnect = new Error("Connection terminated unexpectedly");
+    const followUp = new Error("additional client error");
+    await expect(db.transaction(async () => {
+      expect(fakeClient.emit("error", disconnect)).toBe(true);
+      expect(fakeClient.emit("error", followUp)).toBe(true);
+      return "ok";
+    })).resolves.toBe("ok");
+    expect(released).toEqual([disconnect]);
+    expect(fakeClient.listenerCount("error")).toBe(0);
+    expect(spy).toHaveBeenCalledTimes(1);
+    const logged = String(spy.mock.calls[0]?.[0]);
+    expect(logged).not.toContain("secret");
+    expect(logged).not.toContain(POSTGRES_REPOSITORY.database_url);
+    expect(JSON.parse(logged)).toEqual({
+      event: "pg_client_error",
+      message: "Connection terminated unexpectedly",
+    });
+  });
+
+  it("prefers an explicit release error over a checked-out client error", async () => {
+    const released: Array<Error | undefined> = [];
+    const rollbackError = new Error("rollback failed");
+    const fakeClient = fakePoolClient({
+      query: async (sql: string) => {
+        if (sql === "ROLLBACK") throw rollbackError;
+        return { rows: [] };
+      },
+      release: (err?: Error) => {
+        released.push(err);
+      },
+    });
+    const fakePool = { connect: async () => fakeClient } as unknown as pg.Pool;
+    const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const db = createPostgresDocumentDbFromPool(fakePool, POSTGRES_REPOSITORY);
+    await expect(db.transaction(async () => {
+      fakeClient.emit("error", new Error("connection terminated"));
+      throw new Error("abort");
+    })).rejects.toThrow("abort");
+    expect(released).toEqual([rollbackError]);
+    expect(fakeClient.listenerCount("error")).toBe(0);
+    expect(spy.mock.calls.map((call) => JSON.parse(String(call[0])))).toEqual([
+      { event: "pg_client_error", message: "connection terminated" },
+      { event: "pg_rollback_failed", message: "rollback failed" },
+    ]);
   });
 
   it.skipIf(TEST_DATABASE_URL.length === 0)(

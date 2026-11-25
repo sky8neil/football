@@ -23,12 +23,20 @@ import type {
   UserSeasonStats,
 } from "../domain/types.js";
 import { defaultLevelState } from "../domain/types.js";
-import { InMemoryRepository } from "../infrastructure/repositories.js";
+import { InMemoryRepository, type UnitOfWork } from "../infrastructure/repositories.js";
 import {
   LEVEL_CORRECTION_REEVAL_LOCK_KEY,
   LevelCorrectionReevalService,
 } from "./level-correction-reeval.js";
-import { WEEKLY_LEVEL_EVAL_LOCK_KEY, WeeklyLevelEvalService } from "./weekly-level-eval.js";
+import {
+  buildReplayFacts,
+  loadAppliedSettlementFacts,
+} from "./rebuild-service-support.js";
+import {
+  levelScopeLockKey,
+  WEEKLY_LEVEL_EVAL_LOCK_KEY,
+  WeeklyLevelEvalService,
+} from "./weekly-level-eval.js";
 
 const WEEKLY_AS_OF = new Date("2026-08-10T02:00:00.000Z");
 const CORRECTION_AS_OF = new Date("2026-08-12T02:00:00.000Z");
@@ -247,7 +255,12 @@ async function addAppliedPrediction(
   await repo.settlementItems.insert(item);
 }
 
-async function seedCorrection(downward: boolean, frozen = false) {
+async function seedCorrection(
+  downward: boolean,
+  frozen = false,
+  options: { zeroDelta?: boolean } = {},
+) {
+  const zeroDelta = options.zeroDelta === true;
   const repo = new InMemoryRepository();
   const user = makeUser({
     career_points: downward ? 168 : 180,
@@ -286,8 +299,8 @@ async function seedCorrection(downward: boolean, frozen = false) {
     schema_version: 1,
     match_id: correctionMatchId,
     result_version: 2,
-    regular_home_score: downward ? 0 : 2,
-    regular_away_score: downward ? 0 : 1,
+    regular_home_score: zeroDelta === downward ? 2 : 0,
+    regular_away_score: zeroDelta === downward ? 1 : 0,
     source: "admin",
     provider_status: null,
     admin_id: "admin",
@@ -304,9 +317,11 @@ async function seedCorrection(downward: boolean, frozen = false) {
   await repo.predictions.update({
     ...prediction,
     applied_result_version: 2,
-    match_score: downward ? MatchScoreValue.Miss : MatchScoreValue.ExactHit,
-    wdl_hit: !downward,
-    exact_hit: !downward,
+    match_score: zeroDelta
+      ? downward ? MatchScoreValue.ExactHit : MatchScoreValue.Miss
+      : downward ? MatchScoreValue.Miss : MatchScoreValue.ExactHit,
+    wdl_hit: zeroDelta ? downward : !downward,
+    exact_hit: zeroDelta ? downward : !downward,
     updated_at: CORRECTION_AS_OF,
   });
   const settlement: SettlementDoc = {
@@ -332,12 +347,14 @@ async function seedCorrection(downward: boolean, frozen = false) {
     prediction_id: correctionPredictionId,
     user_id: user.user_id,
     old_score: downward ? MatchScoreValue.ExactHit : MatchScoreValue.Miss,
-    new_score: downward ? MatchScoreValue.Miss : MatchScoreValue.ExactHit,
-    score_delta: downward ? -12 : 12,
+    new_score: zeroDelta
+      ? downward ? MatchScoreValue.ExactHit : MatchScoreValue.Miss
+      : downward ? MatchScoreValue.Miss : MatchScoreValue.ExactHit,
+    score_delta: zeroDelta ? 0 : downward ? -12 : 12,
     old_wdl_hit: downward,
-    new_wdl_hit: !downward,
+    new_wdl_hit: zeroDelta ? downward : !downward,
     old_exact_hit: downward,
-    new_exact_hit: !downward,
+    new_exact_hit: zeroDelta ? downward : !downward,
     valid_prediction_delta: 0,
     source_result_version: 2,
     status: SettlementItemStatus.Applied,
@@ -428,6 +445,126 @@ async function addCorrectionParticipant(
     last_error_message: null,
     created_at: CORRECTION_AS_OF,
     updated_at: CORRECTION_AS_OF,
+  });
+}
+
+async function addStandaloneCorrection(
+  repo: InMemoryRepository,
+  params: {
+    settlementId: string;
+    userId: string;
+    settledAt: Date;
+    user?: User;
+  },
+): Promise<void> {
+  const { settlementId, userId, settledAt } = params;
+  if (params.user !== undefined) await repo.users.insert(params.user);
+  const matchId = `match-${settlementId}`;
+  const predictionId = `prediction-${settlementId}`;
+  const anchor = new Date(settledAt.getTime() - 3_600_000);
+  await repo.matches.insert({
+    schema_version: 1,
+    match_id: matchId,
+    canonical_match_id: matchId,
+    superseded_by: null,
+    league_id: "premier_league",
+    season_id: "2026_2027",
+    round_id: "01",
+    home_team_id: "home",
+    away_team_id: "away",
+    kickoff_at: anchor,
+    kickoff_confirmed: true,
+    prediction_deadline_at: new Date(anchor.getTime() - 600_000),
+    prediction_closed_at: new Date(anchor.getTime() - 600_000),
+    period_anchor_at: anchor,
+    match_status: MatchStatus.Finished,
+    settlement_status: SettlementStatus.Settled,
+    regular_home_score: 2,
+    regular_away_score: 1,
+    extra_home_score: null,
+    extra_away_score: null,
+    penalty_home_score: null,
+    penalty_away_score: null,
+    result_version: 2,
+    settled_result_version: 2,
+    result_source: "provider",
+    scoring_rule_version: RULE,
+    finish_detected_at: settledAt,
+    settled_at: settledAt,
+    created_at: settledAt,
+    updated_at: settledAt,
+  });
+  await repo.predictions.insert({
+    schema_version: 1,
+    prediction_id: predictionId,
+    user_id: userId,
+    match_id: matchId,
+    canonical_match_id: matchId,
+    idempotency_key: newUuid(),
+    pred_home_score: 2,
+    pred_away_score: 1,
+    derived_result: Result.Home,
+    submitted_at: new Date(anchor.getTime() - 3_600_000),
+    scoring_rule_version: RULE,
+    match_score: MatchScoreValue.ExactHit,
+    wdl_hit: true,
+    exact_hit: true,
+    applied_result_version: 2,
+    created_at: settledAt,
+    updated_at: settledAt,
+  });
+  await repo.matchResults.insert({
+    schema_version: 1,
+    match_id: matchId,
+    result_version: 2,
+    regular_home_score: 2,
+    regular_away_score: 1,
+    source: "provider",
+    provider_status: "FT",
+    admin_id: null,
+    reason: null,
+    created_at: settledAt,
+  });
+  await repo.settlements.insert({
+    schema_version: 1,
+    settlement_id: settlementId,
+    match_id: matchId,
+    result_version: 2,
+    rule_version: RULE,
+    status: SettlementDocStatus.Settled,
+    phase: SettlementPhase.Done,
+    is_correction: true,
+    level_reeval_status: "pending",
+    level_reeval_completed_at: null,
+    started_at: settledAt,
+    settled_at: settledAt,
+    attempt_count: 1,
+    last_error_code: null,
+    last_error_message: null,
+    created_at: settledAt,
+    updated_at: settledAt,
+  });
+  await repo.settlementItems.insert({
+    schema_version: 1,
+    settlement_id: settlementId,
+    prediction_id: predictionId,
+    user_id: userId,
+    old_score: MatchScoreValue.Miss,
+    new_score: MatchScoreValue.ExactHit,
+    score_delta: 12,
+    old_wdl_hit: false,
+    new_wdl_hit: true,
+    old_exact_hit: false,
+    new_exact_hit: true,
+    valid_prediction_delta: 1,
+    source_result_version: 2,
+    status: SettlementItemStatus.Applied,
+    applied_at: new Date(settledAt.getTime() - 1),
+    attempt_count: 1,
+    last_error_code: null,
+    last_error_message: null,
+    created_at: settledAt,
+    updated_at: settledAt,
   });
 }
 
@@ -530,6 +667,110 @@ describe("LevelCorrectionReevalService §17.7 / §32.10", () => {
     expect(await repo.userSeasonStats.findByUserAndSeason(user.user_id, "2026_2027"))
       .toMatchObject({ level: 4, best_level: 4, is_level_frozen: true });
     expect(await repo.users.findById(user.user_id)).toMatchObject({ career_level: 3 });
+  });
+
+  it("[A-S4-05] 7/1 后未冻结上赛季的修正重评按比赛所属赛季执行", async () => {
+    const { repo, user, correctionSettlementId } = await seedCorrection(false);
+    const oldSeasonWeeklyAsOf = new Date("2027-06-28T02:00:00.000Z");
+    const crossSeasonCorrectionAsOf = new Date("2027-07-02T02:00:00.000Z");
+    for (const item of await repo.settlementItems.findByStatus(SettlementItemStatus.Applied)) {
+      if (item.settlement_id !== correctionSettlementId) continue;
+      await repo.settlementItems.update({
+        ...item,
+        applied_at: new Date(crossSeasonCorrectionAsOf.getTime() - 1),
+      });
+    }
+    const settlement = await repo.settlements.findById(correctionSettlementId);
+    const currentUser = await repo.users.findById(user.user_id);
+    const oldSeason = await repo.userSeasonStats.findByUserAndSeason(user.user_id, "2026_2027");
+    if (settlement === null || currentUser === null || oldSeason === null) {
+      throw new Error("test state missing");
+    }
+    await repo.settlements.update({
+      ...settlement,
+      started_at: crossSeasonCorrectionAsOf,
+      settled_at: crossSeasonCorrectionAsOf,
+      updated_at: crossSeasonCorrectionAsOf,
+    });
+    const oldSeasonState = {
+      ...oldSeason.level_state!,
+      week_base_as_of: oldSeasonWeeklyAsOf,
+      last_eval_as_of: oldSeasonWeeklyAsOf,
+    };
+    await repo.users.update({
+      ...currentUser,
+      career_level_state: {
+        ...currentUser.career_level_state!,
+        week_base_as_of: oldSeasonWeeklyAsOf,
+        last_eval_as_of: oldSeasonWeeklyAsOf,
+      },
+    });
+    await repo.userSeasonStats.update({
+      ...oldSeason,
+      is_level_frozen: false,
+      level_state: oldSeasonState,
+      updated_at: oldSeasonWeeklyAsOf,
+    });
+    await repo.userSeasonStats.insert(makeSeasonStats(user.user_id, {
+      level_season_id: "2027_2028",
+      points: 0,
+      valid_predictions: 0,
+      wdl_hits: 0,
+      exact_hits: 0,
+      last_scoring_match_at: null,
+      level: 1,
+      best_level: 1,
+      level_state: {
+        ...defaultLevelState(),
+        week_base_as_of: oldSeasonWeeklyAsOf,
+        last_eval_as_of: oldSeasonWeeklyAsOf,
+      },
+      is_level_frozen: false,
+    }));
+
+    const outcome = await reeval(repo).runForSettlement(
+      correctionSettlementId,
+      crossSeasonCorrectionAsOf,
+    );
+
+    expect(outcome.kind).toBe("completed");
+    expect(outcome.evaluated_count).toBe(2);
+    await expect(repo.userSeasonStats.findByUserAndSeason(user.user_id, "2026_2027"))
+      .resolves.toMatchObject({
+        is_level_frozen: false,
+        level_state: { last_eval_as_of: crossSeasonCorrectionAsOf },
+      });
+    await expect(repo.userSeasonStats.findByUserAndSeason(user.user_id, "2027_2028"))
+      .resolves.toMatchObject({
+        level_state: { last_eval_as_of: oldSeasonWeeklyAsOf },
+      });
+  });
+
+  it("[A-S4-05][D-S4-01] score_delta=0 的修正仍进入线上重评与回放事件", async () => {
+    const { repo, user, correctionSettlementId } = await seedCorrection(
+      true,
+      false,
+      { zeroDelta: true },
+    );
+    const applied = await repo.settlementItems.findByStatus(SettlementItemStatus.Applied);
+    const replayFacts = buildReplayFacts(await loadAppliedSettlementFacts(repo, applied));
+
+    expect(replayFacts.correctionSettledAts.map((at) => at.getTime()))
+      .toContain(CORRECTION_AS_OF.getTime());
+
+    const outcome = await reeval(repo).runForSettlement(
+      correctionSettlementId,
+      CORRECTION_AS_OF,
+    );
+
+    expect(outcome.evaluated_count).toBe(2);
+    await expect(repo.users.findById(user.user_id)).resolves.toMatchObject({
+      career_level_state: { last_eval_as_of: CORRECTION_AS_OF },
+    });
+    await expect(repo.userSeasonStats.findByUserAndSeason(user.user_id, "2026_2027"))
+      .resolves.toMatchObject({
+        level_state: { last_eval_as_of: CORRECTION_AS_OF },
+      });
   });
 
   it("[F3] applied_at 与 settled_at 同刻的修正 item 不进入该 as_of 截面", async () => {
@@ -884,6 +1125,147 @@ describe("LevelCorrectionReevalService §17.7 / §32.10", () => {
     expect(leaseUntil.getTime()).toBeGreaterThan(Date.now());
   });
 
+  it("[Slice 3] 撞锁 skipped 后保留 pending，锁释放后周内补偿完成", async () => {
+    const { repo, correctionSettlementId } = await seedCorrection(false);
+    const correction = await repo.settlements.findById(correctionSettlementId);
+    if (correction === null) throw new Error("test fixture missing correction");
+    await repo.settlements.update({ ...correction, level_reeval_status: "pending" });
+    const lockOwner = newUuid();
+    await repo.jobLocks.acquire(
+      LEVEL_CORRECTION_REEVAL_LOCK_KEY,
+      lockOwner,
+      new Date(Date.now() + 60_000),
+    );
+    const service = new LevelCorrectionReevalService(repo, FIRST_EVAL);
+
+    const blocked = await service.runPendingCompensation(CORRECTION_AS_OF);
+
+    expect(blocked).toMatchObject({
+      kind: "skipped",
+      scanned_count: 1,
+      completed_count: 0,
+      pending_count: 1,
+    });
+    expect((await repo.settlements.findById(correctionSettlementId))?.level_reeval_status)
+      .toBe("pending");
+
+    await repo.jobLocks.release(LEVEL_CORRECTION_REEVAL_LOCK_KEY, lockOwner);
+    const compensated = await service.runPendingCompensation(CORRECTION_AS_OF);
+
+    expect(compensated).toMatchObject({
+      kind: "completed",
+      scanned_count: 1,
+      completed_count: 1,
+      pending_count: 0,
+    });
+    const completed = await repo.settlements.findById(correctionSettlementId);
+    expect(completed).toMatchObject({ level_reeval_status: "completed" });
+    expect(completed?.level_reeval_completed_at).toBeInstanceOf(Date);
+  });
+
+  it("[Slice 3] 补偿扫描不被其他用户的锁饥饿", async () => {
+    const { repo, user, correctionSettlementId } = await seedCorrection(false);
+    const correction = await repo.settlements.findById(correctionSettlementId);
+    if (correction === null) throw new Error("test fixture missing correction");
+    await repo.settlements.update({ ...correction, level_reeval_status: "pending" });
+    const laterAsOf = new Date(CORRECTION_AS_OF.getTime() + 60 * 60 * 1000);
+    const otherSettlementId = "scorrection-other-user";
+    await addStandaloneCorrection(repo, {
+      settlementId: otherSettlementId,
+      userId: "u2",
+      settledAt: laterAsOf,
+      user: makeUser({
+        user_id: "u2",
+        openid: "openid_u2",
+        career_valid_predictions: 20,
+      }),
+    });
+    const lockOwner = newUuid();
+    const userLockKey = levelScopeLockKey(user.user_id, LevelScope.Career, null);
+    await repo.jobLocks.acquire(
+      userLockKey,
+      lockOwner,
+      new Date(Date.now() + 60_000),
+    );
+
+    const outcome = await new LevelCorrectionReevalService(repo, FIRST_EVAL)
+      .runPendingCompensation(laterAsOf);
+
+    expect(outcome).toMatchObject({
+      kind: "deferred",
+      scanned_count: 2,
+      completed_count: 1,
+      pending_count: 1,
+      deferred_reason: "user_lock_held",
+    });
+    await expect(repo.settlements.findById(otherSettlementId)).resolves.toMatchObject({
+      level_reeval_status: "completed",
+    });
+    await expect(repo.settlements.findById(correctionSettlementId)).resolves.toMatchObject({
+      level_reeval_status: "pending",
+    });
+    await repo.jobLocks.release(userLockKey, lockOwner);
+  });
+
+  it("[Slice 3] 同一用户前序单据 deferred 时后续单据不越序处理", async () => {
+    const { repo, user, correctionSettlementId } = await seedCorrection(false);
+    const correction = await repo.settlements.findById(correctionSettlementId);
+    if (correction === null) throw new Error("test fixture missing correction");
+    await repo.settlements.update({ ...correction, level_reeval_status: "pending" });
+    const laterAsOf = new Date(CORRECTION_AS_OF.getTime() + 60 * 60 * 1000);
+    const laterSettlementId = "scorrection-same-user-later";
+    await addStandaloneCorrection(repo, {
+      settlementId: laterSettlementId,
+      userId: user.user_id,
+      settledAt: laterAsOf,
+    });
+    const jobLocks = repo.jobLocks;
+    const acquire = jobLocks.acquire.bind(jobLocks);
+    let failedOnce = false;
+    const acquireSpy = vi.spyOn(jobLocks, "acquire").mockImplementation(
+      async (key, ownerId, leaseUntil) => {
+        if (!failedOnce && key === levelScopeLockKey(user.user_id, LevelScope.Career, null)) {
+          failedOnce = true;
+          return false;
+        }
+        return acquire(key, ownerId, leaseUntil);
+      },
+    );
+    const repoProxy = new Proxy(repo, {
+      get(target, prop, receiver) {
+        if (prop === "jobLocks") return jobLocks;
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const service = new LevelCorrectionReevalService(repoProxy, FIRST_EVAL);
+
+    const first = await service.runPendingCompensation(laterAsOf);
+
+    expect(first).toMatchObject({
+      kind: "deferred",
+      scanned_count: 2,
+      completed_count: 0,
+      pending_count: 2,
+      deferred_reason: "user_lock_held",
+    });
+    await expect(repo.settlements.findById(correctionSettlementId)).resolves.toMatchObject({
+      level_reeval_status: "pending",
+    });
+    await expect(repo.settlements.findById(laterSettlementId)).resolves.toMatchObject({
+      level_reeval_status: "pending",
+    });
+
+    acquireSpy.mockRestore();
+    const second = await service.runPendingCompensation(laterAsOf);
+
+    expect(second).toMatchObject({
+      kind: "completed",
+      scanned_count: 2,
+      completed_count: 2,
+      pending_count: 0,
+    });
+  });
+
   it("[Slice 2] 单单超过 20 个用户时循环内续租并回调 onStep", async () => {
     const { repo, correctionSettlementId } = await seedCorrection(false);
     const correction = await repo.settlements.findById(correctionSettlementId);
@@ -937,5 +1319,140 @@ describe("LevelCorrectionReevalService §17.7 / §32.10", () => {
     expect(outcome.kind).toBe("deferred");
     expect((await repo.settlements.findById(correctionSettlementId))?.level_reeval_status)
       .toBe("pending");
+  });
+});
+
+const SCORE_AT = new Date("2026-08-11T03:04:05.000Z");
+
+function installScoreRace(repo: InMemoryRepository, log: string[]): void {
+  const injected = new Set<string>();
+  const original = repo.withTransaction.bind(repo);
+  repo.withTransaction = (async (fn) => original(async (tx) => {
+    const rawUsers = tx.users;
+    const rawStats = tx.userSeasonStats;
+    const users = {
+      ...rawUsers,
+      findByIdForUpdate: async (userId: string) => {
+        log.push(`users.findByIdForUpdate|${userId}`);
+        const user = await rawUsers.findByIdForUpdate!(userId);
+        if (user !== null && !injected.has(`user:${userId}`)) {
+          injected.add(`user:${userId}`);
+          await rawUsers.update({
+            ...user,
+            career_points: 7777,
+            career_last_scoring_match_at: SCORE_AT,
+          });
+        }
+        return user;
+      },
+      update: async (user: User) => {
+        log.push(`users.update|${user.user_id}`);
+        return rawUsers.update(user);
+      },
+      patchFields: async (userId: string, fields: Partial<User>) => {
+        log.push(`users.patchFields|${userId}|${Object.keys(fields).sort().join(",")}`);
+        return rawUsers.patchFields!(userId, fields);
+      },
+    };
+    const stats = rawStats === undefined ? undefined : {
+      ...rawStats,
+      findByUserAndSeasonForUpdate: async (userId: string, seasonId: string) => {
+        log.push(`stats.findByUserAndSeasonForUpdate|${seasonId}`);
+        const row = await rawStats.findByUserAndSeasonForUpdate!(userId, seasonId);
+        const key = `stats:${userId}:${seasonId}`;
+        if (row !== null && !injected.has(key)) {
+          injected.add(key);
+          await rawStats.update({
+            ...row,
+            points: 8888,
+            last_scoring_match_at: SCORE_AT,
+          });
+        }
+        return row;
+      },
+      update: async (row: UserSeasonStats) => {
+        log.push(`stats.update|${row.level_season_id}`);
+        return rawStats.update(row);
+      },
+      patchFields: async (
+        userId: string,
+        seasonId: string,
+        fields: Partial<UserSeasonStats>,
+      ) => {
+        log.push(`stats.patchFields|${seasonId}|${Object.keys(fields).sort().join(",")}`);
+        return rawStats.patchFields!(userId, seasonId, fields);
+      },
+    };
+    const proxied = new Proxy(tx, {
+      get(target, prop) {
+        if (prop === "users") return users;
+        if (prop === "userSeasonStats") return stats;
+        const value = Reflect.get(target, prop, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    log.push("tx:begin");
+    try {
+      return await fn(proxied as UnitOfWork);
+    } finally {
+      log.push("tx:end");
+    }
+  })) as InMemoryRepository["withTransaction"];
+}
+
+function writeTransactions(log: string[]): string[][] {
+  const groups: string[][] = [];
+  let current: string[] | null = null;
+  for (const line of log) {
+    if (line === "tx:begin") current = [];
+    else if (line === "tx:end") {
+      if (current !== null) groups.push(current);
+      current = null;
+    } else if (current !== null) current.push(line);
+  }
+  return groups.filter((events) => events.some((event) =>
+    event.startsWith("users.patchFields") ||
+    event.startsWith("stats.patchFields") ||
+    event.startsWith("users.update") ||
+    event.startsWith("stats.update") ||
+    event.includes("ForUpdate"),
+  ));
+}
+
+describe("LevelCorrectionReevalService A-S4-01", () => {
+  it("修正重评先行锁 users 再锁 user_season_stats，只局部更新等级字段", async () => {
+    const { repo, user, correctionSettlementId } = await seedCorrection(true);
+    const log: string[] = [];
+    installScoreRace(repo, log);
+
+    await reeval(repo).runForSettlement(correctionSettlementId, CORRECTION_AS_OF);
+
+    expect(writeTransactions(log)).toEqual([
+      [
+        `users.findByIdForUpdate|${user.user_id}`,
+        `users.patchFields|${user.user_id}|career_best_level,career_level,career_level_state,updated_at`,
+      ],
+      [
+        `users.findByIdForUpdate|${user.user_id}`,
+        "stats.findByUserAndSeasonForUpdate|2026_2027",
+        "stats.patchFields|2026_2027|best_level,level,level_state,updated_at",
+      ],
+    ]);
+    await expect(repo.users.findById(user.user_id)).resolves.toMatchObject({
+      career_level: 3,
+      career_best_level: 4,
+      career_points: 7777,
+      career_valid_predictions: 20,
+      career_last_scoring_match_at: SCORE_AT,
+    });
+    await expect(repo.userSeasonStats.findByUserAndSeason(user.user_id, "2026_2027"))
+      .resolves.toMatchObject({
+        level: 3,
+        best_level: 4,
+        is_level_frozen: false,
+        points: 8888,
+        valid_predictions: 20,
+        last_scoring_match_at: SCORE_AT,
+      });
   });
 });

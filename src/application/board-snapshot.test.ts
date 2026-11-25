@@ -7,7 +7,11 @@ import {
   type UserSeasonStats,
 } from "../domain/types.js";
 import { InMemoryRepository, type UnitOfWork } from "../infrastructure/repositories.js";
-import { BoardSnapshotService, boardSnapshotJobLockKey } from "./board-snapshot.js";
+import {
+  BoardSnapshotService,
+  boardSnapshotJobLockKey,
+  writeBoardSnapshotInTransaction,
+} from "./board-snapshot.js";
 import { RankingQueryService } from "./ranking-query.js";
 
 const NOW = new Date("2026-08-09T00:00:00.000Z");
@@ -130,6 +134,52 @@ describe("BoardSnapshotService", () => {
       .resolves.toHaveLength(2);
     await expect(repo.boardSnapshots.findByBoardAndSnapshotAt(RankingBoard.Career, secondAt))
       .resolves.toHaveLength(2);
+  });
+
+  it("keeps scheduled writes idempotent for an existing snapshot timestamp", async () => {
+    const repo = new InMemoryRepository();
+    const user = makeUser("career-user", {
+      career_points: 12,
+      career_wdl_hits: 1,
+      career_exact_hits: 1,
+      career_valid_predictions: 1,
+    });
+    await repo.users.insert(user);
+    const service = new BoardSnapshotService(repo);
+    const first = await service.generate(RankingBoard.Career, NOW);
+    await repo.users.update({
+      ...user,
+      career_points: 24,
+      career_wdl_hits: 2,
+      career_exact_hits: 2,
+      career_valid_predictions: 2,
+      updated_at: new Date(NOW.getTime() + 1),
+    });
+
+    await expect(service.generate(RankingBoard.Career, NOW)).resolves.toEqual(first);
+    await expect(repo.boardSnapshots.findByBoardAndSnapshotAt(RankingBoard.Career, NOW))
+      .resolves.toEqual(first);
+  });
+
+  it("[A-S5-12] rejects an explicit same-timestamp rebuild instead of silently reusing old rows", async () => {
+    const repo = new InMemoryRepository();
+    await repo.users.insert(makeUser("career-user", {
+      career_points: 12,
+      career_wdl_hits: 1,
+      career_exact_hits: 1,
+      career_valid_predictions: 1,
+    }));
+    const service = new BoardSnapshotService(repo);
+    const original = await service.generate(RankingBoard.Career, NOW);
+
+    await expect(repo.withTransaction((tx) =>
+      writeBoardSnapshotInTransaction(tx, RankingBoard.Career, NOW, { onExisting: "reject" })
+    )).rejects.toMatchObject({
+      code: "BOARD_SNAPSHOT_ALREADY_EXISTS",
+      details: { board: RankingBoard.Career, snapshot_at: NOW.toISOString() },
+    });
+    await expect(repo.boardSnapshots.findByBoardAndSnapshotAt(RankingBoard.Career, NOW))
+      .resolves.toEqual(original);
   });
 
   it("includes only strength users with a 50-match evaluation window", async () => {
