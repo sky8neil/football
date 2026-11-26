@@ -1,7 +1,12 @@
 /**
  * 这是本地调用次数计数，不等于平台账单口径，不能直接换算资源点。
  */
-import type { CloudBaseDb, CloudBaseDocument, CloudBaseQueryOptions } from "./cloudbase-db.js";
+import type {
+  CloudBaseDb,
+  CloudBaseDocument,
+  CloudBaseQueryOptions,
+  TransactionOptions,
+} from "./cloudbase-db.js";
 
 export interface DbOpCollectionCount {
   collection: string;
@@ -83,8 +88,14 @@ export function createCountingDb(db: CloudBaseDb): { db: CloudBaseDb; counter: D
         bump("read", collection);
         return inner.count(collection, filter);
       },
-      transaction<T>(work: (transactionDb: CloudBaseDb) => Promise<T>) {
-        return inner.transaction((transactionDb) => work(wrap(transactionDb)));
+      transaction<T>(
+        work: (transactionDb: CloudBaseDb) => Promise<T>,
+        options?: TransactionOptions,
+      ) {
+        const wrappedWork = (transactionDb: CloudBaseDb) => work(wrap(transactionDb));
+        return options === undefined
+          ? inner.transaction(wrappedWork)
+          : inner.transaction(wrappedWork, options);
       },
     };
     if (inner.getForUpdate) {

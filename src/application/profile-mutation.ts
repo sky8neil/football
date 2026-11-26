@@ -2,6 +2,7 @@ import {
   AdminStatus,
   GroupMemberStatus,
   GroupStatus,
+  PeriodType,
   SCHEMA_VERSION,
   TeamStatus,
   UserStatus,
@@ -13,14 +14,20 @@ import {
   validationError,
 } from "../domain/errors.js";
 import { isValidUuid } from "../domain/ids.js";
+import { calculatePeriodKey, periodEndAt } from "../domain/time.js";
 import type {
   AppRepository,
   AuthSessionRevoker,
+  RankingRepository,
   UnitOfWork,
 } from "../infrastructure/repositories.js";
 import { validateNickname } from "./session.js";
 import { ProfileQueryService, type MyProfileData } from "./profile.js";
 import { assertValidServerNow } from "./period-finalize.js";
+import {
+  rebuildGlobalRanksInTransaction,
+  withRankingPeriodLocks,
+} from "./settlement-item-application-service.js";
 
 export interface ProfilePatch {
   nickname?: string;
@@ -176,6 +183,38 @@ async function disableAdminsByOpenid(
   });
 }
 
+class MissingWeekRankingLocksError extends Error {
+  constructor(readonly missingPeriodKeys: readonly string[]) {
+    super(`注销事务内新增未加锁周榜: ${missingPeriodKeys.join(",")}`);
+  }
+}
+
+async function findAffectedUnfinalizedWeekKeys(
+  rankings: RankingRepository | undefined,
+  userId: string,
+  serverNow: Date,
+): Promise<string[]> {
+  if (rankings === undefined || rankings.updateGlobalRank === undefined) {
+    return [];
+  }
+  const currentWeekKey = calculatePeriodKey(PeriodType.Week, serverNow);
+  const candidateEntries = rankings.findWeekEntriesSince !== undefined
+    ? await rankings.findWeekEntriesSince(currentWeekKey, false)
+    : rankings.findUnfinalizedWeeks !== undefined
+      ? await rankings.findUnfinalizedWeeks()
+      : await rankings.findAll();
+  return [...new Set(
+    candidateEntries
+      .filter((entry) =>
+        entry.user_id === userId &&
+        entry.period_type === PeriodType.Week &&
+        !entry.is_final &&
+        periodEndAt(PeriodType.Week, entry.period_key).getTime() > serverNow.getTime(),
+      )
+      .map((entry) => entry.period_key),
+  )].sort((left, right) => left.localeCompare(right));
+}
+
 /** 用户资料写操作；注销只保留永久 user_id，并将身份改为不可登录墓碑值。 */
 export class ProfileMutationService {
   constructor(
@@ -236,67 +275,117 @@ export class ProfileMutationService {
       throw validationError("user_id 必须为 UUID v4", { field: "user_id" });
     }
 
-    return this.repo.withTransaction(async (tx) => {
-      const userLock = requireUserRowLock(tx);
-      const user = await userLock.findByIdForUpdate(userId);
-      if (user === null) {
-        throw notFoundError("USER");
-      }
-      if (user.status !== UserStatus.Active) {
-        throw conflictError("USER_DELETED", "该账号已被注销");
-      }
-      // 4.5 墓碑值不可作为 active 用户的事实身份；命中即内部数据异常。
-      if (user.openid.startsWith("deleted:")) {
-        throw internalError("active 用户 openid 使用了 deleted: 墓碑前缀");
+    const maxAttempts = 3;
+    for (let attempt = 1; ; attempt += 1) {
+      // 锁序：先在事务外按字典序获取全部受影响未封板周的 ranking:week:* 分布式锁，再进单事务锁定 DB 行。
+      const preAffectedWeekKeys = await findAffectedUnfinalizedWeekKeys(
+        this.repo.rankings,
+        userId,
+        serverNow,
+      );
+      if (preAffectedWeekKeys.length > 0 && this.repo.jobLocks === undefined) {
+        throw internalError("注销重排周榜缺少 jobLocks repository");
       }
 
-      // D-P1 方案 B：先写/更新注销身份映射（original_openid → 本 user_id），
-      // 再墓碑化 users 主记录；同一事务内 upsert 保证 deleted 解析不丢窗口。
-      const existing = await tx.deletedOpenidMappings.findByOriginalOpenid(user.openid);
-      await tx.deletedOpenidMappings.upsert({
-        schema_version: SCHEMA_VERSION,
-        original_openid: user.openid,
-        deleted_user_id: user.user_id,
-        deleted_at: serverNow,
-        created_at: existing?.created_at ?? serverNow,
-        updated_at: serverNow,
-      });
+      try {
+        return await withRankingPeriodLocks(
+          this.repo,
+          PeriodType.Week,
+          preAffectedWeekKeys,
+          serverNow,
+          async (lockedWeekKeys) => {
+            const lockedWeekSet = new Set(lockedWeekKeys);
+            return this.repo.withTransaction(async (tx) => {
+              const userLock = requireUserRowLock(tx);
+              const user = await userLock.findByIdForUpdate(userId);
+              if (user === null) {
+                throw notFoundError("USER");
+              }
+              if (user.status !== UserStatus.Active) {
+                throw conflictError("USER_DELETED", "该账号已被注销");
+              }
+              // 4.5 墓碑值不可作为 active 用户的事实身份；命中即内部数据异常。
+              if (user.openid.startsWith("deleted:")) {
+                throw internalError("active 用户 openid 使用了 deleted: 墓碑前缀");
+              }
 
-      await userLock.patchFields(user.user_id, {
-        openid: `deleted:${user.user_id}`,
-        unionid: null,
-        nickname: null,
-        favorite_team_id: null,
-        status: UserStatus.Deleted,
-        deleted_at: serverNow,
-        updated_at: serverNow,
-      });
+              // D-P1 方案 B：先写/更新注销身份映射（original_openid → 本 user_id），
+              // 再墓碑化 users 主记录；同一事务内 upsert 保证 deleted 解析不丢窗口。
+              const existing = await tx.deletedOpenidMappings.findByOriginalOpenid(user.openid);
+              await tx.deletedOpenidMappings.upsert({
+                schema_version: SCHEMA_VERSION,
+                original_openid: user.openid,
+                deleted_user_id: user.user_id,
+                deleted_at: serverNow,
+                created_at: existing?.created_at ?? serverNow,
+                updated_at: serverNow,
+              });
 
-      if (tx.userSeasonStats !== undefined) {
-        const seasonLock = requireSeasonRowLock(tx);
-        const seasonStats = [...await tx.userSeasonStats.findByUser(userId)]
-          .sort((left, right) => left.level_season_id.localeCompare(right.level_season_id));
-        for (const stats of seasonStats) {
-          const locked = await seasonLock.findByUserAndSeasonForUpdate(
-            userId,
-            stats.level_season_id,
-          );
-          if (locked === null || locked.is_level_frozen) continue;
-          await seasonLock.patchFields(userId, stats.level_season_id, {
-            is_level_frozen: true,
-            updated_at: serverNow,
-          });
+              await userLock.patchFields(user.user_id, {
+                openid: `deleted:${user.user_id}`,
+                unionid: null,
+                nickname: null,
+                favorite_team_id: null,
+                status: UserStatus.Deleted,
+                deleted_at: serverNow,
+                updated_at: serverNow,
+              });
+
+              if (tx.userSeasonStats !== undefined) {
+                const seasonLock = requireSeasonRowLock(tx);
+                const seasonStats = [...await tx.userSeasonStats.findByUser(userId)]
+                  .sort((left, right) => left.level_season_id.localeCompare(right.level_season_id));
+                for (const stats of seasonStats) {
+                  const locked = await seasonLock.findByUserAndSeasonForUpdate(
+                    userId,
+                    stats.level_season_id,
+                  );
+                  if (locked === null || locked.is_level_frozen) continue;
+                  await seasonLock.patchFields(userId, stats.level_season_id, {
+                    is_level_frozen: true,
+                    updated_at: serverNow,
+                  });
+                }
+              }
+
+              const txAffectedWeekKeys = await findAffectedUnfinalizedWeekKeys(
+                tx.rankings,
+                userId,
+                serverNow,
+              );
+              const missingWeekKeys = txAffectedWeekKeys.filter((key) => !lockedWeekSet.has(key));
+              if (missingWeekKeys.length > 0) {
+                // 极端并发下在获取周榜锁与锁定 users 之间新增了未封板周榜；回滚并释放旧锁后在外层补锁重试。
+                throw new MissingWeekRankingLocksError(missingWeekKeys);
+              }
+              for (const periodKey of txAffectedWeekKeys) {
+                await rebuildGlobalRanksInTransaction(tx, PeriodType.Week, periodKey, serverNow);
+              }
+
+              await leaveAllGroups(tx, userId, serverNow);
+              await disableAdminsByOpenid(tx, user.openid, serverNow);
+              const authSessions = tx.authSessions ?? this.options.authSessions;
+              if (authSessions !== undefined) {
+                await authSessions.deleteByOpenid(user.openid);
+              }
+
+              return { user_id: user.user_id, deleted: true as const };
+            });
+          },
+        );
+      } catch (error) {
+        if (error instanceof MissingWeekRankingLocksError) {
+          if (attempt >= maxAttempts) {
+            throw conflictError(
+              "RANKING_REBUILD_ALREADY_RUNNING",
+              "注销期间受影响周榜存在并发新增，请重试",
+              { period_keys: [...error.missingPeriodKeys] },
+            );
+          }
+          continue;
         }
+        throw error;
       }
-
-      await leaveAllGroups(tx, userId, serverNow);
-      await disableAdminsByOpenid(tx, user.openid, serverNow);
-      const authSessions = tx.authSessions ?? this.options.authSessions;
-      if (authSessions !== undefined) {
-        await authSessions.deleteByOpenid(user.openid);
-      }
-
-      return { user_id: user.user_id, deleted: true };
-    });
+    }
   }
 }

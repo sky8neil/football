@@ -71,19 +71,19 @@
             <text class="stat-label">精确命中</text>
           </view>
         </view>
-
-        <view class="current-row">
-          <view class="current-item">
-            <text>等级 Lv.{{card.seasonLevel}}</text>
-            <text class="now-tag">当前</text>
-          </view>
-          <view class="current-item">
-            <text>生涯积分 {{card.careerPoints}}</text>
-            <text class="now-tag">当前</text>
-          </view>
-        </view>
-        <view class="level-season">等级赛季 {{card.levelSeasonText}}</view>
       </block>
+
+      <view class="current-row">
+        <view class="current-item">
+          <text>等级 Lv.{{card.seasonLevel}}</text>
+          <text class="now-tag">当前</text>
+        </view>
+        <view class="current-item">
+          <text>生涯积分 {{card.careerPoints}}</text>
+          <text class="now-tag">当前</text>
+        </view>
+      </view>
+      <view class="level-season">等级赛季 {{card.levelSeasonText}}</view>
 
       <view class="matches-section">
         <view class="matches-heading">单场预测明细</view>

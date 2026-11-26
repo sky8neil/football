@@ -1,4 +1,9 @@
 const { getPublicProfile } = require("../../services/profile.js");
+const {
+  isPlaceholderLogo,
+  resolveFavoriteTeamSync,
+  resolveFavoriteTeamRemote,
+} = require("../../services/teams.js");
 const { findTeam } = require("../../utils/team-registry.js");
 const { presentTeam } = require("../../utils/team-presentation.js");
 const { PLACEHOLDER } = require("../../utils/logo-registry.js");
@@ -6,50 +11,13 @@ const { PLACEHOLDER } = require("../../utils/logo-registry.js");
 const LEVEL_NAMES = ["", "青训新人", "潜力新星", "崭露头角", "坐稳主力", "球队核心", "顶级球星"];
 const DELETED_DISPLAY_NAME = "已注销用户";
 
-function readStorage(key) {
-  if (typeof wx === "undefined" || typeof wx.getStorageSync !== "function") return "";
-  try {
-    return wx.getStorageSync(key) || "";
-  } catch (_error) {
-    return "";
-  }
-}
-
 function resolveFavoriteTeam(favoriteTeamId) {
-  if (!favoriteTeamId) {
-    return {
-      favoriteTeamId: null,
-      favoriteTeamText: "未设置",
-      favoriteTeamLogo: PLACEHOLDER,
-      hasFavoriteTeam: false,
-    };
-  }
-  const registered = findTeam(favoriteTeamId);
-  if (registered) {
-    const presented = presentTeam(
-      {
-        team_id: favoriteTeamId,
-        name: registered.source_name,
-        name_zh: registered.name_zh,
-        league_id: registered.league_id,
-      },
-      registered.league_id,
-    );
-    return {
-      favoriteTeamId,
-      favoriteTeamText: presented.nameZh || registered.name_zh || registered.source_name || "已选择球队",
-      favoriteTeamLogo: presented.logo || PLACEHOLDER,
-      hasFavoriteTeam: true,
-    };
-  }
-  const cachedName = readStorage("team_name:" + favoriteTeamId);
-  const cachedLogo = readStorage("team_logo:" + favoriteTeamId);
-  return {
-    favoriteTeamId,
-    favoriteTeamText: cachedName || "已选择球队",
-    favoriteTeamLogo: cachedLogo || PLACEHOLDER,
-    hasFavoriteTeam: true,
-  };
+  const { needsRemoteLookup: _needsRemoteLookup, ...team } = resolveFavoriteTeamSync(favoriteTeamId, {
+    findTeam,
+    presentTeam,
+    placeholder: PLACEHOLDER,
+  });
+  return team;
 }
 
 function levelName(level) {
@@ -80,8 +48,10 @@ Page({
   },
 
   requestSerial: 0,
+  unloaded: false,
 
   onLoad(options) {
+    this.unloaded = false;
     const rawUserId = options && typeof options.user_id === "string" ? options.user_id.trim() : "";
     let userId = rawUserId;
     if (userId) {
@@ -93,6 +63,11 @@ Page({
     }
     this.userId = userId;
     return this.loadProfile();
+  },
+
+  onUnload() {
+    this.unloaded = true;
+    this.requestSerial += 1;
   },
 
   loadProfile() {
@@ -112,7 +87,7 @@ Page({
       errorMessage: "",
     });
     return getPublicProfile(this.userId).then((result) => {
-      if (this.requestSerial !== requestSerial) return;
+      if (this.unloaded || this.requestSerial !== requestSerial) return;
       if (!result || typeof result !== "object") {
         this.setData({
           state: "error",
@@ -193,13 +168,53 @@ Page({
         seasonLevelName: levelName(seasonLevel),
         errorMessage: "",
       });
+      return this.hydrateFavoriteTeam(team.favoriteTeamId, isDeleted, requestSerial);
     }).catch(() => {
-      if (this.requestSerial !== requestSerial) return;
+      if (this.unloaded || this.requestSerial !== requestSerial) return;
       this.setData({
         state: "error",
         errorMessage: "网络异常，请稍后重试",
       });
     });
+  },
+
+  async hydrateFavoriteTeam(favoriteTeamId, isDeleted, requestSerial) {
+    if (!favoriteTeamId || isDeleted) return;
+    const syncState = resolveFavoriteTeamSync(favoriteTeamId, {
+      findTeam,
+      presentTeam,
+      placeholder: PLACEHOLDER,
+    });
+    if (!syncState.needsRemoteLookup) return;
+    try {
+      const resolved = await resolveFavoriteTeamRemote(favoriteTeamId, {
+        presentTeam,
+        placeholder: PLACEHOLDER,
+      });
+      if (!resolved) return;
+      if (
+        this.unloaded ||
+        this.requestSerial !== requestSerial ||
+        this.data.state !== "ready" ||
+        this.data.isDeleted ||
+        this.data.favoriteTeamId !== favoriteTeamId
+      ) {
+        return;
+      }
+      const nextText = resolved.favoriteTeamText || this.data.favoriteTeamText || "已选择球队";
+      const nextLogo = !isPlaceholderLogo(resolved.favoriteTeamLogo, PLACEHOLDER)
+        ? resolved.favoriteTeamLogo
+        : (this.data.favoriteTeamLogo || PLACEHOLDER);
+      if (nextText === this.data.favoriteTeamText && nextLogo === this.data.favoriteTeamLogo) {
+        return;
+      }
+      this.setData({
+        favoriteTeamText: nextText,
+        favoriteTeamLogo: nextLogo,
+      });
+    } catch (_error) {
+      /* 远端球队资料补全失败时保留兜底展示，不阻塞公开主页 */
+    }
   },
 
   onTeamLogoError() {

@@ -122,6 +122,7 @@ describe("H4 dual-deploy identity OpenAPI contract", () => {
       ["/admin/auth/login", "post"],
       ["/leagues/status", "get"],
       ["/league-seasons", "get"],
+      ["/teams", "get"],
       ["/matches", "get"],
       ["/matches/{match_id}", "get"],
       ["/profiles/{user_id}", "get"],
@@ -171,6 +172,7 @@ describe("H4 dual-deploy identity OpenAPI contract", () => {
     const bearerRejected = [
       ["/leagues/status", "get"],
       ["/league-seasons", "get"],
+      ["/teams", "get"],
       ["/matches", "get"],
       ["/matches/{match_id}", "get"],
       ["/profiles/{user_id}", "get"],
@@ -181,7 +183,7 @@ describe("H4 dual-deploy identity OpenAPI contract", () => {
         /'401':\n          \$ref: '#\/components\/responses\/Unauthorized'/,
       );
     }
-    for (const path of ["/league-seasons", "/share-card/{user_id}"] as const) {
+    for (const path of ["/league-seasons", "/teams", "/share-card/{user_id}"] as const) {
       expect(operationBlock(specification, path, "get")).toMatch(
         /'429':\n          \$ref: '#\/components\/responses\/RateLimited'/,
       );

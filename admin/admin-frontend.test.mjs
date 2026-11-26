@@ -9,6 +9,163 @@ import {
   validateReason,
 } from "./state.js";
 
+function createDeferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+function flushTasks() {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+async function mountAdminApp(fetchHandler) {
+  const prevWindow = globalThis.window;
+  const prevDocument = globalThis.document;
+  const prevFetch = globalThis.fetch;
+
+  const elements = new Map();
+  const makeElement = (tagName, id = "") => {
+    const classes = new Set();
+    const listeners = new Map();
+    let textValue = "";
+    const node = {
+      tagName: tagName.toUpperCase(),
+      id,
+      value: "",
+      checked: false,
+      disabled: false,
+      required: false,
+      colSpan: 1,
+      style: {},
+      dataset: {},
+      children: [],
+      get className() {
+        return [...classes].join(" ");
+      },
+      set className(val) {
+        classes.clear();
+        for (const token of String(val ?? "").split(/\s+/).filter(Boolean)) {
+          classes.add(token);
+        }
+      },
+      classList: {
+        toggle(cls, force) {
+          if (force === undefined) {
+            if (classes.has(cls)) classes.delete(cls);
+            else classes.add(cls);
+          } else if (force) {
+            classes.add(cls);
+          } else {
+            classes.delete(cls);
+          }
+        },
+        contains(cls) {
+          return classes.has(cls);
+        },
+      },
+      get textContent() {
+        if (this.children.length === 0) return textValue;
+        return this.children.map((child) => child.textContent).join("");
+      },
+      set textContent(val) {
+        textValue = String(val ?? "");
+        this.children = [];
+      },
+      appendChild(child) {
+        this.children.push(child);
+        return child;
+      },
+      append(...nodes) {
+        this.children.push(...nodes);
+      },
+      addEventListener(type, fn) {
+        const list = listeners.get(type) ?? [];
+        list.push(fn);
+        listeners.set(type, list);
+      },
+      async trigger(type, event = {}) {
+        const evt = { preventDefault() {}, ...event };
+        for (const fn of listeners.get(type) ?? []) {
+          await fn(evt);
+        }
+      },
+    };
+    return node;
+  };
+
+  const getEl = (id) => {
+    if (!elements.has(id)) {
+      elements.set(id, makeElement("div", id));
+    }
+    return elements.get(id);
+  };
+
+  // Seed default control states from admin/index.html
+  getEl("anomaly-status-filter").value = "open";
+  getEl("anomaly-limit-filter").value = "20";
+  getEl("anomaly-prev-btn").disabled = true;
+  getEl("anomaly-next-btn").disabled = true;
+  getEl("rc-expected-version").value = "0";
+  getEl("audit-limit-filter").value = "20";
+  getEl("audit-prev-btn").disabled = true;
+  getEl("audit-next-btn").disabled = true;
+  getEl("rebuild-board").value = "week";
+
+  const authModeBtns = ["token", "passcode"].map((mode) => {
+    const btn = makeElement("button");
+    btn.dataset.authMode = mode;
+    return btn;
+  });
+  const navTabBtns = ["anomalies", "settlement", "teams", "rebuild", "audit"].map((tab) => {
+    const btn = makeElement("button");
+    btn.dataset.tab = tab;
+    return btn;
+  });
+  const tabPanels = ["anomalies", "settlement", "teams", "rebuild", "audit"].map((tab) =>
+    getEl(`tab-${tab}`),
+  );
+
+  const storage = new Map();
+  globalThis.window = {
+    sessionStorage: {
+      getItem: (k) => storage.get(k) ?? null,
+      setItem: (k, v) => storage.set(k, String(v)),
+      removeItem: (k) => storage.delete(k),
+    },
+  };
+  globalThis.document = {
+    getElementById: getEl,
+    createElement: (tag) => makeElement(tag),
+    createTextNode: (text) => ({ textContent: String(text ?? "") }),
+    querySelectorAll: (selector) => {
+      if (selector === "[data-auth-mode]") return authModeBtns;
+      if (selector === ".nav-tab") return navTabBtns;
+      if (selector === ".tab-panel") return tabPanels;
+      return [];
+    },
+  };
+  globalThis.fetch = fetchHandler;
+
+  vi.resetModules();
+  await import("./app.js");
+  await flushTasks();
+
+  return {
+    el: getEl,
+    cleanup() {
+      vi.resetModules();
+      globalThis.window = prevWindow;
+      globalThis.document = prevDocument;
+      globalThis.fetch = prevFetch;
+    },
+  };
+}
+
 describe("admin/ Web 管理端前端逻辑与 API 客户端", () => {
   it("AdminApiClient 完整覆盖登录、鉴权头、登出及全部管理端写/读接口", async () => {
     let token = null;
@@ -184,5 +341,475 @@ describe("admin/ Web 管理端前端逻辑与 API 客户端", () => {
     expect(caddy).toContain("respond @health 404");
     expect(caddy).toContain("reverse_proxy 127.0.0.1:8787");
     expect(caddy).toContain("X-Frame-Options DENY");
+  });
+
+  it("CR42-01: 先读取有比分比赛 A 再读取无比分比赛 B 时清空比分框，且空比分/非法比分不能提交", async () => {
+    const matchAId = "00000000-0000-4000-8000-00000000000a";
+    const matchBId = "00000000-0000-4000-8000-00000000000b";
+    const postBodies = [];
+
+    const app = await mountAdminApp(async (url, init = {}) => {
+      const method = init.method ?? "GET";
+      if (method === "GET" && url === `/v1/admin/matches/${matchAId}`) {
+        return new Response(
+          JSON.stringify({
+            data: {
+              match_id: matchAId,
+              match_status: "finished",
+              settlement_status: "settled",
+              result_version: 1,
+              settled_result_version: 1,
+              result_source: "official",
+              regular_home_score: 4,
+              regular_away_score: 1,
+              open_anomalies: [],
+              home_team: { name_zh: "主队A" },
+              away_team: { name_zh: "客队A" },
+            },
+          }),
+          { status: 200 },
+        );
+      }
+      if (method === "GET" && url === `/v1/admin/matches/${matchBId}`) {
+        return new Response(
+          JSON.stringify({
+            data: {
+              match_id: matchBId,
+              match_status: "finished",
+              settlement_status: "failed",
+              result_version: 0,
+              settled_result_version: 0,
+              result_source: null,
+              regular_home_score: null,
+              regular_away_score: null,
+              open_anomalies: [],
+              home_team: { name_zh: "主队B" },
+              away_team: { name_zh: "客队B" },
+            },
+          }),
+          { status: 200 },
+        );
+      }
+      if (method === "POST" && url === `/v1/admin/matches/${matchBId}/result-corrections`) {
+        const body = JSON.parse(String(init.body));
+        postBodies.push(body);
+        return new Response(
+          JSON.stringify({ data: { result_version: 1, audit_id: "audit-1" } }),
+          { status: 200 },
+        );
+      }
+      throw new Error(`Unexpected request: ${method} ${url}`);
+    });
+
+    try {
+      const { el } = app;
+      // 读取比赛 A (4:1)
+      el("rc-match-id").value = matchAId;
+      await el("rc-load-match-btn").trigger("click");
+      expect(el("rc-expected-version").value).toBe("1");
+      expect(el("rc-home-score").value).toBe("4");
+      expect(el("rc-away-score").value).toBe("1");
+
+      // 切换并读取无比分比赛 B (null:null)
+      el("rc-match-id").value = matchBId;
+      await el("rc-load-match-btn").trigger("click");
+      expect(el("rc-expected-version").value).toBe("0");
+      expect(el("rc-home-score").value).toBe("");
+      expect(el("rc-away-score").value).toBe("");
+
+      // 不填比分时禁止提交，避免 Number("") 静默成 0
+      el("rc-reason").value = "人工补录缺失比分";
+      await el("result-correction-form").trigger("submit");
+      expect(postBodies).toHaveLength(0);
+      expect(el("global-toast").className).toContain("error");
+
+      // 仅填一侧或非法负数/小数时也不得提交
+      el("rc-home-score").value = "2";
+      el("rc-away-score").value = "";
+      await el("result-correction-form").trigger("submit");
+      expect(postBodies).toHaveLength(0);
+
+      el("rc-home-score").value = "-1";
+      el("rc-away-score").value = "1.5";
+      await el("result-correction-form").trigger("submit");
+      expect(postBodies).toHaveLength(0);
+
+      // 显式填入 0:0 合法非负整数后允许提交
+      el("rc-home-score").value = "0";
+      el("rc-away-score").value = "0";
+      await el("result-correction-form").trigger("submit");
+      expect(postBodies).toEqual([
+        {
+          expected_result_version: 0,
+          regular_home_score: 0,
+          regular_away_score: 0,
+          reason: "人工补录缺失比分",
+        },
+      ]);
+      expect(el("rc-expected-version").value).toBe("1");
+    } finally {
+      app.cleanup();
+    }
+  });
+
+  it("CR42-02: 异常/球队/审计列表筛选请求乱序返回时仅保留最新请求的行与分页状态", async () => {
+    const anomalyRequests = [];
+    const teamRequests = [];
+    const auditRequests = [];
+
+    const app = await mountAdminApp(async (url) => {
+      const deferred = createDeferred();
+      if (url.startsWith("/v1/admin/anomalies")) {
+        anomalyRequests.push({ url, deferred });
+      } else if (url.startsWith("/v1/admin/teams")) {
+        teamRequests.push({ url, deferred });
+      } else if (url.startsWith("/v1/admin/audit-logs")) {
+        auditRequests.push({ url, deferred });
+      } else {
+        throw new Error(`Unexpected request: ${url}`);
+      }
+      return deferred.promise;
+    });
+
+    try {
+      const { el } = app;
+
+      // 1) 异常列表两次筛选请求逆序返回
+      el("anomaly-status-filter").value = "open";
+      await el("anomaly-status-filter").trigger("change");
+      el("anomaly-status-filter").value = "resolved";
+      await el("anomaly-status-filter").trigger("change");
+      expect(anomalyRequests).toHaveLength(2);
+
+      // 新筛选请求先返回
+      anomalyRequests[1].deferred.resolve(
+        new Response(
+          JSON.stringify({
+            data: {
+              items: [
+                {
+                  anomaly_id: "anom-new",
+                  match_id: "match-new",
+                  type: "RESULT_CONFLICT",
+                  status: "resolved",
+                  blocking: false,
+                  occurrence_count: 1,
+                  last_seen_at: "2026-08-01T10:00:00.000Z",
+                },
+              ],
+              page: { next_cursor: "cursor-new", has_more: true },
+            },
+          }),
+          { status: 200 },
+        ),
+      );
+      await flushTasks();
+
+      expect(el("anomalies-tbody").children).toHaveLength(1);
+      expect(el("anomalies-tbody").textContent).toContain("anom-new");
+      expect(el("anomaly-next-btn").disabled).toBe(false);
+
+      // 旧筛选请求后返回：不能覆盖表格，也不能覆盖分页按钮或游标
+      anomalyRequests[0].deferred.resolve(
+        new Response(
+          JSON.stringify({
+            data: {
+              items: [
+                {
+                  anomaly_id: "anom-old-1",
+                  match_id: "match-old-1",
+                  type: "FINISHED_NO_SCORE",
+                  status: "open",
+                  blocking: true,
+                  occurrence_count: 3,
+                  last_seen_at: "2026-08-01T08:00:00.000Z",
+                },
+                {
+                  anomaly_id: "anom-old-2",
+                  match_id: "match-old-2",
+                  type: "FINISHED_NO_SCORE",
+                  status: "open",
+                  blocking: true,
+                  occurrence_count: 2,
+                  last_seen_at: "2026-08-01T07:00:00.000Z",
+                },
+              ],
+              page: { next_cursor: "cursor-old", has_more: false },
+            },
+          }),
+          { status: 200 },
+        ),
+      );
+      await flushTasks();
+
+      expect(el("anomalies-tbody").children).toHaveLength(1);
+      expect(el("anomalies-tbody").textContent).toContain("anom-new");
+      expect(el("anomalies-tbody").textContent).not.toContain("anom-old-1");
+      expect(el("anomalies-tbody").textContent).not.toContain("anom-old-2");
+      expect(el("anomaly-next-btn").disabled).toBe(false);
+
+      // 点击下一页应沿用新筛选的 cursor-new
+      await el("anomaly-next-btn").trigger("click");
+      expect(anomalyRequests).toHaveLength(3);
+      expect(anomalyRequests[2].url).toContain("cursor=cursor-new");
+      anomalyRequests[2].deferred.resolve(
+        new Response(
+          JSON.stringify({ data: { items: [], page: { next_cursor: null, has_more: false } } }),
+          { status: 200 },
+        ),
+      );
+      await flushTasks();
+
+      // 2) 球队列表两次查询逆序返回
+      el("teams-search-input").value = "OldTeam";
+      await el("teams-refresh-btn").trigger("click");
+      el("teams-search-input").value = "NewTeam";
+      await el("teams-refresh-btn").trigger("click");
+      expect(teamRequests).toHaveLength(2);
+
+      teamRequests[1].deferred.resolve(
+        new Response(
+          JSON.stringify({
+            data: {
+              items: [
+                {
+                  team_id: "team-new",
+                  league_id: "premier_league",
+                  name: "NewTeam FC",
+                  name_zh: "新队",
+                  logo_url: null,
+                  mappings: [],
+                },
+              ],
+            },
+          }),
+          { status: 200 },
+        ),
+      );
+      await flushTasks();
+      teamRequests[0].deferred.resolve(
+        new Response(
+          JSON.stringify({
+            data: {
+              items: [
+                {
+                  team_id: "team-old",
+                  league_id: "premier_league",
+                  name: "OldTeam FC",
+                  name_zh: "旧队",
+                  logo_url: null,
+                  mappings: [],
+                },
+              ],
+            },
+          }),
+          { status: 200 },
+        ),
+      );
+      await flushTasks();
+      expect(el("teams-tbody").children).toHaveLength(1);
+      expect(el("teams-tbody").textContent).toContain("team-new");
+      expect(el("teams-tbody").textContent).not.toContain("team-old");
+
+      // 3) 审计列表两次查询逆序返回
+      el("audit-action-filter").value = "resolve_anomaly";
+      await el("audit-action-filter").trigger("change");
+      el("audit-action-filter").value = "result_correction";
+      await el("audit-action-filter").trigger("change");
+      expect(auditRequests).toHaveLength(2);
+
+      auditRequests[1].deferred.resolve(
+        new Response(
+          JSON.stringify({
+            data: {
+              items: [
+                {
+                  created_at: "2026-08-01T10:00:00.000Z",
+                  action: "result_correction",
+                  target_type: "match",
+                  target_id: "m-new",
+                  admin_id: "a1",
+                  reason: "new audit",
+                  old_value: null,
+                  new_value: { v: 1 },
+                },
+              ],
+              page: { next_cursor: "audit-next", has_more: true },
+            },
+          }),
+          { status: 200 },
+        ),
+      );
+      await flushTasks();
+      auditRequests[0].deferred.resolve(
+        new Response(
+          JSON.stringify({
+            data: {
+              items: [
+                {
+                  created_at: "2026-08-01T08:00:00.000Z",
+                  action: "resolve_anomaly",
+                  target_type: "anomaly",
+                  target_id: "anom-old",
+                  admin_id: "a1",
+                  reason: "old audit",
+                  old_value: null,
+                  new_value: null,
+                },
+              ],
+              page: { next_cursor: null, has_more: false },
+            },
+          }),
+          { status: 200 },
+        ),
+      );
+      await flushTasks();
+      expect(el("audit-tbody").children).toHaveLength(1);
+      expect(el("audit-tbody").textContent).toContain("m-new");
+      expect(el("audit-tbody").textContent).not.toContain("anom-old");
+      expect(el("audit-next-btn").disabled).toBe(false);
+    } finally {
+      app.cleanup();
+    }
+  });
+
+  it("CR43-01: 赛果读取响应乱序完成及切换 match_id 未重新读取时禁止串场提交", async () => {
+    const matchAId = "00000000-0000-4000-8000-0000000000a1";
+    const matchBId = "00000000-0000-4000-8000-0000000000b2";
+    const deferredA = createDeferred();
+    const deferredB = createDeferred();
+    const deferredAFail = createDeferred();
+    const postCalls = [];
+    let matchACalls = 0;
+
+    const app = await mountAdminApp(async (url, init = {}) => {
+      const method = init.method ?? "GET";
+      if (method === "GET" && url === `/v1/admin/matches/${matchAId}`) {
+        matchACalls += 1;
+        return matchACalls === 1 ? deferredA.promise : deferredAFail.promise;
+      }
+      if (method === "GET" && url === `/v1/admin/matches/${matchBId}`) {
+        return deferredB.promise;
+      }
+      if (method === "POST" && url.endsWith("/result-corrections")) {
+        postCalls.push({ url, body: JSON.parse(String(init.body)) });
+        return new Response(
+          JSON.stringify({ data: { result_version: 2, audit_id: "audit-cr43-01" } }),
+          { status: 200 },
+        );
+      }
+      throw new Error(`Unexpected request: ${method} ${url}`);
+    });
+
+    try {
+      const { el } = app;
+
+      // 1. 先点读取 A，再立即把输入框改为 B 并点读取 B
+      el("rc-match-id").value = matchAId;
+      const loadA = el("rc-load-match-btn").trigger("click");
+      el("rc-match-id").value = matchBId;
+      const loadB = el("rc-load-match-btn").trigger("click");
+
+      // 读取 B 尚未完成前，禁止直接提交
+      el("rc-expected-version").value = "1";
+      el("rc-home-score").value = "9";
+      el("rc-away-score").value = "9";
+      el("rc-reason").value = "测试未完成读取禁止提交";
+      await el("result-correction-form").trigger("submit");
+      expect(postCalls).toHaveLength(0);
+      expect(el("global-toast").textContent).toContain("请先重新读取当前比赛信息后再提交");
+      expect(el("global-toast").className).toContain("error");
+
+      // 2. B 的响应先返回 (2:0 / v1)
+      deferredB.resolve(
+        new Response(
+          JSON.stringify({
+            data: {
+              match_id: matchBId,
+              match_status: "finished",
+              settlement_status: "settled",
+              result_version: 1,
+              settled_result_version: 1,
+              result_source: "official",
+              regular_home_score: 2,
+              regular_away_score: 0,
+              open_anomalies: [],
+              home_team: { name_zh: "主队B" },
+              away_team: { name_zh: "客队B" },
+            },
+          }),
+          { status: 200 },
+        ),
+      );
+      await loadB;
+
+      expect(el("rc-expected-version").value).toBe("1");
+      expect(el("rc-home-score").value).toBe("2");
+      expect(el("rc-away-score").value).toBe("0");
+      expect(el("rc-match-preview").textContent).toContain("主队B");
+
+      // 3. A 的旧响应晚到 (4:1 / v1)：必须完全丢弃，不得覆盖 B 的表单与预览
+      deferredA.resolve(
+        new Response(
+          JSON.stringify({
+            data: {
+              match_id: matchAId,
+              match_status: "finished",
+              settlement_status: "settled",
+              result_version: 1,
+              settled_result_version: 1,
+              result_source: "official",
+              regular_home_score: 4,
+              regular_away_score: 1,
+              open_anomalies: [],
+              home_team: { name_zh: "主队A" },
+              away_team: { name_zh: "客队A" },
+            },
+          }),
+          { status: 200 },
+        ),
+      );
+      await loadA;
+
+      expect(el("rc-expected-version").value).toBe("1");
+      expect(el("rc-home-score").value).toBe("2");
+      expect(el("rc-away-score").value).toBe("0");
+      expect(el("rc-match-preview").textContent).toContain("主队B");
+      expect(el("rc-match-preview").textContent).not.toContain("主队A");
+
+      // 4. 提交必须发往 B 且携带 B 的 2:0（而非 A 的 4:1）
+      el("rc-reason").value = "确认修正 B 比分";
+      await el("result-correction-form").trigger("submit");
+      expect(postCalls).toEqual([
+        {
+          url: `/v1/admin/matches/${matchBId}/result-corrections`,
+          body: {
+            expected_result_version: 1,
+            regular_home_score: 2,
+            regular_away_score: 0,
+            reason: "确认修正 B 比分",
+          },
+        },
+      ]);
+
+      // 5. 已加载 B 后把输入框改成 A（即使触发或不触发 input）未重新读取 A 时禁止提交
+      el("rc-match-id").value = matchAId;
+      await el("result-correction-form").trigger("submit");
+      expect(postCalls).toHaveLength(1);
+      expect(el("global-toast").textContent).toContain("请先重新读取当前比赛信息后再提交");
+      expect(el("global-toast").className).toContain("error");
+
+      // 6. 读取 A 失败的旧请求在用户又切换回 B 并触发 input 失效后到达，catch 分支也不得弹错
+      const loadAFail = el("rc-load-match-btn").trigger("click");
+      el("rc-match-id").value = matchBId;
+      await el("rc-match-id").trigger("input");
+      el("global-toast").textContent = "已清空";
+      el("global-toast").className = "toast ok";
+      deferredAFail.reject(new Error("stale network error"));
+      await loadAFail;
+      expect(el("global-toast").textContent).toBe("已清空");
+    } finally {
+      app.cleanup();
+    }
   });
 });

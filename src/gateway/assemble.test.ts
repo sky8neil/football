@@ -4,7 +4,7 @@ import type { RateLimiter } from "../api/v1/rate-limit.js";
 import { SessionService } from "../application/session.js";
 import { MatchQueryService } from "../application/match-query.js";
 import { MVP_SEASON } from "../domain/config.js";
-import { SCHEMA_VERSION, UserStatus } from "../domain/enums.js";
+import { LeagueId, SCHEMA_VERSION, TeamStatus, UserStatus } from "../domain/enums.js";
 import { DomainError } from "../domain/errors.js";
 import { newUuid } from "../domain/ids.js";
 import { defaultLevelState } from "../domain/types.js";
@@ -724,6 +724,212 @@ describe("handleGatewayRequest GET /v1/league-seasons", () => {
   });
 });
 
+describe("handleGatewayRequest GET /v1/teams", () => {
+  it("allows anonymous access, returns only active teams, and supports optional league_id filter", async () => {
+    const harness = makeHarness();
+    const activePromotedId = newUuid();
+    const activeLaLigaId = newUuid();
+    const inactiveTeamId = newUuid();
+    await harness.repo.teams.insert({
+      schema_version: SCHEMA_VERSION,
+      team_id: activePromotedId,
+      league_id: LeagueId.PremierLeague,
+      name: "Promoted FC",
+      name_zh: "升班马联",
+      logo_url: "https://cdn.example.com/promoted.png",
+      short_name: "PFC",
+      primary_color: "#123456",
+      secondary_color: "#ffffff",
+      status: TeamStatus.Active,
+      created_at: NOW,
+      updated_at: NOW,
+    });
+    await harness.repo.teams.insert({
+      schema_version: SCHEMA_VERSION,
+      team_id: activeLaLigaId,
+      league_id: LeagueId.LaLiga,
+      name: "Oviedo",
+      name_zh: "奥维耶多",
+      logo_url: null,
+      short_name: null,
+      primary_color: null,
+      secondary_color: null,
+      status: TeamStatus.Active,
+      created_at: NOW,
+      updated_at: NOW,
+    });
+    await harness.repo.teams.insert({
+      schema_version: SCHEMA_VERSION,
+      team_id: inactiveTeamId,
+      league_id: LeagueId.PremierLeague,
+      name: "Inactive FC",
+      name_zh: "停用球队",
+      logo_url: null,
+      short_name: null,
+      primary_color: null,
+      secondary_color: null,
+      status: TeamStatus.Inactive,
+      created_at: NOW,
+      updated_at: NOW,
+    });
+
+    const allRes = await request(harness, {
+      method: "GET",
+      path: "/v1/teams",
+    });
+    expect(allRes.status).toBe(200);
+    expect(allRes.body).toEqual({
+      data: {
+        items: [
+          {
+            team_id: activeLaLigaId,
+            league_id: "la_liga",
+            name: "Oviedo",
+            name_zh: "奥维耶多",
+            logo_url: null,
+          },
+          {
+            team_id: activePromotedId,
+            league_id: "premier_league",
+            name: "Promoted FC",
+            name_zh: "升班马联",
+            logo_url: "https://cdn.example.com/promoted.png",
+          },
+        ],
+      },
+      request_id: expect.any(String),
+    });
+    const allItems = (allRes.body as { data: { items: Array<Record<string, unknown>> } }).data.items;
+    expect(allItems.some((item) => item.team_id === inactiveTeamId)).toBe(false);
+    expect(Object.keys(allItems[0]!).sort()).toEqual(["league_id", "logo_url", "name", "name_zh", "team_id"]);
+
+    const plRes = await request(harness, {
+      method: "GET",
+      path: "/v1/teams",
+      query: { league_id: "premier_league" },
+    });
+    expect(plRes.status).toBe(200);
+    expect((plRes.body as { data: { items: Array<{ team_id: string }> } }).data.items).toEqual([
+      {
+        team_id: activePromotedId,
+        league_id: "premier_league",
+        name: "Promoted FC",
+        name_zh: "升班马联",
+        logo_url: "https://cdn.example.com/promoted.png",
+      },
+    ]);
+
+    const badLeague = await request(harness, {
+      method: "GET",
+      path: "/v1/teams",
+      query: { league_id: "nba" },
+    });
+    expect(badLeague.status).toBe(422);
+    expect(badLeague.body).toEqual(expect.objectContaining({ code: "VALIDATION_ERROR" }));
+
+    const unknownQuery = await request(harness, {
+      method: "GET",
+      path: "/v1/teams",
+      query: { extra: "1" },
+    });
+    expect(unknownQuery.status).toBe(422);
+    expect(unknownQuery.body).toEqual(expect.objectContaining({ code: "VALIDATION_ERROR" }));
+  });
+
+  it.each(["POST", "PUT", "PATCH", "DELETE"] as const)(
+    "returns 405 for %s",
+    async (method) => {
+      const harness = makeHarness();
+      const response = await request(harness, {
+        method,
+        path: "/v1/teams",
+      });
+
+      expect(response.status).toBe(405);
+      expect(response.body).toEqual(expect.objectContaining({
+        code: "METHOD_NOT_ALLOWED",
+        request_id: expect.any(String),
+      }));
+    },
+  );
+
+  it("applies public_reads per client ip", async () => {
+    const harness = makeHarness();
+    const max = RATE_LIMIT_DEFAULTS.public_reads.max_requests;
+    for (let attempt = 0; attempt < max; attempt += 1) {
+      const response = await request(harness, {
+        method: "GET",
+        path: "/v1/teams",
+        client_ip: "203.0.113.50",
+      });
+      expect(response.status).toBe(200);
+    }
+
+    const blocked = await request(harness, {
+      method: "GET",
+      path: "/v1/teams",
+      client_ip: "203.0.113.50",
+    });
+    expect(blocked.status).toBe(429);
+    expect(blocked.body).toEqual(expect.objectContaining({ code: "RATE_LIMITED" }));
+
+    const otherIp = await request(harness, {
+      method: "GET",
+      path: "/v1/teams",
+      client_ip: "203.0.113.51",
+    });
+    expect(otherIp.status).toBe(200);
+  });
+
+  it("[CR44-03] GET /v1/teams/:team_id resolves an inactive team publicly while GET /v1/teams excludes it", async () => {
+    const harness = makeHarness();
+    const inactiveTeamId = newUuid();
+    await harness.repo.teams.insert({
+      schema_version: SCHEMA_VERSION,
+      team_id: inactiveTeamId,
+      league_id: LeagueId.PremierLeague,
+      name: "Former Club",
+      name_zh: "已停用主队",
+      logo_url: "https://cdn.example.com/former.png",
+      short_name: null,
+      primary_color: null,
+      secondary_color: null,
+      status: TeamStatus.Inactive,
+      created_at: NOW,
+      updated_at: NOW,
+    });
+
+    const listRes = await request(harness, {
+      method: "GET",
+      path: "/v1/teams",
+    });
+    expect(listRes.status).toBe(200);
+    expect((listRes.body as { data: { items: unknown[] } }).data.items).toEqual([]);
+
+    const detailRes = await request(harness, {
+      method: "GET",
+      path: `/v1/teams/${inactiveTeamId}`,
+    });
+    expect(detailRes.status).toBe(200);
+    expect(detailRes.body).toEqual({
+      data: {
+        team_id: inactiveTeamId,
+        league_id: "premier_league",
+        name: "Former Club",
+        name_zh: "已停用主队",
+        logo_url: "https://cdn.example.com/former.png",
+      },
+      request_id: expect.any(String),
+    });
+
+    const methodNotAllowed = await request(harness, {
+      method: "POST",
+      path: `/v1/teams/${inactiveTeamId}`,
+    });
+    expect(methodNotAllowed.status).toBe(405);
+  });
+});
+
 describe("handleGatewayRequest GET /v1/rankings", () => {
   it("requires identity at the existing rankings handler", async () => {
     const harness = makeHarness();
@@ -1267,6 +1473,7 @@ describe("public_reads rate limit isolation by client_ip and user_id", () => {
       "/v1/matches",
       "/v1/leagues/status",
       "/v1/league-seasons",
+      "/v1/teams",
       `/v1/matches/${userId}`,
       `/v1/profiles/${userId}`,
       `/v1/share-card/${userId}`,

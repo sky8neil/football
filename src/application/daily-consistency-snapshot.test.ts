@@ -19,6 +19,8 @@ import type {
   User,
   UserSeasonStats,
 } from "../domain/types.js";
+import { CloudBaseAppRepository } from "../infrastructure/cloudbase-app-repository.js";
+import { createPostgresDocumentDb } from "../infrastructure/postgres-document-db.js";
 import { InMemoryRepository } from "../infrastructure/repositories.js";
 import { checkDailyConsistency } from "./daily-consistency.js";
 import {
@@ -1317,5 +1319,40 @@ describe("RepositoryDailyConsistencySnapshotSource", () => {
       calls += 1;
       if (calls >= 2) throw new Error("lost lock renewal");
     })).rejects.toThrow("lost lock renewal");
+  });
+
+  it("[CR42-07] RepositoryDailyConsistencySnapshotSource.load 使用 REPEATABLE READ READ ONLY 事务并在 PG 上发出对应 BEGIN SQL", async () => {
+    const repo = new InMemoryRepository();
+    const withTransactionSpy = vi.spyOn(repo, "withTransaction");
+    await new RepositoryDailyConsistencySnapshotSource(repo, null).load(NOW);
+    expect(withTransactionSpy).toHaveBeenCalledWith(expect.any(Function), {
+      isolationLevel: "repeatable_read",
+      readOnly: true,
+    });
+
+    const sqlLog: string[] = [];
+    const pgQuery = async (sql: string) => {
+      sqlLog.push(sql);
+      return /^COMMIT\b/.test(sql)
+        ? { rows: [] as Array<Record<string, unknown>>, command: "COMMIT" }
+        : { rows: [] as Array<Record<string, unknown>> };
+    };
+    const db = createPostgresDocumentDb(
+      pgQuery,
+      { schema: "football_test", namespace: "ft" },
+      {
+        connect: async () => ({
+          query: pgQuery,
+          release: () => {},
+        }),
+      },
+    );
+    const pgRepo = new CloudBaseAppRepository(
+      { resource_namespace: "ft" },
+      db,
+    );
+    await new RepositoryDailyConsistencySnapshotSource(pgRepo, null).load(NOW);
+    expect(sqlLog[0]).toBe("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
+    expect(sqlLog[sqlLog.length - 1]).toBe("COMMIT");
   });
 });

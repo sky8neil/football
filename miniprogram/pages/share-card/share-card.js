@@ -1,6 +1,11 @@
 const config = require("../../config.js");
 const { getMyShareCard, getShareCardForUser } = require("../../services/share-card.js");
 const { listLeagueSeasons } = require("../../services/league-seasons.js");
+const {
+  isPlaceholderLogo,
+  resolveFavoriteTeamSync,
+  resolveFavoriteTeamRemote,
+} = require("../../services/teams.js");
 const { formatRound, formatKickoff } = require("../../utils/match-presentation.js");
 const { presentTeam } = require("../../utils/team-presentation.js");
 const { findTeam } = require("../../utils/team-registry.js");
@@ -28,50 +33,12 @@ function readQueryValue(value) {
   return text ? text : null;
 }
 
-function readStorage(key) {
-  if (typeof wx === "undefined" || typeof wx.getStorageSync !== "function") return "";
-  try {
-    return wx.getStorageSync(key) || "";
-  } catch (_error) {
-    return "";
-  }
-}
-
 function resolveFavoriteTeam(favoriteTeamId, isDeleted) {
-  if (isDeleted || !favoriteTeamId) {
-    return {
-      favoriteTeamId: null,
-      favoriteTeamText: "未设置",
-      favoriteTeamLogo: PLACEHOLDER,
-      hasFavoriteTeam: false,
-    };
-  }
-  const registered = findTeam(favoriteTeamId);
-  if (registered) {
-    const presented = presentTeam(
-      {
-        team_id: favoriteTeamId,
-        name: registered.source_name,
-        name_zh: registered.name_zh,
-        league_id: registered.league_id,
-      },
-      registered.league_id,
-    );
-    return {
-      favoriteTeamId,
-      favoriteTeamText: presented.nameZh || registered.name_zh || registered.source_name || "已选择球队",
-      favoriteTeamLogo: presented.logo || PLACEHOLDER,
-      hasFavoriteTeam: true,
-    };
-  }
-  const cachedName = readStorage("team_name:" + favoriteTeamId);
-  const cachedLogo = readStorage("team_logo:" + favoriteTeamId);
-  return {
-    favoriteTeamId,
-    favoriteTeamText: cachedName || "已选择球队",
-    favoriteTeamLogo: cachedLogo || PLACEHOLDER,
-    hasFavoriteTeam: true,
-  };
+  const { needsRemoteLookup: _needsRemoteLookup, ...team } = resolveFavoriteTeamSync(
+    isDeleted ? null : favoriteTeamId,
+    { findTeam, presentTeam, placeholder: PLACEHOLDER },
+  );
+  return team;
 }
 
 function normalizeRoundId(value) {
@@ -269,11 +236,17 @@ function buildShareQuery(card) {
 
 function buildShareTitle(card) {
   const displayName = card.displayName || "预测分享卡";
+  const leagueName = card.leagueName || LEAGUE_NAMES[card.leagueId] || card.leagueId || "";
   const roundLabel = compactRoundLabel(card.roundText, card.roundId) || "第?轮";
   if (card.showFullSummary) {
-    return `${displayName} ${roundLabel}战绩（已结算 ${card.settledCount} 场）`;
+    const hasScore =
+      card.roundScore !== null &&
+      card.roundScore !== undefined &&
+      Number.isFinite(Number(card.roundScore));
+    const roundScore = hasScore ? Number(card.roundScore) : 0;
+    return `${displayName} ${leagueName}${roundLabel}战绩：已拿 ${roundScore} 分`;
   }
-  return `${displayName} ${roundLabel}晒预测`;
+  return `${displayName} 晒出了${leagueName}${roundLabel}预测`;
 }
 
 const SHARE_MENU_OPTIONS = { menus: ["shareAppMessage", "shareTimeline"] };
@@ -307,10 +280,12 @@ Page({
   },
 
   requestSerial: 0,
+  unloaded: false,
   pendingLoginRetry: false,
   loginReturnContext: null,
 
   onLoad(query) {
+    this.unloaded = false;
     const options = query || {};
     const userId = readQueryValue(options.user_id);
     const leagueId = readQueryValue(options.league_id);
@@ -452,6 +427,11 @@ Page({
     return getMyShareCard(params);
   },
 
+  onUnload() {
+    this.unloaded = true;
+    this.requestSerial += 1;
+  },
+
   loadCard() {
     const serial = ++this.requestSerial;
     this.setData({
@@ -462,7 +442,7 @@ Page({
     });
     this.syncShareMenu();
     return this.requestCard().then((result) => this.applyCardResult(result, serial)).catch(() => {
-      if (serial !== this.requestSerial) return;
+      if (this.unloaded || serial !== this.requestSerial) return;
       this.setData({
         state: "error",
         errorKind: "network",
@@ -476,7 +456,7 @@ Page({
   applyCardResult(result, serial) {
     if (result && result.statusCode === 200) {
       const card = presentCard(result.data);
-      if (serial !== this.requestSerial) return;
+      if (this.unloaded || serial !== this.requestSerial) return;
       this.setData({
         state: "card",
         card,
@@ -484,9 +464,9 @@ Page({
         errorMessage: "",
       });
       this.syncShareMenu();
-      return;
+      return this.hydrateFavoriteTeam(card, serial);
     }
-    if (serial !== this.requestSerial) return;
+    if (this.unloaded || serial !== this.requestSerial) return;
     const mapped = this.mapCardError(result);
     this.setData({
       state: "error",
@@ -495,6 +475,50 @@ Page({
       errorMessage: mapped.errorMessage,
     });
     this.syncShareMenu();
+  },
+
+  async hydrateFavoriteTeam(card, serial) {
+    const favoriteTeamId = card && card.favoriteTeamId;
+    if (!favoriteTeamId || (card && card.isDeleted)) return;
+    const syncState = resolveFavoriteTeamSync(favoriteTeamId, {
+      findTeam,
+      presentTeam,
+      placeholder: PLACEHOLDER,
+    });
+    if (!syncState.needsRemoteLookup) return;
+    try {
+      const resolved = await resolveFavoriteTeamRemote(favoriteTeamId, {
+        presentTeam,
+        placeholder: PLACEHOLDER,
+      });
+      if (!resolved) return;
+      if (this.unloaded || serial !== this.requestSerial) return;
+      const currentCard = this.data.card;
+      if (
+        this.data.state !== "card" ||
+        !currentCard ||
+        currentCard.isDeleted ||
+        currentCard.favoriteTeamId !== favoriteTeamId
+      ) {
+        return;
+      }
+      const nextText = resolved.favoriteTeamText || currentCard.favoriteTeamText || "已选择球队";
+      const nextLogo = !isPlaceholderLogo(resolved.favoriteTeamLogo, PLACEHOLDER)
+        ? resolved.favoriteTeamLogo
+        : (currentCard.favoriteTeamLogo || PLACEHOLDER);
+      if (nextText === currentCard.favoriteTeamText && nextLogo === currentCard.favoriteTeamLogo) {
+        return;
+      }
+      this.setData({
+        card: {
+          ...currentCard,
+          favoriteTeamText: nextText,
+          favoriteTeamLogo: nextLogo,
+        },
+      });
+    } catch (_error) {
+      /* 远端球队资料补全失败时保留兜底展示，不阻塞卡片 */
+    }
   },
 
   syncShareMenu() {

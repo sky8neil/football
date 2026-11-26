@@ -145,6 +145,61 @@ paths:
           $ref: '#/components/responses/RateLimited'
         '405':
           $ref: '#/components/responses/MethodNotAllowed'
+  /teams:
+    get:
+      tags: [matches]
+      summary: 获取公开活跃球队列表
+      description: 可选按 league_id 过滤，仅返回 status === "active" 的球队列表，游客可访问。
+      parameters:
+        - name: league_id
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/LeagueId'
+      responses:
+        '200':
+          description: 活跃球队列表
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicTeamsEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+  /teams/{team_id}:
+    get:
+      tags: [matches]
+      summary: 按 ID 获取公开球队展示资料
+      description: 按 team_id 读取单支球队的公开展示字段（包含已停用球队，用于解析已选主队展示），游客可访问。
+      parameters:
+        - name: team_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: 球队公开展示资料
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicTeamEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
   /predictions/summary:
     get:
       tags: [predictions]
@@ -1515,6 +1570,47 @@ components:
           type: array
           items:
             type: string
+    PublicTeamItem:
+      type: object
+      additionalProperties: false
+      required: [team_id, league_id, name, name_zh, logo_url]
+      properties:
+        team_id:
+          type: string
+          format: uuid
+        league_id:
+          $ref: '#/components/schemas/LeagueId'
+        name:
+          type: string
+        name_zh:
+          type: [string, 'null']
+        logo_url:
+          type: [string, 'null']
+    PublicTeamsEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data, request_id]
+      properties:
+        data:
+          type: object
+          additionalProperties: false
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/PublicTeamItem'
+        request_id:
+          type: string
+    PublicTeamEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data, request_id]
+      properties:
+        data:
+          $ref: '#/components/schemas/PublicTeamItem'
+        request_id:
+          type: string
     LeagueStatusEnvelope:
       type: object
       required: [data, request_id]

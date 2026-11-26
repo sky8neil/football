@@ -25,6 +25,7 @@ import {
   defaultLevelState,
   type LevelHistoryEntry,
   type LevelState,
+  type SettlementDoc,
   type User,
   type UserSeasonStats,
 } from "../domain/types.js";
@@ -35,6 +36,8 @@ import {
 } from "./rebuild-service-support.js";
 import { assertValidServerNow } from "./period-finalize.js";
 import {
+  catchUpCareerWeeklyStepsInTransaction,
+  catchUpSeasonWeeklyStepsInTransaction,
   eligibleSeasonStats,
   evaluateWithProtection,
   isSettlementAlreadyRunning,
@@ -441,8 +444,9 @@ export class LevelCorrectionReevalService {
     asOf: Date,
     serverNow: Date,
     onStep?: () => Promise<void>,
+    onBeforeSettlement?: (settlement: SettlementDoc, cycleAsOf: Date) => Promise<void>,
   ): Promise<void> {
-    await this.runPendingInWindow(asOf, serverNow, "before", onStep);
+    await this.runPendingInWindow(asOf, serverNow, "before", onStep, onBeforeSettlement);
   }
 
   async runPending(
@@ -529,6 +533,7 @@ export class LevelCorrectionReevalService {
     serverNow: Date,
     window: "before" | "after",
     onStep?: () => Promise<void>,
+    onBeforeSettlement?: (settlement: SettlementDoc, cycleAsOf: Date) => Promise<void>,
   ): Promise<void> {
     if (this.repo.settlements.findSettledCorrectionsPendingReeval === undefined) {
       throw internalError("settlements repository 缺少 findSettledCorrectionsPendingReeval");
@@ -545,6 +550,9 @@ export class LevelCorrectionReevalService {
       .sort((left, right) => left.settled_at!.getTime() - right.settled_at!.getTime());
     for (const settlement of settlements) {
       await onStep?.();
+      if (onBeforeSettlement !== undefined && settlement.settled_at !== null) {
+        await onBeforeSettlement(settlement, currentWeeklyCycleAsOf(settlement.settled_at));
+      }
       const outcome = await this.runForSettlementInternal(
         settlement.settlement_id,
         serverNow,
@@ -587,19 +595,19 @@ export class LevelCorrectionReevalService {
           return { evaluated: false, changed: false, skipped: true, deferred: false };
         }
         const previous = user.career_level_state ?? defaultLevelState();
-        const current = {
-          level: user.career_level,
-          best_level: user.career_best_level,
-          below_count: previous.below_count,
-        };
-        const selected = stateForCorrection(
-          current,
+        const cycleAsOf = currentWeeklyCycleAsOf(asOf);
+        const initialSelection = stateForCorrection(
+          {
+            level: user.career_level,
+            best_level: user.career_best_level,
+            below_count: previous.below_count,
+          },
           previous,
           asOf,
           this.firstEvalAsOf,
           weeklyTaskIncomplete && user.career_valid_predictions >= 1,
         );
-        if (selected.deferred) {
+        if (initialSelection.deferred) {
           return {
             evaluated: false,
             changed: false,
@@ -608,25 +616,54 @@ export class LevelCorrectionReevalService {
             deferredReason: "weekly_eval_incomplete",
           };
         }
-        if (selected.stale) {
+        if (initialSelection.stale) {
           return { evaluated: false, changed: false, skipped: true, deferred: false };
         }
-        const inputs = buildLevelInputs(
-          await factsForUser(tx, userId, asOf),
-          LevelScope.Career,
+        requireHistoryPort(tx);
+        const facts = await factsForUser(tx, userId, asOf);
+        let currentLevel = user.career_level;
+        let currentBestLevel = user.career_best_level;
+        let currentState = previous;
+        let weeklyChanged = false;
+        if (this.firstEvalAsOf !== null && user.career_valid_predictions >= 1) {
+          const catchUp = await catchUpCareerWeeklyStepsInTransaction({
+            tx,
+            userId,
+            level: currentLevel,
+            bestLevel: currentBestLevel,
+            state: currentState,
+            maxAsOf: cycleAsOf,
+            firstEvalAsOf: this.firstEvalAsOf,
+            changedAt,
+            facts,
+          });
+          currentLevel = catchUp.level;
+          currentBestLevel = catchUp.bestLevel;
+          currentState = catchUp.state;
+          weeklyChanged = catchUp.changed;
+        }
+        const selected = stateForCorrection(
+          {
+            level: currentLevel,
+            best_level: currentBestLevel,
+            below_count: currentState.below_count,
+          },
+          currentState,
           asOf,
+          this.firstEvalAsOf,
+          false,
         );
+        const inputs = buildLevelInputs(facts, LevelScope.Career, asOf);
         const result = evaluateWithProtection(selected.base, inputs, asOf, this.firstEvalAsOf);
         const nextState = this.nextLevelState(selected.nextState, selected.base, result, inputs, asOf);
-        const bestLevel = Math.max(user.career_best_level, result.level);
-        const changed = user.career_level !== result.level;
-        requireHistoryPort(tx);
-        if (changed) {
+        const bestLevel = Math.max(currentBestLevel, result.level);
+        const correctionChanged = currentLevel !== result.level;
+        if (correctionChanged) {
           await tx.levelHistory.insert(historyEntry({
             userId,
             scope: LevelScope.Career,
             seasonId: null,
-            fromLevel: user.career_level,
+            fromLevel: currentLevel,
             toLevel: result.level,
             inputs,
             asOf,
@@ -635,7 +672,8 @@ export class LevelCorrectionReevalService {
           }));
         }
         if (
-          changed || bestLevel !== user.career_best_level ||
+          result.level !== user.career_level ||
+          bestLevel !== user.career_best_level ||
           !sameLevelState(previous, nextState)
         ) {
           await userLock.patchFields(userId, {
@@ -645,7 +683,12 @@ export class LevelCorrectionReevalService {
             updated_at: changedAt,
           });
         }
-        return { evaluated: true, changed, skipped: false, deferred: false };
+        return {
+          evaluated: true,
+          changed: weeklyChanged || correctionChanged,
+          skipped: false,
+          deferred: false,
+        };
       });
     } catch (error) {
       if (isSettlementAlreadyRunning(error)) {
@@ -705,20 +748,19 @@ export class LevelCorrectionReevalService {
           return { evaluated: false, changed: false, skipped: true, deferred: false };
         }
         const previous = currentStats.level_state ?? defaultLevelState();
-        const current = {
-          level: currentStats.level,
-          best_level: currentStats.best_level,
-          below_count: previous.below_count,
-        };
         const cycleAsOf = currentWeeklyCycleAsOf(asOf);
-        const selected = stateForCorrection(
-          current,
+        const initialSelection = stateForCorrection(
+          {
+            level: currentStats.level,
+            best_level: currentStats.best_level,
+            below_count: previous.below_count,
+          },
           previous,
           asOf,
           this.firstEvalAsOf,
           weeklyTaskIncomplete && eligibleSeasonStats(currentStats, cycleAsOf),
         );
-        if (selected.deferred) {
+        if (initialSelection.deferred) {
           return {
             evaluated: false,
             changed: false,
@@ -727,26 +769,79 @@ export class LevelCorrectionReevalService {
             deferredReason: "weekly_eval_incomplete",
           };
         }
-        if (selected.stale) {
+        if (initialSelection.stale) {
           return { evaluated: false, changed: false, skipped: true, deferred: false };
         }
+        requireHistoryPort(tx);
+        const facts = await factsForUser(tx, userId, asOf);
+        let currentLevel = currentStats.level;
+        let currentBestLevel = currentStats.best_level;
+        let currentState = previous;
+        let weeklyChanged = false;
+        if (this.firstEvalAsOf !== null && eligibleSeasonStats(currentStats, cycleAsOf)) {
+          const catchUp = await catchUpSeasonWeeklyStepsInTransaction({
+            tx,
+            userId,
+            stats: currentStats,
+            maxAsOf: cycleAsOf,
+            firstEvalAsOf: this.firstEvalAsOf,
+            changedAt,
+            facts,
+          });
+          currentLevel = catchUp.level;
+          currentBestLevel = catchUp.bestLevel;
+          currentState = catchUp.state;
+          weeklyChanged = catchUp.changed;
+          if (catchUp.freeze) {
+            if (
+              catchUp.shouldPersistFreezeOnly ||
+              currentLevel !== currentStats.level ||
+              currentBestLevel !== currentStats.best_level ||
+              !sameLevelState(previous, currentState)
+            ) {
+              await seasonLock.patchFields(userId, currentStats.level_season_id, {
+                level: currentLevel,
+                best_level: currentBestLevel,
+                level_state: currentState,
+                is_level_frozen: true,
+                updated_at: changedAt,
+              });
+            }
+            return {
+              evaluated: catchUp.evaluated,
+              changed: weeklyChanged,
+              skipped: !catchUp.evaluated,
+              deferred: false,
+            };
+          }
+        }
+        const selected = stateForCorrection(
+          {
+            level: currentLevel,
+            best_level: currentBestLevel,
+            below_count: currentState.below_count,
+          },
+          currentState,
+          asOf,
+          this.firstEvalAsOf,
+          false,
+        );
         const inputs = buildLevelInputs(
-          await factsForUser(tx, userId, asOf),
+          facts,
           LevelScope.Season,
           asOf,
           currentStats.level_season_id,
         );
         const result = evaluateWithProtection(selected.base, inputs, asOf, this.firstEvalAsOf);
         const nextState = this.nextLevelState(selected.nextState, selected.base, result, inputs, asOf);
-        const bestLevel = Math.max(currentStats.best_level, result.level);
-        const changed = currentStats.level !== result.level;
-        requireHistoryPort(tx);
-        if (changed) {
+        const bestLevel = Math.max(currentBestLevel, result.level);
+        const correctionChanged = currentLevel !== result.level;
+        if (correctionChanged) {
           await tx.levelHistory.insert(historyEntry({
             userId,
             scope: LevelScope.Season,
             seasonId: currentStats.level_season_id,
-            fromLevel: currentStats.level,
+            fromLevel: currentLevel,
             toLevel: result.level,
             inputs,
             asOf,
@@ -755,7 +850,8 @@ export class LevelCorrectionReevalService {
           }));
         }
         if (
-          changed || bestLevel !== currentStats.best_level ||
+          result.level !== currentStats.level ||
+          bestLevel !== currentStats.best_level ||
           !sameLevelState(previous, nextState)
         ) {
           await seasonLock.patchFields(userId, currentStats.level_season_id, {
@@ -765,7 +861,12 @@ export class LevelCorrectionReevalService {
             updated_at: changedAt,
           });
         }
-        return { evaluated: true, changed, skipped: false, deferred: false };
+        return {
+          evaluated: true,
+          changed: weeklyChanged || correctionChanged,
+          skipped: false,
+          deferred: false,
+        };
       });
     } catch (error) {
       if (isSettlementAlreadyRunning(error)) {

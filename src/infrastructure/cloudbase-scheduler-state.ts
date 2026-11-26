@@ -10,6 +10,15 @@ export interface SettlementFallbackState {
   updated_at: Date;
 }
 
+export interface StaleRecoveryGroupProgress {
+  group_key: string;
+  completed_primary_dates: string[];
+}
+
+export interface StaleRecoveryCursorState extends SettlementFallbackState {
+  group_progress?: StaleRecoveryGroupProgress | null;
+}
+
 export interface PeriodicJobCycleState {
   job_type: string;
   completed_cycle_at: Date;
@@ -19,11 +28,14 @@ export interface PeriodicJobCycleState {
 export interface SchedulerStateStore {
   getSettlementFallback(): Promise<SettlementFallbackState | null>;
   upsertSettlementFallback(state: SettlementFallbackState): Promise<void>;
+  getStaleRecoveryCursor(): Promise<StaleRecoveryCursorState | null>;
+  upsertStaleRecoveryCursor(state: StaleRecoveryCursorState): Promise<void>;
   getPeriodicJobCycle(jobType: string): Promise<PeriodicJobCycleState | null>;
   upsertPeriodicJobCycle(state: PeriodicJobCycleState): Promise<void>;
 }
 
 export const POST_FINISH_DAILY_FALLBACK_STATE_ID = "post_finish_daily_fallback";
+export const STALE_RECOVERY_CURSOR_STATE_ID = "stale_recovery_cursor";
 
 const PERIODIC_JOB_STATE_IDS = new Set<string>([
   SyncJobType.PeriodFinalize,
@@ -48,6 +60,7 @@ export function periodicJobStateId(jobType: string): string {
 
 export class InMemorySchedulerStateStore implements SchedulerStateStore {
   private settlement: SettlementFallbackState | null = null;
+  private staleRecoveryCursor: StaleRecoveryCursorState | null = null;
   private readonly cycles = new Map<string, PeriodicJobCycleState>();
 
   async getSettlementFallback(): Promise<SettlementFallbackState | null> {
@@ -56,6 +69,29 @@ export class InMemorySchedulerStateStore implements SchedulerStateStore {
 
   async upsertSettlementFallback(state: SettlementFallbackState): Promise<void> {
     this.settlement = { ...state };
+  }
+
+  async getStaleRecoveryCursor(): Promise<StaleRecoveryCursorState | null> {
+    if (this.staleRecoveryCursor === null) return null;
+    const progress = normalizeGroupProgress(this.staleRecoveryCursor.group_progress);
+    return {
+      cursor_kickoff_at: this.staleRecoveryCursor.cursor_kickoff_at,
+      cursor_match_id: this.staleRecoveryCursor.cursor_match_id,
+      last_run_at: this.staleRecoveryCursor.last_run_at,
+      updated_at: this.staleRecoveryCursor.updated_at,
+      ...(progress === null ? {} : { group_progress: progress }),
+    };
+  }
+
+  async upsertStaleRecoveryCursor(state: StaleRecoveryCursorState): Promise<void> {
+    const progress = normalizeGroupProgress(state.group_progress);
+    this.staleRecoveryCursor = {
+      cursor_kickoff_at: state.cursor_kickoff_at,
+      cursor_match_id: state.cursor_match_id,
+      last_run_at: state.last_run_at,
+      updated_at: state.updated_at,
+      ...(progress === null ? {} : { group_progress: progress }),
+    };
   }
 
   async getPeriodicJobCycle(jobType: string): Promise<PeriodicJobCycleState | null> {
@@ -79,20 +115,49 @@ export class CloudBaseSchedulerStateStore implements SchedulerStateStore {
   }
 
   async getSettlementFallback(): Promise<SettlementFallbackState | null> {
-    const row = await this.db.get(this.collection, SETTLEMENT_FALLBACK_STATE_ID);
+    return this.readCursorState(SETTLEMENT_FALLBACK_STATE_ID);
+  }
+
+  async upsertSettlementFallback(state: SettlementFallbackState): Promise<void> {
+    await this.writeCursorState(SETTLEMENT_FALLBACK_STATE_ID, state);
+  }
+
+  async getStaleRecoveryCursor(): Promise<StaleRecoveryCursorState | null> {
+    const row = await this.db.get(this.collection, STALE_RECOVERY_CURSOR_STATE_ID);
+    if (row === null) return null;
+    const base = deserializeSettlement(row);
+    const progress = normalizeGroupProgress(row.group_progress);
+    return progress === null ? base : { ...base, group_progress: progress };
+  }
+
+  async upsertStaleRecoveryCursor(state: StaleRecoveryCursorState): Promise<void> {
+    const progress = normalizeGroupProgress(state.group_progress);
+    const document: CloudBaseDocument = {
+      _id: STALE_RECOVERY_CURSOR_STATE_ID,
+      cursor_kickoff_at: state.cursor_kickoff_at,
+      cursor_match_id: state.cursor_match_id,
+      group_progress: progress,
+      last_run_at: state.last_run_at,
+      updated_at: state.updated_at,
+    };
+    await this.upsert(STALE_RECOVERY_CURSOR_STATE_ID, document);
+  }
+
+  private async readCursorState(id: string): Promise<SettlementFallbackState | null> {
+    const row = await this.db.get(this.collection, id);
     if (row === null) return null;
     return deserializeSettlement(row);
   }
 
-  async upsertSettlementFallback(state: SettlementFallbackState): Promise<void> {
+  private async writeCursorState(id: string, state: SettlementFallbackState): Promise<void> {
     const document: CloudBaseDocument = {
-      _id: SETTLEMENT_FALLBACK_STATE_ID,
+      _id: id,
       cursor_kickoff_at: state.cursor_kickoff_at,
       cursor_match_id: state.cursor_match_id,
       last_run_at: state.last_run_at,
       updated_at: state.updated_at,
     };
-    await this.upsert(SETTLEMENT_FALLBACK_STATE_ID, document);
+    await this.upsert(id, document);
   }
 
   async getPeriodicJobCycle(jobType: string): Promise<PeriodicJobCycleState | null> {
@@ -138,6 +203,29 @@ function deserializeCycle(row: CloudBaseDocument, jobType: string): PeriodicJobC
     job_type: typeof row.job_type === "string" ? row.job_type : jobType,
     completed_cycle_at: completed,
     updated_at: toDateOrNull(row.updated_at) ?? completed,
+  };
+}
+
+function normalizeGroupProgress(value: unknown): StaleRecoveryGroupProgress | null {
+  if (value === null || value === undefined || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  if (typeof record.group_key !== "string" || record.group_key.length === 0) {
+    return null;
+  }
+  if (!Array.isArray(record.completed_primary_dates)) {
+    return null;
+  }
+  const dates = record.completed_primary_dates.filter(
+    (item): item is string => typeof item === "string" && item.length > 0,
+  );
+  if (dates.length === 0) {
+    return null;
+  }
+  return {
+    group_key: record.group_key,
+    completed_primary_dates: [...new Set(dates)].sort(),
   };
 }
 

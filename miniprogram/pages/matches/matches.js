@@ -11,7 +11,7 @@ const { formatRound } = require("../../utils/match-presentation.js");
 const { buildCardState } = require("../../utils/match-card-state.js");
 const { currentSeasonId } = require("../../utils/rankings-view-model.js");
 const { formatLevelSeasonLabel } = require("../../utils/level-season.js");
-const { getLoginGeneration } = require("../../services/auth.js");
+const { getLoginGeneration, onAuthRestored } = require("../../services/auth.js");
 
 const LEAGUES = [
   { id: "premier_league", name: "英超" },
@@ -183,6 +183,17 @@ Page({
     this.initialized = true;
     this.hasShown = false;
     this.needsDefaultLeague = true;
+    if (typeof this.unsubscribeAuthRestored === "function") {
+      this.unsubscribeAuthRestored();
+      this.unsubscribeAuthRestored = null;
+    }
+    if (typeof onAuthRestored === "function") {
+      this.unsubscribeAuthRestored = onAuthRestored(() => {
+        if (!this.initialized) return;
+        this.clearReloadTimer();
+        return this.loadFirstPage();
+      });
+    }
     this.loadFirstPage(true);
   },
 
@@ -281,6 +292,10 @@ Page({
 
   onUnload() {
     this.clearTimers();
+    if (typeof this.unsubscribeAuthRestored === "function") {
+      this.unsubscribeAuthRestored();
+      this.unsubscribeAuthRestored = null;
+    }
   },
 
   onLeagueTap(event) {
@@ -588,6 +603,7 @@ Page({
   onScoreTap(event) {
     const { matchId, side, delta } = event.currentTarget.dataset;
     const key = scope(this.data.selectedLeague, this.data.selectedDate, matchId);
+    if (this.uiStates[key] === "submitting" || this.uiStates[key] === "submitted_locked") return;
     this.clearSubmitError(key);
     const current = this.drafts[key] || { home: 0, away: 0 };
     current[side] = Math.max(0, Math.min(20, current[side] + Number(delta)));
@@ -599,14 +615,15 @@ Page({
     const matchId = event.currentTarget.dataset.matchId;
     const key = scope(this.data.selectedLeague, this.data.selectedDate, matchId);
     const item = this.data.items.find((entry) => entry.match_id === matchId);
-    if (!item || this.uiStates[key] === "submitting") return;
+    if (!item || this.uiStates[key] === "submitting" || this.uiStates[key] === "submitted_locked") return;
     this.clearSubmitError(key);
     const previousGeneration = this.loginGeneration;
     const draft = this.drafts[key] || { home: 0, away: 0 };
+    const submittedScore = Object.freeze({ home: draft.home, away: draft.away });
     const previousPayload = this.lastPayloads[key];
-    if (!previousPayload || previousPayload.home !== draft.home || previousPayload.away !== draft.away) {
+    if (!previousPayload || previousPayload.home !== submittedScore.home || previousPayload.away !== submittedScore.away) {
       this.idempotencyKeys[key] = createUuidV4();
-      this.lastPayloads[key] = { ...draft };
+      this.lastPayloads[key] = { home: submittedScore.home, away: submittedScore.away };
     }
     this.uiStates[key] = "submitting";
     this.refreshItems();
@@ -619,8 +636,8 @@ Page({
       pending = Promise.resolve(submitPrediction({
         idempotencyKey: this.idempotencyKeys[key],
         matchId,
-        homeScore: draft.home,
-        awayScore: draft.away,
+        homeScore: submittedScore.home,
+        awayScore: submittedScore.away,
       }));
     } catch (error) {
       pending = Promise.reject(error);
@@ -638,7 +655,7 @@ Page({
       }
       if (result.statusCode === 200 || result.statusCode === 201) {
         this.clearSubmitError(key);
-        this.submittedMap[key] = { ...draft, generation: loginGeneration };
+        this.submittedMap[key] = { home: submittedScore.home, away: submittedScore.away, generation: loginGeneration };
         this.uiStates[key] = "submitted_locked";
         delete this.drafts[key];
         delete this.idempotencyKeys[key];

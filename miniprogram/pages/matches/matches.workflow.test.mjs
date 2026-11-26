@@ -1184,4 +1184,211 @@ describe("matches page gateway workflows", () => {
     expect(page.data.hasMore).toBe(true);
     expect(page.data.errorMessage).toBe("page boom");
   });
+
+  it("[CR42-11] guards onScoreTap during submitting/submitted_locked, disables stepper buttons, and snapshots submitted score", async () => {
+    const template = readFileSync(MATCHES_WXML, "utf8");
+    const stepperButtons = template.match(/<button[^>]*catchtap="onScoreTap"[^>]*>/g) || [];
+    expect(stepperButtons).toHaveLength(4);
+    for (const buttonTag of stepperButtons) {
+      expect(buttonTag).toContain('disabled="{{item.uiState === \'submitting\'}}"');
+    }
+
+    const pendingSubmit = deferred();
+    const listMatches = vi.fn(async () => listResult([match("match-1")]));
+    const { page, submitPrediction } = loadPage({
+      submitResult: pendingSubmit.promise,
+      listMatches,
+    });
+    const key = "premier_league:2026-09-01:match-1";
+    page.setData({
+      selectedLeague: "premier_league",
+      selectedDate: "2026-09-01",
+      state: "list",
+      items: [page.decorateItem(match("match-1"))],
+    });
+    page.drafts[key] = { home: 1, away: 0 };
+    page.uiStates[key] = "editing";
+
+    const submitPromise = page.onSubmitTap({ currentTarget: { dataset: { matchId: "match-1" } } });
+    await vi.waitFor(() => expect(submitPrediction).toHaveBeenCalledOnce());
+    expect(page.uiStates[key]).toBe("submitting");
+
+    page.onScoreTap({ currentTarget: { dataset: { matchId: "match-1", side: "home", delta: "1" } } });
+    expect(page.drafts[key]).toEqual({ home: 1, away: 0 });
+    page.drafts[key].home = 2;
+
+    pendingSubmit.resolve({ statusCode: 201 });
+    await submitPromise;
+
+    expect(submitPrediction).toHaveBeenCalledWith({
+      idempotencyKey: "00000000-0000-4000-8000-000000000001",
+      matchId: "match-1",
+      homeScore: 1,
+      awayScore: 0,
+    });
+    expect(page.submittedMap[key]).toEqual({ home: 1, away: 0, generation: 0 });
+    expect(page.uiStates[key]).toBe("submitted_locked");
+    expect(page.data.items[0].predText).toBe("已提交 1 : 0 · 不可修改");
+
+    page.onScoreTap({ currentTarget: { dataset: { matchId: "match-1", side: "home", delta: "1" } } });
+    expect(page.drafts[key]).toBeUndefined();
+    expect(page.submittedMap[key]).toEqual({ home: 1, away: 0, generation: 0 });
+  });
+
+  it("[CR42-10] reloads matches automatically after cold-start expired-session restoreAuth succeeds", async () => {
+    const PAST = "2020-01-01T00:00:00.000Z";
+    const FUTURE = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+    const store = new Map([["auth_session", { access_token: "expired-token", expires_at: PAST }]]);
+    const wxRequest = vi.fn();
+    let finishAuthLogin;
+    let matchListRequests = 0;
+
+    Object.defineProperty(globalThis, "wx", {
+      value: {
+        request: wxRequest,
+        login: (opts) => opts.success({ code: "wx-cold-code" }),
+        getAccountInfoSync: () => ({ miniProgram: { envVersion: "develop" } }),
+        getStorageSync: (key) => store.get(key),
+        setStorageSync: (key, value) => store.set(key, value),
+        removeStorageSync: (key) => store.delete(key),
+        switchTab: vi.fn(),
+        stopPullDownRefresh: vi.fn(),
+      },
+      configurable: true,
+    });
+
+    wxRequest.mockImplementation((options) => {
+      const url = String(options.url || "");
+      if (url.endsWith("/v1/auth/wechat")) {
+        finishAuthLogin = () => options.success({
+          statusCode: 200,
+          data: { data: { access_token: "renewed-token", token_type: "Bearer", expires_at: FUTURE }, request_id: "auth-1" },
+        });
+        return;
+      }
+      if (url.endsWith("/v1/leagues/status")) {
+        options.success({ statusCode: 200, data: { data: { items: [] }, request_id: "status-1" } });
+        return;
+      }
+      if (url.includes("/v1/matches")) {
+        matchListRequests += 1;
+        const authHeader = options.header && options.header.Authorization;
+        if (!authHeader) {
+          options.success({
+            statusCode: 200,
+            data: {
+              data: {
+                items: [{
+                  ...match("match-1"),
+                  can_predict: false,
+                  can_predict_reason: "AUTH_REQUIRED",
+                  my_prediction: null,
+                }],
+                page: { has_more: false, next_cursor: null },
+              },
+              request_id: "list-guest",
+            },
+          });
+          return;
+        }
+        expect(authHeader).toBe("Bearer renewed-token");
+        options.success({
+          statusCode: 200,
+          data: {
+            data: {
+              items: [
+                match("match-1"),
+                predictedMatch("match-2", 2, 1),
+              ],
+              page: { has_more: false, next_cursor: null },
+            },
+            request_id: "list-authed",
+          },
+        });
+        return;
+      }
+      throw new Error(`Unexpected url: ${url}`);
+    });
+
+    const SERVICES_DIR = join(HERE, "..", "..", "services");
+    const UTILS_DIR = join(HERE, "..", "..", "utils");
+    const config = { transport: "http", gatewayOrigin: "https://api.example.com" };
+    const authStorage = loadCommonJs(join(UTILS_DIR, "auth-storage.js"), () => {
+      throw new Error("auth-storage has no deps");
+    });
+    const cloudDiagnostics = await import("../../services/cloud-diagnostics.js");
+    const authRef = { current: null };
+    const api = loadCommonJs(join(SERVICES_DIR, "api.js"), (id) => {
+      if (id === "../config.js") return config;
+      if (id === "./cloud-diagnostics.js") return cloudDiagnostics;
+      if (id === "../utils/auth-storage.js") return authStorage;
+      if (id === "./auth.js") return authRef.current;
+      throw new Error(`Unexpected api require: ${id}`);
+    });
+    const auth = loadCommonJs(join(SERVICES_DIR, "auth.js"), (id) => {
+      if (id === "../config.js") return config;
+      if (id === "./api.js") return api;
+      if (id === "../utils/auth-storage.js") return authStorage;
+      throw new Error(`Unexpected auth require: ${id}`);
+    });
+    authRef.current = auth;
+    const matchesService = loadCommonJs(join(SERVICES_DIR, "matches.js"), (id) => {
+      if (id === "./api.js") return api;
+      throw new Error(`Unexpected matches service require: ${id}`);
+    });
+    const leaguesService = loadCommonJs(join(SERVICES_DIR, "leagues.js"), (id) => {
+      if (id === "./api.js") return api;
+      throw new Error(`Unexpected leagues service require: ${id}`);
+    });
+
+    const pageConfig = {};
+    Object.defineProperty(globalThis, "Page", {
+      value: (cfg) => Object.assign(pageConfig, cfg),
+      configurable: true,
+    });
+    loadCommonJs(MATCHES_JS, (id) => {
+      if (id === "../../services/auth.js") return auth;
+      if (id === "../../utils/logo-registry.js") return { getTeamLogo: () => "team.png", getLeagueLogo: () => "league.png" };
+      if (id === "../../utils/team-presentation.js") return { presentTeam: () => ({ nameZh: "Team", logo: "team.png", missing: false }) };
+      if (id === "../../utils/nickname.js") return { resolveNickname: () => "球友", truncateNickname: (v) => v };
+      if (id === "../../services/matches.js") return matchesService;
+      if (id === "../../services/leagues.js") return leaguesService;
+      if (id === "../../utils/matches-default-league.js") return loadCommonJs(LEAGUE_UTIL, () => { throw new Error("unexpected"); });
+      if (id === "../../services/predictions.js") return { createUuidV4: () => "uuid", submitPrediction: vi.fn(), getMyLeagueSummary: vi.fn() };
+      if (id === "../../utils/crowd-copy.js") return { COPY: { homeLink: "大家怎么选 ›" } };
+      if (id === "../../utils/ui-layout.js") return { headerHeight: () => 88 };
+      if (id === "../../utils/match-presentation.js") return loadCommonJs(join(UTILS_DIR, "match-presentation.js"), () => { throw new Error("unexpected"); });
+      if (id === "../../utils/match-card-state.js") return loadCommonJs(join(UTILS_DIR, "match-card-state.js"), () => { throw new Error("unexpected"); });
+      if (id === "../../utils/rankings-view-model.js") return { currentSeasonId: () => "2026_2027" };
+      if (id === "../../utils/level-season.js") return loadCommonJs(join(UTILS_DIR, "level-season.js"), () => { throw new Error("unexpected"); });
+      throw new Error(`Unexpected page require: ${id}`);
+    });
+    const page = Object.assign({}, pageConfig, {
+      data: JSON.parse(JSON.stringify(pageConfig.data)),
+      setData(patch) { Object.assign(this.data, patch); },
+    });
+
+    const restorePromise = auth.restoreAuth();
+    page.onLoad();
+
+    await vi.waitFor(() => expect(page.data.state).toBe("list"));
+    expect(matchListRequests).toBe(1);
+    expect(page.data.items).toHaveLength(1);
+    expect(page.data.items[0].showPredict).toBe(false);
+    expect(page.data.items[0].can_predict_reason).toBe("AUTH_REQUIRED");
+    expect(page.data.items[0].chipText).toBe("需登录后预测");
+
+    await vi.waitFor(() => expect(typeof finishAuthLogin).toBe("function"));
+    finishAuthLogin();
+    await restorePromise;
+
+    await vi.waitFor(() => expect(matchListRequests).toBe(2));
+    await vi.waitFor(() => expect(page.data.items).toHaveLength(2));
+    expect(page.data.items[0].showPredict).toBe(true);
+    expect(page.data.items[1].uiState).toBe("submitted_locked");
+    expect(page.data.items[1].predText).toBe("已提交 2 : 1 · 不可修改");
+
+    page.onUnload();
+    expect(page.unsubscribeAuthRestored).toBeNull();
+  });
 });

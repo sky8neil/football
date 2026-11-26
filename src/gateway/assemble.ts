@@ -2,6 +2,7 @@ import { postSessionInit } from "../api/v1/session.js";
 import { getMatch, getMatches } from "../api/v1/matches.js";
 import { getLeagueStatus } from "../api/v1/league-status.js";
 import { getLeagueSeasons } from "../api/v1/league-seasons.js";
+import { getTeamById, getTeams } from "../api/v1/teams.js";
 import { getPersonalLeagueSummary } from "../api/v1/personal-league-summary.js";
 import { getMatchCrowd } from "../api/v1/crowd.js";
 import { getMyPrediction, getMyPredictions, postPrediction } from "../api/v1/predictions.js";
@@ -270,6 +271,7 @@ const EXACT_ALLOWED_METHODS: Readonly<Record<string, readonly string[]>> = {
   "/v1/matches": ["GET"],
   "/v1/leagues/status": ["GET"],
   "/v1/league-seasons": ["GET"],
+  "/v1/teams": ["GET"],
   "/v1/predictions": ["POST"],
   "/v1/predictions/summary": ["GET"],
   "/v1/predictions/me": ["GET"],
@@ -305,6 +307,9 @@ function allowedMethods(path: string): readonly string[] | null {
     return ["GET"];
   }
   if (singlePathParameter(path, "/v1/profiles/") !== null) {
+    return ["GET"];
+  }
+  if (singlePathParameter(path, "/v1/teams/") !== null) {
     return ["GET"];
   }
   if (singlePathParameter(path, "/v1/share-card/") !== null) {
@@ -515,6 +520,34 @@ export async function handleGatewayRequest(
       const result = await getLeagueSeasons(input.repo, {
         query: input.query,
         request_id: requestId,
+      });
+      logGateway(requestId, path, result.status, undefined);
+      return result;
+    }
+
+    if (method === "GET" && path === "/v1/teams") {
+      const identity = await resolveIdentity(trustedOpenid, input.repo);
+      const result = await getTeams(input.repo, {
+        public_source: resolvePublicReadRateKey(identity, input.client_ip, input.config.public_source),
+        query: input.query,
+        server_now: input.server_now,
+        request_id: requestId,
+        rate_limiter: input.rate_limiter,
+      });
+      logGateway(requestId, path, result.status, undefined);
+      return result;
+    }
+
+    const publicTeamId = singlePathParameter(path, "/v1/teams/");
+    if (method === "GET" && publicTeamId !== null) {
+      const identity = await resolveIdentity(trustedOpenid, input.repo);
+      const result = await getTeamById(input.repo, {
+        team_id: publicTeamId,
+        public_source: resolvePublicReadRateKey(identity, input.client_ip, input.config.public_source),
+        query: input.query,
+        server_now: input.server_now,
+        request_id: requestId,
+        rate_limiter: input.rate_limiter,
       });
       logGateway(requestId, path, result.status, undefined);
       return result;

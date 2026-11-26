@@ -1,9 +1,18 @@
 import { MatchStatus, SettlementStatus } from "../domain/enums.js";
 import type { Match } from "../domain/types.js";
 import { activeWindow } from "../application/provider-active-window.js";
-import { coerceMatchKickoff, kickoffMs } from "./settlement-todo-query.js";
+import {
+  coerceMatchKickoff,
+  isAfterSettlementCursor,
+  kickoffMs,
+} from "./settlement-todo-query.js";
 
 export type ActiveWindowJob = "near_match" | "live_match" | "post_finish_verify" | "stale_recovery";
+
+export interface ActiveWindowCursor {
+  kickoff_at: Date;
+  match_id: string;
+}
 
 export interface ActiveWindowQuery {
   jobType: ActiveWindowJob;
@@ -12,6 +21,8 @@ export interface ActiveWindowQuery {
   limit: number;
   /** 仅 post_finish_verify 使用：是否由持久化状态允许当日超 24h 每日兜底。 */
   includeOverdueDailyFallback?: boolean;
+  /** 仅 stale_recovery 轮转使用：只取 (kickoff_at, match_id) 严格晚于该游标的候选。 */
+  after?: ActiveWindowCursor | null;
 }
 
 /** 单个数据库查询片段：等值条件和可选 kickoff_at 上下界。 */
@@ -81,9 +92,13 @@ export function buildActiveWindowFilters(query: ActiveWindowQuery): ActiveWindow
   }
   if (query.jobType === "stale_recovery") {
     const kickoffAtLte = new Date(nowMs - 6 * HOUR_MS);
+    const kickoffAtGte = query.after == null
+      ? undefined
+      : new Date(kickoffMs(query.after.kickoff_at));
     return [MatchStatus.Scheduled, MatchStatus.Live].map((status) => ({
       equals: { match_status: status },
       supersededByNull: true,
+      ...(kickoffAtGte === undefined ? {} : { kickoffAtGte }),
       kickoffAtLte,
     }));
   }
@@ -140,9 +155,13 @@ export function selectActiveWindow(
       ? undefined
       : { includeOverdueDailyFallback: query.includeOverdueDailyFallback },
   );
+  const cursorFiltered =
+    query.jobType === "stale_recovery" && query.after != null
+      ? filtered.filter((match) => isAfterSettlementCursor(match, query.after))
+      : filtered;
   const seen = new Set<string>();
   const unique: Match[] = [];
-  for (const match of filtered.sort(compareActiveWindow)) {
+  for (const match of cursorFiltered.sort(compareActiveWindow)) {
     if (seen.has(match.match_id)) continue;
     seen.add(match.match_id);
     unique.push(match);

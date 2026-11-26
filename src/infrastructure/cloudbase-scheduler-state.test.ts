@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { CloudBaseDb, CloudBaseDocument } from "./cloudbase-db.js";
-import { CloudBaseSchedulerStateStore, periodicJobStateId } from "./cloudbase-scheduler-state.js";
+import {
+  CloudBaseSchedulerStateStore,
+  InMemorySchedulerStateStore,
+  STALE_RECOVERY_CURSOR_STATE_ID,
+  periodicJobStateId,
+} from "./cloudbase-scheduler-state.js";
 
 const NOW = new Date("2026-08-09T12:00:00.000Z");
 const KICKOFF = new Date("2026-08-08T12:00:00.000Z");
@@ -177,6 +182,83 @@ describe("CloudBaseSchedulerStateStore", () => {
         updated_at: NOW,
       });
       expect(periodicJobStateId(jobType)).toBe(jobType);
+    }
+  });
+
+  it("[CR42-08] 读写 stale_recovery_cursor（CloudBase 与 InMemory）互不干扰", async () => {
+    const db = new RecordingCloudBaseDb();
+    const cloud = new CloudBaseSchedulerStateStore(db, NAMESPACE);
+    expect(await cloud.getStaleRecoveryCursor()).toBeNull();
+
+    await cloud.upsertStaleRecoveryCursor({
+      cursor_kickoff_at: KICKOFF,
+      cursor_match_id: "m-10",
+      last_run_at: NOW,
+      updated_at: NOW,
+    });
+    expect(await cloud.getStaleRecoveryCursor()).toEqual({
+      cursor_kickoff_at: KICKOFF,
+      cursor_match_id: "m-10",
+      last_run_at: NOW,
+      updated_at: NOW,
+    });
+    expect(db.calls.some((call) => call.id === STALE_RECOVERY_CURSOR_STATE_ID)).toBe(true);
+
+    const memory = new InMemorySchedulerStateStore();
+    expect(await memory.getStaleRecoveryCursor()).toBeNull();
+    await memory.upsertStaleRecoveryCursor({
+      cursor_kickoff_at: null,
+      cursor_match_id: null,
+      last_run_at: NOW,
+      updated_at: NOW,
+    });
+    expect(await memory.getStaleRecoveryCursor()).toEqual({
+      cursor_kickoff_at: null,
+      cursor_match_id: null,
+      last_run_at: NOW,
+      updated_at: NOW,
+    });
+  });
+
+  it("[CR44-01] stale_recovery_cursor 支持持久化与清空 group_progress（CloudBase 与 InMemory）", async () => {
+    const db = new RecordingCloudBaseDb();
+    const cloud = new CloudBaseSchedulerStateStore(db, NAMESPACE);
+    const memory = new InMemorySchedulerStateStore();
+
+    for (const store of [cloud, memory]) {
+      await store.upsertStaleRecoveryCursor({
+        cursor_kickoff_at: KICKOFF,
+        cursor_match_id: "m-1",
+        group_progress: {
+          group_key: "premier_league|2026_2027|2026-09-01",
+          completed_primary_dates: ["2026-09-01"],
+        },
+        last_run_at: NOW,
+        updated_at: NOW,
+      });
+      expect(await store.getStaleRecoveryCursor()).toEqual({
+        cursor_kickoff_at: KICKOFF,
+        cursor_match_id: "m-1",
+        group_progress: {
+          group_key: "premier_league|2026_2027|2026-09-01",
+          completed_primary_dates: ["2026-09-01"],
+        },
+        last_run_at: NOW,
+        updated_at: NOW,
+      });
+
+      await store.upsertStaleRecoveryCursor({
+        cursor_kickoff_at: null,
+        cursor_match_id: null,
+        last_run_at: NOW,
+        updated_at: NOW,
+      });
+      expect(await store.getStaleRecoveryCursor()).toEqual({
+        cursor_kickoff_at: null,
+        cursor_match_id: null,
+        last_run_at: NOW,
+        updated_at: NOW,
+      });
     }
   });
 });

@@ -21,6 +21,8 @@ export {
   type CloudBaseDocument,
   type CloudBaseQueryOptions,
   type CloudBaseRepositoryConfig,
+  type TransactionIsolationLevel,
+  type TransactionOptions,
 } from "./cloudbase-db.js";
 export { CloudBaseDuplicateKeyError, CloudBaseDocumentNotFoundError } from "./cloudbase-db.js";
 export {

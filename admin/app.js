@@ -19,6 +19,29 @@ const anomalyPager = createCursorPager();
 const auditPager = createCursorPager();
 let currentTab = "anomalies";
 let cachedTeams = [];
+let anomaliesRequestSerial = 0;
+let teamsRequestSerial = 0;
+let auditRequestSerial = 0;
+let matchLoadSerial = 0;
+let loadedMatchId = null;
+
+function invalidateLoadedMatch() {
+  matchLoadSerial += 1;
+  loadedMatchId = null;
+}
+
+function resetMatchPreview() {
+  const preview = el("rc-match-preview");
+  preview.textContent = "";
+  setVisible(preview, false);
+}
+
+function parseNonNegativeInteger(value) {
+  const raw = String(value ?? "").trim();
+  if (!/^\d+$/.test(raw)) return null;
+  const parsed = Number(raw);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
+}
 
 const el = (id) => document.getElementById(id);
 
@@ -126,8 +149,7 @@ function makeBadge(text, className) {
 }
 
 async function loadAnomalies(transition = null) {
-  const tbody = el("anomalies-tbody");
-  tbody.textContent = "";
+  const requestSerial = ++anomaliesRequestSerial;
   try {
     const cursor = transition ? transition.currentCursor : anomalyPager.currentCursor;
     const data = await api.listAnomalies({
@@ -136,11 +158,16 @@ async function loadAnomalies(transition = null) {
       limit: el("anomaly-limit-filter").value,
       cursor,
     });
+    if (requestSerial !== anomaliesRequestSerial) return;
     anomalyPager.commit(transition, data.page);
     el("anomaly-prev-btn").disabled = !anomalyPager.canGoBack();
     el("anomaly-next-btn").disabled = !anomalyPager.hasMore;
 
-    if (data.items.length === 0) {
+    const tbody = el("anomalies-tbody");
+    tbody.textContent = "";
+
+    const items = Array.isArray(data?.items) ? data.items : [];
+    if (items.length === 0) {
       const tr = document.createElement("tr");
       const td = makeCell("暂无符合条件的异常记录");
       td.colSpan = 7;
@@ -149,7 +176,7 @@ async function loadAnomalies(transition = null) {
       return;
     }
 
-    for (const item of data.items) {
+    for (const item of items) {
       const tr = document.createElement("tr");
 
       const statusTd = document.createElement("td");
@@ -197,6 +224,8 @@ async function loadAnomalies(transition = null) {
       fixBtn.addEventListener("click", () => {
         el("rc-match-id").value = item.match_id;
         el("retry-match-id").value = item.match_id;
+        invalidateLoadedMatch();
+        resetMatchPreview();
         switchTab("settlement");
       });
       actions.appendChild(fixBtn);
@@ -206,20 +235,24 @@ async function loadAnomalies(transition = null) {
       tbody.appendChild(tr);
     }
   } catch (err) {
+    if (requestSerial !== anomaliesRequestSerial) return;
     showToast(formatApiError(err), "error");
   }
 }
 
 async function loadTeams() {
-  const tbody = el("teams-tbody");
-  tbody.textContent = "";
+  const requestSerial = ++teamsRequestSerial;
   try {
     const data = await api.listTeams({
       league_id: el("teams-league-filter").value,
       q: el("teams-search-input").value.trim(),
       missing_only: el("teams-missing-only").checked ? "true" : "",
     });
-    cachedTeams = data.items || [];
+    if (requestSerial !== teamsRequestSerial) return;
+    cachedTeams = Array.isArray(data?.items) ? data.items : [];
+
+    const tbody = el("teams-tbody");
+    tbody.textContent = "";
 
     if (cachedTeams.length === 0) {
       const tr = document.createElement("tr");
@@ -275,13 +308,13 @@ async function loadTeams() {
       tbody.appendChild(tr);
     }
   } catch (err) {
+    if (requestSerial !== teamsRequestSerial) return;
     showToast(formatApiError(err), "error");
   }
 }
 
 async function loadAuditLogs(transition = null) {
-  const tbody = el("audit-tbody");
-  tbody.textContent = "";
+  const requestSerial = ++auditRequestSerial;
   try {
     const cursor = transition ? transition.currentCursor : auditPager.currentCursor;
     const data = await api.listAuditLogs({
@@ -291,11 +324,16 @@ async function loadAuditLogs(transition = null) {
       limit: el("audit-limit-filter").value,
       cursor,
     });
+    if (requestSerial !== auditRequestSerial) return;
     auditPager.commit(transition, data.page);
     el("audit-prev-btn").disabled = !auditPager.canGoBack();
     el("audit-next-btn").disabled = !auditPager.hasMore;
 
-    if (data.items.length === 0) {
+    const tbody = el("audit-tbody");
+    tbody.textContent = "";
+
+    const items = Array.isArray(data?.items) ? data.items : [];
+    if (items.length === 0) {
       const tr = document.createElement("tr");
       const td = makeCell("暂无审计日志");
       td.colSpan = 6;
@@ -304,7 +342,7 @@ async function loadAuditLogs(transition = null) {
       return;
     }
 
-    for (const item of data.items) {
+    for (const item of items) {
       const tr = document.createElement("tr");
       tr.appendChild(makeCell(formatIsoDate(item.created_at)));
       tr.appendChild(makeCell(item.action, "mono"));
@@ -320,6 +358,7 @@ async function loadAuditLogs(transition = null) {
       tbody.appendChild(tr);
     }
   } catch (err) {
+    if (requestSerial !== auditRequestSerial) return;
     showToast(formatApiError(err), "error");
   }
 }
@@ -368,6 +407,8 @@ function bindEvents() {
   });
 
   el("logout-btn").addEventListener("click", async () => {
+    invalidateLoadedMatch();
+    resetMatchPreview();
     await api.logout().catch(() => {});
     showLoginView();
     showToast("已退出管理员会话");
@@ -391,6 +432,8 @@ function bindEvents() {
   }
   el("anomaly-refresh-btn").addEventListener("click", () => {
     anomalyPager.reset();
+    el("anomaly-prev-btn").disabled = true;
+    el("anomaly-next-btn").disabled = true;
     void loadAnomalies();
   });
   el("anomaly-prev-btn").addEventListener("click", () => {
@@ -421,24 +464,40 @@ function bindEvents() {
   });
 
   // Settlement
+  const handleRcMatchIdChange = () => {
+    if (el("rc-match-id").value.trim() !== loadedMatchId) {
+      invalidateLoadedMatch();
+      resetMatchPreview();
+    }
+  };
+  el("rc-match-id").addEventListener("input", handleRcMatchIdChange);
+  el("rc-match-id").addEventListener("change", handleRcMatchIdChange);
+
   el("rc-load-match-btn").addEventListener("click", async () => {
     const matchId = el("rc-match-id").value.trim();
     if (!isValidUuid(matchId)) return showToast("match_id 必须为 UUID v4", "error");
+    const serial = ++matchLoadSerial;
+    loadedMatchId = null;
     try {
       const match = await api.getMatch(matchId);
+      if (serial !== matchLoadSerial || el("rc-match-id").value.trim() !== matchId) return;
       el("rc-expected-version").value = String(match.result_version ?? 0);
-      if (match.regular_home_score !== null && match.regular_home_score !== undefined) {
-        el("rc-home-score").value = String(match.regular_home_score);
-      }
-      if (match.regular_away_score !== null && match.regular_away_score !== undefined) {
-        el("rc-away-score").value = String(match.regular_away_score);
-      }
+      el("rc-home-score").value =
+        match.regular_home_score !== null && match.regular_home_score !== undefined
+          ? String(match.regular_home_score)
+          : "";
+      el("rc-away-score").value =
+        match.regular_away_score !== null && match.regular_away_score !== undefined
+          ? String(match.regular_away_score)
+          : "";
       const preview = el("rc-match-preview");
       const openAnomalyCount = Array.isArray(match.open_anomalies) ? match.open_anomalies.length : 0;
       preview.textContent =
         `${match.home_team?.name_zh || match.home_team?.name || "?"} vs ${match.away_team?.name_zh || match.away_team?.name || "?"} | 状态: ${match.match_status} / 结算: ${match.settlement_status} | 当前版本: v${match.result_version} (已结算 v${match.settled_result_version ?? 0}, 来源: ${match.result_source ?? "none"}, 未解决异常: ${openAnomalyCount})`;
       setVisible(preview, true);
+      loadedMatchId = matchId;
     } catch (err) {
+      if (serial !== matchLoadSerial || el("rc-match-id").value.trim() !== matchId) return;
       showToast(formatApiError(err), "error");
     }
   });
@@ -447,20 +506,34 @@ function bindEvents() {
     event.preventDefault();
     const matchId = el("rc-match-id").value.trim();
     if (!isValidUuid(matchId)) return showToast("match_id 必须为 UUID v4", "error");
+    if (!loadedMatchId || loadedMatchId !== matchId) {
+      return showToast("请先重新读取当前比赛信息后再提交", "error");
+    }
+    const expectedResultVersion = parseNonNegativeInteger(el("rc-expected-version").value);
+    if (expectedResultVersion === null) {
+      return showToast("expected_result_version 必须为合法非负整数", "error");
+    }
+    const homeScore = parseNonNegativeInteger(el("rc-home-score").value);
+    const awayScore = parseNonNegativeInteger(el("rc-away-score").value);
+    if (homeScore === null || awayScore === null) {
+      return showToast("主客队常规时间进球不能为空且必须为合法非负整数", "error");
+    }
     const reason = el("rc-reason").value;
     const reasonErr = validateReason(reason);
     if (reasonErr) return showToast(reasonErr, "error");
     try {
       const res = await api.correctResult(matchId, {
-        expected_result_version: Number(el("rc-expected-version").value),
-        regular_home_score: Number(el("rc-home-score").value),
-        regular_away_score: Number(el("rc-away-score").value),
+        expected_result_version: expectedResultVersion,
+        regular_home_score: homeScore,
+        regular_away_score: awayScore,
         reason: reason.trim(),
       });
       const out = el("rc-result-box");
       out.textContent = JSON.stringify(res, null, 2);
       setVisible(out, true);
-      el("rc-expected-version").value = String(res.result_version);
+      if (el("rc-match-id").value.trim() === matchId) {
+        el("rc-expected-version").value = String(res.result_version);
+      }
       showToast(`赛果修正成功：v${res.result_version}（审计 ${res.audit_id}）`);
     } catch (err) {
       showToast(formatApiError(err), "error");
@@ -591,6 +664,8 @@ function bindEvents() {
   });
   el("audit-refresh-btn").addEventListener("click", () => {
     auditPager.reset();
+    el("audit-prev-btn").disabled = true;
+    el("audit-next-btn").disabled = true;
     void loadAuditLogs();
   });
   el("audit-prev-btn").addEventListener("click", () => {

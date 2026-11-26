@@ -1,22 +1,44 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   AdminRole,
   AdminStatus,
   GroupMemberStatus,
   GroupStatus,
+  MatchScoreValue,
+  MatchStatus,
+  PeriodType,
+  Result,
+  SettlementDocStatus,
+  SettlementItemStatus,
+  SettlementPhase,
+  SettlementStatus,
   TeamStatus,
   UserStatus,
 } from "../domain/enums.js";
+import { newUuid } from "../domain/ids.js";
+import { calculatePeriodKey } from "../domain/time.js";
 import type {
   Admin,
   Group,
   GroupMember,
+  Match,
+  MatchResult,
+  Prediction,
+  SettlementDoc,
+  SettlementItem,
   Team,
   User,
   UserSeasonStats,
 } from "../domain/types.js";
 import { InMemoryRepository, type UnitOfWork } from "../infrastructure/repositories.js";
+import { DailyConsistencyService, DAILY_CONSISTENCY_ANOMALY_MATCH_ID, DAILY_CONSISTENCY_MISMATCH_CODE } from "./daily-consistency-service.js";
+import { RepositoryDailyConsistencySnapshotSource } from "./daily-consistency-snapshot.js";
 import { ProfileMutationService } from "./profile-mutation.js";
+import {
+  SettlementItemApplicationService,
+  rankingPeriodLockKey,
+  rebuildSettlementWeekRanks,
+} from "./settlement-item-application-service.js";
 import { defaultLevelState } from "../domain/types.js";
 
 const NOW = new Date("2026-08-09T00:00:00.000Z");
@@ -769,5 +791,521 @@ describe("ProfileMutationService A-S4-01", () => {
         level: 1,
         last_scoring_match_at: SCORE_AT,
       });
+  });
+});
+
+async function setupWeekRankingFixture(repo: InMemoryRepository) {
+  const firstEval = new Date("2026-08-03T02:00:00.000Z");
+  // 2026-08-08 (周六) 属于 2026-W32（周期至 2026-08-09T16:00:00Z 结束）
+  const anchorAt = new Date("2026-08-08T06:00:00.000Z");
+  const settledAt = new Date("2026-08-08T08:00:00.000Z");
+  const deleteAt = new Date("2026-08-08T12:00:00.000Z");
+  const checkAt = new Date("2026-08-09T00:00:00.000Z");
+  const weekKey = calculatePeriodKey(PeriodType.Week, anchorAt);
+
+  const u1 = makeUser({
+    user_id: "00000000-0000-4000-8000-000000000101",
+    openid: "openid-rank-del-1",
+    nickname: "TopUser",
+    favorite_team_id: null,
+    career_points: 0,
+    career_valid_predictions: 0,
+    career_wdl_hits: 0,
+    career_exact_hits: 0,
+    created_at: anchorAt,
+    updated_at: anchorAt,
+  });
+  const u2 = makeUser({
+    user_id: "00000000-0000-4000-8000-000000000102",
+    openid: "openid-rank-del-2",
+    nickname: "SecondUser",
+    favorite_team_id: null,
+    career_points: 0,
+    career_valid_predictions: 0,
+    career_wdl_hits: 0,
+    career_exact_hits: 0,
+    created_at: anchorAt,
+    updated_at: anchorAt,
+  });
+  await repo.users.insert(u1);
+  await repo.users.insert(u2);
+
+  const matchId = newUuid();
+  const match: Match = {
+    schema_version: 1,
+    match_id: matchId,
+    canonical_match_id: matchId,
+    superseded_by: null,
+    league_id: "premier_league",
+    season_id: "2026_2027",
+    round_id: "01",
+    home_team_id: newUuid(),
+    away_team_id: newUuid(),
+    kickoff_at: anchorAt,
+    kickoff_confirmed: true,
+    prediction_deadline_at: new Date(anchorAt.getTime() - 600_000),
+    prediction_closed_at: new Date(anchorAt.getTime() - 600_000),
+    period_anchor_at: anchorAt,
+    match_status: MatchStatus.Finished,
+    settlement_status: SettlementStatus.Settled,
+    regular_home_score: 2,
+    regular_away_score: 1,
+    extra_home_score: null,
+    extra_away_score: null,
+    penalty_home_score: null,
+    penalty_away_score: null,
+    result_version: 1,
+    settled_result_version: 1,
+    result_source: "provider",
+    scoring_rule_version: "scoring_v1",
+    finish_detected_at: settledAt,
+    settled_at: settledAt,
+    created_at: anchorAt,
+    updated_at: anchorAt,
+  };
+  await repo.matches.insert(match);
+
+  const matchResult: MatchResult = {
+    schema_version: 1,
+    match_id: matchId,
+    result_version: 1,
+    regular_home_score: 2,
+    regular_away_score: 1,
+    source: "provider",
+    provider_status: "FT",
+    admin_id: null,
+    reason: null,
+    created_at: settledAt,
+  };
+  await repo.matchResults.insert(matchResult);
+
+  const p1: Prediction = {
+    schema_version: 1,
+    prediction_id: newUuid(),
+    user_id: u1.user_id,
+    match_id: matchId,
+    canonical_match_id: matchId,
+    idempotency_key: newUuid(),
+    pred_home_score: 2,
+    pred_away_score: 1,
+    derived_result: Result.Home,
+    submitted_at: new Date(anchorAt.getTime() - 3_600_000),
+    scoring_rule_version: "scoring_v1",
+    match_score: MatchScoreValue.Miss,
+    wdl_hit: false,
+    exact_hit: false,
+    applied_result_version: 0,
+    created_at: anchorAt,
+    updated_at: anchorAt,
+  };
+  const p2: Prediction = {
+    ...p1,
+    prediction_id: newUuid(),
+    user_id: u2.user_id,
+    idempotency_key: newUuid(),
+    pred_home_score: 1,
+    pred_away_score: 0,
+  };
+  await repo.predictions.insert(p1);
+  await repo.predictions.insert(p2);
+
+  const settlementId = newUuid();
+  const settlement: SettlementDoc = {
+    schema_version: 1,
+    settlement_id: settlementId,
+    match_id: matchId,
+    result_version: 1,
+    rule_version: "scoring_v1",
+    status: SettlementDocStatus.Running,
+    phase: SettlementPhase.ApplyItems,
+    is_correction: false,
+    started_at: settledAt,
+    settled_at: null,
+    attempt_count: 1,
+    last_error_code: null,
+    last_error_message: null,
+    created_at: settledAt,
+    updated_at: settledAt,
+  };
+  await repo.settlements.insert(settlement);
+
+  const makePendingItem = (predId: string, uid: string, score: MatchScoreValue, exact: boolean): SettlementItem => ({
+    schema_version: 1,
+    settlement_id: settlementId,
+    prediction_id: predId,
+    user_id: uid,
+    old_score: MatchScoreValue.Miss,
+    new_score: score,
+    score_delta: score,
+    old_wdl_hit: false,
+    new_wdl_hit: true,
+    old_exact_hit: false,
+    new_exact_hit: exact,
+    valid_prediction_delta: 1,
+    source_result_version: 1,
+    status: SettlementItemStatus.Pending,
+    applied_at: null,
+    attempt_count: 0,
+    last_error_code: null,
+    last_error_message: null,
+    created_at: settledAt,
+    updated_at: settledAt,
+  });
+  await repo.settlementItems.insert(makePendingItem(p1.prediction_id, u1.user_id, MatchScoreValue.ExactHit, true));
+  await repo.settlementItems.insert(makePendingItem(p2.prediction_id, u2.user_id, MatchScoreValue.WdlHit, false));
+
+  const itemService = new SettlementItemApplicationService(repo);
+  await itemService.apply(settlementId, p1.prediction_id, settledAt);
+  await itemService.apply(settlementId, p2.prediction_id, settledAt);
+  await repo.settlements.update({
+    ...settlement,
+    status: SettlementDocStatus.Settled,
+    phase: SettlementPhase.Done,
+    settled_at: settledAt,
+    updated_at: settledAt,
+  });
+  await rebuildSettlementWeekRanks(repo, anchorAt, settledAt);
+
+  return { firstEval, anchorAt, settledAt, deleteAt, checkAt, weekKey, u1, u2 };
+}
+
+describe("ProfileMutationService CR42-04 / CR43-02 注销与未封板周榜原子重排", () => {
+  it("锁序验证：先在事务外按序获取 ranking:week:* 锁，再进单事务原子注销与重排，每日对账无中间态", async () => {
+    const repo = new InMemoryRepository();
+    const { firstEval, deleteAt, checkAt, weekKey, u1, u2 } = await setupWeekRankingFixture(repo);
+
+    expect(await repo.rankings.findByPeriodAndUser(PeriodType.Week, weekKey, u1.user_id))
+      .toMatchObject({ period_score: 12, global_rank: 1, is_final: false });
+    expect(await repo.rankings.findByPeriodAndUser(PeriodType.Week, weekKey, u2.user_id))
+      .toMatchObject({ period_score: 3, global_rank: 2, is_final: false });
+
+    const consistencyBefore = await new DailyConsistencyService(
+      repo,
+      new RepositoryDailyConsistencySnapshotSource(repo, firstEval),
+      firstEval,
+    ).run(checkAt);
+    expect(consistencyBefore).toMatchObject({ kind: "completed", differences: [] });
+
+    // 验证锁序与单事务提交：周榜锁必须在注销事务开始前获取、事务提交后逆序释放
+    const lockTrace: string[] = [];
+    let activeTxDepth = 0;
+    let inTxMidCheck: Promise<unknown> | null = null;
+    const jobLocks = repo.jobLocks;
+    const origWithTx = repo.withTransaction.bind(repo);
+    const origAcquire = jobLocks.acquire.bind(jobLocks);
+    const origRelease = jobLocks.release.bind(jobLocks);
+    const acquireSpy = vi.spyOn(jobLocks, "acquire").mockImplementation(async (key, owner, lease) => {
+      lockTrace.push(`lock:${key}:inTx=${activeTxDepth}`);
+      return origAcquire(key, owner, lease);
+    });
+    const releaseSpy = vi.spyOn(jobLocks, "release").mockImplementation(async (key, owner) => {
+      lockTrace.push(`release:${key}:inTx=${activeTxDepth}`);
+      return origRelease(key, owner);
+    });
+    const trackedRepo = new Proxy(repo, {
+      get(target, prop, receiver) {
+        if (prop === "jobLocks") return jobLocks;
+        if (prop === "withTransaction") {
+          return (async (fn, options) => {
+            activeTxDepth += 1;
+            lockTrace.push("tx:enter");
+            try {
+              return await origWithTx(async (tx) => {
+                const rawUsers = tx.users;
+                const wrappedUsers = {
+                  ...rawUsers,
+                  patchFields: async (uid: string, fields: Parameters<NonNullable<typeof rawUsers.patchFields>>[1]) => {
+                    await rawUsers.patchFields!(uid, fields);
+                    // 模拟在用户写墓碑之后立刻并发发起每日对账，必须等原子事务提交后读取，差异恒为 0
+                    inTxMidCheck ??= new DailyConsistencyService(
+                      repo,
+                      new RepositoryDailyConsistencySnapshotSource(repo, firstEval),
+                      firstEval,
+                    ).run(checkAt);
+                  },
+                };
+                const wrappedTx = new Proxy(tx, {
+                  get(txTarget, txProp, txReceiver) {
+                    if (txProp === "users") return wrappedUsers;
+                    const value = Reflect.get(txTarget, txProp, txReceiver);
+                    return typeof value === "function" ? value.bind(txTarget) : value;
+                  },
+                });
+                return fn(wrappedTx as UnitOfWork);
+              }, options);
+            } finally {
+              lockTrace.push("tx:exit");
+              activeTxDepth -= 1;
+            }
+          }) as InMemoryRepository["withTransaction"];
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+
+    await new ProfileMutationService(trackedRepo).deleteMyProfile(u1.user_id, deleteAt);
+    acquireSpy.mockRestore();
+    releaseSpy.mockRestore();
+
+    expect(lockTrace).toEqual([
+      `lock:ranking:week:${weekKey}:inTx=0`,
+      "tx:enter",
+      "tx:exit",
+      `release:ranking:week:${weekKey}:inTx=0`,
+    ]);
+
+    expect(await inTxMidCheck).toMatchObject({ kind: "completed", differences: [] });
+
+    expect(await repo.rankings.findByPeriodAndUser(PeriodType.Week, weekKey, u1.user_id))
+      .toMatchObject({ period_score: 12, global_rank: null, is_final: false });
+    expect(await repo.rankings.findByPeriodAndUser(PeriodType.Week, weekKey, u2.user_id))
+      .toMatchObject({ period_score: 3, global_rank: 1, is_final: false });
+
+    const consistency = await new DailyConsistencyService(
+      repo,
+      new RepositoryDailyConsistencySnapshotSource(repo, firstEval),
+      firstEval,
+    ).run(checkAt);
+    expect(consistency.kind).toBe("completed");
+    if (consistency.kind === "completed") {
+      expect(consistency.differences).toEqual([]);
+    }
+    const mismatchKey = `${DAILY_CONSISTENCY_ANOMALY_MATCH_ID}:${DAILY_CONSISTENCY_MISMATCH_CODE}`;
+    expect(await repo.anomalies.findByKey(mismatchKey)).toBeNull();
+  });
+
+  it("锁竞争验证：周榜锁被占用时失败报错且账号保持 Active 与原名次不变，释放后重试原子生效", async () => {
+    const repo = new InMemoryRepository();
+    const { firstEval, deleteAt, checkAt, weekKey, u1, u2 } = await setupWeekRankingFixture(repo);
+    const lockKey = rankingPeriodLockKey(PeriodType.Week, weekKey);
+    const holderId = newUuid();
+    expect(
+      await repo.jobLocks.acquire(lockKey, holderId, new Date(Date.now() + 60_000)),
+    ).toBe(true);
+
+    const service = new ProfileMutationService(repo);
+    await expect(service.deleteMyProfile(u1.user_id, deleteAt)).rejects.toMatchObject({
+      code: "RANKING_REBUILD_ALREADY_RUNNING",
+    });
+
+    // 账号未被半注销，原 openid、状态、mapping 与周榜名次全部保持一致
+    await expect(repo.users.findById(u1.user_id)).resolves.toMatchObject({
+      user_id: u1.user_id,
+      openid: u1.openid,
+      nickname: u1.nickname,
+      status: UserStatus.Active,
+      deleted_at: null,
+    });
+    await expect(repo.deletedOpenidMappings.findByOriginalOpenid(u1.openid)).resolves.toBeNull();
+    await expect(repo.rankings.findByPeriodAndUser(PeriodType.Week, weekKey, u1.user_id))
+      .resolves.toMatchObject({ global_rank: 1 });
+    await expect(repo.rankings.findByPeriodAndUser(PeriodType.Week, weekKey, u2.user_id))
+      .resolves.toMatchObject({ global_rank: 2 });
+    await expect(
+      new DailyConsistencyService(
+        repo,
+        new RepositoryDailyConsistencySnapshotSource(repo, firstEval),
+        firstEval,
+      ).run(checkAt),
+    ).resolves.toMatchObject({ kind: "completed", differences: [] });
+
+    // 释放锁后重试：账号注销与周榜重排同事务原子生效
+    await repo.jobLocks.release(lockKey, holderId);
+    await expect(service.deleteMyProfile(u1.user_id, deleteAt)).resolves.toEqual({
+      user_id: u1.user_id,
+      deleted: true,
+    });
+    await expect(repo.users.findById(u1.user_id)).resolves.toMatchObject({
+      user_id: u1.user_id,
+      openid: `deleted:${u1.user_id}`,
+      status: UserStatus.Deleted,
+      deleted_at: deleteAt,
+    });
+    await expect(repo.rankings.findByPeriodAndUser(PeriodType.Week, weekKey, u1.user_id))
+      .resolves.toMatchObject({ global_rank: null });
+    await expect(repo.rankings.findByPeriodAndUser(PeriodType.Week, weekKey, u2.user_id))
+      .resolves.toMatchObject({ global_rank: 1 });
+    await expect(
+      new DailyConsistencyService(
+        repo,
+        new RepositoryDailyConsistencySnapshotSource(repo, firstEval),
+        firstEval,
+      ).run(checkAt),
+    ).resolves.toMatchObject({ kind: "completed", differences: [] });
+  });
+
+  it("多周锁序：按字典序获取多周锁，后一周失败时立即释放已获锁且未进事务，成功时逆序释放", async () => {
+    const repo = new InMemoryRepository();
+    const { deleteAt, weekKey, u1, u2 } = await setupWeekRankingFixture(repo);
+    const nextWeekAnchor = new Date("2026-08-15T06:00:00.000Z");
+    const nextWeekKey = calculatePeriodKey(PeriodType.Week, nextWeekAnchor);
+    expect(weekKey < nextWeekKey).toBe(true);
+
+    await repo.rankings.insert({
+      schema_version: 1,
+      period_type: PeriodType.Week,
+      period_key: nextWeekKey,
+      user_id: u1.user_id,
+      period_score: 6,
+      valid_predictions: 1,
+      wdl_hits: 1,
+      exact_hits: 0,
+      last_scoring_match_at: nextWeekAnchor,
+      global_rank: 1,
+      is_final: false,
+      created_at: deleteAt,
+      updated_at: deleteAt,
+    });
+    await repo.rankings.insert({
+      schema_version: 1,
+      period_type: PeriodType.Week,
+      period_key: nextWeekKey,
+      user_id: u2.user_id,
+      period_score: 3,
+      valid_predictions: 1,
+      wdl_hits: 1,
+      exact_hits: 0,
+      last_scoring_match_at: nextWeekAnchor,
+      global_rank: 2,
+      is_final: false,
+      created_at: deleteAt,
+      updated_at: deleteAt,
+    });
+
+    const events: string[] = [];
+    let txCount = 0;
+    const jobLocks = repo.jobLocks;
+    const origAcquire = jobLocks.acquire.bind(jobLocks);
+    const origRelease = jobLocks.release.bind(jobLocks);
+    const origWithTx = repo.withTransaction.bind(repo);
+    const acquireSpy = vi.spyOn(jobLocks, "acquire").mockImplementation(async (key, owner, lease) => {
+      events.push(`acquire:${key}`);
+      return origAcquire(key, owner, lease);
+    });
+    const releaseSpy = vi.spyOn(jobLocks, "release").mockImplementation(async (key, owner) => {
+      events.push(`release:${key}`);
+      return origRelease(key, owner);
+    });
+    const trackedRepo = new Proxy(repo, {
+      get(target, prop, receiver) {
+        if (prop === "jobLocks") return jobLocks;
+        if (prop === "withTransaction") {
+          return (async (fn, options) => {
+            txCount += 1;
+            events.push("tx:enter");
+            try {
+              return await origWithTx(fn, options);
+            } finally {
+              events.push("tx:exit");
+            }
+          }) as InMemoryRepository["withTransaction"];
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+
+    const nextWeekLockKey = rankingPeriodLockKey(PeriodType.Week, nextWeekKey);
+    const blockerOwner = newUuid();
+    await origAcquire(nextWeekLockKey, blockerOwner, new Date(Date.now() + 60_000));
+
+    await expect(
+      new ProfileMutationService(trackedRepo).deleteMyProfile(u1.user_id, deleteAt),
+    ).rejects.toMatchObject({ code: "RANKING_REBUILD_ALREADY_RUNNING" });
+
+    expect(txCount).toBe(0);
+    expect(await repo.jobLocks.isHeld(rankingPeriodLockKey(PeriodType.Week, weekKey), new Date())).toBe(false);
+    expect(events[0]).toBe(`acquire:ranking:week:${weekKey}`);
+    expect(events[events.length - 1]).toBe(`release:ranking:week:${weekKey}`);
+    await expect(repo.users.findById(u1.user_id)).resolves.toMatchObject({ status: UserStatus.Active });
+
+    await origRelease(nextWeekLockKey, blockerOwner);
+    events.length = 0;
+    await expect(
+      new ProfileMutationService(trackedRepo).deleteMyProfile(u1.user_id, deleteAt),
+    ).resolves.toEqual({ user_id: u1.user_id, deleted: true });
+
+    expect(events).toEqual([
+      `acquire:ranking:week:${weekKey}`,
+      `acquire:ranking:week:${nextWeekKey}`,
+      "tx:enter",
+      "tx:exit",
+      `release:ranking:week:${nextWeekKey}`,
+      `release:ranking:week:${weekKey}`,
+    ]);
+    await expect(repo.rankings.findByPeriodAndUser(PeriodType.Week, nextWeekKey, u1.user_id))
+      .resolves.toMatchObject({ global_rank: null });
+    await expect(repo.rankings.findByPeriodAndUser(PeriodType.Week, nextWeekKey, u2.user_id))
+      .resolves.toMatchObject({ global_rank: 1 });
+
+    acquireSpy.mockRestore();
+    releaseSpy.mockRestore();
+  });
+
+  it("极端并发场景：事务内发现新增未封板周榜时安全回滚并重新补锁提交", async () => {
+    const repo = new InMemoryRepository();
+    const { deleteAt, weekKey, u1, u2 } = await setupWeekRankingFixture(repo);
+    const nextWeekAnchor = new Date("2026-08-15T06:00:00.000Z");
+    const nextWeekKey = calculatePeriodKey(PeriodType.Week, nextWeekAnchor);
+
+    const origWithTx = repo.withTransaction.bind(repo);
+    let attempt = 0;
+    const realRaceRepo = new Proxy(repo, {
+      get(target, prop, receiver) {
+        if (prop !== "withTransaction") {
+          return Reflect.get(target, prop, receiver);
+        }
+        return (async (fn, options) => {
+          attempt += 1;
+          if (attempt === 1) {
+            await repo.rankings.insert({
+              schema_version: 1,
+              period_type: PeriodType.Week,
+              period_key: nextWeekKey,
+              user_id: u1.user_id,
+              period_score: 12,
+              valid_predictions: 1,
+              wdl_hits: 1,
+              exact_hits: 1,
+              last_scoring_match_at: nextWeekAnchor,
+              global_rank: 1,
+              is_final: false,
+              created_at: deleteAt,
+              updated_at: deleteAt,
+            });
+            await repo.rankings.insert({
+              schema_version: 1,
+              period_type: PeriodType.Week,
+              period_key: nextWeekKey,
+              user_id: u2.user_id,
+              period_score: 3,
+              valid_predictions: 1,
+              wdl_hits: 1,
+              exact_hits: 0,
+              last_scoring_match_at: nextWeekAnchor,
+              global_rank: 2,
+              is_final: false,
+              created_at: deleteAt,
+              updated_at: deleteAt,
+            });
+          }
+          return origWithTx(fn, options);
+        }) as InMemoryRepository["withTransaction"];
+      },
+    });
+
+    await expect(
+      new ProfileMutationService(realRaceRepo).deleteMyProfile(u1.user_id, deleteAt),
+    ).resolves.toEqual({ user_id: u1.user_id, deleted: true });
+
+    expect(attempt).toBe(2);
+    await expect(repo.users.findById(u1.user_id)).resolves.toMatchObject({ status: UserStatus.Deleted });
+    await expect(repo.rankings.findByPeriodAndUser(PeriodType.Week, weekKey, u1.user_id))
+      .resolves.toMatchObject({ global_rank: null });
+    await expect(repo.rankings.findByPeriodAndUser(PeriodType.Week, weekKey, u2.user_id))
+      .resolves.toMatchObject({ global_rank: 1 });
+    await expect(repo.rankings.findByPeriodAndUser(PeriodType.Week, nextWeekKey, u1.user_id))
+      .resolves.toMatchObject({ global_rank: null });
+    await expect(repo.rankings.findByPeriodAndUser(PeriodType.Week, nextWeekKey, u2.user_id))
+      .resolves.toMatchObject({ global_rank: 1 });
   });
 });

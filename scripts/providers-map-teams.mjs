@@ -64,6 +64,116 @@ export function normalizeNameZh(value) {
   return trimmed.length === 0 ? null : trimmed;
 }
 
+function normalizeOptionalString(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function normalizeProviderTeamId(value) {
+  if (value === undefined || value === null) return "";
+  return String(value).trim();
+}
+
+/**
+ * Resolve confirmed team mappings from both `confirmed_mappings[]` and
+ * `provider_teams[].confirmed_team_id`, rejecting conflicting targets/leagues
+ * and deduplicating identical pairs.
+ */
+function resolveConfirmedMappings(input) {
+  if (
+    input.confirmed_mappings !== undefined &&
+    input.confirmed_mappings !== null &&
+    !Array.isArray(input.confirmed_mappings)
+  ) {
+    throw new Error("confirmed_mappings must be an array");
+  }
+  if (
+    input.provider_teams !== undefined &&
+    input.provider_teams !== null &&
+    !Array.isArray(input.provider_teams)
+  ) {
+    throw new Error("provider_teams must be an array");
+  }
+
+  const byKey = new Map();
+  const providerLeagues = new Map();
+
+  const recordLeague = (provider, providerTeamId, leagueId) => {
+    if (!provider || !providerTeamId || !leagueId) return;
+    const key = `${provider}:${providerTeamId}`;
+    const leagues = providerLeagues.get(key) ?? new Set();
+    leagues.add(leagueId);
+    providerLeagues.set(key, leagues);
+  };
+
+  const addMapping = (provider, providerTeamId, teamId, leagueId, source) => {
+    const key = `${provider}:${providerTeamId}`;
+    recordLeague(provider, providerTeamId, leagueId);
+    const existing = byKey.get(key);
+    if (existing) {
+      if (existing.team_id !== teamId) {
+        throw new Error(
+          `Conflicting confirmed mapping for ${key}: ${existing.team_id} (${existing.source}) vs ${teamId} (${source})`,
+        );
+      }
+      if (!existing.league_id && leagueId) {
+        existing.league_id = leagueId;
+      }
+      return;
+    }
+    byKey.set(key, {
+      provider,
+      provider_team_id: providerTeamId,
+      team_id: teamId,
+      league_id: leagueId || null,
+      source,
+    });
+  };
+
+  for (const entry of input.confirmed_mappings ?? []) {
+    const provider = normalizeOptionalString(entry?.provider);
+    const providerTeamId = normalizeProviderTeamId(entry?.provider_team_id);
+    const teamId = normalizeOptionalString(entry?.team_id);
+    const leagueId = normalizeOptionalString(entry?.league_id);
+    if (!provider || !providerTeamId || !teamId) {
+      throw new Error(`Invalid confirmed_mappings entry: ${JSON.stringify(entry)}`);
+    }
+    addMapping(provider, providerTeamId, teamId, leagueId, "confirmed_mappings");
+  }
+
+  for (const team of input.provider_teams ?? []) {
+    const provider = normalizeOptionalString(team?.provider);
+    const providerTeamId = normalizeProviderTeamId(team?.provider_team_id);
+    const leagueId = normalizeOptionalString(team?.league_id);
+    recordLeague(provider, providerTeamId, leagueId);
+
+    const rawConfirmed = team?.confirmed_team_id;
+    if (rawConfirmed === undefined || rawConfirmed === null) continue;
+    if (typeof rawConfirmed !== "string") {
+      throw new Error(`Invalid provider_teams confirmed_team_id: ${JSON.stringify(team)}`);
+    }
+    const confirmedTeamId = rawConfirmed.trim();
+    if (!confirmedTeamId) continue;
+    if (!provider || !providerTeamId) {
+      throw new Error(`Invalid provider_teams entry with confirmed_team_id: ${JSON.stringify(team)}`);
+    }
+    addMapping(provider, providerTeamId, confirmedTeamId, leagueId, "provider_teams");
+  }
+
+  for (const [key, entry] of byKey.entries()) {
+    const leagues = providerLeagues.get(key);
+    if (!leagues || leagues.size === 0) continue;
+    if (leagues.size > 1) {
+      throw new Error(`Conflicting league_id for ${key}: ${[...leagues].join(" vs ")}`);
+    }
+    entry.league_id = [...leagues][0];
+  }
+
+  return {
+    byKey,
+    entries: [...byKey.values()],
+  };
+}
+
 export function analyzeTeamMappings(input) {
   if (!input || !Array.isArray(input.local_teams) || !Array.isArray(input.provider_teams)) {
     throw new Error("Input must contain local_teams and provider_teams arrays");
@@ -75,14 +185,13 @@ export function analyzeTeamMappings(input) {
     const key = `${team.league_id}:${normalize(team.name)}`;
     localByName.set(key, [...(localByName.get(key) ?? []), team]);
   }
-  const confirmedMappings = new Map((input.confirmed_mappings ?? []).map((mapping) => [
-    `${mapping.provider}:${String(mapping.provider_team_id)}`,
-    mapping.team_id,
-  ]));
+  const { byKey: confirmedMappings } = resolveConfirmedMappings(input);
   const report = input.provider_teams.map((team) => {
     const candidates = localByName.get(`${team.league_id}:${normalize(team.name)}`) ?? [];
-    const mappedTeamId = confirmedMappings.get(`${team.provider}:${String(team.provider_team_id)}`) ?? team.confirmed_team_id;
-    const mappedTeam = mappedTeamId ? localById.get(mappedTeamId) : null;
+    const provider = normalizeOptionalString(team.provider);
+    const providerTeamId = normalizeProviderTeamId(team.provider_team_id);
+    const mappedTeamId = confirmedMappings.get(`${provider}:${providerTeamId}`)?.team_id ?? null;
+    const mappedTeam = mappedTeamId ? (localById.get(mappedTeamId) ?? null) : null;
     const confirmed = mappedTeam?.league_id === team.league_id ? mappedTeam : null;
     const suggestion = candidates.length === 1 ? candidates[0] : null;
     const status = confirmed ? "confirmed" : candidates.length > 1 ? "ambiguous" : candidates.length === 1 ? "review" : "unmatched";
@@ -158,7 +267,7 @@ export async function applyTeamMappings(repo, input, options = {}) {
   if (!input || typeof input !== "object") {
     throw new Error("Input must be a JSON object");
   }
-  const confirmedMappings = Array.isArray(input.confirmed_mappings) ? input.confirmed_mappings : [];
+  const { entries: confirmedMappings } = resolveConfirmedMappings(input);
   const teamUpdates = collectTeamUpdates(input);
   const now = options.now instanceof Date && Number.isFinite(options.now.getTime())
     ? options.now
@@ -177,17 +286,15 @@ export async function applyTeamMappings(repo, input, options = {}) {
     let anomaliesResolved = 0;
 
     for (const entry of confirmedMappings) {
-      const provider = typeof entry?.provider === "string" ? entry.provider.trim() : "";
-      const providerTeamId = entry?.provider_team_id === undefined || entry?.provider_team_id === null
-        ? ""
-        : String(entry.provider_team_id).trim();
-      const teamId = typeof entry?.team_id === "string" ? entry.team_id.trim() : "";
-      if (!provider || !providerTeamId || !teamId) {
-        throw new Error(`Invalid confirmed_mappings entry: ${JSON.stringify(entry)}`);
-      }
+      const { provider, provider_team_id: providerTeamId, team_id: teamId, league_id: providerLeagueId } = entry;
       const team = await tx.teams.findById(teamId);
       if (team === null) {
         throw new Error(`Confirmed mapping points to unknown team_id: ${teamId}`);
+      }
+      if (providerLeagueId && team.league_id !== providerLeagueId) {
+        throw new Error(
+          `Confirmed mapping league mismatch for ${provider}:${providerTeamId} (provider=${providerLeagueId}, team=${team.league_id})`,
+        );
       }
       const existing = await tx.teamProviderMappings.findByProviderAndExternalId(provider, providerTeamId);
       if (existing === null) {

@@ -20,6 +20,7 @@ import {
   compileAnomalyPage,
   compileLatestRegularBoardSnapshot,
   compilePostgresAdjustCounter,
+  compilePostgresBeginTransaction,
   compilePostgresDistinctQuery,
   compilePostgresDocumentAdd,
   compilePostgresDocumentDelete,
@@ -2940,5 +2941,61 @@ describe("PostgresDocumentDb 事务内 getForUpdate 与局部 patch [Slice 2]", 
       `SELECT document FROM "${SCHEMA}"."${users()}" WHERE (document ->> 'openid') = $1`,
     );
     expect(compiled.params).toEqual([12345]);
+  });
+
+  it("[CR42-07] compilePostgresBeginTransaction 与 transaction(options) 按需生成 REPEATABLE READ READ ONLY", async () => {
+    expect(compilePostgresBeginTransaction()).toBe("BEGIN");
+    expect(compilePostgresBeginTransaction({ isolationLevel: "repeatable_read", readOnly: true })).toBe(
+      "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY",
+    );
+    expect(compilePostgresBeginTransaction({ isolationLevel: "read_committed" })).toBe(
+      "BEGIN TRANSACTION ISOLATION LEVEL READ COMMITTED",
+    );
+    expect(compilePostgresBeginTransaction({ readOnly: true })).toBe(
+      "BEGIN TRANSACTION READ ONLY",
+    );
+
+    const rec = new ExclusiveRecordingQuery();
+    rec.responses.push({ rows: [{ document: encodeDocument(userDoc("u1")) }] });
+    const db = createPostgresDocumentDb(rec.query, CONFIG, { connect: rec.connect });
+
+    await db.transaction(
+      async (tx) => {
+        await expect(tx.get(users(), "u1")).resolves.toMatchObject({ _id: "u1" });
+        await expect(
+          tx.transaction(async () => "bad", { isolationLevel: "repeatable_read" }),
+        ).rejects.toThrow(/nested transaction/i);
+      },
+      { isolationLevel: "repeatable_read", readOnly: true },
+    );
+
+    expect(rec.statements.map((item) => item.sql)).toEqual([
+      "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY",
+      `SELECT document FROM "${SCHEMA}"."${users()}" WHERE _id = $1`,
+      "COMMIT",
+    ]);
+  });
+
+  it("[CR42-08] compilePostgresDocumentQuery 支持 order_bys 多列稳定排序", () => {
+    const compiled = compilePostgresDocumentQuery(
+      CONFIG,
+      matches(),
+      { match_status: MatchStatus.Scheduled },
+      {
+        order_by: "kickoff_at",
+        order_bys: [
+          { field: "kickoff_at", direction: "asc" },
+          { field: "match_id", direction: "asc" },
+        ],
+        limit: 10,
+      },
+    );
+    const statusExpr = postgresDocumentFieldExpr(SCHEMA, "matches", "match_status");
+    const kickoffExpr = postgresDocumentFieldExpr(SCHEMA, "matches", "kickoff_at");
+    const matchIdExpr = postgresDocumentFieldExpr(SCHEMA, "matches", "match_id");
+    expect(compiled.sql).toBe(
+      `SELECT document FROM "${SCHEMA}"."${matches()}" WHERE ${statusExpr} = $1 ORDER BY ${kickoffExpr} ASC, ${matchIdExpr} ASC LIMIT $2`,
+    );
+    expect(compiled.params).toEqual([MatchStatus.Scheduled, 10]);
   });
 });

@@ -344,25 +344,29 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** 周期 ranking 锁必须在 repo.withTransaction 之外 acquire/release。 */
-export async function rebuildGlobalRanks(
-  repo: AppRepository,
+export interface RankingPeriodLockHandle {
+  lockKey: string;
+  ownerId: string;
+}
+
+/** 按单周获取 `ranking:week:<periodKey>` 分布式锁（带短退避重试）。 */
+export async function acquireRankingPeriodLock(
+  repo: Pick<AppRepository, "jobLocks">,
   periodType: typeof PeriodType.Week,
   periodKey: string,
   now: Date,
   options?: { retryDelaysMs?: readonly number[] },
-): Promise<void> {
+): Promise<RankingPeriodLockHandle> {
   const lockKey = rankingPeriodLockKey(periodType, periodKey);
   const ownerId = newUuid();
   const retryDelaysMs = options?.retryDelaysMs ?? RANKING_REBUILD_RETRY_DELAYS_MS;
-  let acquired = false;
   for (let attempt = 0; ; attempt += 1) {
     const leaseUntil = new Date(
       Math.max(now.getTime(), Date.now()) + FIXED_CONFIG_V1.JOB_LEASE_MINUTES * 60 * 1000,
     );
-    acquired = await repo.jobLocks.acquire(lockKey, ownerId, leaseUntil);
+    const acquired = await repo.jobLocks.acquire(lockKey, ownerId, leaseUntil);
     if (acquired) {
-      break;
+      return { lockKey, ownerId };
     }
     if (attempt >= retryDelaysMs.length) {
       throw conflictError("RANKING_REBUILD_ALREADY_RUNNING", "周期排行榜重算锁被占用", {
@@ -371,15 +375,53 @@ export async function rebuildGlobalRanks(
     }
     await delay(retryDelaysMs[attempt]!);
   }
+}
 
+/** 按字典序获取周期 ranking 锁并在 finally 中逆序释放，必须在事务外调用。 */
+export async function withRankingPeriodLocks<T>(
+  repo: Pick<AppRepository, "jobLocks">,
+  periodType: typeof PeriodType.Week,
+  periodKeys: readonly string[],
+  now: Date,
+  work: (lockedPeriodKeys: readonly string[]) => Promise<T>,
+  options?: { retryDelaysMs?: readonly number[] },
+): Promise<T> {
+  const sortedKeys = [...new Set(periodKeys)].sort((left, right) => left.localeCompare(right));
+  const heldLocks: RankingPeriodLockHandle[] = [];
   try {
-    await repo.withTransaction((tx) =>
-      rebuildGlobalRanksInTransaction(tx, periodType, periodKey, now),
-    );
+    for (const periodKey of sortedKeys) {
+      heldLocks.push(await acquireRankingPeriodLock(repo, periodType, periodKey, now, options));
+    }
+    return await work(sortedKeys);
   } finally {
-    // 释放失败不得掩盖原始事务异常。
-    await repo.jobLocks.release(lockKey, ownerId).catch(() => undefined);
+    for (let index = heldLocks.length - 1; index >= 0; index -= 1) {
+      const held = heldLocks[index]!;
+      // 释放失败不得掩盖原始事务异常。
+      await repo.jobLocks.release(held.lockKey, held.ownerId).catch(() => undefined);
+    }
   }
+}
+
+/** 周期 ranking 锁必须在 repo.withTransaction 之外 acquire/release。 */
+export async function rebuildGlobalRanks(
+  repo: AppRepository,
+  periodType: typeof PeriodType.Week,
+  periodKey: string,
+  now: Date,
+  options?: { retryDelaysMs?: readonly number[] },
+): Promise<void> {
+  await withRankingPeriodLocks(
+    repo,
+    periodType,
+    [periodKey],
+    now,
+    async () => {
+      await repo.withTransaction((tx) =>
+        rebuildGlobalRanksInTransaction(tx, periodType, periodKey, now),
+      );
+    },
+    options,
+  );
 }
 
 export async function rebuildSettlementWeekRanks(

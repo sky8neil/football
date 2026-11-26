@@ -990,8 +990,9 @@ export class RepositoryDailyConsistencySnapshotSource {
       : FIXED_CONFIG_V1.LEVEL_FIRST_EVAL_AS_OF,
     assertHealthy?: () => void,
   ): Promise<DailyConsistencyInput> {
-    return this.repo.withTransaction((tx) =>
-      loadDailyConsistencySnapshot(tx, serverNow, firstEvalAsOf, assertHealthy),
+    return this.repo.withTransaction(
+      (tx) => loadDailyConsistencySnapshot(tx, serverNow, firstEvalAsOf, assertHealthy),
+      { isolationLevel: "repeatable_read", readOnly: true },
     );
   }
 }

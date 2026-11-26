@@ -6,6 +6,7 @@ import {
   type CloudBaseDocument,
   type CloudBasePredictionHistoryPage,
   type CloudBaseQueryOptions,
+  type TransactionOptions,
 } from "./cloudbase-db.js";
 
 type SdkResult<T> = { data?: T };
@@ -542,7 +543,10 @@ export class CloudBaseWxDb implements CloudBaseDb {
     return rows;
   }
 
-  async transaction<T>(work: (transactionDb: CloudBaseDb) => Promise<T>): Promise<T> {
+  async transaction<T>(
+    work: (transactionDb: CloudBaseDb) => Promise<T>,
+    _options?: TransactionOptions,
+  ): Promise<T> {
     if (this.transactionDb) return work(this);
     if (!("startTransaction" in this.db)) throw new Error("Cannot start a nested CloudBase transaction");
     const transaction = await (this.db as CloudBaseSdkDatabase).startTransaction();

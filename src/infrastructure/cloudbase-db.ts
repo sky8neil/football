@@ -11,6 +11,13 @@ export interface CloudBaseQueryOptions {
   offset?: number;
 }
 
+export type TransactionIsolationLevel = "read_committed" | "repeatable_read";
+
+export interface TransactionOptions {
+  isolationLevel?: TransactionIsolationLevel;
+  readOnly?: boolean;
+}
+
 export interface AuthSessionRevoker {
   deleteByOpenid(openid: string): Promise<number>;
 }
@@ -134,7 +141,10 @@ export interface CloudBaseDb {
     lockKey: string,
     ownerId: string,
   ): Promise<void>;
-  transaction<T>(work: (transactionDb: CloudBaseDb) => Promise<T>): Promise<T>;
+  transaction<T>(
+    work: (transactionDb: CloudBaseDb) => Promise<T>,
+    options?: TransactionOptions,
+  ): Promise<T>;
 }
 
 export class CloudBaseDuplicateKeyError extends Error {

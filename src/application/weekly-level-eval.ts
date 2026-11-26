@@ -4,6 +4,7 @@ import {
   LevelScope,
   RankingBoard,
   SCHEMA_VERSION,
+  SettlementItemStatus,
   SyncJobType,
   UserStatus,
 } from "../domain/enums.js";
@@ -26,6 +27,7 @@ import {
   defaultLevelState,
   type LevelHistoryEntry,
   type LevelState,
+  type SettlementDoc,
   type User,
   type UserSeasonStats,
 } from "../domain/types.js";
@@ -78,6 +80,65 @@ function seasonStartAt(levelSeasonId: string): Date {
     throw new DomainError("INVALID_LEDGER", `level_season_id 非法（level_season_id=${levelSeasonId}）`);
   }
   return new Date(Date.UTC(Number(match[1]), 6, 1) - 8 * 60 * 60 * 1000);
+}
+
+function anchorEvalMs(state: LevelState): number {
+  const lastEval = state.last_eval_as_of?.getTime();
+  const weekBase = state.week_base_as_of?.getTime();
+  if (lastEval !== undefined && weekBase !== undefined) {
+    return Math.max(lastEval, weekBase);
+  }
+  return lastEval ?? weekBase ?? Number.NEGATIVE_INFINITY;
+}
+
+function missedWeeklySteps(params: {
+  anchorMs: number;
+  maxStepMs: number;
+  firstEvalAsOf: Date | null;
+  seasonStartAtMs?: number;
+}): Date[] {
+  const { anchorMs, maxStepMs, firstEvalAsOf, seasonStartAtMs } = params;
+  if (Number.isFinite(anchorMs)) {
+    if (anchorMs >= maxStepMs) {
+      return [];
+    }
+    let next = nextMondayEvalAt(new Date(anchorMs + 1));
+    if (firstEvalAsOf !== null && next.getTime() < firstEvalAsOf.getTime()) {
+      next = new Date(firstEvalAsOf.getTime());
+    }
+    if (seasonStartAtMs !== undefined && next.getTime() < seasonStartAtMs) {
+      next = nextMondayEvalAt(new Date(seasonStartAtMs));
+    }
+    const steps: Date[] = [];
+    for (
+      let ms = next.getTime();
+      ms <= maxStepMs;
+      ms = nextMondayEvalAt(new Date(ms + 1)).getTime()
+    ) {
+      steps.push(new Date(ms));
+    }
+    return steps;
+  }
+
+  if (firstEvalAsOf === null) {
+    // 兼容未登记 firstEvalAsOf：仅按当前窗口截点评估一次（含保护期 SPEC_GAP 判定）
+    return [new Date(maxStepMs)];
+  }
+  const initialFloorMs = seasonStartAtMs === undefined
+    ? firstEvalAsOf.getTime()
+    : nextMondayEvalAt(new Date(Math.max(firstEvalAsOf.getTime(), seasonStartAtMs))).getTime();
+  if (initialFloorMs > maxStepMs) {
+    return [];
+  }
+  const steps: Date[] = [];
+  for (
+    let ms = initialFloorMs;
+    ms <= maxStepMs;
+    ms = nextMondayEvalAt(new Date(ms + 1)).getTime()
+  ) {
+    steps.push(new Date(ms));
+  }
+  return steps;
 }
 
 export async function listDueSeasonFinalIds(
@@ -287,6 +348,192 @@ export function eligibleSeasonStats(stats: UserSeasonStats, asOf: Date): boolean
     asOf.getTime() >= seasonFinalEvalAsOf(stats.level_season_id).getTime();
 }
 
+export interface CareerWeeklyCatchUpResult {
+  evaluated: boolean;
+  changed: boolean;
+  level: number;
+  bestLevel: number;
+  state: LevelState;
+}
+
+export interface SeasonWeeklyCatchUpResult {
+  evaluated: boolean;
+  changed: boolean;
+  freeze: boolean;
+  shouldPersistFreezeOnly: boolean;
+  level: number;
+  bestLevel: number;
+  state: LevelState;
+}
+
+/** 事务内按遗漏周一 10:00 序列逐周补算 career 等级并写 weekly_eval history。 */
+export async function catchUpCareerWeeklyStepsInTransaction(params: {
+  tx: UnitOfWork;
+  userId: string;
+  level: number;
+  bestLevel: number;
+  state: LevelState;
+  maxAsOf: Date;
+  firstEvalAsOf: Date | null;
+  changedAt: Date;
+  facts?: readonly LevelPredictionFact[];
+}): Promise<CareerWeeklyCatchUpResult> {
+  const steps = missedWeeklySteps({
+    anchorMs: anchorEvalMs(params.state),
+    maxStepMs: params.maxAsOf.getTime(),
+    firstEvalAsOf: params.firstEvalAsOf,
+  });
+  if (steps.length === 0) {
+    return {
+      evaluated: false,
+      changed: false,
+      level: params.level,
+      bestLevel: params.bestLevel,
+      state: params.state,
+    };
+  }
+  requireLevelPorts(params.tx);
+  const facts = params.facts ?? await userFacts(params.tx, params.userId, steps[steps.length - 1]!);
+  let currentLevel = params.level;
+  let currentBestLevel = params.bestLevel;
+  let currentState = params.state;
+  let anyChanged = false;
+  for (const stepAsOf of steps) {
+    const inputs = buildLevelInputs(facts, LevelScope.Career, stepAsOf);
+    const base = evalState(currentLevel, currentBestLevel, currentState.below_count);
+    const result = evaluateWithProtection(base, inputs, stepAsOf, params.firstEvalAsOf);
+    if (result.level !== currentLevel) {
+      anyChanged = true;
+      await params.tx.levelHistory.insert(historyEntry({
+        userId: params.userId,
+        scope: LevelScope.Career,
+        seasonId: null,
+        fromLevel: currentLevel,
+        toLevel: result.level,
+        inputs,
+        asOf: stepAsOf,
+        changedAt: params.changedAt,
+      }));
+    }
+    currentState = levelStateAfterEval(currentState, base, result, inputs, stepAsOf);
+    currentLevel = result.level;
+    currentBestLevel = Math.max(currentBestLevel, result.level);
+  }
+  return {
+    evaluated: true,
+    changed: anyChanged,
+    level: currentLevel,
+    bestLevel: currentBestLevel,
+    state: currentState,
+  };
+}
+
+/** 事务内按遗漏周一 10:00 序列逐周补算 season 等级并写 weekly_eval history。 */
+export async function catchUpSeasonWeeklyStepsInTransaction(params: {
+  tx: UnitOfWork;
+  userId: string;
+  stats: UserSeasonStats;
+  maxAsOf: Date;
+  firstEvalAsOf: Date | null;
+  changedAt: Date;
+  facts?: readonly LevelPredictionFact[];
+}): Promise<SeasonWeeklyCatchUpResult> {
+  const previous = params.stats.level_state ?? defaultLevelState();
+  const seasonFinal = seasonFinalEvalAsOf(params.stats.level_season_id);
+  const maxStepMs = Math.min(params.maxAsOf.getTime(), seasonFinal.getTime());
+  const anchorMs = anchorEvalMs(previous);
+  const steps = missedWeeklySteps({
+    anchorMs,
+    maxStepMs,
+    firstEvalAsOf: params.firstEvalAsOf,
+    seasonStartAtMs: seasonStartAt(params.stats.level_season_id).getTime(),
+  });
+  if (steps.length === 0) {
+    const shouldPersistFreezeOnly =
+      !Number.isFinite(anchorMs) && params.maxAsOf.getTime() >= seasonFinal.getTime();
+    return {
+      evaluated: false,
+      changed: false,
+      freeze: shouldPersistFreezeOnly || params.stats.is_level_frozen === true,
+      shouldPersistFreezeOnly,
+      level: params.stats.level,
+      bestLevel: params.stats.best_level,
+      state: previous,
+    };
+  }
+  requireLevelPorts(params.tx);
+  const facts = params.facts ?? await userFacts(params.tx, params.userId, steps[steps.length - 1]!);
+  let currentLevel = params.stats.level;
+  let currentBestLevel = params.stats.best_level;
+  let currentState = previous;
+  let anyChanged = false;
+  let freeze = false;
+  let ranAnyStep = false;
+  for (const stepAsOf of steps) {
+    const snapshot = {
+      ...params.stats,
+      level: currentLevel,
+      best_level: currentBestLevel,
+      level_state: currentState,
+      is_level_frozen: freeze,
+    };
+    if (!eligibleSeasonStats(snapshot, stepAsOf)) continue;
+    ranAnyStep = true;
+    const inputs = buildLevelInputs(
+      facts,
+      LevelScope.Season,
+      stepAsOf,
+      params.stats.level_season_id,
+    );
+    const base = evalState(currentLevel, currentBestLevel, currentState.below_count);
+    const evalResult = evaluateWithProtection(base, inputs, stepAsOf, params.firstEvalAsOf);
+    if (evalResult.level !== currentLevel) {
+      anyChanged = true;
+      await params.tx.levelHistory.insert(historyEntry({
+        userId: params.userId,
+        scope: LevelScope.Season,
+        seasonId: params.stats.level_season_id,
+        fromLevel: currentLevel,
+        toLevel: evalResult.level,
+        inputs,
+        asOf: stepAsOf,
+        changedAt: params.changedAt,
+      }));
+    }
+    currentState = levelStateAfterEval(currentState, base, evalResult, inputs, stepAsOf);
+    currentLevel = evalResult.level;
+    currentBestLevel = Math.max(currentBestLevel, evalResult.level);
+    // 仅在到达或超过该赛季终评时刻且已切出本赛季时才冻结，避免漏算周提前冻结
+    if (
+      stepAsOf.getTime() >= seasonFinal.getTime() &&
+      levelSeasonOf(stepAsOf) !== params.stats.level_season_id
+    ) {
+      freeze = true;
+      break;
+    }
+  }
+  if (!ranAnyStep) {
+    return {
+      evaluated: false,
+      changed: false,
+      freeze: params.stats.is_level_frozen === true,
+      shouldPersistFreezeOnly: false,
+      level: params.stats.level,
+      bestLevel: params.stats.best_level,
+      state: previous,
+    };
+  }
+  return {
+    evaluated: true,
+    changed: anyChanged,
+    freeze,
+    shouldPersistFreezeOnly: false,
+    level: currentLevel,
+    bestLevel: currentBestLevel,
+    state: currentState,
+  };
+}
+
 export class WeeklyLevelEvalService {
   constructor(
     private readonly repo: AppRepository,
@@ -353,77 +600,197 @@ export class WeeklyLevelEvalService {
           throw new Error("weekly level eval lock lost during correction reeval");
         }
       };
-      await correctionReeval.runPendingBefore(asOf, serverNow, renewWeeklyLock);
+
+      type ScopeOutcome = {
+        evaluated: boolean;
+        changed: boolean;
+        skipped: boolean;
+        settlementSkipped?: boolean;
+        failed?: boolean;
+        deferred?: boolean;
+      };
+      const careerPreOutcomes = new Map<string, ScopeOutcome>();
+      const seasonPreOutcomes = new Map<string, Map<string, ScopeOutcome>>();
+      const mergeOutcome = (
+        prev: ScopeOutcome | undefined,
+        next: ScopeOutcome,
+      ): ScopeOutcome => {
+        if (prev === undefined) return next;
+        const evaluated = prev.evaluated || next.evaluated;
+        const changed = prev.changed || next.changed;
+        const deferred = Boolean(prev.deferred || next.deferred);
+        const failed = Boolean(prev.failed || next.failed);
+        const settlementSkipped = Boolean(prev.settlementSkipped || next.settlementSkipped);
+        return {
+          evaluated,
+          changed,
+          skipped: !evaluated && !failed && !deferred && (prev.skipped || next.skipped),
+          ...(deferred ? { deferred: true } : {}),
+          ...(failed ? { failed: true } : {}),
+          ...(settlementSkipped ? { settlementSkipped: true } : {}),
+        };
+      };
+      const recordOutcome = (res: ScopeOutcome): void => {
+        evaluatedCount += res.evaluated ? 1 : 0;
+        changedCount += res.changed ? 1 : 0;
+        skippedCount += res.skipped ? 1 : 0;
+        settlementSkippedCount += res.settlementSkipped ? 1 : 0;
+        failedCount += res.failed ? 1 : 0;
+        deferredCount += res.deferred ? 1 : 0;
+      };
+
+      const runCareerScope = async (
+        targetUserId: string,
+        targetAsOf: Date,
+      ): Promise<ScopeOutcome> => {
+        try {
+          return await this.evaluateCareer(targetUserId, targetAsOf, serverNow);
+        } catch (error) {
+          if (isSettlementAlreadyRunning(error)) {
+            this.log?.({
+              event: "weekly_level_eval_user_skipped",
+              user_id: targetUserId,
+              scope: LevelScope.Career,
+              as_of: targetAsOf.toISOString(),
+              reason: error.code,
+              message: error.message,
+            });
+            return {
+              evaluated: false,
+              changed: false,
+              skipped: true,
+              settlementSkipped: true,
+            };
+          }
+          this.log?.({
+            event: "weekly_level_eval_user_failed",
+            user_id: targetUserId,
+            scope: LevelScope.Career,
+            as_of: targetAsOf.toISOString(),
+            error_code: error instanceof DomainError ? error.code : "INTERNAL_ERROR",
+            error_message: error instanceof Error ? error.message : String(error),
+          });
+          return { evaluated: false, changed: false, skipped: false, failed: true };
+        }
+      };
+
+      const runSeasonScopes = async (
+        targetUserId: string,
+        targetAsOf: Date,
+        targetSeasonId?: string,
+      ): Promise<Array<{ seasonId: string } & ScopeOutcome>> => {
+        try {
+          return await this.evaluateSeasons(
+            targetUserId,
+            targetAsOf,
+            serverNow,
+            targetSeasonId,
+          );
+        } catch (error) {
+          if (isSettlementAlreadyRunning(error)) {
+            this.log?.({
+              event: "weekly_level_eval_user_skipped",
+              user_id: targetUserId,
+              scope: LevelScope.Season,
+              as_of: targetAsOf.toISOString(),
+              reason: error.code,
+              message: error.message,
+            });
+            return [{
+              seasonId: targetSeasonId ?? "*",
+              evaluated: false,
+              changed: false,
+              skipped: true,
+              settlementSkipped: true,
+            }];
+          }
+          this.log?.({
+            event: "weekly_level_eval_user_failed",
+            user_id: targetUserId,
+            scope: LevelScope.Season,
+            as_of: targetAsOf.toISOString(),
+            error_code: error instanceof DomainError ? error.code : "INTERNAL_ERROR",
+            error_message: error instanceof Error ? error.message : String(error),
+          });
+          return [{
+            seasonId: targetSeasonId ?? "*",
+            evaluated: false,
+            changed: false,
+            skipped: false,
+            failed: true,
+          }];
+        }
+      };
+
+      const onBeforePendingCorrection = async (
+        settlement: SettlementDoc,
+        cycleAsOf: Date,
+      ): Promise<void> => {
+        if (this.firstEvalAsOf !== null && cycleAsOf.getTime() < this.firstEvalAsOf.getTime()) {
+          return;
+        }
+        const items = await this.repo.settlementItems.findBySettlementAndStatus(
+          settlement.settlement_id,
+          SettlementItemStatus.Applied,
+        );
+        const affectedUsers = [...new Set(items.map((item) => item.user_id))];
+        const match = await this.repo.matches.findById(settlement.match_id);
+        const matchSeasonId = match?.period_anchor_at ? levelSeasonOf(match.period_anchor_at) : null;
+        for (const affectedUserId of affectedUsers) {
+          const candidate = await this.repo.users.findById(affectedUserId);
+          if (candidate === null || candidate.status !== UserStatus.Active) continue;
+          if (candidate.career_valid_predictions >= 1) {
+            const res = await runCareerScope(affectedUserId, cycleAsOf);
+            careerPreOutcomes.set(
+              affectedUserId,
+              mergeOutcome(careerPreOutcomes.get(affectedUserId), res),
+            );
+          }
+          if (matchSeasonId !== null) {
+            const seasonResults = await runSeasonScopes(affectedUserId, cycleAsOf, matchSeasonId);
+            let bySeason = seasonPreOutcomes.get(affectedUserId);
+            if (bySeason === undefined) {
+              bySeason = new Map();
+              seasonPreOutcomes.set(affectedUserId, bySeason);
+            }
+            for (const seasonRes of seasonResults) {
+              bySeason.set(
+                seasonRes.seasonId,
+                mergeOutcome(bySeason.get(seasonRes.seasonId), seasonRes),
+              );
+            }
+          }
+        }
+      };
+
+      await correctionReeval.runPendingBefore(
+        asOf,
+        serverNow,
+        renewWeeklyLock,
+        onBeforePendingCorrection,
+      );
       const users = await this.repo.users.findAll();
       let processedActiveUsers = 0;
       let lastRenewWallMs = Date.now();
       for (const candidate of users) {
         if (candidate.status !== UserStatus.Active) continue;
         if (candidate.career_valid_predictions >= 1) {
-          try {
-            const career = await this.evaluateCareer(candidate.user_id, asOf, serverNow);
-            evaluatedCount += career.evaluated ? 1 : 0;
-            changedCount += career.changed ? 1 : 0;
-            skippedCount += career.skipped ? 1 : 0;
-            deferredCount += career.deferred ? 1 : 0;
-          } catch (error) {
-            if (isSettlementAlreadyRunning(error)) {
-              skippedCount += 1;
-              settlementSkippedCount += 1;
-              this.log?.({
-                event: "weekly_level_eval_user_skipped",
-                user_id: candidate.user_id,
-                scope: LevelScope.Career,
-                as_of: asOf.toISOString(),
-                reason: error.code,
-                message: error.message,
-              });
-            } else {
-              failedCount += 1;
-              this.log?.({
-                event: "weekly_level_eval_user_failed",
-                user_id: candidate.user_id,
-                scope: LevelScope.Career,
-                as_of: asOf.toISOString(),
-                error_code: error instanceof DomainError ? error.code : "INTERNAL_ERROR",
-                error_message: error instanceof Error ? error.message : String(error),
-              });
-            }
-          }
+          const pre = careerPreOutcomes.get(candidate.user_id);
+          const current = await runCareerScope(candidate.user_id, asOf);
+          recordOutcome(mergeOutcome(pre, current));
         }
 
-        try {
-          const seasonResults = await this.evaluateSeasons(candidate.user_id, asOf, serverNow);
-          for (const result of seasonResults) {
-            evaluatedCount += result.evaluated ? 1 : 0;
-            changedCount += result.changed ? 1 : 0;
-            skippedCount += result.skipped ? 1 : 0;
-            settlementSkippedCount += result.settlementSkipped ? 1 : 0;
-            failedCount += result.failed ? 1 : 0;
-            deferredCount += result.deferred ? 1 : 0;
-          }
-        } catch (error) {
-          if (isSettlementAlreadyRunning(error)) {
-            skippedCount += 1;
-            settlementSkippedCount += 1;
-            this.log?.({
-              event: "weekly_level_eval_user_skipped",
-              user_id: candidate.user_id,
-              scope: LevelScope.Season,
-              as_of: asOf.toISOString(),
-              reason: error.code,
-              message: error.message,
-            });
-          } else {
-            failedCount += 1;
-            this.log?.({
-              event: "weekly_level_eval_user_failed",
-              user_id: candidate.user_id,
-              scope: LevelScope.Season,
-              as_of: asOf.toISOString(),
-              error_code: error instanceof DomainError ? error.code : "INTERNAL_ERROR",
-              error_message: error instanceof Error ? error.message : String(error),
-            });
+        const preSeasons = seasonPreOutcomes.get(candidate.user_id);
+        const seenSeasonIds = new Set<string>();
+        for (const result of await runSeasonScopes(candidate.user_id, asOf)) {
+          seenSeasonIds.add(result.seasonId);
+          recordOutcome(mergeOutcome(preSeasons?.get(result.seasonId), result));
+        }
+        if (preSeasons !== undefined) {
+          for (const [seasonId, pre] of preSeasons) {
+            if (!seenSeasonIds.has(seasonId)) {
+              recordOutcome(pre);
+            }
           }
         }
 
@@ -510,38 +877,26 @@ export class WeeklyLevelEvalService {
           return { evaluated: false, changed: false, skipped: true };
         }
         const previous = user.career_level_state ?? defaultLevelState();
-        if (
-          previous.last_eval_as_of?.getTime() === asOf.getTime() ||
-          previous.week_base_as_of?.getTime() === asOf.getTime()
-        ) {
+        const catchUp = await catchUpCareerWeeklyStepsInTransaction({
+          tx,
+          userId,
+          level: user.career_level,
+          bestLevel: user.career_best_level,
+          state: previous,
+          maxAsOf: asOf,
+          firstEvalAsOf: this.firstEvalAsOf,
+          changedAt,
+        });
+        if (!catchUp.evaluated) {
           return { evaluated: false, changed: false, skipped: true };
         }
-        const facts = await userFacts(tx, userId, asOf);
-        const inputs = buildLevelInputs(facts, LevelScope.Career, asOf);
-        const base = evalState(user.career_level, user.career_best_level, previous.below_count);
-        const result = evaluateWithProtection(base, inputs, asOf, this.firstEvalAsOf);
-        const nextState = levelStateAfterEval(previous, base, result, inputs, asOf);
-        const changed = result.level !== user.career_level;
-        requireLevelPorts(tx);
-        if (changed) {
-          await tx.levelHistory.insert(historyEntry({
-            userId,
-            scope: LevelScope.Career,
-            seasonId: null,
-            fromLevel: user.career_level,
-            toLevel: result.level,
-            inputs,
-            asOf,
-            changedAt,
-          }));
-        }
         await userLock.patchFields(userId, {
-          career_level: result.level,
-          career_best_level: Math.max(user.career_best_level, result.level),
-          career_level_state: nextState,
+          career_level: catchUp.level,
+          career_best_level: catchUp.bestLevel,
+          career_level_state: catchUp.state,
           updated_at: changedAt,
         });
-        return { evaluated: true, changed, skipped: false };
+        return { evaluated: true, changed: catchUp.changed, skipped: false };
       });
     } finally {
       await this.repo.jobLocks.release(lockKey, ownerId);
@@ -552,7 +907,9 @@ export class WeeklyLevelEvalService {
     userId: string,
     asOf: Date,
     changedAt: Date,
+    targetSeasonId?: string,
   ): Promise<Array<{
+    seasonId: string;
     evaluated: boolean;
     changed: boolean;
     skipped: boolean;
@@ -564,6 +921,7 @@ export class WeeklyLevelEvalService {
       ? []
       : await this.repo.userSeasonStats.findByUser(userId);
     const results: Array<{
+      seasonId: string;
       evaluated: boolean;
       changed: boolean;
       skipped: boolean;
@@ -572,6 +930,7 @@ export class WeeklyLevelEvalService {
       deferred?: boolean;
     }> = [];
     for (const row of statsRows) {
+      if (targetSeasonId !== undefined && row.level_season_id !== targetSeasonId) continue;
       if (!eligibleSeasonStats(row, asOf)) continue;
       const lockKey = levelScopeLockKey(userId, LevelScope.Season, row.level_season_id);
       const ownerId = newUuid();
@@ -581,6 +940,7 @@ export class WeeklyLevelEvalService {
         levelLeaseDeadline(changedAt),
       ))) {
         results.push({
+          seasonId: row.level_season_id,
           evaluated: false,
           changed: false,
           skipped: false,
@@ -603,42 +963,34 @@ export class WeeklyLevelEvalService {
           if (stats === null || stats.is_level_frozen === true || !eligibleSeasonStats(stats, asOf)) {
             return { evaluated: false, changed: false, skipped: true };
           }
-          const previous = stats.level_state ?? defaultLevelState();
-          if (
-            previous.last_eval_as_of?.getTime() === asOf.getTime() ||
-            previous.week_base_as_of?.getTime() === asOf.getTime()
-          ) {
+          const catchUp = await catchUpSeasonWeeklyStepsInTransaction({
+            tx,
+            userId,
+            stats,
+            maxAsOf: asOf,
+            firstEvalAsOf: this.firstEvalAsOf,
+            changedAt,
+          });
+          if (catchUp.shouldPersistFreezeOnly) {
+            await seasonLock.patchFields(userId, stats.level_season_id, {
+              is_level_frozen: true,
+              updated_at: changedAt,
+            });
             return { evaluated: false, changed: false, skipped: true };
           }
-          const facts = await userFacts(tx, userId, asOf);
-          const inputs = buildLevelInputs(facts, LevelScope.Season, asOf, stats.level_season_id);
-          const base = evalState(stats.level, stats.best_level, previous.below_count);
-          const evalResult = evaluateWithProtection(base, inputs, asOf, this.firstEvalAsOf);
-          const nextState = levelStateAfterEval(previous, base, evalResult, inputs, asOf);
-          const changed = evalResult.level !== stats.level;
-          if (changed) {
-            await tx.levelHistory.insert(historyEntry({
-              userId,
-              scope: LevelScope.Season,
-              seasonId: stats.level_season_id,
-              fromLevel: stats.level,
-              toLevel: evalResult.level,
-              inputs,
-              asOf,
-              changedAt,
-            }));
+          if (!catchUp.evaluated) {
+            return { evaluated: false, changed: false, skipped: true };
           }
-          const freeze = levelSeasonOf(asOf) !== stats.level_season_id;
           await seasonLock.patchFields(userId, stats.level_season_id, {
-            level: evalResult.level,
-            best_level: Math.max(stats.best_level, evalResult.level),
-            level_state: nextState,
-            is_level_frozen: freeze,
+            level: catchUp.level,
+            best_level: catchUp.bestLevel,
+            level_state: catchUp.state,
+            is_level_frozen: catchUp.freeze,
             updated_at: changedAt,
           });
-          return { evaluated: true, changed, skipped: false };
+          return { evaluated: true, changed: catchUp.changed, skipped: false };
         });
-        results.push({ ...result, settlementSkipped: false, failed: false });
+        results.push({ seasonId: row.level_season_id, ...result, settlementSkipped: false, failed: false });
       } catch (error) {
         if (isSettlementAlreadyRunning(error)) {
           this.log?.({
@@ -650,7 +1002,7 @@ export class WeeklyLevelEvalService {
             reason: error.code,
             message: error.message,
           });
-          results.push({ evaluated: false, changed: false, skipped: true, settlementSkipped: true, failed: false });
+          results.push({ seasonId: row.level_season_id, evaluated: false, changed: false, skipped: true, settlementSkipped: true, failed: false });
         } else {
           this.log?.({
             event: "weekly_level_eval_user_failed",
@@ -661,7 +1013,7 @@ export class WeeklyLevelEvalService {
             error_code: error instanceof DomainError ? error.code : "INTERNAL_ERROR",
             error_message: error instanceof Error ? error.message : String(error),
           });
-          results.push({ evaluated: false, changed: false, skipped: false, settlementSkipped: false, failed: true });
+          results.push({ seasonId: row.level_season_id, evaluated: false, changed: false, skipped: false, settlementSkipped: false, failed: true });
         }
       } finally {
         await this.repo.jobLocks.release(lockKey, ownerId);

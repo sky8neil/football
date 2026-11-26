@@ -400,4 +400,27 @@ describe("selectActiveWindow", () => {
       ).map((match) => match.match_id),
     ).toEqual(["effective-finished", "superseded"]);
   });
+
+  it("[CR42-08] stale_recovery 支持 after 游标过滤（按 kickoff_at, match_id 严格推进并下推 kickoffAtGte）", () => {
+    const tEarly = at(-10 * HOUR_MS);
+    const tSame = at(-8 * HOUR_MS);
+    const tLate = at(-7 * HOUR_MS);
+    const matches = [
+      makeMatch({ match_id: "m-early", kickoff_at: tEarly }),
+      makeMatch({ match_id: "m-same-a", kickoff_at: tSame }),
+      makeMatch({ match_id: "m-same-b", kickoff_at: tSame, match_status: MatchStatus.Live }),
+      makeMatch({ match_id: "m-late", kickoff_at: tLate }),
+    ];
+
+    const after = { kickoff_at: tSame, match_id: "m-same-a" };
+    const fragments = buildActiveWindowFilters({ jobType: "stale_recovery", now: NOW, limit: 10, after });
+    expect(fragments.every((fragment) => fragment.kickoffAtGte?.getTime() === tSame.getTime())).toBe(true);
+
+    expect(idsOf(selectActiveWindow(matches, {
+      jobType: "stale_recovery",
+      now: NOW,
+      limit: 10,
+      after,
+    }))).toEqual(["m-same-b", "m-late"]);
+  });
 });

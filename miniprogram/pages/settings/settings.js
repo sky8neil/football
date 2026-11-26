@@ -1,5 +1,6 @@
 const config = require("../../config.js");
 const { getMyProfile, updateMyProfile, deleteMyProfile } = require("../../services/profile.js");
+const { listTeams, resolveFavoriteTeamRemote } = require("../../services/teams.js");
 const { storeNickname, clearNickname } = require("../../utils/nickname.js");
 const { presentTeam } = require("../../utils/team-presentation.js");
 const { findTeam, TEAM_REGISTRY } = require("../../utils/team-registry.js");
@@ -54,6 +55,31 @@ function buildRegistryTeams() {
   });
 }
 
+function mergeServerAndRegistryTeams(serverItems) {
+  const merged = new Map();
+  if (Array.isArray(serverItems)) {
+    for (const item of serverItems) {
+      if (!item || !item.team_id || !item.league_id) continue;
+      if (item.status && item.status !== "active") continue;
+      const fallback = findTeam(item.team_id);
+      const raw = {
+        team_id: item.team_id,
+        league_id: item.league_id,
+        name: item.name || (fallback && fallback.source_name) || "",
+        name_zh: item.name_zh !== undefined ? item.name_zh : (fallback ? fallback.name_zh : null),
+        logo_url: item.logo_url !== undefined ? item.logo_url : null,
+      };
+      const presented = presentTeam(raw, raw.league_id);
+      merged.set(raw.team_id, {
+        ...raw,
+        logo: presented.logo,
+        nameZh: presented.nameZh,
+      });
+    }
+  }
+  return [...merged.values()];
+}
+
 function groupTeams(teams) {
   const byLeague = new Map();
   for (const team of teams) {
@@ -73,6 +99,8 @@ function groupTeams(teams) {
 Page({
   data: { loading: true, saving: false, deleting: false, saveErrorMessage: "", errorMessage: "", errorKind: "", nickname: "", originalNickname: "", favoriteTeamId: null, originalTeamId: null, favoriteTeamName: "未设置", showTeams: false, teams: [], visibleGroups: [], search: "", teamsLoading: false, teamsError: "", showLogout: isHttpTransport() },
   profileRequestSerial: 0,
+  favoriteTeamNameSerial: 0,
+  teamsLoaded: false,
   loginGeneration: null,
   onLoad(query) {
     this.loginGeneration = currentLoginGeneration();
@@ -144,14 +172,54 @@ Page({
   },
   refreshTeamName() {
     const id = this.data.favoriteTeamId;
+    if (!id) {
+      this.setData({ favoriteTeamName: "未设置" });
+      return;
+    }
+    const loaded = Array.isArray(this.data.teams)
+      ? this.data.teams.find((team) => team && team.team_id === id)
+      : null;
     const found = findTeam(id);
-    this.setData({ favoriteTeamName: id ? ((found && found.name_zh) || wx.getStorageSync("team_name:" + id) || "已选择球队") : "未设置" });
+    const loadedName = loaded
+      ? ((loaded.nameZh && loaded.nameZh !== "球队资料待补全" ? loaded.nameZh : "") || loaded.name_zh || loaded.name || "")
+      : "";
+    const registryName = (found && (found.name_zh || found.source_name)) || "";
+    const cachedName = (typeof wx !== "undefined" && typeof wx.getStorageSync === "function" && wx.getStorageSync("team_name:" + id)) || "";
+    this.setData({ favoriteTeamName: loadedName || registryName || cachedName || "已选择球队" });
+    if (!loadedName && !registryName && this.teamsLoaded && typeof resolveFavoriteTeamRemote === "function") {
+      this.hydrateFavoriteTeamName(id);
+    }
   },
-  loadTeams() {
+  async hydrateFavoriteTeamName(teamId) {
+    const serial = (this.favoriteTeamNameSerial || 0) + 1;
+    this.favoriteTeamNameSerial = serial;
+    try {
+      const resolved = await resolveFavoriteTeamRemote(teamId, { presentTeam });
+      if (this.favoriteTeamNameSerial !== serial || this.data.favoriteTeamId !== teamId) return;
+      if (resolved && resolved.favoriteTeamText) {
+        this.setData({ favoriteTeamName: resolved.favoriteTeamText });
+      }
+    } catch (_error) {
+      /* 远端解析失败时保留兜底名称 */
+    }
+  },
+  async loadTeams() {
     if (this.data.teamsLoading) return;
     this.setData({ teamsLoading: true, teamsError: "" });
     try {
-      const teams = buildRegistryTeams();
+      let serverItems = null;
+      if (typeof listTeams === "function") {
+        try {
+          const result = await listTeams();
+          if (result && result.statusCode === 200 && result.data && Array.isArray(result.data.items)) {
+            serverItems = result.data.items;
+          }
+        } catch (_) {
+          /* 服务端拉取失败时静默降级到包内静态注册表，不阻塞页面 */
+        }
+      }
+      const teams = serverItems !== null ? mergeServerAndRegistryTeams(serverItems) : buildRegistryTeams();
+      this.teamsLoaded = true;
       this.setData({ teams });
       this.filterTeams();
       this.refreshTeamName();
@@ -213,6 +281,16 @@ Page({
         return;
       }
       storeNickname(result.data && result.data.nickname || nickname);
+      if (this.data.favoriteTeamId && typeof wx !== "undefined" && typeof wx.setStorageSync === "function") {
+        const picked = Array.isArray(this.data.teams)
+          ? this.data.teams.find((team) => team && team.team_id === this.data.favoriteTeamId)
+          : null;
+        const teamName = picked && ((picked.nameZh && picked.nameZh !== "球队资料待补全" ? picked.nameZh : "") || picked.name_zh || picked.name);
+        if (teamName) wx.setStorageSync("team_name:" + this.data.favoriteTeamId, teamName);
+        if (picked && picked.logo && !String(picked.logo).endsWith("/team-placeholder.png")) {
+          wx.setStorageSync("team_logo:" + this.data.favoriteTeamId, picked.logo);
+        }
+      }
       wx.showToast({ title: "已保存", icon: "success" });
       wx.navigateBack({ fail: () => { wx.switchTab({ url: "/pages/profile/profile" }); } });
     } catch (error) {

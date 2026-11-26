@@ -1,9 +1,33 @@
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
-import { describe, expect, it, vi } from "vitest";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
+const HERE = dirname(fileURLToPath(import.meta.url));
+const ROOT = join(HERE, "..", "..");
 const PAGE_URL = new URL("./public-profile.js", import.meta.url);
 const WXML_URL = new URL("./public-profile.wxml", import.meta.url);
+
+const originals = {
+  wx: Object.getOwnPropertyDescriptor(globalThis, "wx"),
+};
+
+afterEach(() => {
+  if (originals.wx) Object.defineProperty(globalThis, "wx", originals.wx);
+  else delete globalThis.wx;
+});
+
+function loadCommonJs(filePath, requireShim, globals = {}) {
+  const module = { exports: {} };
+  const factory = runInNewContext(
+    `(function(module, exports, require) {\n${readFileSync(filePath, "utf8")}\n})`,
+    { ...globals },
+    { filename: filePath },
+  );
+  factory(module, module.exports, requireShim);
+  return module.exports;
+}
 
 function deferred() {
   let resolve;
@@ -19,12 +43,15 @@ function loadPage({
   getPublicProfile = vi.fn(),
   findTeam = () => null,
   presentTeam = (team) => ({ nameZh: team && (team.name_zh || team.name), logo: "logo.png" }),
+  listTeams = vi.fn(async () => ({ statusCode: 200, data: { items: [] } })),
+  useRealTeamPresentation = false,
   storage = {},
 } = {}) {
   let definition;
   const navs = [];
   const wx = {
     getStorageSync: (key) => storage[key],
+    setStorageSync: (key, value) => { storage[key] = value; },
     navigateTo: (options) => navs.push(["navigateTo", options.url]),
     navigateBack: (options) => {
       navs.push(["navigateBack", options && options.delta]);
@@ -32,14 +59,48 @@ function loadPage({
     },
     switchTab: (options) => navs.push(["switchTab", options.url]),
   };
+  Object.defineProperty(globalThis, "wx", {
+    value: wx,
+    configurable: true,
+    writable: true,
+    enumerable: true,
+  });
+  const realTeamRegistry = loadCommonJs(join(ROOT, "utils", "team-registry.js"), () => {
+    throw new Error("team-registry has no dependencies");
+  });
+  const realLogoRegistry = loadCommonJs(join(ROOT, "utils", "logo-registry.js"), (id) => {
+    if (id === "./team-registry.js") return realTeamRegistry;
+    throw new Error("Unexpected require: " + id);
+  });
+  const realTeamPresentation = loadCommonJs(join(ROOT, "utils", "team-presentation.js"), (id) => {
+    if (id === "./team-registry.js") return realTeamRegistry;
+    if (id === "./logo-registry.js") return realLogoRegistry;
+    throw new Error("Unexpected require: " + id);
+  });
+  const teamsService = loadCommonJs(
+    join(ROOT, "services", "teams.js"),
+    (id) => {
+      if (id === "./api.js") return { request: (options) => listTeams(options) };
+      throw new Error("Unexpected require: " + id);
+    },
+    { wx },
+  );
+
   runInNewContext(readFileSync(PAGE_URL, "utf8"), {
     Page: (value) => { definition = value; },
     wx,
     require: (id) => {
       if (id === "../../services/profile.js") return { getPublicProfile };
-      if (id === "../../utils/team-registry.js") return { findTeam };
-      if (id === "../../utils/team-presentation.js") return { presentTeam };
-      if (id === "../../utils/logo-registry.js") return { PLACEHOLDER: "placeholder.png" };
+      if (id === "../../services/teams.js") return teamsService;
+      if (id === "../../utils/team-registry.js") {
+        return useRealTeamPresentation ? realTeamRegistry : { findTeam };
+      }
+      if (id === "../../utils/team-presentation.js") {
+        return useRealTeamPresentation ? realTeamPresentation : { presentTeam };
+      }
+      if (id === "../../utils/logo-registry.js") {
+        return useRealTeamPresentation ? realLogoRegistry : { PLACEHOLDER: "placeholder.png" };
+      }
       throw new Error("Unexpected require: " + id);
     },
   });
@@ -51,7 +112,7 @@ function loadPage({
       if (callback) callback();
     },
   };
-  return { page, getPublicProfile, navs };
+  return { page, getPublicProfile, listTeams, teamsService, storage, navs };
 }
 
 describe("public-profile page (A-S6-01)", () => {
@@ -235,5 +296,304 @@ describe("public-profile page (A-S6-01)", () => {
     await p3;
     expect(page.data.state).toBe("ready");
     expect(page.data.displayName).toBe("FreshRetry");
+  });
+
+  it("[CR43-06] receiver with empty local cache resolves out-of-bundle favorite team via /v1/teams and caches it", async () => {
+    const promotedId = "00000000-0000-4000-8000-000000000999";
+    const getPublicProfile = vi.fn(async () => ({
+      statusCode: 200,
+      data: {
+        user_id: "00000000-0000-4000-8000-000000000099",
+        display_name: "升班马粉丝",
+        favorite_team_id: promotedId,
+        career_points: 60,
+        career_valid_predictions: 10,
+        career_exact_hits: 2,
+        career_level: 2,
+        career_best_level: 3,
+        season_level: 2,
+      },
+    }));
+    const listTeams = vi.fn(async () => ({
+      statusCode: 200,
+      data: {
+        items: [
+          {
+            team_id: promotedId,
+            league_id: "premier_league",
+            name: "Promoted Athletic",
+            name_zh: "升班马竞技",
+            logo_url: "https://cdn.example.com/promoted-athletic.png",
+          },
+        ],
+      },
+    }));
+    const { page, storage, listTeams: requestSpy } = loadPage({
+      getPublicProfile,
+      listTeams,
+      useRealTeamPresentation: true,
+      storage: {},
+    });
+
+    await page.onLoad({ user_id: "00000000-0000-4000-8000-000000000099" });
+
+    expect(requestSpy).toHaveBeenCalledTimes(1);
+    expect(requestSpy).toHaveBeenCalledWith({ method: "GET", path: "/v1/teams", auth: "optional" });
+    expect(page.data.state).toBe("ready");
+    expect(page.data.favoriteTeamId).toBe(promotedId);
+    expect(page.data.favoriteTeamText).toBe("升班马竞技");
+    expect(page.data.favoriteTeamLogo).toBe("https://cdn.example.com/promoted-athletic.png");
+    expect(storage[`team_name:${promotedId}`]).toBe("升班马竞技");
+    expect(storage[`team_logo:${promotedId}`]).toBe("https://cdn.example.com/promoted-athletic.png");
+  });
+
+  it("[CR43-06] prevents stale /v1/teams update after switching user or unloading and tolerates lookup failure", async () => {
+    const promotedId = "00000000-0000-4000-8000-000000000777";
+    const teamsDeferred = deferred();
+    const getPublicProfile = vi.fn()
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        data: {
+          user_id: "u-promoted",
+          display_name: "PromotedFan",
+          favorite_team_id: promotedId,
+          career_points: 10,
+          career_valid_predictions: 2,
+          career_exact_hits: 0,
+          career_level: 1,
+          career_best_level: 1,
+          season_level: 1,
+        },
+      })
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        data: {
+          user_id: "u-plain",
+          display_name: "PlainFan",
+          favorite_team_id: null,
+          career_points: 20,
+          career_valid_predictions: 4,
+          career_exact_hits: 1,
+          career_level: 2,
+          career_best_level: 2,
+          season_level: 2,
+        },
+      });
+    const listTeams = vi.fn(() => teamsDeferred.promise);
+    const { page } = loadPage({
+      getPublicProfile,
+      listTeams,
+      useRealTeamPresentation: true,
+      storage: {},
+    });
+
+    const p1 = page.onLoad({ user_id: "u-promoted" });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(page.data.state).toBe("ready");
+    expect(page.data.favoriteTeamText).toBe("已选择球队");
+
+    // Switch to another profile before /v1/teams resolves
+    await page.onLoad({ user_id: "u-plain" });
+    expect(page.data.displayName).toBe("PlainFan");
+    expect(page.data.favoriteTeamText).toBe("未设置");
+
+    teamsDeferred.resolve({
+      statusCode: 200,
+      data: {
+        items: [
+          {
+            team_id: promotedId,
+            league_id: "premier_league",
+            name: "Late FC",
+            name_zh: "迟到升班马",
+            logo_url: "https://cdn.example.com/late.png",
+          },
+        ],
+      },
+    });
+    await p1;
+    expect(page.data.displayName).toBe("PlainFan");
+    expect(page.data.favoriteTeamText).toBe("未设置");
+
+    // Unload guard + failure fallback
+    const failLoad = loadPage({
+      getPublicProfile: vi.fn(async () => ({
+        statusCode: 200,
+        data: {
+          user_id: "u-promoted-2",
+          display_name: "Fan2",
+          favorite_team_id: promotedId,
+          career_points: 0,
+          career_valid_predictions: 0,
+          career_exact_hits: 0,
+          career_level: 1,
+          career_best_level: 1,
+          season_level: 1,
+        },
+      })),
+      listTeams: vi.fn(async () => {
+        throw new Error("network");
+      }),
+      useRealTeamPresentation: true,
+      storage: {},
+    });
+    await failLoad.page.onLoad({ user_id: "u-promoted-2" });
+    expect(failLoad.page.data.state).toBe("ready");
+    expect(failLoad.page.data.favoriteTeamText).toBe("已选择球队");
+    expect(failLoad.page.data.favoriteTeamLogo).toContain("team-placeholder.png");
+
+    // Verify onUnload blocks late setData
+    const lateDeferred = deferred();
+    const unloadCase = loadPage({
+      getPublicProfile: vi.fn(async () => ({
+        statusCode: 200,
+        data: {
+          user_id: "u-promoted-3",
+          display_name: "Fan3",
+          favorite_team_id: promotedId,
+          career_points: 0,
+          career_valid_predictions: 0,
+          career_exact_hits: 0,
+          career_level: 1,
+          career_best_level: 1,
+          season_level: 1,
+        },
+      })),
+      listTeams: vi.fn(() => lateDeferred.promise),
+      useRealTeamPresentation: true,
+      storage: {},
+    });
+    const setDataSpy = vi.spyOn(unloadCase.page, "setData");
+    const p3 = unloadCase.page.onLoad({ user_id: "u-promoted-3" });
+    await Promise.resolve();
+    await Promise.resolve();
+    const beforeUnloadCalls = setDataSpy.mock.calls.length;
+    unloadCase.page.onUnload();
+    lateDeferred.resolve({
+      statusCode: 200,
+      data: {
+        items: [{ team_id: promotedId, league_id: "premier_league", name: "Late", name_zh: "迟到", logo_url: "https://cdn.example.com/x.png" }],
+      },
+    });
+    await p3;
+    expect(setDataSpy.mock.calls.length).toBe(beforeUnloadCalls);
+  });
+
+  it("[CR44-02] refreshes cached out-of-bundle favorite team name_zh and logo_url after in-memory cache clears", async () => {
+    const promotedId = "00000000-0000-4000-8000-000000000991";
+    let version = 1;
+    const getPublicProfile = vi.fn(async () => ({
+      statusCode: 200,
+      data: {
+        user_id: "00000000-0000-4000-8000-000000000091",
+        display_name: "升班马粉丝",
+        favorite_team_id: promotedId,
+        career_points: 60,
+        career_valid_predictions: 10,
+        career_exact_hits: 2,
+        career_level: 2,
+        career_best_level: 3,
+        season_level: 2,
+      },
+    }));
+    const listTeams = vi.fn(async () => ({
+      statusCode: 200,
+      data: {
+        items: [
+          version === 1
+            ? {
+              team_id: promotedId,
+              league_id: "premier_league",
+              name: "Promoted FC",
+              name_zh: null,
+              logo_url: "https://cdn.example.com/logo-v1.png",
+            }
+            : {
+              team_id: promotedId,
+              league_id: "premier_league",
+              name: "Promoted FC",
+              name_zh: "升班马竞技",
+              logo_url: "https://cdn.example.com/logo-v2.png",
+            },
+        ],
+      },
+    }));
+    const { page, storage, teamsService, listTeams: requestSpy } = loadPage({
+      getPublicProfile,
+      listTeams,
+      useRealTeamPresentation: true,
+      storage: {},
+    });
+
+    await page.onLoad({ user_id: "00000000-0000-4000-8000-000000000091" });
+    expect(page.data.favoriteTeamText).toBe("Promoted FC");
+    expect(page.data.favoriteTeamLogo).toBe("https://cdn.example.com/logo-v1.png");
+    expect(storage[`team_name:${promotedId}`]).toBe("Promoted FC");
+    expect(storage[`team_logo:${promotedId}`]).toBe("https://cdn.example.com/logo-v1.png");
+
+    // Admin updates name_zh and logo_url; keep wx storage but clear in-memory cache
+    version = 2;
+    teamsService.clearTeamsCache();
+
+    await page.onLoad({ user_id: "00000000-0000-4000-8000-000000000091" });
+    expect(requestSpy).toHaveBeenCalledTimes(2);
+    expect(page.data.favoriteTeamText).toBe("升班马竞技");
+    expect(page.data.favoriteTeamLogo).toBe("https://cdn.example.com/logo-v2.png");
+    expect(storage[`team_name:${promotedId}`]).toBe("升班马竞技");
+    expect(storage[`team_logo:${promotedId}`]).toBe("https://cdn.example.com/logo-v2.png");
+  });
+
+  it("[CR44-03] resolves inactive out-of-bundle favorite team via /v1/teams/:team_id on a fresh device", async () => {
+    const inactiveId = "00000000-0000-4000-8000-000000000992";
+    const getPublicProfile = vi.fn(async () => ({
+      statusCode: 200,
+      data: {
+        user_id: "00000000-0000-4000-8000-000000000092",
+        display_name: "老球迷",
+        favorite_team_id: inactiveId,
+        career_points: 120,
+        career_valid_predictions: 20,
+        career_exact_hits: 5,
+        career_level: 3,
+        career_best_level: 4,
+        season_level: 3,
+      },
+    }));
+    const listTeams = vi.fn(async (options) => {
+      if (options.path === "/v1/teams") {
+        return { statusCode: 200, data: { items: [] } };
+      }
+      if (options.path === `/v1/teams/${inactiveId}`) {
+        return {
+          statusCode: 200,
+          data: {
+            team_id: inactiveId,
+            league_id: "premier_league",
+            name: "Relegated Athletic",
+            name_zh: "已停用老牌队",
+            logo_url: "https://cdn.example.com/relegated-athletic.png",
+          },
+        };
+      }
+      return { statusCode: 404, code: "TEAM_NOT_FOUND" };
+    });
+    const { page, storage, listTeams: requestSpy } = loadPage({
+      getPublicProfile,
+      listTeams,
+      useRealTeamPresentation: true,
+      storage: {},
+    });
+
+    await page.onLoad({ user_id: "00000000-0000-4000-8000-000000000092" });
+
+    expect(requestSpy).toHaveBeenCalledWith({ method: "GET", path: "/v1/teams", auth: "optional" });
+    expect(requestSpy).toHaveBeenCalledWith({ method: "GET", path: `/v1/teams/${inactiveId}`, auth: "optional" });
+    expect(page.data.state).toBe("ready");
+    expect(page.data.favoriteTeamId).toBe(inactiveId);
+    expect(page.data.favoriteTeamText).toBe("已停用老牌队");
+    expect(page.data.favoriteTeamLogo).toBe("https://cdn.example.com/relegated-athletic.png");
+    expect(storage[`team_name:${inactiveId}`]).toBe("已停用老牌队");
+    expect(storage[`team_logo:${inactiveId}`]).toBe("https://cdn.example.com/relegated-athletic.png");
   });
 });

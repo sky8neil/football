@@ -12,9 +12,28 @@ const AUTH_LOGIN_PATH = "/v1/auth/wechat";
 let accessToken;
 let inflight;
 let loginGeneration = 0;
+const authRestoredListeners = new Set();
 
 setAccessTokenProvider(() => accessToken);
 setAuthPreparer(() => restoreAuth());
+
+function onAuthRestored(listener) {
+  if (typeof listener !== "function") return () => {};
+  authRestoredListeners.add(listener);
+  return () => {
+    authRestoredListeners.delete(listener);
+  };
+}
+
+function notifyAuthRestored(result) {
+  for (const listener of [...authRestoredListeners]) {
+    try {
+      listener(result);
+    } catch (_error) {
+      /* 单个订阅者异常不影响其他订阅者及登录主流程 */
+    }
+  }
+}
 
 function isHttpTransport() {
   return (config.transport || "http") === "http";
@@ -174,7 +193,19 @@ function restoreAuth() {
   accessToken = undefined;
   if (!cached) return Promise.resolve(skippedResult());
   clearAuthSession();
-  return startLogin();
+  const generation = loginGeneration;
+  const promise = startLogin();
+  promise.then((result) => {
+    if (
+      generation === loginGeneration
+      && result
+      && result.statusCode === 200
+      && isAuthSessionActive(readAuthSession(), new Date())
+    ) {
+      notifyAuthRestored(result);
+    }
+  }).catch(() => {});
+  return promise;
 }
 
 module.exports = {
@@ -183,4 +214,5 @@ module.exports = {
   clearAuth,
   recoverSession,
   getLoginGeneration,
+  onAuthRestored,
 };

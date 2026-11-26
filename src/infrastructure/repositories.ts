@@ -81,9 +81,19 @@ import type {
   UserSeasonStats,
 } from "../domain/types.js";
 import type { AdminAuditAction, AdminAuditEntityType, AnomalyStatus } from "../domain/enums.js";
-import type { AuthSessionRevoker } from "./cloudbase-db.js";
+import type {
+  AuthSessionRevoker,
+  TransactionIsolationLevel,
+  TransactionOptions,
+} from "./cloudbase-db.js";
 
-export type { SettlementTodoQuery, ActiveWindowQuery, AuthSessionRevoker };
+export type {
+  SettlementTodoQuery,
+  ActiveWindowQuery,
+  AuthSessionRevoker,
+  TransactionIsolationLevel,
+  TransactionOptions,
+};
 
 /** 唯一约束冲突（模拟数据库唯一索引冲突）。 */
 export class UniqueConstraintError extends Error {
@@ -734,7 +744,7 @@ export interface ProviderReconcileTodoRepository {
 
 export interface AppRepository extends UnitOfWork {
   jobLocks: JobLockRepository;
-  withTransaction<T>(fn: (tx: UnitOfWork) => Promise<T>): Promise<T>;
+  withTransaction<T>(fn: (tx: UnitOfWork) => Promise<T>, options?: TransactionOptions): Promise<T>;
 }
 
 interface InMemoryStore {
@@ -3220,7 +3230,10 @@ export class InMemoryRepository implements AppRepository {
 
   // ---- transaction ----
 
-  async withTransaction<T>(fn: (tx: UnitOfWork) => Promise<T>): Promise<T> {
+  async withTransaction<T>(
+    fn: (tx: UnitOfWork) => Promise<T>,
+    _options?: TransactionOptions,
+  ): Promise<T> {
     let release!: () => void;
     const previous = this.transactionTail;
     this.transactionTail = new Promise<void>((resolve) => {

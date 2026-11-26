@@ -23,9 +23,13 @@ import type {
   UserSeasonStats,
 } from "../domain/types.js";
 import { defaultLevelState } from "../domain/types.js";
+import { replayLevel } from "../domain/levels.js";
+import { levelProtectionEndAsOf, seasonFinalEvalAsOf } from "../domain/time.js";
 import { InMemoryRepository, type UnitOfWork } from "../infrastructure/repositories.js";
 import { DailyConsistencyService } from "./daily-consistency-service.js";
 import { RepositoryDailyConsistencySnapshotSource } from "./daily-consistency-snapshot.js";
+import { LevelCorrectionReevalService } from "./level-correction-reeval.js";
+import { buildReplayFacts, loadAppliedSettlementFacts } from "./rebuild-service-support.js";
 import { RebuildUserStatsService } from "./stats-rebuild-service.js";
 import { levelScopeLockKey, listDueSeasonFinalIds, WeeklyLevelEvalService } from "./weekly-level-eval.js";
 
@@ -1060,5 +1064,427 @@ describe("WeeklyLevelEvalService A-S4-01", () => {
         exact_hits: 20,
         last_scoring_match_at: SCORE_AT,
       });
+  });
+});
+
+async function replayExpectedScope(
+  repo: InMemoryRepository,
+  userId: string,
+  scope: LevelScope,
+  firstEvalAsOf: Date,
+  untilAsOf: Date,
+  levelSeasonId?: string,
+) {
+  const applied = await repo.settlementItems.findAppliedByUserBefore(
+    userId,
+    new Date(untilAsOf.getTime() + 1),
+  );
+  const loaded = await loadAppliedSettlementFacts(repo, applied);
+  const { facts, correctionSettledAts } = buildReplayFacts(loaded);
+  return replayLevel({
+    scope,
+    facts,
+    firstEvalAsOf,
+    untilAsOf,
+    correctionSettledAts,
+    ruleVersion: "level_v3.0",
+    protectionEndAsOf: levelProtectionEndAsOf(firstEvalAsOf),
+    ...(levelSeasonId === undefined ? {} : { levelSeasonId }),
+  });
+}
+
+describe("WeeklyLevelEvalService CR42-06 跨周漏算补算", () => {
+  it("漏掉中间两周后恢复评估，career 与 season 终态及 level_history 与按时逐周和 replayLevel 完全一致", async () => {
+    const onTimeRepo = new InMemoryRepository();
+    const catchUpRepo = new InMemoryRepository();
+    const firstEval = new Date("2026-08-03T02:00:00.000Z");
+
+    const buildBaseUser = () =>
+      makeUser({
+        user_id: "u-catchup",
+        openid: "openid_u_catchup",
+        career_points: 720,
+        career_valid_predictions: 60,
+        career_wdl_hits: 60,
+        career_exact_hits: 60,
+        career_last_scoring_match_at: new Date(Date.UTC(2026, 7, 1, 0, 59, 0)),
+      });
+    const seed60BeforeWeek1 = async (repo: InMemoryRepository) => {
+      await seedUser(repo, 60, {
+        user: buildBaseUser(),
+        lateIndex: -1,
+        indexOffset: 0,
+      });
+      // 确保所有 applied_at 落在 2026-08-10T02:00Z 之前（seedUser 已使用 AS_OF - 60s = 08-10T01:59Z）
+    };
+
+    await seed60BeforeWeek1(onTimeRepo);
+    await seed60BeforeWeek1(catchUpRepo);
+
+    const onTimeService = new WeeklyLevelEvalService(onTimeRepo, firstEval);
+    for (const runAt of [
+      new Date("2026-08-10T02:10:00.000Z"),
+      new Date("2026-08-17T02:10:00.000Z"),
+      new Date("2026-08-24T02:10:00.000Z"),
+      new Date("2026-08-31T02:10:00.000Z"),
+    ]) {
+      await onTimeService.run(runAt);
+    }
+
+    const catchUpService = new WeeklyLevelEvalService(catchUpRepo, firstEval);
+    // 仅评估 08-10，随后漏算 08-17 与 08-24，在 08-31 恢复
+    await catchUpService.run(new Date("2026-08-10T02:10:00.000Z"));
+    await catchUpService.run(new Date("2026-08-31T02:10:00.000Z"));
+
+    const endAsOf = new Date("2026-08-31T02:00:00.000Z");
+    const onTimeUser = (await onTimeRepo.users.findById("u-catchup"))!;
+    const catchUpUser = (await catchUpRepo.users.findById("u-catchup"))!;
+    expect(catchUpUser.career_level).toBe(5);
+    expect(catchUpUser.career_level).toBe(onTimeUser.career_level);
+    expect(catchUpUser.career_best_level).toBe(onTimeUser.career_best_level);
+    expect(catchUpUser.career_level_state).toEqual(onTimeUser.career_level_state);
+
+    const onTimeSeason = (await onTimeRepo.userSeasonStats.findByUserAndSeason("u-catchup", "2026_2027"))!;
+    const catchUpSeason = (await catchUpRepo.userSeasonStats.findByUserAndSeason("u-catchup", "2026_2027"))!;
+    expect(catchUpSeason.level).toBe(5);
+    expect(catchUpSeason.level).toBe(onTimeSeason.level);
+    expect(catchUpSeason.best_level).toBe(onTimeSeason.best_level);
+    expect(catchUpSeason.level_state).toEqual(onTimeSeason.level_state);
+
+    const expectedCareer = await replayExpectedScope(
+      catchUpRepo,
+      "u-catchup",
+      LevelScope.Career,
+      firstEval,
+      endAsOf,
+    );
+    const expectedSeason = await replayExpectedScope(
+      catchUpRepo,
+      "u-catchup",
+      LevelScope.Season,
+      firstEval,
+      endAsOf,
+      "2026_2027",
+    );
+    expect(catchUpUser.career_level).toBe(expectedCareer.level);
+    expect(catchUpUser.career_best_level).toBe(expectedCareer.best_level);
+    expect(catchUpUser.career_level_state).toMatchObject({
+      below_count: expectedCareer.below_count,
+      last_eval_as_of: expectedCareer.last_eval_as_of,
+      last_eval_n: expectedCareer.last_inputs?.n,
+      last_eval_score_sum: expectedCareer.last_inputs?.S,
+      last_eval_b_points: expectedCareer.last_inputs?.b_points,
+    });
+    expect(catchUpSeason.level).toBe(expectedSeason.level);
+    expect(catchUpSeason.best_level).toBe(expectedSeason.best_level);
+    expect(catchUpSeason.level_state).toMatchObject({
+      below_count: expectedSeason.below_count,
+      last_eval_as_of: expectedSeason.last_eval_as_of,
+      last_eval_n: expectedSeason.last_inputs?.n,
+      last_eval_score_sum: expectedSeason.last_inputs?.S,
+      last_eval_b_points: expectedSeason.last_inputs?.b_points,
+    });
+
+    const sortHistory = (entries: Awaited<ReturnType<typeof onTimeRepo.levelHistory.findByUser>>) =>
+      entries
+        .map((entry) => ({ scope: entry.scope, from: entry.from_level, to: entry.to_level, asOf: entry.eval_as_of.toISOString() }))
+        .sort((left, right) =>
+          left.scope.localeCompare(right.scope) || left.asOf.localeCompare(right.asOf),
+        );
+    const onTimeHist = sortHistory(await onTimeRepo.levelHistory.findByUser("u-catchup"));
+    const catchUpHist = sortHistory(await catchUpRepo.levelHistory.findByUser("u-catchup"));
+    expect(catchUpHist).toEqual(onTimeHist);
+
+    const consistency = await new DailyConsistencyService(
+      catchUpRepo,
+      new RepositoryDailyConsistencySnapshotSource(catchUpRepo, firstEval),
+      firstEval,
+    ).run(new Date("2026-08-31T03:00:00.000Z"));
+    expect(consistency.kind).toBe("completed");
+    if (consistency.kind === "completed") {
+      expect(consistency.differences.filter((d) => d.scope === "career" || d.scope === "season_stats")).toEqual([]);
+    }
+  });
+
+  it("跨赛季漏算恢复时，仅在到达/超过赛季终评且切出赛季时冻结，不提前冻结也不超评到新赛季", async () => {
+    const repo = new InMemoryRepository();
+    const firstEval = new Date("2025-07-07T02:00:00.000Z");
+    const seasonFinal = seasonFinalEvalAsOf("2025_2026"); // 2026-07-06T02:00:00Z
+    expect(seasonFinal.toISOString()).toBe("2026-07-06T02:00:00.000Z");
+
+    const user = makeUser({
+      user_id: "u-season-gap",
+      openid: "openid_season_gap",
+      career_points: 720,
+      career_valid_predictions: 60,
+      career_wdl_hits: 60,
+      career_exact_hits: 60,
+    });
+    await repo.users.insert(user);
+    await repo.userSeasonStats.insert(makeSeasonStats(user.user_id, {
+      level_season_id: "2025_2026",
+      points: 720,
+      valid_predictions: 60,
+      wdl_hits: 60,
+      exact_hits: 60,
+      last_scoring_match_at: new Date("2026-06-20T12:00:00.000Z"),
+    }));
+    const appliedAt = new Date("2026-06-21T12:00:00.000Z");
+    for (let i = 0; i < 60; i += 1) {
+      const seasonAnchor = new Date(Date.UTC(2026, 5, 1, 0, i, 0));
+      const matchId = `ms${i}`;
+      const predictionId = `ps${i}`;
+      const settlementId = `ss${i}`;
+      await repo.matches.insert({
+        schema_version: 1,
+        match_id: matchId,
+        canonical_match_id: matchId,
+        superseded_by: null,
+        league_id: "premier_league",
+        season_id: "2025_2026",
+        round_id: "01",
+        home_team_id: "home",
+        away_team_id: "away",
+        kickoff_at: seasonAnchor,
+        kickoff_confirmed: true,
+        prediction_deadline_at: new Date(seasonAnchor.getTime() - 600_000),
+        prediction_closed_at: new Date(seasonAnchor.getTime() - 600_000),
+        period_anchor_at: seasonAnchor,
+        match_status: MatchStatus.Finished,
+        settlement_status: SettlementStatus.Settled,
+        regular_home_score: 2,
+        regular_away_score: 1,
+        extra_home_score: null,
+        extra_away_score: null,
+        penalty_home_score: null,
+        penalty_away_score: null,
+        result_version: 1,
+        settled_result_version: 1,
+        result_source: "provider",
+        scoring_rule_version: RULE,
+        finish_detected_at: appliedAt,
+        settled_at: appliedAt,
+        created_at: appliedAt,
+        updated_at: appliedAt,
+      });
+      await repo.predictions.insert({
+        schema_version: 1,
+        prediction_id: predictionId,
+        user_id: user.user_id,
+        match_id: matchId,
+        canonical_match_id: matchId,
+        idempotency_key: newUuid(),
+        pred_home_score: 2,
+        pred_away_score: 1,
+        derived_result: Result.Home,
+        submitted_at: new Date(seasonAnchor.getTime() - 3_600_000),
+        scoring_rule_version: RULE,
+        match_score: MatchScoreValue.ExactHit,
+        wdl_hit: true,
+        exact_hit: true,
+        applied_result_version: 1,
+        created_at: appliedAt,
+        updated_at: appliedAt,
+      });
+      await repo.matchResults.insert({
+        schema_version: 1,
+        match_id: matchId,
+        result_version: 1,
+        regular_home_score: 2,
+        regular_away_score: 1,
+        source: "provider",
+        provider_status: "FT",
+        admin_id: null,
+        reason: null,
+        created_at: appliedAt,
+      });
+      await repo.settlements.insert({
+        schema_version: 1,
+        settlement_id: settlementId,
+        match_id: matchId,
+        result_version: 1,
+        rule_version: RULE,
+        status: SettlementDocStatus.Settled,
+        phase: SettlementPhase.Done,
+        is_correction: false,
+        started_at: appliedAt,
+        settled_at: appliedAt,
+        attempt_count: 1,
+        last_error_code: null,
+        last_error_message: null,
+        created_at: appliedAt,
+        updated_at: appliedAt,
+      });
+      await repo.settlementItems.insert({
+        schema_version: 1,
+        settlement_id: settlementId,
+        prediction_id: predictionId,
+        user_id: user.user_id,
+        old_score: MatchScoreValue.Miss,
+        new_score: MatchScoreValue.ExactHit,
+        score_delta: MatchScoreValue.ExactHit,
+        old_wdl_hit: false,
+        new_wdl_hit: true,
+        old_exact_hit: false,
+        new_exact_hit: true,
+        valid_prediction_delta: 1,
+        source_result_version: 1,
+        status: SettlementItemStatus.Applied,
+        applied_at: appliedAt,
+        attempt_count: 1,
+        last_error_code: null,
+        last_error_message: null,
+        created_at: appliedAt,
+        updated_at: appliedAt,
+      });
+    }
+
+    const service = new WeeklyLevelEvalService(repo, firstEval);
+    // 2026-06-22 先评一次（Lv.1 -> Lv.2），然后漏掉 06-29（仍在 2025_2026 内）与 07-06（终评）
+    await service.run(new Date("2026-06-22T02:10:00.000Z"));
+    expect(await repo.userSeasonStats.findByUserAndSeason(user.user_id, "2025_2026"))
+      .toMatchObject({ level: 2, is_level_frozen: false });
+
+    // 在新赛季 2026-07-13 恢复运行：应补跑 06-29（不冻结，-> Lv.3）和 07-06（终评，-> Lv.4 并冻结），不能评到 07-13
+    await service.run(new Date("2026-07-13T02:10:00.000Z"));
+    const stats = (await repo.userSeasonStats.findByUserAndSeason(user.user_id, "2025_2026"))!;
+    expect(stats.is_level_frozen).toBe(true);
+    expect(stats.level).toBe(4);
+    expect(stats.best_level).toBe(4);
+    expect(stats.level_state?.last_eval_as_of?.toISOString()).toBe("2026-07-06T02:00:00.000Z");
+
+    const expectedSeason = await replayExpectedScope(
+      repo,
+      user.user_id,
+      LevelScope.Season,
+      firstEval,
+      seasonFinal,
+      "2025_2026",
+    );
+    expect(stats.level).toBe(expectedSeason.level);
+    expect(stats.best_level).toBe(expectedSeason.best_level);
+    expect(stats.level_state?.last_eval_as_of).toEqual(expectedSeason.last_eval_as_of);
+
+    const seasonHist = (await repo.levelHistory.findByUser(user.user_id))
+      .filter((entry) => entry.scope === LevelScope.Season)
+      .map((entry) => entry.eval_as_of.toISOString());
+    expect(seasonHist).toEqual([
+      "2026-06-22T02:00:00.000Z",
+      "2026-06-29T02:00:00.000Z",
+      "2026-07-06T02:00:00.000Z",
+    ]);
+  });
+
+  it("漏周期间存在待补跑订正结算时，先补算对应周期周评估再执行订正重评", async () => {
+    const onTimeRepo = new InMemoryRepository();
+    const catchUpRepo = new InMemoryRepository();
+    const firstEval = new Date("2026-08-03T02:00:00.000Z");
+
+    const setupRepo = async (repo: InMemoryRepository) => {
+      await seedUser(repo, 60, {
+        user: makeUser({
+          user_id: "u-midgap-corr",
+          openid: "openid_midgap_corr",
+          career_points: 720,
+          career_valid_predictions: 60,
+          career_wdl_hits: 60,
+          career_exact_hits: 60,
+        }),
+      });
+      // 第 0 场做一次周中（08-12 星期三）的订正重评结算
+      const correctionSettledAt = new Date("2026-08-12T05:00:00.000Z");
+      const m0 = (await repo.matches.findById("m0"))!;
+      await repo.matches.update({ ...m0, result_version: 2, settled_result_version: 2 });
+      await repo.matchResults.insert({
+        schema_version: 1,
+        match_id: "m0",
+        result_version: 2,
+        regular_home_score: 2,
+        regular_away_score: 1,
+        source: "provider",
+        provider_status: "FT",
+        admin_id: null,
+        reason: null,
+        created_at: correctionSettledAt,
+      });
+      const corrDoc: SettlementDoc = {
+        schema_version: 1,
+        settlement_id: "s-corr-midgap",
+        match_id: "m0",
+        result_version: 2,
+        rule_version: RULE,
+        status: SettlementDocStatus.Settled,
+        phase: SettlementPhase.Done,
+        is_correction: true,
+        level_reeval_status: "pending",
+        started_at: correctionSettledAt,
+        settled_at: correctionSettledAt,
+        attempt_count: 1,
+        last_error_code: null,
+        last_error_message: null,
+        created_at: correctionSettledAt,
+        updated_at: correctionSettledAt,
+      };
+      await repo.settlements.insert(corrDoc);
+      await repo.settlementItems.insert({
+        schema_version: 1,
+        settlement_id: corrDoc.settlement_id,
+        prediction_id: "p0",
+        user_id: "u-midgap-corr",
+        old_score: MatchScoreValue.ExactHit,
+        new_score: MatchScoreValue.ExactHit,
+        score_delta: 0,
+        old_wdl_hit: true,
+        new_wdl_hit: true,
+        old_exact_hit: true,
+        new_exact_hit: true,
+        valid_prediction_delta: 0,
+        source_result_version: 2,
+        status: SettlementItemStatus.Applied,
+        applied_at: correctionSettledAt,
+        attempt_count: 1,
+        last_error_code: null,
+        last_error_message: null,
+        created_at: correctionSettledAt,
+        updated_at: correctionSettledAt,
+      });
+    };
+
+    await setupRepo(onTimeRepo);
+    await setupRepo(catchUpRepo);
+
+    // On-time: 08-03 -> 08-10 -> correction(08-12) -> 08-17
+    const onTimeWeekly = new WeeklyLevelEvalService(onTimeRepo, firstEval);
+    await onTimeWeekly.run(new Date("2026-08-03T02:10:00.000Z"));
+    await onTimeWeekly.run(new Date("2026-08-10T02:10:00.000Z"));
+    await new LevelCorrectionReevalService(onTimeRepo, firstEval).runForSettlement(
+      "s-corr-midgap",
+      new Date("2026-08-12T05:05:00.000Z"),
+    );
+    await onTimeWeekly.run(new Date("2026-08-17T02:10:00.000Z"));
+
+    // Catch-up: 08-03 -> 漏掉 08-10（且未单独触发 08-12 重评）-> 在 08-17 统一恢复
+    const catchUpWeekly = new WeeklyLevelEvalService(catchUpRepo, firstEval);
+    await catchUpWeekly.run(new Date("2026-08-03T02:10:00.000Z"));
+    await catchUpWeekly.run(new Date("2026-08-17T02:10:00.000Z"));
+
+    const onTimeUser = (await onTimeRepo.users.findById("u-midgap-corr"))!;
+    const catchUpUser = (await catchUpRepo.users.findById("u-midgap-corr"))!;
+    expect(catchUpUser.career_level).toBe(3);
+    expect(catchUpUser.career_level).toBe(onTimeUser.career_level);
+    expect(catchUpUser.career_best_level).toBe(onTimeUser.career_best_level);
+    expect(catchUpUser.career_level_state).toEqual(onTimeUser.career_level_state);
+
+    const endAsOf = new Date("2026-08-17T02:00:00.000Z");
+    const expectedCareer = await replayExpectedScope(
+      catchUpRepo,
+      "u-midgap-corr",
+      LevelScope.Career,
+      firstEval,
+      endAsOf,
+    );
+    expect(catchUpUser.career_level).toBe(expectedCareer.level);
+    expect(catchUpUser.career_level_state?.last_eval_as_of).toEqual(expectedCareer.last_eval_as_of);
+    expect(catchUpUser.career_level_state?.week_base_as_of).toEqual(expectedCareer.week_base_as_of);
   });
 });

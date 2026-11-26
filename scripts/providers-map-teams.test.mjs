@@ -180,4 +180,162 @@ describe("providers-map-teams", () => {
       team_updates: [{ team_id: teamId, logo_url: "http://insecure.example/x.png" }],
     }, { now: NOW })).rejects.toThrow(/Invalid logo_url/);
   });
+
+  it("CR42-03: supports provider_teams[].confirmed_team_id consistently in analyze and apply, deduplicates, and rejects conflicts", async () => {
+    const repo = new InMemoryRepository();
+    const teamId = newUuid();
+    const otherTeamId = newUuid();
+
+    await repo.teams.insert({
+      schema_version: SCHEMA_VERSION,
+      team_id: teamId,
+      league_id: "premier_league",
+      name: "Leeds United FC",
+      name_zh: null,
+      logo_url: null,
+      short_name: null,
+      primary_color: null,
+      secondary_color: null,
+      status: TeamStatus.Active,
+      created_at: NOW,
+      updated_at: NOW,
+    });
+    await repo.teams.insert({
+      schema_version: SCHEMA_VERSION,
+      team_id: otherTeamId,
+      league_id: "la_liga",
+      name: "Other League Club",
+      name_zh: null,
+      logo_url: null,
+      short_name: null,
+      primary_color: null,
+      secondary_color: null,
+      status: TeamStatus.Active,
+      created_at: NOW,
+      updated_at: NOW,
+    });
+
+    const inputWithConfirmedTeamId = {
+      local_teams: [
+        { team_id: teamId, league_id: "premier_league", name: "Leeds United FC" },
+      ],
+      provider_teams: [
+        {
+          provider: "openfoot",
+          provider_team_id: "63",
+          league_id: "premier_league",
+          name: "Leeds United",
+          confirmed_team_id: teamId,
+          name_zh: "不应由provider_teams覆写的字段",
+          logo_url: "http://ignored-provider-logo.example/a.png",
+        },
+      ],
+    };
+
+    const report = analyzeTeamMappings(inputWithConfirmedTeamId);
+    expect(report).toMatchObject({
+      confirmed: 1,
+      review: 0,
+      ambiguous: 0,
+      unmatched: 0,
+    });
+    expect(report.mappings[0]).toMatchObject({
+      provider: "openfoot",
+      provider_team_id: "63",
+      status: "confirmed",
+      team_id: teamId,
+      mapping_league_mismatch: false,
+    });
+
+    const applied = await applyTeamMappings(repo, inputWithConfirmedTeamId, { now: NOW });
+    expect(applied).toEqual({
+      mode: "apply",
+      mappings_inserted: 1,
+      mappings_updated: 0,
+      mappings_unchanged: 0,
+      teams_updated: 0,
+      teams_unchanged: 0,
+      anomalies_resolved: 0,
+    });
+    expect(
+      await repo.teamProviderMappings.findByProviderAndExternalId(Provider.OpenFoot, "63"),
+    ).toMatchObject({ team_id: teamId });
+
+    // Same target in both confirmed_mappings and provider_teams[].confirmed_team_id deduplicates cleanly
+    const dedupInput = {
+      local_teams: [{ team_id: teamId, league_id: "premier_league", name: "Leeds United FC" }],
+      provider_teams: [
+        {
+          provider: "openfoot",
+          provider_team_id: "64",
+          league_id: "premier_league",
+          name: "Leeds Reserve",
+          confirmed_team_id: teamId,
+        },
+      ],
+      confirmed_mappings: [
+        {
+          provider: "openfoot",
+          provider_team_id: "64",
+          team_id: teamId,
+          name_zh: "利兹联",
+        },
+      ],
+    };
+    expect(analyzeTeamMappings(dedupInput).confirmed).toBe(1);
+    const dedupApplied = await applyTeamMappings(repo, dedupInput, { now: NOW });
+    expect(dedupApplied).toMatchObject({
+      mappings_inserted: 1,
+      mappings_unchanged: 0,
+      teams_updated: 1,
+    });
+    expect((await repo.teams.findById(teamId))?.name_zh).toBe("利兹联");
+
+    // Conflicting targets between confirmed_mappings and confirmed_team_id fail in both analyze and apply
+    const conflictInput = {
+      local_teams: [
+        { team_id: teamId, league_id: "premier_league", name: "Leeds United FC" },
+        { team_id: otherTeamId, league_id: "premier_league", name: "Other Club" },
+      ],
+      provider_teams: [
+        {
+          provider: "openfoot",
+          provider_team_id: "65",
+          league_id: "premier_league",
+          name: "Leeds",
+          confirmed_team_id: teamId,
+        },
+      ],
+      confirmed_mappings: [
+        { provider: "openfoot", provider_team_id: "65", team_id: otherTeamId },
+      ],
+    };
+    expect(() => analyzeTeamMappings(conflictInput)).toThrow(/Conflicting confirmed mapping/);
+    await expect(applyTeamMappings(repo, conflictInput, { now: NOW })).rejects.toThrow(
+      /Conflicting confirmed mapping/,
+    );
+
+    // League mismatch in provider_teams[].confirmed_team_id rejects in applyTeamMappings
+    const leagueMismatchInput = {
+      local_teams: [
+        { team_id: otherTeamId, league_id: "la_liga", name: "Other League Club" },
+      ],
+      provider_teams: [
+        {
+          provider: "openfoot",
+          provider_team_id: "66",
+          league_id: "premier_league",
+          name: "Other League Club",
+          confirmed_team_id: otherTeamId,
+        },
+      ],
+    };
+    expect(analyzeTeamMappings(leagueMismatchInput)).toMatchObject({
+      confirmed: 0,
+      mappings: [expect.objectContaining({ mapping_league_mismatch: true })],
+    });
+    await expect(applyTeamMappings(repo, leagueMismatchInput, { now: NOW })).rejects.toThrow(
+      /league mismatch/i,
+    );
+  });
 });

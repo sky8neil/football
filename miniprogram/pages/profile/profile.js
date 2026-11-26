@@ -2,6 +2,17 @@ const { getMyProfile } = require("../../services/profile.js");
 const { getMyLevels } = require("../../services/levels.js");
 const { listMyGroups, createGroup } = require("../../services/groups.js");
 const { listMatches } = require("../../services/matches.js");
+let teamsService = {};
+try {
+  teamsService = require("../../services/teams.js") || {};
+} catch (_error) {
+  teamsService = {};
+}
+const {
+  isPlaceholderLogo,
+  resolveFavoriteTeamSync,
+  resolveFavoriteTeamRemote,
+} = teamsService;
 const { getTeamLogo, PLACEHOLDER } = require("../../utils/logo-registry.js");
 const { presentTeam } = require("../../utils/team-presentation.js");
 const { findTeam } = require("../../utils/team-registry.js");
@@ -289,10 +300,45 @@ Page({
       }
     } else {
       const logo = wx.getStorageSync("team_logo:" + teamId);
-      if (logo && logo !== PLACEHOLDER) { this.setData({ favoriteTeamLogo: logo }); return; }
       if (logo === PLACEHOLDER && typeof wx.removeStorageSync === "function") {
         wx.removeStorageSync("team_logo:" + teamId);
       }
+      if (typeof resolveFavoriteTeamSync === "function" && typeof resolveFavoriteTeamRemote === "function") {
+        const syncState = resolveFavoriteTeamSync(teamId, {
+          findTeam,
+          presentTeam,
+          placeholder: PLACEHOLDER,
+        });
+        if (!syncState.needsRemoteLookup) {
+          this.setData({
+            favoriteTeamText: syncState.favoriteTeamText || this.data.favoriteTeamText || "已选择球队",
+            favoriteTeamLogo: syncState.favoriteTeamLogo || PLACEHOLDER,
+          });
+          return;
+        }
+        try {
+          const resolved = await resolveFavoriteTeamRemote(teamId, {
+            presentTeam,
+            placeholder: PLACEHOLDER,
+          });
+          if (this.favoriteTeamRequestId !== requestId) return;
+          if (resolved) {
+            const nextText = resolved.favoriteTeamText || this.data.favoriteTeamText || "已选择球队";
+            const nextLogo = typeof isPlaceholderLogo === "function" && !isPlaceholderLogo(resolved.favoriteTeamLogo, PLACEHOLDER)
+              ? resolved.favoriteTeamLogo
+              : (logo && logo !== PLACEHOLDER ? logo : PLACEHOLDER);
+            this.setData({
+              favoriteTeamText: nextText,
+              favoriteTeamLogo: nextLogo,
+            });
+            return;
+          }
+        } catch (_error) {
+          /* 远端球队资料解析失败时继续走兜底逻辑 */
+        }
+        if (this.favoriteTeamRequestId !== requestId) return;
+      }
+      if (logo && logo !== PLACEHOLDER) { this.setData({ favoriteTeamLogo: logo }); return; }
     }
     // Resolve the server's team ID after a fresh login or cleared cache.
     let cursor = null;

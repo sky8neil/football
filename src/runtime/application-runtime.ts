@@ -124,7 +124,7 @@ export function createApplicationRuntime(input: ApplicationRuntimeInput): Applic
   const providerReconcile = new ProviderReconcileService(input.repo, providerClient, providerLeagueRefs);
   const providerStaleRecovery = new ProviderStaleRecoveryService(input.repo, providerClient, {}, {
     dueIntervalMs: providerJobIntervalMs(SyncJobType.StaleRecovery, profile),
-  }, providerLeagueRefs, logger);
+  }, providerLeagueRefs, logger, schedulerState);
   const levelFirstEvalAsOf = parseLevelFirstEvalAsOf(input.env, input.env.FOOTBALL_ENVIRONMENT);
   const periodFinalize = new PeriodFinalizeService(input.repo);
   const dailyConsistency = new DailyConsistencyService(

@@ -1041,6 +1041,101 @@ describe("HTTP self-hosted login and session cache", () => {
     expect(wxRequest).toHaveBeenCalledTimes(1);
     expect(wxRequest.mock.calls[0][0].header.Authorization).toBeUndefined();
   });
+
+  it("[CR42-10] notifies onAuthRestored once when expired-session restoreAuth succeeds and supports unsubscribe", async () => {
+    let finishLogin;
+    const { auth, wxRequest, store } = loadStack({
+      stored: { [AUTH_SESSION_STORAGE_KEY]: { access_token: "expired-token", expires_at: PAST } },
+    });
+    wxRequest.mockImplementation((options) => {
+      if (String(options.url || "").endsWith("/v1/auth/wechat")) {
+        finishLogin = () => options.success({
+          statusCode: 200,
+          data: { data: { access_token: "renewed-token", token_type: "Bearer", expires_at: FUTURE }, request_id: "auth-restore" },
+        });
+        return;
+      }
+      throw new Error(options.url);
+    });
+
+    const listener = vi.fn();
+    const removedListener = vi.fn();
+    const unsub = auth.onAuthRestored(listener);
+    const unsubRemoved = auth.onAuthRestored(removedListener);
+    unsubRemoved();
+
+    const p1 = auth.restoreAuth();
+    const p2 = auth.restoreAuth();
+    expect(listener).not.toHaveBeenCalled();
+
+    await waitFor(() => typeof finishLogin === "function");
+    finishLogin();
+    await Promise.all([p1, p2]);
+
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(removedListener).not.toHaveBeenCalled();
+    expect(store.get(AUTH_SESSION_STORAGE_KEY)).toEqual({ access_token: "renewed-token", expires_at: FUTURE });
+
+    unsub();
+    store.set(AUTH_SESSION_STORAGE_KEY, { access_token: "expired-again", expires_at: PAST });
+    finishLogin = undefined;
+    const p3 = auth.restoreAuth();
+    await waitFor(() => typeof finishLogin === "function");
+    finishLogin();
+    await p3;
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  it("[CR42-10] does not notify onAuthRestored when cache is empty, already valid, login fails, or clearAuth runs", async () => {
+    const emptyStack = loadStack();
+    const emptyListener = vi.fn();
+    emptyStack.auth.onAuthRestored(emptyListener);
+    await emptyStack.auth.restoreAuth();
+    expect(emptyListener).not.toHaveBeenCalled();
+
+    const validStack = loadStack({
+      stored: { [AUTH_SESSION_STORAGE_KEY]: { access_token: "valid-token", expires_at: FUTURE } },
+    });
+    const validListener = vi.fn();
+    validStack.auth.onAuthRestored(validListener);
+    await validStack.auth.restoreAuth();
+    expect(validListener).not.toHaveBeenCalled();
+
+    const failedStack = loadStack({
+      stored: { [AUTH_SESSION_STORAGE_KEY]: { access_token: "expired-token", expires_at: PAST } },
+    });
+    succeedHttp(failedStack.wxRequest, (url) => {
+      if (url.endsWith("/v1/auth/wechat")) {
+        return { statusCode: 401, data: { code: "UNAUTHORIZED", message: "需要重新登录" } };
+      }
+      throw new Error(url);
+    });
+    const failedListener = vi.fn();
+    failedStack.auth.onAuthRestored(failedListener);
+    await failedStack.auth.restoreAuth();
+    expect(failedListener).not.toHaveBeenCalled();
+
+    let finishCancelledLogin;
+    const raceStack = loadStack({
+      stored: { [AUTH_SESSION_STORAGE_KEY]: { access_token: "expired-token", expires_at: PAST } },
+    });
+    raceStack.wxRequest.mockImplementation((options) => {
+      if (String(options.url || "").endsWith("/v1/auth/wechat")) {
+        finishCancelledLogin = () => options.success({
+          statusCode: 200,
+          data: { data: { access_token: "late-token", token_type: "Bearer", expires_at: FUTURE }, request_id: "auth-race" },
+        });
+      }
+    });
+    const raceListener = vi.fn();
+    raceStack.auth.onAuthRestored(raceListener);
+    const pending = raceStack.auth.restoreAuth();
+    await waitFor(() => typeof finishCancelledLogin === "function");
+    raceStack.auth.clearAuth();
+    finishCancelledLogin();
+    await pending;
+    expect(raceListener).not.toHaveBeenCalled();
+  });
 });
 
 describe("CloudBase keeps the original identity flow", () => {

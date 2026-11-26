@@ -387,4 +387,29 @@ describe("createCountingDb passthrough of patch", () => {
     const { db } = createCountingDb(inner);
     expect(db.patch).toBeUndefined();
   });
+
+  it("[CR42-07] createCountingDb 与 CloudBaseAppRepository 透传 transaction options", async () => {
+    const inner = new FakeDb(true, true);
+    const seen: unknown[] = [];
+    inner.transaction = async <T>(
+      work: (transactionDb: CloudBaseDb) => Promise<T>,
+      options?: unknown,
+    ) => {
+      seen.push(options);
+      return work(inner);
+    };
+    const { db } = createCountingDb(inner);
+    const repo = new CloudBaseAppRepository(CONFIG, db);
+
+    await repo.withTransaction(async () => "default");
+    await repo.withTransaction(async () => "snapshot", {
+      isolationLevel: "repeatable_read",
+      readOnly: true,
+    });
+
+    expect(seen).toEqual([
+      undefined,
+      { isolationLevel: "repeatable_read", readOnly: true },
+    ]);
+  });
 });

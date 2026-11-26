@@ -139,7 +139,15 @@ function catalogItems() {
   ];
 }
 
-function loadPage({ getMyShareCard, getShareCardForUser, listLeagueSeasons, stored, pages, transport = "http" } = {}) {
+function loadPage({
+  getMyShareCard,
+  getShareCardForUser,
+  listLeagueSeasons,
+  listTeams,
+  stored,
+  pages,
+  transport = "http",
+} = {}) {
   const wxStub = installWxStub({ stored, pages });
   const getMyShareCardFn = getMyShareCard || vi.fn(async () => ({
     statusCode: 200,
@@ -153,6 +161,18 @@ function loadPage({ getMyShareCard, getShareCardForUser, listLeagueSeasons, stor
     statusCode: 200,
     data: { items: catalogItems() },
   }));
+  const listTeamsFn = listTeams || vi.fn(async () => ({
+    statusCode: 200,
+    data: { items: [] },
+  }));
+  const teamsService = loadCommonJs(join(ROOT, "services", "teams.js"), (id) => {
+    if (id === "./api.js") {
+      return {
+        request: (options) => listTeamsFn(options),
+      };
+    }
+    throw new Error(`Unexpected require: ${id}`);
+  });
   const matchPresentation = loadUtil("match-presentation.js", () => {
     throw new Error("match-presentation has no dependencies");
   });
@@ -177,6 +197,7 @@ function loadPage({ getMyShareCard, getShareCardForUser, listLeagueSeasons, stor
       return { getMyShareCard: getMyShareCardFn, getShareCardForUser: getShareCardForUserFn };
     }
     if (id === "../../services/league-seasons.js") return { listLeagueSeasons: listLeagueSeasonsFn };
+    if (id === "../../services/teams.js") return teamsService;
     if (id === "../../utils/match-presentation.js") return matchPresentation;
     if (id === "../../utils/team-presentation.js") return teamPresentation;
     if (id === "../../utils/team-registry.js") return teamRegistry;
@@ -189,6 +210,8 @@ function loadPage({ getMyShareCard, getShareCardForUser, listLeagueSeasons, stor
     getMyShareCard: getMyShareCardFn,
     getShareCardForUser: getShareCardForUserFn,
     listLeagueSeasons: listLeagueSeasonsFn,
+    listTeams: listTeamsFn,
+    teamsService,
     ...wxStub,
   };
 }
@@ -243,15 +266,19 @@ describe("share-card page", () => {
     expect(wxml).not.toContain("home-pitch-bg.webp");
     expect(wxml).not.toContain("pendingCount");
     expect(wxml).not.toContain("没有结算");
+    expect(wxml).toContain("{{card.careerPoints}}");
+    const fullSummaryBlock = wxml.match(/<block wx:if="\{\{card\.showFullSummary\}\}">[\s\S]*?<\/block>/);
+    expect(fullSummaryBlock).not.toBeNull();
+    expect(fullSummaryBlock[0]).not.toContain("careerPoints");
 
     const getMyShareCard = vi.fn()
       .mockResolvedValueOnce({
         statusCode: 200,
-        data: shareCardData({ round_predictions: 3, round_score: 12 }),
+        data: shareCardData({ round_predictions: 3, round_score: 12, career_points: 180 }),
       })
       .mockResolvedValueOnce({
         statusCode: 200,
-        data: shareCardData({ round_predictions: 4, round_score: 15 }),
+        data: shareCardData({ round_predictions: 4, round_score: 15, career_points: 195 }),
       });
     const { page } = loadPage({ getMyShareCard });
 
@@ -259,17 +286,18 @@ describe("share-card page", () => {
     expect(page.data.state).toBe("card");
     expect(page.data.card.settledCount).toBe(3);
     expect(page.data.card.showFullSummary).toBe(false);
+    expect(page.data.card.careerPoints).toBe(180);
     expect(page.data.card.cardTitle).toContain("晒预测");
     expect(page.data.card).not.toHaveProperty("pendingCount");
-    expect(page.onShareAppMessage().title).toContain("晒预测");
-    expect(page.onShareTimeline().title).toContain("晒预测");
+    expect(page.onShareAppMessage().title).toBe("Sky 晒出了英超第12轮预测");
+    expect(page.onShareTimeline().title).toBe("Sky 晒出了英超第12轮预测");
 
     await page.onLoad({ ...QUERY });
     expect(page.data.card.settledCount).toBe(4);
     expect(page.data.card.showFullSummary).toBe(true);
     expect(page.data.card.cardTitle).toContain("战绩");
-    expect(page.onShareAppMessage().title).toContain("战绩");
-    expect(page.onShareAppMessage().title).toContain("已结算 4 场");
+    expect(page.onShareAppMessage().title).toBe("Sky 英超第12轮战绩：已拿 15 分");
+    expect(page.onShareTimeline().title).toBe("Sky 英超第12轮战绩：已拿 15 分");
   });
 
   it("share path and onShareTimeline keep sharer, season/round, and share_token in receiver mode", async () => {
@@ -279,6 +307,7 @@ describe("share-card page", () => {
         user_id: SHARER_ID,
         display_name: "Sharer",
         round_predictions: 6,
+        round_score: 21,
         share_token: "signed_tok_6",
       }),
     }));
@@ -299,8 +328,7 @@ describe("share-card page", () => {
     expect(share.path).toContain("round_id=12");
     expect(share.path).toContain("share_token=signed_tok_6");
     expect(share.path).toMatch(/^\/pages\/share-card\/share-card\?/);
-    expect(share.title).toContain("Sharer");
-    expect(share.title).toContain("已结算 6 场");
+    expect(share.title).toBe("Sharer 英超第12轮战绩：已拿 21 分");
     expect(share.title).not.toMatch(/未结算/);
 
     const timeline = page.onShareTimeline();
@@ -818,5 +846,203 @@ describe("share-card page", () => {
     const timeline = page.onShareTimeline();
     expect(timeline.query).toBe("");
     expect(timeline.query).not.toContain("user_id=");
+  });
+
+  it("[CR43-06] receiver with empty local cache resolves out-of-bundle favorite team via /v1/teams and caches it", async () => {
+    const promotedId = "00000000-0000-4000-8000-000000000999";
+    const getShareCardForUser = vi.fn(async () => ({
+      statusCode: 200,
+      data: shareCardData({
+        user_id: SHARER_ID,
+        display_name: "Sharer",
+        favorite_team_id: promotedId,
+      }),
+    }));
+    const listTeams = vi.fn(async () => ({
+      statusCode: 200,
+      data: {
+        items: [
+          {
+            team_id: promotedId,
+            league_id: "premier_league",
+            name: "Promoted Athletic",
+            name_zh: "升班马竞技",
+            logo_url: "https://cdn.example.com/promoted-athletic.png",
+          },
+        ],
+      },
+    }));
+    const { page, store, listTeams: requestSpy } = loadPage({
+      getShareCardForUser,
+      listTeams,
+      stored: {},
+    });
+
+    await page.onLoad({ user_id: SHARER_ID, ...QUERY });
+
+    expect(requestSpy).toHaveBeenCalledTimes(1);
+    expect(requestSpy).toHaveBeenCalledWith({ method: "GET", path: "/v1/teams", auth: "optional" });
+    expect(page.data.state).toBe("card");
+    expect(page.data.card.favoriteTeamId).toBe(promotedId);
+    expect(page.data.card.favoriteTeamText).toBe("升班马竞技");
+    expect(page.data.card.favoriteTeamLogo).toBe("https://cdn.example.com/promoted-athletic.png");
+    expect(store.get(`team_name:${promotedId}`)).toBe("升班马竞技");
+    expect(store.get(`team_logo:${promotedId}`)).toBe("https://cdn.example.com/promoted-athletic.png");
+  });
+
+  it("[CR43-06] guards against late /v1/teams responses after round switch or page unload and falls back cleanly on error", async () => {
+    const promotedId = "00000000-0000-4000-8000-000000000777";
+    let finishTeams;
+    const listTeams = vi.fn(() => new Promise((resolve) => {
+      finishTeams = resolve;
+    }));
+    const getShareCardForUser = vi.fn(async () => ({
+      statusCode: 200,
+      data: shareCardData({
+        user_id: SHARER_ID,
+        display_name: "Sharer",
+        favorite_team_id: promotedId,
+      }),
+    }));
+    const { page } = loadPage({ getShareCardForUser, listTeams, stored: {} });
+
+    const setDataSpy = vi.spyOn(page, "setData");
+    const pendingLoad = page.onLoad({ user_id: SHARER_ID, ...QUERY });
+    // Flush microtasks so share card renders immediately while /v1/teams is still in flight
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(page.data.state).toBe("card");
+    expect(page.data.card.favoriteTeamText).toBe("已选择球队");
+
+    // Unload before /v1/teams returns -> stale callback must not call setData
+    const callsBeforeUnload = setDataSpy.mock.calls.length;
+    page.onUnload();
+    finishTeams({
+      statusCode: 200,
+      data: {
+        items: [
+          {
+            team_id: promotedId,
+            league_id: "premier_league",
+            name: "Promoted FC",
+            name_zh: "迟到升班马",
+            logo_url: "https://cdn.example.com/late.png",
+          },
+        ],
+      },
+    });
+    await pendingLoad;
+    expect(setDataSpy.mock.calls.length).toBe(callsBeforeUnload);
+
+    // Failure of /v1/teams must keep the share card rendered with fallback text/placeholder
+    const failedTeams = vi.fn(async () => ({ statusCode: 500, code: "INTERNAL" }));
+    const fallbackCase = loadPage({ getShareCardForUser, listTeams: failedTeams, stored: {} });
+    await fallbackCase.page.onLoad({ user_id: SHARER_ID, ...QUERY });
+    expect(fallbackCase.page.data.state).toBe("card");
+    expect(fallbackCase.page.data.card.favoriteTeamText).toBe("已选择球队");
+    expect(fallbackCase.page.data.card.favoriteTeamLogo).toContain("team-placeholder.png");
+  });
+
+  it("[CR44-02] refreshes cached out-of-bundle favorite team name_zh and logo_url after in-memory cache clears", async () => {
+    const promotedId = "00000000-0000-4000-8000-000000000991";
+    let version = 1;
+    const getShareCardForUser = vi.fn(async () => ({
+      statusCode: 200,
+      data: shareCardData({
+        user_id: SHARER_ID,
+        display_name: "Sharer",
+        favorite_team_id: promotedId,
+      }),
+    }));
+    const listTeams = vi.fn(async () => ({
+      statusCode: 200,
+      data: {
+        items: [
+          version === 1
+            ? {
+              team_id: promotedId,
+              league_id: "premier_league",
+              name: "Promoted FC",
+              name_zh: null,
+              logo_url: "https://cdn.example.com/logo-v1.png",
+            }
+            : {
+              team_id: promotedId,
+              league_id: "premier_league",
+              name: "Promoted FC",
+              name_zh: "升班马竞技",
+              logo_url: "https://cdn.example.com/logo-v2.png",
+            },
+        ],
+      },
+    }));
+    const { page, store, teamsService, listTeams: requestSpy } = loadPage({
+      getShareCardForUser,
+      listTeams,
+      stored: {},
+    });
+
+    await page.onLoad({ user_id: SHARER_ID, ...QUERY });
+    expect(page.data.card.favoriteTeamText).toBe("Promoted FC");
+    expect(page.data.card.favoriteTeamLogo).toBe("https://cdn.example.com/logo-v1.png");
+    expect(store.get(`team_name:${promotedId}`)).toBe("Promoted FC");
+    expect(store.get(`team_logo:${promotedId}`)).toBe("https://cdn.example.com/logo-v1.png");
+
+    // Admin updates name_zh and logo_url; keep wx storage but clear in-memory cache
+    version = 2;
+    teamsService.clearTeamsCache();
+
+    await page.onLoad({ user_id: SHARER_ID, ...QUERY });
+    expect(requestSpy).toHaveBeenCalledTimes(2);
+    expect(page.data.card.favoriteTeamText).toBe("升班马竞技");
+    expect(page.data.card.favoriteTeamLogo).toBe("https://cdn.example.com/logo-v2.png");
+    expect(store.get(`team_name:${promotedId}`)).toBe("升班马竞技");
+    expect(store.get(`team_logo:${promotedId}`)).toBe("https://cdn.example.com/logo-v2.png");
+  });
+
+  it("[CR44-03] resolves inactive out-of-bundle favorite team via /v1/teams/:team_id on a fresh device", async () => {
+    const inactiveId = "00000000-0000-4000-8000-000000000992";
+    const getShareCardForUser = vi.fn(async () => ({
+      statusCode: 200,
+      data: shareCardData({
+        user_id: SHARER_ID,
+        display_name: "Sharer",
+        favorite_team_id: inactiveId,
+      }),
+    }));
+    const listTeams = vi.fn(async (options) => {
+      if (options.path === "/v1/teams") {
+        return { statusCode: 200, data: { items: [] } };
+      }
+      if (options.path === `/v1/teams/${inactiveId}`) {
+        return {
+          statusCode: 200,
+          data: {
+            team_id: inactiveId,
+            league_id: "premier_league",
+            name: "Relegated Athletic",
+            name_zh: "已停用老牌队",
+            logo_url: "https://cdn.example.com/relegated-athletic.png",
+          },
+        };
+      }
+      return { statusCode: 404, code: "TEAM_NOT_FOUND" };
+    });
+    const { page, store, listTeams: requestSpy } = loadPage({
+      getShareCardForUser,
+      listTeams,
+      stored: {},
+    });
+
+    await page.onLoad({ user_id: SHARER_ID, ...QUERY });
+
+    expect(requestSpy).toHaveBeenCalledWith({ method: "GET", path: "/v1/teams", auth: "optional" });
+    expect(requestSpy).toHaveBeenCalledWith({ method: "GET", path: `/v1/teams/${inactiveId}`, auth: "optional" });
+    expect(page.data.state).toBe("card");
+    expect(page.data.card.favoriteTeamId).toBe(inactiveId);
+    expect(page.data.card.favoriteTeamText).toBe("已停用老牌队");
+    expect(page.data.card.favoriteTeamLogo).toBe("https://cdn.example.com/relegated-athletic.png");
+    expect(store.get(`team_name:${inactiveId}`)).toBe("已停用老牌队");
+    expect(store.get(`team_logo:${inactiveId}`)).toBe("https://cdn.example.com/relegated-athletic.png");
   });
 });

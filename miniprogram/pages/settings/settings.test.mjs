@@ -8,16 +8,21 @@ const TEAM_REGISTRY = {
   "bayern-id": { league_id: "bundesliga", source_name: "FC Bayern München", name_zh: "拜仁慕尼黑" },
 };
 
-function load({ transport = "http", profile, getLoginGeneration } = {}) {
+function load({ transport = "http", profile, getLoginGeneration, listTeams: listTeamsOverride, resolveFavoriteTeamRemote } = {}) {
   let definition;
   const findTeam = vi.fn((id) => (id && TEAM_REGISTRY[id]) || null);
   const presentTeam = vi.fn((team) => {
     const found = findTeam(team && team.team_id);
+    const serverNameZh = team && typeof team.name_zh === "string" && team.name_zh.trim() ? team.name_zh.trim() : "";
+    const registryNameZh = found && found.name_zh ? found.name_zh : "";
+    const serverName = team && typeof team.name === "string" && team.name.trim() ? team.name.trim() : "";
+    const nameZh = serverNameZh || registryNameZh || serverName || "球队资料待补全";
+    const serverLogo = team && typeof team.logo_url === "string" && team.logo_url.trim() ? team.logo_url.trim() : "";
     return {
       teamId: team && team.team_id,
-      nameZh: (found && found.name_zh) || "球队资料待补全",
-      logo: `logo:${team && team.team_id}`,
-      missing: !found,
+      nameZh,
+      logo: found ? `logo:${team && team.team_id}` : (serverLogo || `logo:${team && team.team_id}`),
+      missing: !serverNameZh && !registryNameZh && !serverName,
     };
   });
   const getMyProfile = vi.fn(async () => ({
@@ -27,6 +32,18 @@ function load({ transport = "http", profile, getLoginGeneration } = {}) {
   const updateMyProfile = vi.fn(async () => ({ statusCode: 200, data: { nickname: "新昵称" } }));
   const deleteMyProfile = vi.fn(async () => ({ statusCode: 204 }));
   const listMatches = vi.fn(async () => ({ statusCode: 200, data: { items: [], page: {} } }));
+  const listTeams = listTeamsOverride || vi.fn(async () => ({
+    statusCode: 200,
+    data: {
+      items: Object.entries(TEAM_REGISTRY).map(([team_id, item]) => ({
+        team_id,
+        league_id: item.league_id,
+        name: item.source_name,
+        name_zh: item.name_zh,
+        logo_url: null,
+      })),
+    },
+  }));
   const storeNickname = vi.fn();
   const clearNickname = vi.fn();
   const clearAuth = vi.fn();
@@ -37,6 +54,7 @@ function load({ transport = "http", profile, getLoginGeneration } = {}) {
     require: (name) => {
       required.push(name);
       if (name.includes("profile")) return { getMyProfile, updateMyProfile, deleteMyProfile };
+      if (name.includes("services/teams")) return { listTeams, ...(resolveFavoriteTeamRemote ? { resolveFavoriteTeamRemote } : {}) };
       if (name.includes("matches")) return { listMatches };
       if (name.includes("nickname")) return { storeNickname, clearNickname };
       if (name.includes("auth")) return { clearAuth, ...(getLoginGeneration ? { getLoginGeneration } : {}) };
@@ -48,7 +66,7 @@ function load({ transport = "http", profile, getLoginGeneration } = {}) {
     },
   });
   const page = { ...definition, data: structuredClone(definition.data), setData(value) { Object.assign(this.data, value); } };
-  return { page, getMyProfile, updateMyProfile, deleteMyProfile, listMatches, storeNickname, clearNickname, clearAuth, wx, required, findTeam, presentTeam };
+  return { page, getMyProfile, updateMyProfile, deleteMyProfile, listMatches, listTeams, storeNickname, clearNickname, clearAuth, wx, required, findTeam, presentTeam };
 }
 
 describe("personal profile settings", () => {
@@ -357,5 +375,178 @@ describe("personal profile settings", () => {
     wx.navigateBack.mockImplementationOnce((opts) => opts?.fail?.());
     await page.onSave();
     expect(wx.switchTab).toHaveBeenCalledWith({ url: "/pages/profile/profile" });
+  });
+
+  it("[CR42-09] merges server active promoted teams with static registry, searches, selects, displays name, and saves", async () => {
+    const promotedId = "00000000-0000-4000-8000-000000000999";
+    const listTeams = vi.fn(async () => ({
+      statusCode: 200,
+      data: {
+        items: [
+          {
+            team_id: promotedId,
+            league_id: "premier_league",
+            name: "Promoted Athletic",
+            name_zh: "升班马竞技",
+            logo_url: "https://cdn.example.com/promoted-athletic.png",
+          },
+          {
+            team_id: "arsenal-id",
+            league_id: "premier_league",
+            name: "Arsenal FC",
+            name_zh: "阿森纳（服务端）",
+            logo_url: null,
+          },
+        ],
+      },
+    }));
+    const { page, updateMyProfile, wx } = load({
+      profile: { nickname: "球友", favorite_team_id: promotedId },
+      listTeams,
+    });
+
+    await page.loadProfile();
+    expect(page.data.favoriteTeamName).toBe("已选择球队");
+
+    await page.loadTeams();
+    expect(listTeams).toHaveBeenCalledTimes(1);
+    expect(page.data.teamsError).toBe("");
+    expect(page.data.teamsLoading).toBe(false);
+    expect(page.data.favoriteTeamName).toBe("升班马竞技");
+
+    const premierGroup = page.data.visibleGroups.find((g) => g.league_id === "premier_league");
+    expect(premierGroup.teams.map((t) => t.team_id)).toEqual([promotedId, "arsenal-id"]);
+    expect(premierGroup.teams[0]).toMatchObject({
+      team_id: promotedId,
+      name: "Promoted Athletic",
+      nameZh: "升班马竞技",
+      logo: "https://cdn.example.com/promoted-athletic.png",
+    });
+    expect(premierGroup.teams[1].nameZh).toBe("阿森纳（服务端）");
+
+    page.onSearch({ detail: { value: "升班马" } });
+    expect(page.data.visibleGroups.map((g) => g.teams.map((t) => t.team_id))).toEqual([[promotedId]]);
+
+    page.onSearch({ detail: { value: "Promoted" } });
+    expect(page.data.visibleGroups.map((g) => g.teams.map((t) => t.team_id))).toEqual([[promotedId]]);
+
+    page.setData({ originalTeamId: null, favoriteTeamId: null, favoriteTeamName: "未设置" });
+    page.onTeamPick({ currentTarget: { dataset: { id: promotedId } } });
+    expect(page.data.favoriteTeamId).toBe(promotedId);
+    expect(page.data.favoriteTeamName).toBe("升班马竞技");
+
+    await page.onSave();
+    expect(updateMyProfile).toHaveBeenCalledWith({ favorite_team_id: promotedId });
+    expect(wx.setStorageSync).toHaveBeenCalledWith(`team_name:${promotedId}`, "升班马竞技");
+    expect(wx.navigateBack).toHaveBeenCalledOnce();
+  });
+
+  it("[CR42-09] falls back to static registry when GET /v1/teams fails without blocking", async () => {
+    const listTeams = vi.fn().mockRejectedValueOnce(new Error("network down"));
+    const { page } = load({ listTeams });
+
+    await page.loadProfile();
+    await page.loadTeams();
+
+    expect(page.data.teamsError).toBe("");
+    expect(page.data.teamsLoading).toBe(false);
+    expect(page.data.visibleGroups.map((g) => g.league_id)).toEqual(["premier_league", "bundesliga"]);
+    expect(page.data.visibleGroups[0].teams.map((t) => t.team_id)).toEqual(["arsenal-id", "chelsea-id"]);
+  });
+
+  it("[CR43-05] excludes inactive registry teams omitted by 200 GET /v1/teams while preserving local fallback presentation and non-200 fallback", async () => {
+    const promotedId = "00000000-0000-4000-8000-000000000888";
+    const listTeams = vi.fn()
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        data: {
+          items: [
+            {
+              team_id: promotedId,
+              league_id: "premier_league",
+              name: "Promoted Town",
+              name_zh: "升班马镇",
+              logo_url: "https://cdn.example.com/promoted-town.png",
+            },
+            {
+              team_id: "arsenal-id",
+              league_id: "premier_league",
+              name: "Arsenal FC",
+              name_zh: null,
+              logo_url: null,
+            },
+          ],
+        },
+      })
+      .mockResolvedValueOnce({ statusCode: 200, data: { items: [] } })
+      .mockResolvedValueOnce({ statusCode: 503, code: "UNAVAILABLE" });
+
+    const { page } = load({ listTeams });
+    await page.loadProfile();
+    await page.loadTeams();
+
+    const teamIds = page.data.teams.map((t) => t.team_id);
+    expect(teamIds).toEqual([promotedId, "arsenal-id"]);
+    expect(teamIds).not.toContain("chelsea-id");
+    expect(teamIds).not.toContain("bayern-id");
+    expect(page.data.visibleGroups.map((g) => g.league_id)).toEqual(["premier_league"]);
+    expect(page.data.teams.find((t) => t.team_id === "arsenal-id")).toMatchObject({
+      nameZh: "阿森纳",
+      logo: "logo:arsenal-id",
+    });
+
+    // 200 返回空数组时也不得回填静态停用球队
+    await page.loadTeams();
+    expect(page.data.teams).toEqual([]);
+    expect(page.data.visibleGroups).toEqual([]);
+
+    // 非 200 才整体降级静态表
+    await page.loadTeams();
+    expect(page.data.visibleGroups.map((g) => g.league_id)).toEqual(["premier_league", "bundesliga"]);
+    expect(page.data.teams.map((t) => t.team_id)).toEqual(["arsenal-id", "chelsea-id", "bayern-id"]);
+  });
+
+  it("[CR44-03] displays selected inactive out-of-bundle favorite team name without adding it to selectable candidates", async () => {
+    const inactiveId = "00000000-0000-4000-8000-000000000889";
+    const listTeams = vi.fn(async () => ({
+      statusCode: 200,
+      data: {
+        items: [
+          {
+            team_id: "arsenal-id",
+            league_id: "premier_league",
+            name: "Arsenal FC",
+            name_zh: "阿森纳",
+            logo_url: null,
+          },
+        ],
+      },
+    }));
+    const resolveFavoriteTeamRemote = vi.fn(async (teamId) => (
+      teamId === inactiveId
+        ? {
+          favoriteTeamId: inactiveId,
+          favoriteTeamText: "已停用老牌队",
+          favoriteTeamLogo: "https://cdn.example.com/relegated.png",
+        }
+        : null
+    ));
+    const { page } = load({
+      profile: { nickname: "球友", favorite_team_id: inactiveId },
+      listTeams,
+      resolveFavoriteTeamRemote,
+    });
+
+    await page.loadProfile();
+    await page.loadTeams();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(resolveFavoriteTeamRemote).toHaveBeenCalledWith(inactiveId, expect.any(Object));
+    expect(page.data.favoriteTeamId).toBe(inactiveId);
+    expect(page.data.favoriteTeamName).toBe("已停用老牌队");
+    expect(page.data.teams.map((t) => t.team_id)).toEqual(["arsenal-id"]);
+    expect(page.data.teams.some((t) => t.team_id === inactiveId)).toBe(false);
+    expect(page.data.visibleGroups.flatMap((g) => g.teams.map((t) => t.team_id))).toEqual(["arsenal-id"]);
   });
 });

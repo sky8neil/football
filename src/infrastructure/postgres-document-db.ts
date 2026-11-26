@@ -12,6 +12,7 @@ import {
   type CloudBaseDocument,
   type CloudBasePredictionHistoryPage,
   type CloudBaseQueryOptions,
+  type TransactionOptions,
 } from "./cloudbase-db.js";
 import { decodeDocument, encodeDocument, encodeQueryValue } from "./document-codec.js";
 import {
@@ -521,6 +522,22 @@ export function compilePostgresReleaseJobLock(
   };
 }
 
+export function compilePostgresBeginTransaction(options?: TransactionOptions): string {
+  if (options === undefined || (options.isolationLevel === undefined && options.readOnly !== true)) {
+    return "BEGIN";
+  }
+  const parts = ["BEGIN TRANSACTION"];
+  if (options.isolationLevel === "repeatable_read") {
+    parts.push("ISOLATION LEVEL REPEATABLE READ");
+  } else if (options.isolationLevel === "read_committed") {
+    parts.push("ISOLATION LEVEL READ COMMITTED");
+  }
+  if (options.readOnly === true) {
+    parts.push("READ ONLY");
+  }
+  return parts.join(" ");
+}
+
 export function compilePostgresDocumentQuery(
   config: PostgresDocumentDbConfig,
   collection: string,
@@ -539,7 +556,13 @@ export function compilePostgresDocumentQuery(
   }
   const params = [...where.params];
   let sql = `SELECT document FROM ${table} WHERE ${where.sql}`;
-  if (options.order_by) {
+  if (options.order_bys !== undefined && options.order_bys.length > 0) {
+    const orderClauses = options.order_bys.map((spec) => {
+      const direction = spec.direction === "desc" ? "DESC" : "ASC";
+      return `${postgresDocumentFieldExpr(config.schema, logical, assertField(spec.field))} ${direction}`;
+    });
+    sql += ` ORDER BY ${orderClauses.join(", ")}`;
+  } else if (options.order_by) {
     const direction = options.direction === "desc" ? "DESC" : "ASC";
     sql += ` ORDER BY ${postgresDocumentFieldExpr(config.schema, logical, assertField(options.order_by))} ${direction}`;
   }
@@ -1155,13 +1178,19 @@ export class PostgresDocumentDb implements CloudBaseDb {
     return queue.run(work);
   }
 
-  async transaction<T>(work: (transactionDb: CloudBaseDb) => Promise<T>): Promise<T> {
+  async transaction<T>(
+    work: (transactionDb: CloudBaseDb) => Promise<T>,
+    options?: TransactionOptions,
+  ): Promise<T> {
     if (this.inTransaction) {
+      if (options?.isolationLevel !== undefined || options?.readOnly === true) {
+        throw new Error("nested transaction cannot override transaction isolation or read-only mode");
+      }
       const queue = this.scopeQueue;
       if (queue === undefined) return this.runSavepoint(work);
       return queue.run(() => this.runSavepoint(work));
     }
-    return this.runOuterTransaction(work);
+    return this.runOuterTransaction(work, options);
   }
 
   private decodeRow(collection: string, id: string, value: unknown): CloudBaseDocument | null {
@@ -1335,7 +1364,10 @@ export class PostgresDocumentDb implements CloudBaseDb {
     }
   }
 
-  private async runOuterTransaction<T>(work: (transactionDb: CloudBaseDb) => Promise<T>): Promise<T> {
+  private async runOuterTransaction<T>(
+    work: (transactionDb: CloudBaseDb) => Promise<T>,
+    options?: TransactionOptions,
+  ): Promise<T> {
     if (this.connect === undefined) {
       throw new Error("PostgresDocumentDb.transaction requires an exclusive connection factory");
     }
@@ -1344,7 +1376,7 @@ export class PostgresDocumentDb implements CloudBaseDb {
     let outcome: { ok: true; value: T } | { ok: false; error: unknown } | undefined;
     let rollbackError: Error | undefined;
     try {
-      await client.query("BEGIN");
+      await client.query(compilePostgresBeginTransaction(options));
       try {
         const txDb = this.scoped(client.query, 0, txState);
         const value = await this.invokeCallback(txDb, txState, work);

@@ -1548,6 +1548,34 @@ describe("CloudBaseAppRepository.findActiveWindow", () => {
     }
   });
 
+  it("[CR42-08] 同开球时间超过 10 场滞留时，stale_recovery 带 after 游标向后翻页返回第 11+ 场", async () => {
+    const db = new RangeAwareMemoryCloudBaseDb();
+    const repo = createCloudBaseRepository(db);
+    const sameKickoff = new Date(NOW.getTime() - 10 * hour);
+    for (let index = 1; index <= 12; index += 1) {
+      const id = `same-${String(index).padStart(2, "0")}`;
+      await repo.matches.insert(makeWindowMatch({ match_id: id, kickoff_at: sameKickoff }));
+    }
+
+    const firstPage = await repo.matches.findActiveWindow({
+      jobType: "stale_recovery",
+      now: NOW,
+      limit: 10,
+    });
+    expect(firstPage.map((m) => m.match_id)).toEqual(
+      Array.from({ length: 10 }, (_, idx) => `same-${String(idx + 1).padStart(2, "0")}`),
+    );
+
+    const lastOfFirst = firstPage[firstPage.length - 1]!;
+    const secondPage = await repo.matches.findActiveWindow({
+      jobType: "stale_recovery",
+      now: NOW,
+      limit: 10,
+      after: { kickoff_at: lastOfFirst.kickoff_at, match_id: lastOfFirst.match_id },
+    });
+    expect(secondPage.map((m) => m.match_id)).toEqual(["same-11", "same-12"]);
+  });
+
   it("[Slice 4] board_snapshots 多时间截面下 findLatestByBoard/findLatestBySeason 只查最新非终榜截面", async () => {
     const db = new MemoryCloudBaseDb();
     const repo = createCloudBaseRepository(db);

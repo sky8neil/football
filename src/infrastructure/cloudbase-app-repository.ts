@@ -55,6 +55,7 @@ import {
   type CloudBaseDocument,
   type CloudBaseQueryOptions,
   type CloudBaseRepositoryConfig,
+  type TransactionOptions,
 } from "./cloudbase-db.js";
 import {
   SETTLEMENT_TODO_STATUSES,
@@ -972,8 +973,14 @@ export class CloudBaseAppRepository implements AppRepository {
     };
   }
 
-  async withTransaction<T>(work: (tx: UnitOfWork) => Promise<T>): Promise<T> {
-    return this.db.transaction((txDb) => work(new CloudBaseAppRepository(this.config, txDb)));
+  async withTransaction<T>(
+    work: (tx: UnitOfWork) => Promise<T>,
+    options?: TransactionOptions,
+  ): Promise<T> {
+    const wrapped = (txDb: CloudBaseDb) => work(new CloudBaseAppRepository(this.config, txDb));
+    return options === undefined
+      ? this.db.transaction(wrapped)
+      : this.db.transaction(wrapped, options);
   }
 
   async savepoint<T>(work: (tx: UnitOfWork) => Promise<T>): Promise<T> {
@@ -1070,12 +1077,45 @@ export class CloudBaseAppRepository implements AppRepository {
           }
         }
       }
-      const page = await this.where<Match>("matches", filter, {
-        order_by: "kickoff_at",
-        direction: query.jobType === "stale_recovery" ? "asc" : "desc",
-        limit: query.limit,
-      });
-      for (const match of page) collected.set(match.match_id, match);
+      if (query.jobType !== "stale_recovery" || query.after == null) {
+        const page = await this.where<Match>("matches", filter, {
+          order_by: "kickoff_at",
+          direction: query.jobType === "stale_recovery" ? "asc" : "desc",
+          ...(query.jobType === "stale_recovery"
+            ? {
+                order_bys: [
+                  { field: "kickoff_at", direction: "asc" as const },
+                  { field: "match_id", direction: "asc" as const },
+                ],
+              }
+            : {}),
+          limit: query.limit,
+        });
+        for (const match of page) collected.set(match.match_id, match);
+        continue;
+      }
+      const pageSize = Math.max(query.limit, 1);
+      const fragmentRows: Match[] = [];
+      let offset = 0;
+      for (;;) {
+        const page = await this.where<Match>("matches", filter, {
+          order_by: "kickoff_at",
+          order_bys: [
+            { field: "kickoff_at", direction: "asc" },
+            { field: "match_id", direction: "asc" },
+          ],
+          limit: pageSize,
+          offset,
+        });
+        if (page.length === 0) break;
+        for (const match of page) {
+          collected.set(match.match_id, match);
+          fragmentRows.push(match);
+        }
+        const selectedInFragment = selectActiveWindow(fragmentRows, query);
+        if (selectedInFragment.length >= query.limit || page.length < pageSize) break;
+        offset += page.length;
+      }
     }
     return selectActiveWindow(collected.values(), query);
   }
