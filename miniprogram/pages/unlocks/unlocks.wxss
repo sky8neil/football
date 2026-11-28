@@ -113,7 +113,7 @@
 .unlock-card {
   position: relative;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 24rpx;
   padding: 28rpx 28rpx 28rpx 32rpx;
   margin-bottom: 0;
@@ -187,6 +187,7 @@
   font-size: 28rpx;
   font-weight: 700;
   color: var(--text-primary);
+  min-width: 0;
 }
 
 .unlock-meta {
@@ -195,9 +196,11 @@
 }
 
 .unlock-time {
-  margin-top: 12rpx;
+  margin-top: 0;
   font-size: 22rpx;
   color: var(--text-muted);
+  white-space: nowrap;
+  flex: none;
 }
 
 .chip {
@@ -252,6 +255,11 @@
   justify-content: center;
   font-size: 48rpx;
   font-weight: 700;
+}
+
+.state-icon.is-ball {
+  background: var(--mark-gradient);
+  box-shadow: var(--shadow-mark);
 }
 
 .state-icon.is-danger {

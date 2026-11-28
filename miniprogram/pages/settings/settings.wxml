@@ -113,7 +113,7 @@
         </scroll-view>
       </view>
 
-      <scroll-view class="sheet-scroll" scroll-y="true">
+      <scroll-view class="sheet-scroll" scroll-y="true" enhanced="true" show-scrollbar="false">
         <view wx:if="{{teamsLoading}}" class="empty-search">正在加载球队…</view>
         <view wx:elif="{{teamsError}}" class="empty-search">
           <view>{{teamsError}}</view>

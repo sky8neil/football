@@ -15,7 +15,7 @@
     <text>{{filterError}}</text>
     <button bindtap="onFilterRetry">重试</button>
   </view>
-  <button wx:if="{{state === 'list' || state === 'empty'}}" class="share-entry" bindtap="onShareCardTap">
+  <button wx:if="{{state === 'list' || (state === 'empty' && (selectedLeagueId || selectedSeasonId))}}" class="share-entry" bindtap="onShareCardTap">
     <text>分享轮次成绩</text>
     <text class="share-entry-arrow">›</text>
   </button>
@@ -95,6 +95,10 @@
           >{{choice.label}}</button>
         </view>
       </view>
+      <view wx:else class="share-sheet-empty">
+        <text>{{filterError || '当前暂无已预测轮次，可在下方手动选择'}}</text>
+        <button wx:if="{{filterError}}" class="share-retry-btn" bindtap="onFilterRetry">重试加载选项</button>
+      </view>
       <view wx:if="{{filterReady && leagues.length > 0}}" class="share-sheet-section">
         <view class="share-sheet-label">按联赛 / 赛季 / 轮次选择</view>
         <view class="share-picker-row">
@@ -113,10 +117,6 @@
           bindtap="onShareConfirm"
           disabled="{{!shareLeagueId || !shareSeasonId || !shareRoundId}}"
         >生成分享卡</button>
-      </view>
-      <view wx:elif="{{shareRoundChoices.length === 0}}" class="share-sheet-empty">
-        <text>{{filterError || '请先加载联赛与轮次选项后再选择分享轮次'}}</text>
-        <button wx:if="{{filterError}}" class="share-retry-btn" bindtap="onFilterRetry">重试加载选项</button>
       </view>
     </view>
   </view>
