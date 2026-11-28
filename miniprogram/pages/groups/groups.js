@@ -89,7 +89,7 @@ Page({
           canJoin: false,
           canCreate: false,
           loadingAction: false,
-          errorMessage: result.message || "该账号已被注销",
+          errorMessage: result.message || "当前账号不可用",
         });
         return;
       }
@@ -141,7 +141,6 @@ Page({
     this.setData({ loadingAction: true, errorMessage: "" });
     return createGroup().then((result) => {
       if (currentLoginGeneration() !== generation) {
-        this.setData({ loadingAction: false });
         return;
       }
       if (result.statusCode === 401 && result.code === "UNAUTHORIZED") {
@@ -164,7 +163,7 @@ Page({
           canJoin: false,
           canCreate: false,
           loadingAction: false,
-          errorMessage: result.message || "该账号已被注销",
+          errorMessage: result.message || "当前账号不可用",
         });
         return;
       }
@@ -182,6 +181,7 @@ Page({
       this.setData({ loadingAction: false });
       wx.navigateTo({ url: `/pages/groups/detail?group_id=${encodeURIComponent(result.data.group_id)}&created=1&owned_count=${this.data.ownedCount + 1}` });
     }).catch(() => {
+      if (currentLoginGeneration() !== generation) return;
       this.setData({
         loadingAction: false,
         errorMessage: COPY.groupActionFailed,

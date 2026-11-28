@@ -5,6 +5,7 @@ import {
   PeriodType,
   SCHEMA_VERSION,
   TeamStatus,
+  UserGender,
   UserStatus,
 } from "../domain/enums.js";
 import {
@@ -32,6 +33,7 @@ import {
 export interface ProfilePatch {
   nickname?: string;
   favorite_team_id?: string | null;
+  gender?: UserGender | null;
 }
 
 export interface DeleteProfileResult {
@@ -43,7 +45,18 @@ export interface ProfileMutationServiceOptions {
   authSessions?: AuthSessionRevoker;
 }
 
-const PROFILE_PATCH_FIELDS = new Set(["nickname", "favorite_team_id"]);
+const PROFILE_PATCH_FIELDS = new Set(["nickname", "favorite_team_id", "gender"]);
+const VALID_USER_GENDERS = new Set<string>(Object.values(UserGender));
+
+export function validateGender(value: unknown): UserGender | null {
+  if (value === null) return null;
+  if (typeof value !== "string" || !VALID_USER_GENDERS.has(value)) {
+    throw validationError("gender 必须为 male、female、undisclosed 或 null", {
+      field: "gender",
+    });
+  }
+  return value as UserGender;
+}
 
 function assertPatchObject(input: unknown): asserts input is Record<string, unknown> {
   if (typeof input !== "object" || input === null || Array.isArray(input)) {
@@ -77,6 +90,10 @@ function parseProfilePatch(input: unknown): ProfilePatch {
       });
     }
     patch.favorite_team_id = favoriteTeamId;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(input, "gender")) {
+    patch.gender = validateGender(input.gender);
   }
 
   return patch;
@@ -259,6 +276,9 @@ export class ProfileMutationService {
         ...(Object.prototype.hasOwnProperty.call(patch, "favorite_team_id")
           ? { favorite_team_id: patch.favorite_team_id }
           : {}),
+        ...(Object.prototype.hasOwnProperty.call(patch, "gender")
+          ? { gender: patch.gender }
+          : {}),
         updated_at: serverNow,
       });
 
@@ -326,6 +346,7 @@ export class ProfileMutationService {
                 unionid: null,
                 nickname: null,
                 favorite_team_id: null,
+                gender: null,
                 status: UserStatus.Deleted,
                 deleted_at: serverNow,
                 updated_at: serverNow,

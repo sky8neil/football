@@ -23,6 +23,16 @@ describe("PATCH /v1/profile/me", () => {
     expect(validateProfilePatch({ favorite_team_id: null })).toEqual({
       favorite_team_id: null,
     });
+    expect(validateProfilePatch({ gender: "male" })).toEqual({ gender: "male" });
+    expect(validateProfilePatch({ gender: "female" })).toEqual({ gender: "female" });
+    expect(validateProfilePatch({ gender: "undisclosed" })).toEqual({ gender: "undisclosed" });
+    expect(validateProfilePatch({ gender: null })).toEqual({ gender: null });
+    expect(() => validateProfilePatch({ gender: "other" })).toThrowError(
+      expect.objectContaining({ code: "VALIDATION_ERROR", details: { field: "gender" } }),
+    );
+    expect(() => validateProfilePatch({ gender: 123 })).toThrowError(
+      expect.objectContaining({ code: "VALIDATION_ERROR", details: { field: "gender" } }),
+    );
     expect(() => validateProfilePatch({})).toThrowError(
       expect.objectContaining({ code: "VALIDATION_ERROR" }),
     );
@@ -36,6 +46,7 @@ describe("PATCH /v1/profile/me", () => {
       user_id: "00000000-0000-4000-8000-000000000010",
       nickname: "Alice",
       favorite_team_id: null,
+      gender: "female" as const,
       career_points: 12,
       career_valid_predictions: 1,
       career_exact_hits: 1,
@@ -49,7 +60,7 @@ describe("PATCH /v1/profile/me", () => {
     await expect(
       patchMyProfile({ updateMyProfile: updateProfile }, {
         authenticated_user_id: "00000000-0000-4000-8000-000000000010",
-        body: { nickname: "Alice" },
+        body: { nickname: "Alice", gender: "female" },
         server_now: serverNow,
         request_id: "request-profile-patch-1",
       }),
@@ -60,6 +71,7 @@ describe("PATCH /v1/profile/me", () => {
           user_id: "00000000-0000-4000-8000-000000000010",
           nickname: "Alice",
           favorite_team_id: null,
+          gender: "female",
           career_points: 12,
           career_valid_predictions: 1,
           career_exact_hits: 1,
@@ -73,7 +85,7 @@ describe("PATCH /v1/profile/me", () => {
     });
     expect(updateProfile).toHaveBeenCalledWith(
       "00000000-0000-4000-8000-000000000010",
-      { nickname: "Alice" },
+      { nickname: "Alice", gender: "female" },
       serverNow,
     );
   });
@@ -97,6 +109,7 @@ describe("PATCH /v1/profile/me", () => {
       user_id: "00000000-0000-4000-8000-000000000010",
       nickname: "Alice",
       favorite_team_id: null,
+      gender: null,
       career_points: 0,
       career_valid_predictions: 0,
       career_exact_hits: 0,
@@ -165,6 +178,7 @@ describe("GET /v1/profiles/:user_id", () => {
           user_id: userId,
           display_name: "Sky",
           favorite_team_id: null,
+          gender: null,
           career_points: 3,
           career_valid_predictions: 1,
           career_exact_hits: 0,
@@ -202,6 +216,7 @@ describe("GET /v1/profiles/:user_id", () => {
       user_id: "00000000-0000-4000-8000-000000000010",
       display_name: "Sky",
       favorite_team_id: null,
+      gender: null,
       career_points: 0,
       career_valid_predictions: 0,
       career_exact_hits: 0,
@@ -268,6 +283,7 @@ describe("GET /v1/profile/me", () => {
           user_id: userId,
           nickname: "Sky",
           favorite_team_id: null,
+          gender: null,
           career_points: 428,
           career_valid_predictions: 76,
           career_exact_hits: 8,
@@ -296,6 +312,7 @@ describe("GET /v1/profile/me", () => {
       user_id: "00000000-0000-0000-0000-000000000001",
       nickname: "Sky",
       favorite_team_id: null,
+      gender: null,
       career_points: 0,
       career_valid_predictions: 0,
       career_exact_hits: 0,

@@ -1,0 +1,530 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>比赛详情页 · UI 预览</title>
+  <link rel="stylesheet" href="./_shared.css">
+  <style>
+    /* 顶部对阵卡 */
+    .match-head-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+    .match-meta-left {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--text-secondary);
+      font-weight: 600;
+    }
+    .league-mini {
+      width: 16px;
+      height: 16px;
+      object-fit: contain;
+    }
+
+    .faceoff {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      align-items: center;
+      gap: 10px;
+    }
+    .team-col {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+      gap: 6px;
+      min-width: 0;
+    }
+    .team-crest {
+      width: 46px;
+      height: 46px;
+      object-fit: contain;
+    }
+    .team-name {
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--text-primary);
+      line-height: 1.25;
+    }
+    .team-role {
+      font-size: 10px;
+      color: var(--text-muted);
+    }
+
+    /* 比分块：严格遵守 Design System V1 §6.4，实色、不玻璃化 */
+    .score-bug {
+      width: 78px;
+      min-height: 64px;
+      padding: 8px 6px;
+      border-radius: var(--radius-xl);
+      background: var(--surface-solid);
+      border: 1px solid var(--border-subtle);
+      box-shadow: var(--shadow-bug);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 3px;
+    }
+    .score-bug.dark {
+      background: var(--surface-solid-dark);
+      border-color: var(--navy-900);
+      color: #ffffff;
+    }
+    .bug-main {
+      font-size: 20px;
+      font-weight: 750;
+      line-height: 1;
+      color: var(--text-primary);
+    }
+    .score-bug.dark .bug-main { color: #ffffff; }
+    .bug-sub {
+      font-size: 10px;
+      color: var(--text-secondary);
+      font-weight: 600;
+    }
+    .score-bug.dark .bug-sub { color: rgba(255, 255, 255, 0.78); }
+
+    .deadline-bar {
+      margin-top: 14px;
+      padding: 8px 10px;
+      border-radius: var(--radius-xs);
+      background: rgba(255, 255, 255, 0.6);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 11px;
+      color: var(--text-secondary);
+    }
+
+    /* 分享卡预填提示条 */
+    .prefill-banner {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 12px;
+      margin-bottom: 12px;
+      border-radius: var(--radius-lg);
+      background: var(--color-brand-soft);
+      border: 1px solid rgba(47, 138, 58, 0.28);
+      font-size: 12px;
+      color: var(--text-positive);
+      font-weight: 600;
+    }
+
+    /* 预测表单卡 */
+    .section-title {
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--text-primary);
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .steppers {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 12px;
+      border-radius: var(--radius-lg);
+      background: rgba(255, 255, 255, 0.56);
+      border: 1px solid rgba(255, 255, 255, 0.72);
+    }
+    .stepper-group {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+    }
+    .stepper-team {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 12px;
+      font-weight: 650;
+      color: var(--text-primary);
+    }
+    .stepper-team img {
+      width: 18px;
+      height: 18px;
+      object-fit: contain;
+    }
+    .stepper-ctrl {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .step-btn {
+      width: 32px;
+      height: 32px;
+      border-radius: var(--radius-xs);
+      border: 0;
+      background: var(--color-brand-soft);
+      color: var(--color-brand-primary-pressed);
+      font-size: 18px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .step-val {
+      width: 24px;
+      text-align: center;
+      font-size: 20px;
+      font-weight: 750;
+      color: var(--text-primary);
+    }
+    .stepper-sep {
+      font-size: 20px;
+      font-weight: 700;
+      color: var(--text-muted);
+      margin-top: 22px;
+    }
+    .derived-row {
+      margin: 12px 0 4px;
+      text-align: center;
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--text-positive);
+    }
+    .scoring-note {
+      text-align: center;
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-bottom: 14px;
+    }
+    .submit-note {
+      margin-top: 8px;
+      text-align: center;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    /* 我的预测结果卡 */
+    .my-pred-box {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 14px;
+      border-radius: var(--radius-lg);
+      background: rgba(255, 255, 255, 0.65);
+      border: 1px solid rgba(255, 255, 255, 0.85);
+    }
+    .my-pred-score {
+      font-size: 24px;
+      font-weight: 800;
+      color: var(--text-primary);
+      line-height: 1;
+    }
+    .my-pred-sub {
+      margin-top: 4px;
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+    .submitted-at {
+      margin-top: 10px;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    /* 大家怎么选（Q6） */
+    .crowd-legend {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .crowd-item {
+      padding: 8px 8px;
+      border-radius: var(--radius-md);
+      background: rgba(255, 255, 255, 0.56);
+      border: 1px solid transparent;
+    }
+    .crowd-item.selected {
+      background: var(--color-brand-soft);
+      border-color: rgba(47, 138, 58, 0.32);
+    }
+    .crowd-name-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 4px;
+      font-size: 11px;
+      color: var(--text-secondary);
+      font-weight: 600;
+    }
+    .crowd-pct {
+      display: block;
+      margin-top: 4px;
+      font-size: 18px;
+      font-weight: 750;
+      color: var(--text-primary);
+    }
+    .crowd-tag {
+      font-size: 9px;
+      padding: 1px 5px;
+      border-radius: 99px;
+      background: var(--color-brand-primary-pressed);
+      color: #fff;
+    }
+    .crowd-bar {
+      display: flex;
+      height: 10px;
+      border-radius: 99px;
+      overflow: hidden;
+      gap: 2px;
+      margin-bottom: 10px;
+    }
+    .seg-home { background: #3aa37a; }
+    .seg-draw { background: #94a3b8; }
+    .seg-away { background: #f08a3c; }
+    .crowd-comparison {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin-bottom: 4px;
+    }
+    .crowd-footer {
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <img class="stadium-bg" src="/assets/images/baseline-pitch.webp" alt="">
+    <div class="stadium-overlay"></div>
+
+    <div class="content">
+      <div class="preview-state-bar">
+        <span class="preview-state-label">状态</span>
+        <button type="button" class="state-pill active" data-state="prefill">跟单预填</button>
+        <button type="button" class="state-pill" data-state="live">进行中+大家怎么选</button>
+        <button type="button" class="state-pill" data-state="settled">完场结算(+12)</button>
+      </div>
+
+      <!-- 对阵头部卡 -->
+      <div class="glass-card strong">
+        <div class="match-head-top">
+          <div class="match-meta-left">
+            <img class="league-mini" src="/assets/logos/leagues/premier_league.png" alt="">
+            <span>英超 · 第 14 轮</span>
+          </div>
+          <span class="chip chip-brand" id="match-status-chip">未开赛</span>
+        </div>
+
+        <div class="faceoff">
+          <div class="team-col">
+            <img class="team-crest" src="/assets/logos/teams/premier-league/arsenal.png" alt="">
+            <span class="team-name">阿森纳</span>
+            <span class="team-role">主队</span>
+          </div>
+
+          <div class="score-bug" id="score-bug">
+            <span class="bug-main num" id="bug-main">VS</span>
+            <span class="bug-sub num" id="bug-sub">20:30</span>
+          </div>
+
+          <div class="team-col">
+            <img class="team-crest" src="/assets/logos/teams/premier-league/chelsea.png" alt="">
+            <span class="team-name">切尔西</span>
+            <span class="team-role">客队</span>
+          </div>
+        </div>
+
+        <div class="deadline-bar" id="deadline-bar">
+          <span>开球 11-28 20:30</span>
+          <span class="num">预测截止 20:20</span>
+        </div>
+      </div>
+
+      <!-- 分享卡预填提示 -->
+      <div class="prefill-banner" id="prefill-banner">
+        <span>✨</span>
+        <span>已为你预填分享卡预测 2 : 1，可调整后提交</span>
+      </div>
+
+      <!-- 预测提交表单 -->
+      <div class="glass-card strong" id="pred-form-card">
+        <div class="section-title">
+          <span>预测比分</span>
+          <span class="chip chip-brand">90 分钟及补时</span>
+        </div>
+        <div class="steppers">
+          <div class="stepper-group">
+            <div class="stepper-team">
+              <img src="/assets/logos/teams/premier-league/arsenal.png" alt="">
+              <span>阿森纳</span>
+            </div>
+            <div class="stepper-ctrl">
+              <button type="button" class="step-btn" data-side="home" data-delta="-1">−</button>
+              <span class="step-val num" id="home-score">2</span>
+              <button type="button" class="step-btn" data-side="home" data-delta="1">+</button>
+            </div>
+          </div>
+          <span class="stepper-sep">:</span>
+          <div class="stepper-group">
+            <div class="stepper-team">
+              <img src="/assets/logos/teams/premier-league/chelsea.png" alt="">
+              <span>切尔西</span>
+            </div>
+            <div class="stepper-ctrl">
+              <button type="button" class="step-btn" data-side="away" data-delta="-1">−</button>
+              <span class="step-val num" id="away-score">1</span>
+              <button type="button" class="step-btn" data-side="away" data-delta="1">+</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="derived-row" id="derived-text">即时判定：主胜</div>
+        <div class="scoring-note">赛果命中 +3 分 · 精确比分 +12 分</div>
+        <button type="button" class="btn btn-primary btn-block">提交预测</button>
+        <div class="submit-note">提交后无法修改</div>
+      </div>
+
+      <!-- 我的预测（进行中 / 完场态展示） -->
+      <div class="glass-card strong hidden" id="my-pred-card">
+        <div class="section-title">
+          <span>我的预测</span>
+          <span class="chip chip-hit" id="my-pred-chip">已锁定</span>
+        </div>
+        <div class="my-pred-box">
+          <div>
+            <div class="my-pred-score num">2 : 1</div>
+            <div class="my-pred-sub">预测主胜</div>
+          </div>
+          <div style="text-align:right;">
+            <div style="font-size:15px;font-weight:750;color:var(--text-positive);" id="my-pred-points">等待完场</div>
+            <div style="font-size:11px;color:var(--text-muted);" id="my-pred-result">比赛进行中</div>
+          </div>
+        </div>
+        <div class="submitted-at num">提交于 2026-11-28 19:42</div>
+      </div>
+
+      <!-- 大家怎么选（截止后 + 样本 >= 20） -->
+      <div class="glass-card strong hidden" id="crowd-card">
+        <div class="section-title">
+          <span>大家怎么选</span>
+          <span class="chip chip-done">已截止 · 5% 圆整</span>
+        </div>
+        <div class="crowd-legend">
+          <div class="crowd-item selected">
+            <div class="crowd-name-row">
+              <span>主胜</span>
+              <span class="crowd-tag">你的选择</span>
+            </div>
+            <span class="crowd-pct num">55%</span>
+          </div>
+          <div class="crowd-item">
+            <div class="crowd-name-row"><span>平局</span></div>
+            <span class="crowd-pct num">25%</span>
+          </div>
+          <div class="crowd-item">
+            <div class="crowd-name-row"><span>客胜</span></div>
+            <span class="crowd-pct num">20%</span>
+          </div>
+        </div>
+        <div class="crowd-bar">
+          <div class="seg-home" style="width:55%;"></div>
+          <div class="seg-draw" style="width:25%;"></div>
+          <div class="seg-away" style="width:20%;"></div>
+        </div>
+        <div class="crowd-comparison">你与 55% 的预言家站在同一边</div>
+        <div class="crowd-footer">基于本场 142 份有效预测统计</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let home = 2, away = 1;
+    const homeEl = document.getElementById("home-score");
+    const awayEl = document.getElementById("away-score");
+    const derivedEl = document.getElementById("derived-text");
+
+    function updateDerived() {
+      homeEl.textContent = home;
+      awayEl.textContent = away;
+      derivedEl.textContent = "即时判定：" + (home > away ? "主胜" : home < away ? "客胜" : "平局");
+    }
+
+    document.querySelectorAll(".step-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const delta = Number(btn.dataset.delta);
+        if (btn.dataset.side === "home") home = Math.max(0, Math.min(20, home + delta));
+        else away = Math.max(0, Math.min(20, away + delta));
+        updateDerived();
+      });
+    });
+
+    const pills = document.querySelectorAll(".state-pill");
+    const statusChip = document.getElementById("match-status-chip");
+    const scoreBug = document.getElementById("score-bug");
+    const bugMain = document.getElementById("bug-main");
+    const bugSub = document.getElementById("bug-sub");
+    const deadlineBar = document.getElementById("deadline-bar");
+    const prefillBanner = document.getElementById("prefill-banner");
+    const predForm = document.getElementById("pred-form-card");
+    const myPred = document.getElementById("my-pred-card");
+    const myPredChip = document.getElementById("my-pred-chip");
+    const myPredPoints = document.getElementById("my-pred-points");
+    const myPredResult = document.getElementById("my-pred-result");
+    const crowdCard = document.getElementById("crowd-card");
+
+    function setState(state) {
+      pills.forEach((p) => p.classList.toggle("active", p.dataset.state === state));
+      if (state === "prefill") {
+        statusChip.className = "chip chip-brand";
+        statusChip.textContent = "未开赛";
+        scoreBug.className = "score-bug";
+        bugMain.textContent = "VS";
+        bugSub.textContent = "20:30";
+        deadlineBar.classList.remove("hidden");
+        prefillBanner.classList.remove("hidden");
+        predForm.classList.remove("hidden");
+        myPred.classList.add("hidden");
+        crowdCard.classList.add("hidden");
+      } else if (state === "live") {
+        statusChip.className = "chip chip-live";
+        statusChip.textContent = "进行中";
+        scoreBug.className = "score-bug dark";
+        bugMain.textContent = "1 : 1";
+        bugSub.textContent = "67'";
+        deadlineBar.classList.add("hidden");
+        prefillBanner.classList.add("hidden");
+        predForm.classList.add("hidden");
+        myPred.classList.remove("hidden");
+        myPredChip.className = "chip chip-hit";
+        myPredChip.textContent = "已锁定";
+        myPredPoints.textContent = "等待完场";
+        myPredResult.textContent = "比赛进行中";
+        crowdCard.classList.remove("hidden");
+      } else if (state === "settled") {
+        statusChip.className = "chip chip-done";
+        statusChip.textContent = "已完场";
+        scoreBug.className = "score-bug dark";
+        bugMain.textContent = "2 : 1";
+        bugSub.textContent = "90' 终场";
+        deadlineBar.classList.add("hidden");
+        prefillBanner.classList.add("hidden");
+        predForm.classList.add("hidden");
+        myPred.classList.remove("hidden");
+        myPredChip.className = "chip chip-brand";
+        myPredChip.textContent = "精确命中";
+        myPredPoints.textContent = "+12 分";
+        myPredResult.textContent = "已计入生涯与本周积分";
+        crowdCard.classList.remove("hidden");
+      }
+    }
+
+    pills.forEach((p) => p.addEventListener("click", () => setState(p.dataset.state)));
+  </script>
+</body>
+</html>

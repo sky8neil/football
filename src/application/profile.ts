@@ -1,5 +1,5 @@
 import { FIXED_CONFIG_V1 } from "../domain/config.js";
-import { UserStatus } from "../domain/enums.js";
+import { UserStatus, type UserGender } from "../domain/enums.js";
 import {
   conflictError,
   internalError,
@@ -16,6 +16,7 @@ export interface PublicProfileData {
   user_id: string;
   display_name: string;
   favorite_team_id: string | null;
+  gender: UserGender | null;
   career_points: number;
   career_valid_predictions: number;
   career_exact_hits: number;
@@ -28,6 +29,7 @@ export interface MyProfileData {
   user_id: string;
   nickname: string;
   favorite_team_id: string | null;
+  gender: UserGender | null;
   career_points: number;
   career_valid_predictions: number;
   career_exact_hits: number;
@@ -105,6 +107,7 @@ export class ProfileQueryService {
       user_id: user.user_id,
       nickname: user.nickname,
       favorite_team_id: user.favorite_team_id,
+      gender: user.gender ?? null,
       career_points: user.career_points,
       career_valid_predictions: user.career_valid_predictions,
       career_exact_hits: user.career_exact_hits,
@@ -134,6 +137,7 @@ export class ProfileQueryService {
       user_id: user.user_id,
       display_name: displayName(user),
       favorite_team_id: user.status === UserStatus.Deleted ? null : user.favorite_team_id,
+      gender: user.status === UserStatus.Deleted ? null : (user.gender ?? null),
       career_points: user.career_points,
       career_valid_predictions: user.career_valid_predictions,
       career_exact_hits: user.career_exact_hits,

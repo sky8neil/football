@@ -1391,4 +1391,119 @@ describe("matches page gateway workflows", () => {
     page.onUnload();
     expect(page.unsubscribeAuthRestored).toBeNull();
   });
+
+  it("[CR50-05] keeps card locked with pending-sync copy after 409 PREDICTION_ALREADY_SUBMITTED when silent refresh fails", async () => {
+    const listMatches = vi.fn().mockRejectedValueOnce(new Error("silent refresh network error"));
+    const { page, storage } = loadPage({
+      submitResult: { statusCode: 409, code: "PREDICTION_ALREADY_SUBMITTED", message: "已提交过预测" },
+      listMatches,
+    });
+    const key = "premier_league:2026-09-01:match-1";
+    page.setData({
+      selectedLeague: "premier_league",
+      selectedDate: "2026-09-01",
+      state: "list",
+      items: [page.decorateItem(match("match-1"))],
+    });
+    page.drafts[key] = { home: 2, away: 1 };
+    page.uiStates[key] = "editing";
+
+    await page.onSubmitTap({ currentTarget: { dataset: { matchId: "match-1" } } });
+
+    expect(storage.get("my_predictions_dirty")).toBe(true);
+    expect(page.drafts[key]).toBeUndefined();
+    expect(page.submittedMap[key]).toEqual({ pendingSync: true, loginGeneration: 0 });
+    expect(page.data.items[0].showPredict).toBe(false);
+    expect(page.data.items[0].uiState).toBe("submitted_locked");
+    expect(page.data.items[0].cardClass).toBe("is-submitted");
+    expect(page.data.items[0].predText).toBe("已提交 · 比分同步中");
+    expect(page.data.items[0].predText).not.toContain("2 : 1");
+    expect(page.data.items[0].predText).not.toContain("undefined");
+    expect(page.data.items[0].predText).not.toBe("未预测");
+    expect(page.data.openCount).toBe(0);
+    expect(page.data.doneCount).toBe(1);
+
+    page.refreshItems();
+    expect(page.data.items[0].showPredict).toBe(false);
+    expect(page.data.items[0].uiState).toBe("submitted_locked");
+    expect(page.data.items[0].predText).toBe("已提交 · 比分同步中");
+    expect(page.data.openCount).toBe(0);
+    expect(page.data.doneCount).toBe(1);
+  });
+
+  it("[CR50-05] preserves pending-sync state for a page-2 match omitted from page-1 silent refresh", async () => {
+    const listMatches = vi.fn(async () => listResult([match("match-1")]));
+    const { page } = loadPage({
+      submitResult: { statusCode: 409, code: "PREDICTION_ALREADY_SUBMITTED" },
+      listMatches,
+    });
+    const key2 = "premier_league:2026-09-01:match-2";
+    page.setData({
+      selectedLeague: "premier_league",
+      selectedDate: "2026-09-01",
+      state: "list",
+      items: [page.decorateItem(match("match-1")), page.decorateItem(match("match-2"))],
+    });
+    page.drafts[key2] = { home: 3, away: 0 };
+    page.uiStates[key2] = "editing";
+
+    await page.onSubmitTap({ currentTarget: { dataset: { matchId: "match-2" } } });
+
+    expect(page.data.items).toHaveLength(2);
+    expect(page.data.items[0].showPredict).toBe(true);
+    expect(page.data.items[1].showPredict).toBe(false);
+    expect(page.data.items[1].uiState).toBe("submitted_locked");
+    expect(page.data.items[1].predText).toBe("已提交 · 比分同步中");
+    expect(page.data.items[1].predText).not.toContain("3 : 0");
+    expect(page.data.openCount).toBe(1);
+    expect(page.data.doneCount).toBe(1);
+  });
+
+  it("[CR50-05] replaces pending-sync marker with real server score differing from rejected draft, and clears marker on account switch", async () => {
+    const pendingRefresh = deferred();
+    const listMatches = vi.fn(() => pendingRefresh.promise);
+    const { page, bumpLoginGeneration } = loadPage({
+      submitResult: { statusCode: 409, code: "PREDICTION_ALREADY_SUBMITTED" },
+      listMatches,
+    });
+    const key = "premier_league:2026-09-01:match-1";
+    page.setData({
+      selectedLeague: "premier_league",
+      selectedDate: "2026-09-01",
+      state: "list",
+      items: [page.decorateItem(match("match-1"))],
+    });
+    page.drafts[key] = { home: 2, away: 1 };
+    page.uiStates[key] = "editing";
+
+    const submitDone = page.onSubmitTap({ currentTarget: { dataset: { matchId: "match-1" } } });
+    await vi.waitFor(() => expect(listMatches).toHaveBeenCalledTimes(1));
+
+    // Before silent refresh returns, must show pending-sync copy, never the rejected 2:1 draft
+    expect(page.data.items[0].showPredict).toBe(false);
+    expect(page.data.items[0].uiState).toBe("submitted_locked");
+    expect(page.data.items[0].predText).toBe("已提交 · 比分同步中");
+    expect(page.data.openCount).toBe(0);
+    expect(page.data.doneCount).toBe(1);
+
+    // Server returns the real prediction (0:3), different from rejected draft (2:1)
+    pendingRefresh.resolve(listResult([predictedMatch("match-1", 0, 3)]));
+    await submitDone;
+
+    expect(page.submittedMap[key]).toBeUndefined();
+    expect(page.data.items[0].showPredict).toBe(false);
+    expect(page.data.items[0].uiState).toBe("submitted_locked");
+    expect(page.data.items[0].predText).toBe("已提交 0 : 3 · 不可修改");
+    expect(page.data.openCount).toBe(0);
+    expect(page.data.doneCount).toBe(1);
+
+    // Switch account: pendingSync marker from previous generation must not carry over
+    page.submittedMap[key] = { pendingSync: true, loginGeneration: 0 };
+    bumpLoginGeneration();
+    const freshCard = page.decorateItem({ ...match("match-1"), my_prediction: null });
+    expect(page.submittedMap[key]).toBeUndefined();
+    expect(freshCard.showPredict).toBe(true);
+    expect(freshCard.uiState).toBe("collapsed");
+    expect(freshCard.predText).toBe("");
+  });
 });

@@ -234,6 +234,28 @@ describe("getShareCardForUser", () => {
       round_id: "12",
     });
   });
+
+  it("[CR50-08] URL-encodes special characters in userId while preserving query and share_token", () => {
+    const request = vi.fn();
+    const specialUserId = "user/a?b#c&d=1%20e";
+    loadService("share-card.js", request).getShareCardForUser(specialUserId, {
+      ...VALID,
+      shareToken: " tok_special ",
+    });
+
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(request).toHaveBeenCalledWith({
+      method: "GET",
+      path: "/v1/share-card/" + encodeURIComponent(specialUserId),
+      query: {
+        league_id: "premier_league",
+        season_id: "2025_2026",
+        round_id: "12",
+        share_token: "tok_special",
+      },
+      auth: "optional",
+    });
+  });
 });
 
 describe("public share-card HTTP auth", () => {

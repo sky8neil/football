@@ -54,7 +54,7 @@ Page({
     this.setData({
       state: "error",
       loading: false,
-      canConfirm: true,
+      canConfirm: isValidInviteCode(this.data.inviteCode),
       errorMessage: errorMessage || COPY.groupLoadFailed,
     });
   },
@@ -99,7 +99,7 @@ Page({
         return;
       }
       if (result.statusCode === 401 && result.code === "UNAUTHORIZED") {
-        this.setData({ loading: false, canConfirm: isValidInviteCode(inviteCode) });
+        this.setData({ loading: false, canConfirm: isValidInviteCode(this.data.inviteCode) });
         wx.setStorageSync("pending_group_invite_code", inviteCode);
         wx.redirectTo({ url: "/pages/session/session" });
         return;
@@ -118,7 +118,7 @@ Page({
       this.setData({
         state: "ready",
         loading: false,
-        canConfirm: true,
+        canConfirm: isValidInviteCode(this.data.inviteCode),
         errorMessage: groupJoinError(result.code, result.message),
       });
     }).catch(() => {
@@ -126,7 +126,7 @@ Page({
       this.setData({
         state: "ready",
         loading: false,
-        canConfirm: true,
+        canConfirm: isValidInviteCode(this.data.inviteCode),
         errorMessage: COPY.groupActionFailed,
       });
     });
@@ -143,7 +143,7 @@ Page({
           this.setData({
             state: "error",
             loading: false,
-            canConfirm: true,
+            canConfirm: isValidInviteCode(this.data.inviteCode),
             errorMessage: COPY.groupLoadFailed,
           });
         },
@@ -159,7 +159,7 @@ Page({
         this.failRecovery(requestId, result.message || COPY.groupLoadFailed);
         return;
       }
-      this.setData({ loading: false });
+      this.setData({ loading: false, canConfirm: isValidInviteCode(this.data.inviteCode) });
       wx.setStorageSync("pending_ranking_group_id", groupId);
       wx.switchTab({ url: "/pages/rankings/rankings" });
     }).catch((error) => {
@@ -182,7 +182,7 @@ Page({
           detail.statusCode === 200 && detail.data && detail.data.invite_code === inviteCode
         );
         if (!match) {
-          this.setData({ state: "ready", loading: false, canConfirm: true, errorMessage: groupJoinError("GROUP_ALREADY_MEMBER") });
+          this.setData({ state: "ready", loading: false, canConfirm: isValidInviteCode(this.data.inviteCode), errorMessage: groupJoinError("GROUP_ALREADY_MEMBER") });
           return;
         }
         this.pendingRecovery = { type: "openGroup", groupId: match.data.group_id };

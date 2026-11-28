@@ -635,7 +635,7 @@ describe("my-predictions league/season filters", () => {
     expect(page.data.errorMessage).not.toMatch(/\b0\b/);
   });
 
-  it("opens the share card page without filters by default", async () => {
+  it("[CR50-01] opens the share round sheet without auto-selecting a round or navigating prematurely", async () => {
     const listMyPredictions = vi.fn(async () => ({
       statusCode: 200,
       data: { items: [prediction()], page: { has_more: false, next_cursor: null } },
@@ -647,10 +647,16 @@ describe("my-predictions league/season filters", () => {
     const { page, navs } = loadPage({ listMyPredictions, listLeagueSeasons });
     await page.onLoad();
     page.onShareCardTap();
-    expect(navs).toEqual([["navigateTo", "/pages/share-card/share-card"]]);
+    expect(page.data.showShareSheet).toBe(true);
+    expect(page.data.shareRoundId).toBeNull();
+    expect(page.data.shareRoundIndex).toBe(0);
+    expect(navs).toEqual([]);
+
+    page.onShareConfirm();
+    expect(navs).toEqual([]);
   });
 
-  it("passes the current league and season to the share card page", async () => {
+  it("[CR50-01] navigates to share-card with complete league_id, season_id, and user-selected round_id", async () => {
     const listMyPredictions = vi.fn(async () => ({
       statusCode: 200,
       data: { items: [prediction()], page: { has_more: false, next_cursor: null } },
@@ -664,8 +670,72 @@ describe("my-predictions league/season filters", () => {
     await page.onLeagueChange({ detail: { value: "1" } });
     await page.onSeasonChange({ detail: { value: "1" } });
     page.onShareCardTap();
+
+    expect(page.data.showShareSheet).toBe(true);
+    expect(page.data.shareLeagueId).toBe("premier_league");
+    expect(page.data.shareSeasonId).toBe("2026_2027");
+    expect(page.data.shareRoundId).toBeNull();
+    expect(page.data.shareRoundOptions).toEqual(["选择轮次", "第 1 轮"]);
+    expect(navs).toEqual([]);
+
+    page.onShareRoundChange({ detail: { value: "1" } });
+    expect(page.data.shareRoundId).toBe("01");
+    page.onShareConfirm();
+    expect(page.data.showShareSheet).toBe(false);
     expect(navs).toEqual([
-      ["navigateTo", "/pages/share-card/share-card?league_id=premier_league&season_id=2026_2027"],
+      ["navigateTo", "/pages/share-card/share-card?league_id=premier_league&season_id=2026_2027&round_id=01"],
+    ]);
+  });
+
+  it("[CR50-01] allows explicitly picking a round from loaded predictions to jump to share-card", async () => {
+    const listMyPredictions = vi.fn(async () => ({
+      statusCode: 200,
+      data: {
+        items: [
+          prediction({ prediction_id: "pred-12", league_id: "premier_league", season_id: "2026_2027", round_id: 12 }),
+          prediction({ prediction_id: "pred-12b", league_id: "premier_league", season_id: "2026_2027", round_id: 12 }),
+          prediction({ prediction_id: "pred-03", league_id: "la_liga", season_id: "2026_2027", round_id: 3 }),
+        ],
+        page: { has_more: false, next_cursor: null },
+      },
+    }));
+    const listLeagueSeasons = vi.fn(async () => ({
+      statusCode: 200,
+      data: { items: catalogItems() },
+    }));
+    const { page, navs } = loadPage({ listMyPredictions, listLeagueSeasons });
+    await page.onLoad();
+    page.onShareCardTap();
+
+    expect(page.data.shareRoundChoices).toEqual([
+      {
+        key: "premier_league|2026_2027|12",
+        leagueId: "premier_league",
+        seasonId: "2026_2027",
+        roundId: "12",
+        label: "英超 · 2026/27 · 第 12 轮",
+      },
+      {
+        key: "la_liga|2026_2027|03",
+        leagueId: "la_liga",
+        seasonId: "2026_2027",
+        roundId: "03",
+        label: "西甲 · 2026/27 · 第 3 轮",
+      },
+    ]);
+
+    page.onShareChoiceTap({
+      currentTarget: {
+        dataset: {
+          leagueId: "la_liga",
+          seasonId: "2026_2027",
+          roundId: "03",
+        },
+      },
+    });
+    expect(page.data.showShareSheet).toBe(false);
+    expect(navs).toEqual([
+      ["navigateTo", "/pages/share-card/share-card?league_id=la_liga&season_id=2026_2027&round_id=03"],
     ]);
   });
 

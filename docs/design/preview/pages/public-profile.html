@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>他人公开主页 · UI 预览</title>
+  <link rel="stylesheet" href="./_shared.css">
+  <style>
+    .profile-hero {
+      padding: 18px 16px;
+    }
+    .hero-eyebrow {
+      font-size: 11px;
+      color: var(--text-muted);
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      margin-bottom: 12px;
+    }
+    .hero-core {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+    .emblem-ring {
+      position: relative;
+      width: 66px;
+      height: 66px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: conic-gradient(#3aa37a 0deg 260deg, rgba(22, 48, 36, 0.1) 260deg 360deg);
+      flex: none;
+    }
+    .emblem-ring.deleted {
+      background: rgba(113, 128, 150, 0.22);
+    }
+    .emblem-inner {
+      width: 56px;
+      height: 56px;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.94);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 22px;
+      font-weight: 700;
+      color: var(--text-positive);
+    }
+    .emblem-inner img {
+      width: 34px;
+      height: 34px;
+      object-fit: contain;
+    }
+    .identity-copy {
+      flex: 1;
+      min-width: 0;
+    }
+    .name-row {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .display-name {
+      font-size: 18px;
+      font-weight: 750;
+      color: var(--text-primary);
+    }
+    .gender-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      background: rgba(37, 99, 235, 0.12);
+      color: #2563eb;
+      flex: none;
+    }
+    .gender-badge svg {
+      width: 13px;
+      height: 13px;
+      display: block;
+    }
+    .title-sub {
+      font-size: 12px;
+      color: var(--text-positive);
+      font-weight: 650;
+      margin-top: 2px;
+    }
+    .team-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: 8px;
+      padding: 4px 10px;
+      border-radius: var(--radius-pill);
+      background: rgba(255, 255, 255, 0.72);
+      border: 1px solid rgba(22, 48, 36, 0.08);
+      font-size: 12px;
+      color: var(--text-secondary);
+      font-weight: 600;
+    }
+    .team-pill img {
+      width: 16px;
+      height: 16px;
+      object-fit: contain;
+    }
+    .deleted-banner {
+      margin-top: 8px;
+      padding: 6px 10px;
+      border-radius: var(--radius-xs);
+      background: var(--color-state-done-soft);
+      font-size: 11px;
+      color: var(--text-secondary);
+    }
+
+    .section-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }
+    .section-title {
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--text-primary);
+    }
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+      text-align: center;
+    }
+    .metric-box {
+      padding: 10px 6px;
+      border-radius: var(--radius-lg);
+      background: rgba(255, 255, 255, 0.56);
+      border: 1px solid rgba(255, 255, 255, 0.75);
+    }
+    .metric-val {
+      display: block;
+      font-size: 22px;
+      font-weight: 750;
+      color: var(--text-primary);
+      line-height: 1.15;
+    }
+    .metric-val.positive {
+      color: var(--text-positive);
+    }
+    .metric-label {
+      display: block;
+      margin-top: 4px;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    .level-rows {
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid rgba(22, 48, 36, 0.08);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .kv-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 12px;
+    }
+    .kv-label { color: var(--text-secondary); }
+    .kv-val { font-weight: 700; color: var(--text-primary); }
+
+    .season-card {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .season-eyebrow {
+      font-size: 11px;
+      color: var(--secondary-accent);
+      font-weight: 600;
+    }
+    .season-level {
+      margin-top: 3px;
+      font-size: 17px;
+      font-weight: 750;
+    }
+    .season-sub {
+      margin-top: 2px;
+      font-size: 11px;
+      color: rgba(255, 255, 255, 0.72);
+    }
+    .season-badge {
+      padding: 6px 12px;
+      border-radius: var(--radius-pill);
+      background: rgba(185, 240, 143, 0.16);
+      border: 1px solid rgba(185, 240, 143, 0.35);
+      color: var(--secondary-accent);
+      font-size: 12px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .privacy-note {
+      margin-top: 14px;
+      text-align: center;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <img class="stadium-bg" src="/assets/images/baseline-pitch.webp" alt="">
+    <div class="stadium-overlay"></div>
+
+    <div class="content">
+      <div class="preview-state-bar">
+        <span class="preview-state-label">状态</span>
+        <button type="button" class="state-pill active" data-state="ready">正常用户</button>
+        <button type="button" class="state-pill" data-state="deleted">已注销脱敏</button>
+        <button type="button" class="state-pill" data-state="notFound">用户不存在</button>
+      </div>
+
+      <!-- 状态 1：正常用户 -->
+      <section data-panel="ready">
+        <div class="glass-card strong profile-hero">
+          <div class="hero-core">
+            <div class="emblem-ring">
+              <div class="emblem-inner">
+                <img src="/assets/logos/teams/premier-league/arsenal.png" alt="阿森纳">
+              </div>
+            </div>
+            <div class="identity-copy">
+              <div class="name-row">
+                <span class="display-name">北伦敦预言家</span>
+                <span class="chip chip-brand">Lv.4</span>
+                <span class="gender-badge" title="男" aria-label="男">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <circle cx="10" cy="14" r="5"></circle>
+                    <path d="M19 5l-5.4 5.4"></path>
+                    <path d="M15 5h4v4"></path>
+                  </svg>
+                </span>
+              </div>
+              <div class="title-sub">战术分析师</div>
+              <div class="team-pill">
+                <img src="/assets/logos/teams/premier-league/arsenal.png" alt="">
+                <span>主队 · 阿森纳</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="dark-hero season-card">
+          <div>
+            <div class="season-eyebrow">2026–2027 等级赛季</div>
+            <div class="season-level">Lv.4 战术分析师</div>
+          </div>
+          <span class="season-badge">当前赛季</span>
+        </div>
+
+        <div class="glass-card strong">
+          <div class="section-head">
+            <span class="section-title">生涯战绩</span>
+            <span class="chip chip-hit">永久累计</span>
+          </div>
+          <div class="metrics-grid">
+            <div class="metric-box">
+              <span class="metric-val positive num">246</span>
+              <span class="metric-label">生涯积分</span>
+            </div>
+            <div class="metric-box">
+              <span class="metric-val num">68</span>
+              <span class="metric-label">有效预测</span>
+            </div>
+            <div class="metric-box">
+              <span class="metric-val num">11</span>
+              <span class="metric-label">精确命中</span>
+            </div>
+          </div>
+          <div class="level-rows">
+            <div class="kv-row">
+              <span class="kv-label">当前生涯等级</span>
+              <span class="kv-val">Lv.4 战术分析师</span>
+            </div>
+            <div class="kv-row">
+              <span class="kv-label">历史最高等级</span>
+              <span class="kv-val">Lv.5 赛事先知</span>
+            </div>
+          </div>
+        </div>
+
+        <p class="privacy-note">公开主页仅展示聚合战绩，不展示单场预测明细。</p>
+      </section>
+
+      <!-- 状态 2：已注销用户脱敏态 -->
+      <section data-panel="deleted" class="hidden">
+        <div class="glass-card strong profile-hero">
+          <div class="hero-core">
+            <div class="emblem-ring deleted">
+              <div class="emblem-inner" style="color:var(--text-muted);">已</div>
+            </div>
+            <div class="identity-copy">
+              <div class="name-row">
+                <span class="display-name">已注销用户</span>
+                <span class="chip chip-done">Lv.3</span>
+              </div>
+              <div class="deleted-banner">该账号已注销，仅保留历史公开统计。</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="glass-card strong">
+          <div class="section-head">
+            <span class="section-title">历史生涯战绩</span>
+            <span class="chip chip-done">已冻结</span>
+          </div>
+          <div class="metrics-grid">
+            <div class="metric-box">
+              <span class="metric-val num">114</span>
+              <span class="metric-label">生涯积分</span>
+            </div>
+            <div class="metric-box">
+              <span class="metric-val num">32</span>
+              <span class="metric-label">有效预测</span>
+            </div>
+            <div class="metric-box">
+              <span class="metric-val num">4</span>
+              <span class="metric-label">精确命中</span>
+            </div>
+          </div>
+          <div class="level-rows">
+            <div class="kv-row">
+              <span class="kv-label">注销前生涯等级</span>
+              <span class="kv-val">Lv.3 资深球探</span>
+            </div>
+            <div class="kv-row">
+              <span class="kv-label">历史最高等级</span>
+              <span class="kv-val">Lv.3 资深球探</span>
+            </div>
+          </div>
+        </div>
+
+        <p class="privacy-note">公开主页仅展示聚合战绩，不展示单场预测明细。</p>
+      </section>
+
+      <!-- 状态 3：用户不存在 -->
+      <section data-panel="notFound" class="hidden">
+        <div class="glass-card strong state-panel">
+          <div class="state-icon" style="background:var(--color-state-done-soft);color:var(--text-muted);">?</div>
+          <h2 class="state-title">用户不存在</h2>
+          <p class="state-desc">未找到该预言家主页，可能链接已失效。</p>
+          <button type="button" class="btn btn-ghost" style="min-width:128px;">返回</button>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <script>
+    const pills = document.querySelectorAll(".state-pill");
+    const panels = document.querySelectorAll("[data-panel]");
+    pills.forEach((pill) => {
+      pill.addEventListener("click", () => {
+        pills.forEach((p) => p.classList.remove("active"));
+        pill.classList.add("active");
+        const target = pill.dataset.state;
+        panels.forEach((panel) => {
+          panel.classList.toggle("hidden", panel.dataset.panel !== target);
+        });
+      });
+    });
+  </script>
+</body>
+</html>

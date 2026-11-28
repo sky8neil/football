@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>解锁记录页 · UI 预览</title>
+  <link rel="stylesheet" href="./_shared.css">
+  <style>
+    .summary-hero {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .hero-eyebrow {
+      font-size: 11px;
+      color: var(--secondary-accent);
+      font-weight: 600;
+      letter-spacing: 0.04em;
+    }
+    .hero-count {
+      margin: 4px 0 2px;
+      font-size: 26px;
+      font-weight: 750;
+      line-height: 1.15;
+    }
+    .hero-count span {
+      font-size: 13px;
+      font-weight: 500;
+      color: rgba(255, 255, 255, 0.72);
+      margin-left: 4px;
+    }
+    .hero-note {
+      font-size: 11px;
+      color: rgba(255, 255, 255, 0.76);
+      line-height: 1.5;
+    }
+    .hero-emblem {
+      width: 52px;
+      height: 52px;
+      border-radius: 16px;
+      background: rgba(185, 240, 143, 0.16);
+      border: 1px solid rgba(185, 240, 143, 0.34);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex: none;
+    }
+    .hero-emblem img {
+      width: 28px;
+      height: 28px;
+      opacity: 0.95;
+    }
+
+    .unlock-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .unlock-card {
+      position: relative;
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      padding: 14px 14px 14px 16px;
+      margin-bottom: 0;
+      overflow: hidden;
+    }
+    .unlock-card::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 12px;
+      bottom: 12px;
+      width: 3px;
+      border-radius: 99px;
+      background: var(--color-state-success);
+    }
+    .unlock-card.is-locked::before {
+      background: var(--color-state-done);
+    }
+    .unlock-badge-box {
+      width: 44px;
+      height: 44px;
+      border-radius: 12px;
+      background: var(--surface-solid);
+      border: 1px solid var(--border-subtle);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      flex: none;
+    }
+    .unlock-card.is-locked .unlock-badge-box {
+      background: var(--slate-200);
+      border-color: rgba(113, 128, 150, 0.22);
+    }
+    .unlock-threshold-num {
+      font-size: 15px;
+      font-weight: 750;
+      line-height: 1;
+      color: var(--text-positive);
+    }
+    .unlock-card.is-locked .unlock-threshold-num {
+      color: var(--text-muted);
+    }
+    .unlock-threshold-unit {
+      font-size: 9px;
+      color: var(--text-secondary);
+      margin-top: 2px;
+    }
+    .unlock-body {
+      flex: 1;
+      min-width: 0;
+    }
+    .unlock-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 4px;
+    }
+    .unlock-name {
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--text-primary);
+    }
+    .unlock-meta {
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+    .unlock-time {
+      margin-top: 6px;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+    .rule-footer {
+      margin-top: 16px;
+      text-align: center;
+      font-size: 11px;
+      color: var(--text-muted);
+      line-height: 1.6;
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <img class="stadium-bg" src="/assets/images/baseline-pitch.webp" alt="">
+    <div class="stadium-overlay"></div>
+
+    <div class="content">
+      <div class="preview-state-bar">
+        <span class="preview-state-label">状态</span>
+        <button type="button" class="state-pill active" data-state="list">已有记录</button>
+        <button type="button" class="state-pill" data-state="empty">空态（UI-02）</button>
+        <button type="button" class="state-pill" data-state="unauthorized">未登录</button>
+        <button type="button" class="state-pill" data-state="error">加载失败</button>
+      </div>
+
+      <header class="page-header">
+        <h1 class="page-title">解锁记录</h1>
+        <p class="page-subtitle">生涯累计积分达标后自动记录，永不回收。</p>
+      </header>
+
+      <!-- 状态 1：已有解锁记录 -->
+      <section data-panel="list">
+        <div class="dark-hero summary-hero">
+          <div>
+            <div class="hero-eyebrow">生涯里程碑记录</div>
+            <div class="hero-count num">2<span>/ 3 项已记录</span></div>
+            <div class="hero-note">达标后自动写入记录 · 不因赛果修正而回收</div>
+          </div>
+          <div class="hero-emblem">
+            <img src="/assets/icons/ui-rules.png" alt="">
+          </div>
+        </div>
+
+        <div class="unlock-list">
+          <article class="glass-card strong unlock-card">
+            <div class="unlock-badge-box">
+              <span class="unlock-threshold-num num">30</span>
+              <span class="unlock-threshold-unit">生涯分</span>
+            </div>
+            <div class="unlock-body">
+              <div class="unlock-head">
+                <span class="unlock-name">个人档案卡样式 I</span>
+                <span class="chip chip-hit">已解锁</span>
+              </div>
+              <div class="unlock-meta">解锁门槛：生涯累计 30 分</div>
+              <div class="unlock-time">记录于 2026-09-14 22:18</div>
+            </div>
+          </article>
+
+          <article class="glass-card strong unlock-card">
+            <div class="unlock-badge-box">
+              <span class="unlock-threshold-num num">100</span>
+              <span class="unlock-threshold-unit">生涯分</span>
+            </div>
+            <div class="unlock-body">
+              <div class="unlock-head">
+                <span class="unlock-name">主队名称强调色</span>
+                <span class="chip chip-hit">已解锁</span>
+              </div>
+              <div class="unlock-meta">解锁门槛：生涯累计 100 分</div>
+              <div class="unlock-time">记录于 2026-10-26 04:05</div>
+            </div>
+          </article>
+
+          <article class="glass-card unlock-card is-locked">
+            <div class="unlock-badge-box">
+              <span class="unlock-threshold-num num">200</span>
+              <span class="unlock-threshold-unit">生涯分</span>
+            </div>
+            <div class="unlock-body">
+              <div class="unlock-head">
+                <span class="unlock-name">主队头像框 I</span>
+                <span class="chip chip-done">未达成</span>
+              </div>
+              <div class="unlock-meta">解锁门槛：生涯累计 200 分</div>
+              <div class="unlock-time">继续参与预测，生涯积分达标后自动记录</div>
+            </div>
+          </article>
+        </div>
+
+        <p class="rule-footer">仅展示生涯积分里程碑记录，不含装扮穿戴或数值加成。</p>
+      </section>
+
+      <!-- 状态 2：空态（严格遵守 UI-02 文案与按钮） -->
+      <section data-panel="empty" class="hidden">
+        <div class="glass-card strong state-panel">
+          <div class="state-icon">
+            <img src="/assets/icons/icon-ball.png" alt="" style="width:26px;height:26px;">
+          </div>
+          <h2 class="state-title">暂无解锁记录</h2>
+          <p class="state-desc">解锁按生涯积分达标后自动记录；已解锁记录不会因赛果修正而回收。</p>
+          <button type="button" class="btn btn-primary" style="min-width:148px;">去预测</button>
+        </div>
+      </section>
+
+      <!-- 状态 3：未登录 -->
+      <section data-panel="unauthorized" class="hidden">
+        <div class="glass-card strong state-panel">
+          <div class="state-icon">🔒</div>
+          <h2 class="state-title">登录后查看解锁记录</h2>
+          <p class="state-desc">登录微信账号后，即可同步查看你的生涯积分里程碑记录。</p>
+          <button type="button" class="btn btn-primary" style="min-width:148px;">去登录</button>
+        </div>
+      </section>
+
+      <!-- 状态 4：加载失败 -->
+      <section data-panel="error" class="hidden">
+        <div class="glass-card strong state-panel">
+          <div class="state-icon" style="background:var(--red-50);color:var(--red-600);">!</div>
+          <h2 class="state-title">暂时无法加载解锁记录</h2>
+          <p class="state-desc">网络开了点小差，请稍后重试。</p>
+          <button type="button" class="btn btn-ghost" style="min-width:128px;">重试</button>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <script>
+    const pills = document.querySelectorAll(".state-pill");
+    const panels = document.querySelectorAll("[data-panel]");
+    pills.forEach((pill) => {
+      pill.addEventListener("click", () => {
+        pills.forEach((p) => p.classList.remove("active"));
+        pill.classList.add("active");
+        const target = pill.dataset.state;
+        panels.forEach((panel) => {
+          panel.classList.toggle("hidden", panel.dataset.panel !== target);
+        });
+      });
+    });
+  </script>
+</body>
+</html>

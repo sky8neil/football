@@ -191,7 +191,7 @@ describe("public-profile page (A-S6-01)", () => {
 
     await page.onLoad({ user_id: "00000000-0000-4000-8000-000000000002" });
     expect(page.data.state).toBe("ready");
-    expect(page.data.displayName).toBe("已注销用户");
+    expect(page.data.displayName).toBe("历史用户");
     expect(page.data.isDeleted).toBe(true);
     expect(page.data.hasFavoriteTeam).toBe(false);
     expect(page.data.favoriteTeamText).toBe("未设置");
@@ -595,5 +595,59 @@ describe("public-profile page (A-S6-01)", () => {
     expect(page.data.favoriteTeamLogo).toBe("https://cdn.example.com/relegated-athletic.png");
     expect(storage[`team_name:${inactiveId}`]).toBe("已停用老牌队");
     expect(storage[`team_logo:${inactiveId}`]).toBe("https://cdn.example.com/relegated-athletic.png");
+  });
+
+  it("displays gender badge for male/female and hides it for undisclosed, null, or deleted users", async () => {
+    const wxml = readFileSync(WXML_URL, "utf8");
+    expect(wxml).toContain("/assets/images/baseline-pitch.webp");
+    expect(wxml).toContain("emblem-ring");
+    expect(wxml).toContain("dark-hero");
+    expect(wxml).toContain("gender-badge is-male");
+    expect(wxml).toContain("gender-badge is-female");
+    expect(wxml).not.toContain("预言家公开档案");
+    expect(wxml).not.toContain("每周一 10:00 按窗口表现与积分联合评估");
+    expect(wxml).not.toMatch(/<svg[\s>]/i);
+
+    const makeProfile = (overrides = {}) => ({
+      statusCode: 200,
+      data: {
+        user_id: "00000000-0000-4000-8000-000000000100",
+        display_name: "北伦敦预言家",
+        favorite_team_id: null,
+        career_points: 100,
+        career_valid_predictions: 20,
+        career_exact_hits: 3,
+        career_level: 3,
+        career_best_level: 4,
+        season_level: 3,
+        ...overrides,
+      },
+    });
+
+    const getPublicProfile = vi.fn()
+      .mockResolvedValueOnce(makeProfile({ gender: "male" }))
+      .mockResolvedValueOnce(makeProfile({ gender: "female" }))
+      .mockResolvedValueOnce(makeProfile({ gender: "undisclosed" }))
+      .mockResolvedValueOnce(makeProfile({ gender: null }))
+      .mockResolvedValueOnce(makeProfile({ display_name: "已注销用户", gender: "male" }));
+
+    const { page } = loadPage({ getPublicProfile });
+
+    await page.onLoad({ user_id: "u-male" });
+    expect(page.data.gender).toBe("male");
+    expect(page.data.isDeleted).toBe(false);
+
+    await page.onLoad({ user_id: "u-female" });
+    expect(page.data.gender).toBe("female");
+
+    await page.onLoad({ user_id: "u-undisclosed" });
+    expect(page.data.gender).toBe("");
+
+    await page.onLoad({ user_id: "u-null" });
+    expect(page.data.gender).toBe("");
+
+    await page.onLoad({ user_id: "u-deleted" });
+    expect(page.data.isDeleted).toBe(true);
+    expect(page.data.gender).toBe("");
   });
 });

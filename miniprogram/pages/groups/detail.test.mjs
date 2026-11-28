@@ -227,4 +227,101 @@ describe("group detail sharing and loading recovery", () => {
     expect(page.data.state).toBe("userDeleted");
     expect(page.data.errorMessage).toBe("该账号已被注销");
   });
+
+  it("[CR50-14] prevents double modal/execution while wx.showModal is pending and releases lock on cancel/fail", async () => {
+    const leaveGroup = vi.fn(async () => ({ statusCode: 204 }));
+    const { config } = loadDetail({ leaveGroup });
+    const { navs } = installWx();
+    const modalCallbacks = [];
+    globalThis.wx.showModal = vi.fn((options) => { modalCallbacks.push(options); });
+
+    const page = instantiate(config);
+    await page.onLoad({ group_id: "group-1" });
+
+    // Double tap before showModal resolves: only one modal should open
+    page.onLeaveTap();
+    page.onLeaveTap();
+    expect(globalThis.wx.showModal).toHaveBeenCalledTimes(1);
+
+    // Cancel releases confirmation lock
+    modalCallbacks[0].success({ confirm: false });
+    expect(leaveGroup).not.toHaveBeenCalled();
+
+    // Next tap can open modal again; fail also releases lock
+    page.onLeaveTap();
+    expect(globalThis.wx.showModal).toHaveBeenCalledTimes(2);
+    modalCallbacks[1].fail();
+
+    // Confirm executes once and navigates back
+    page.onLeaveTap();
+    page.onLeaveTap();
+    expect(globalThis.wx.showModal).toHaveBeenCalledTimes(3);
+    modalCallbacks[2].success({ confirm: true });
+    await flush();
+    expect(leaveGroup).toHaveBeenCalledTimes(1);
+    expect(page.data.loadingAction).toBe(false);
+    expect(navs).toEqual([["navigateBack", 1]]);
+  });
+
+  it("[CR50-14] keeps account B leaveGroup lock/error/navigation untouched when stale account A resolves or rejects", async () => {
+    const deferred = () => {
+      let resolve;
+      let reject;
+      const promise = new Promise((done, fail) => { resolve = done; reject = fail; });
+      return { promise, resolve, reject };
+    };
+    let generation = 0;
+    const reqA1 = deferred();
+    const reqB1 = deferred();
+    const reqA2 = deferred();
+    const reqB2 = deferred();
+    const leaveGroup = vi.fn()
+      .mockImplementationOnce(() => reqA1.promise)
+      .mockImplementationOnce(() => reqB1.promise)
+      .mockImplementationOnce(() => reqA2.promise)
+      .mockImplementationOnce(() => reqB2.promise);
+    const { config } = loadDetail({ leaveGroup }, { getLoginGeneration: () => generation });
+    const { navs } = installWx();
+    const page = instantiate(config);
+
+    // Case 1: Account A resolves while Account B has an in-flight leaveGroup
+    await page.onLoad({ group_id: "group-1" });
+    page.onLeaveTap();
+    expect(page.data.loadingAction).toBe(true);
+
+    generation = 1;
+    await page.onShow();
+    page.onLeaveTap();
+    expect(page.data.loadingAction).toBe(true);
+
+    reqA1.resolve({ statusCode: 204 });
+    await flush();
+    expect(page.data.loadingAction).toBe(true);
+    expect(page.data.errorMessage).toBe("");
+    expect(navs).toEqual([]);
+
+    reqB1.resolve({ statusCode: 204 });
+    await flush();
+    expect(page.data.loadingAction).toBe(false);
+    expect(navs).toEqual([["navigateBack", 1]]);
+
+    // Case 2: Account A rejects while Account B has an in-flight leaveGroup
+    page.onLeaveTap();
+    expect(page.data.loadingAction).toBe(true);
+
+    generation = 2;
+    await page.onShow();
+    page.onLeaveTap();
+    expect(page.data.loadingAction).toBe(true);
+
+    reqA2.reject(new Error("stale leave error"));
+    await flush();
+    expect(page.data.loadingAction).toBe(true);
+    expect(page.data.errorMessage).toBe("");
+
+    reqB2.resolve({ statusCode: 204 });
+    await flush();
+    expect(page.data.loadingAction).toBe(false);
+    expect(navs).toEqual([["navigateBack", 1], ["navigateBack", 1]]);
+  });
 });

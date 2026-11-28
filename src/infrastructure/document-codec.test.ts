@@ -129,6 +129,14 @@ describe("document-codec Date/JSONB 编解码", () => {
     expect(prediction.canonical_match_id).toBe("old-match");
   });
 
+  it("历史 User 文档缺少 gender 时规范化为 null，已有值原样保留", () => {
+    const legacy = decodeDocument("users", encodeDocument(userDoc()));
+    expect(legacy.gender).toBeNull();
+
+    const withGender = decodeDocument("users", encodeDocument({ ...userDoc(), gender: "male" }));
+    expect(withGender.gender).toBe("male");
+  });
+
   it("运行态 store 日期字段往返为 Date", () => {
     const usage = decodeDocument(
       "provider_usage",

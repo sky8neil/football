@@ -1,103 +1,159 @@
 <view class="page">
-  <view wx:if="{{state === 'loading'}}" class="loading"></view>
-  <view wx:elif="{{state === 'error'}}" class="error-state">
-    <text>{{errorMessage}}</text>
-    <button bindtap="loadDetail">重试</button>
-  </view>
-  <view wx:else class="detail">
-    <view class="match-head">
-      <view class="match-meta">
-        <text>{{statusText}}</text>
-        <text wx:if="{{roundText}}">{{roundText}}</text>
-        <text>{{kickoffText}}</text>
-      </view>
-      <view class="scoreline">
-        <view class="team">
-          <image src="{{homeLogo}}" mode="aspectFit"></image>
-          <text>{{homeNameZh}}</text>
-        </view>
-        <view class="score">
-          <text wx:if="{{match.regular_home_score !== null && match.regular_home_score !== undefined}}">{{match.regular_home_score}} : {{match.regular_away_score}}</text>
-          <text wx:else>VS</text>
-          <text class="score-caption">{{scoreCaption}}</text>
-        </view>
-        <view class="team away">
-          <image src="{{awayLogo}}" mode="aspectFit"></image>
-          <text>{{awayNameZh}}</text>
-        </view>
-      </view>
-      <view wx:if="{{match.prediction_deadline_at && canSubmit}}" class="deadline">
-        预测截止 {{deadlineText}}
-      </view>
+  <image class="stadium-background" src="/assets/images/baseline-pitch.webp" mode="aspectFill" />
+  <view class="stadium-overlay"></view>
+
+  <view class="secondary-content">
+    <view wx:if="{{state === 'loading'}}" class="glass-card strong loading"></view>
+
+    <view wx:elif="{{state === 'error'}}" class="glass-card strong state-panel error-state">
+      <text class="error-text">{{errorMessage}}</text>
+      <button class="btn btn-ghost" bindtap="loadDetail">重试</button>
     </view>
 
-    <view wx:if="{{myPrediction}}" class="prediction-result">
-      <view class="section-title">我的预测</view>
-      <view class="prediction-line">
-        <text class="prediction-score">{{myPredictionScore}}</text>
-        <text>{{myPrediction.derived_result === 'HOME' ? '主胜' : myPrediction.derived_result === 'AWAY' ? '客胜' : '平局'}}</text>
-      </view>
-      <view class="result-line">
-        <text>{{predictionResultText}}</text>
-        <text>{{predictionPointsText}}</text>
-      </view>
-      <view wx:if="{{submittedText}}" class="submitted-at">提交于 {{submittedText}}</view>
-    </view>
+    <view wx:else class="detail">
+      <!-- 对阵头部卡 -->
+      <view class="glass-card strong match-head">
+        <view class="match-head-top">
+          <view class="match-meta-left">
+            <image wx:if="{{leagueLogo}}" class="league-mini" src="{{leagueLogo}}" mode="aspectFit" />
+            <text>{{leagueRoundText || kickoffText}}</text>
+          </view>
+          <text class="chip {{statusChipClass}}">{{statusText}}</text>
+        </view>
 
-    <view wx:if="{{canSubmit}}" class="prediction-form">
-      <view class="section-title">预测比分</view>
-      <view class="steppers">
-        <view class="stepper-group">
-          <view class="stepper-team"><image src="{{homeLogo}}" mode="aspectFit"></image><text>{{homeNameZh}}</text></view>
-          <view class="stepper">
-            <button data-side="home" data-delta="-1" bindtap="onScoreStep">−</button>
-            <text>{{homeScore}}</text>
-            <button data-side="home" data-delta="1" bindtap="onScoreStep">+</button>
+        <view class="faceoff">
+          <view class="team-col">
+            <image class="team-crest" src="{{homeLogo}}" mode="aspectFit" />
+            <text class="team-name">{{homeNameZh}}</text>
+            <text class="team-role">主队</text>
+          </view>
+
+          <!-- 比分块：严格遵守 Design System V1 §6.4，实色不玻璃化 -->
+          <view class="score-bug {{isDarkScoreBug ? 'dark' : ''}}">
+            <text wx:if="{{match.regular_home_score !== null && match.regular_home_score !== undefined}}" class="bug-main num">{{match.regular_home_score}} : {{match.regular_away_score}}</text>
+            <text wx:else class="bug-main num">VS</text>
+            <text class="bug-sub num">{{scoreBugSubText}}</text>
+          </view>
+
+          <view class="team-col">
+            <image class="team-crest" src="{{awayLogo}}" mode="aspectFit" />
+            <text class="team-name">{{awayNameZh}}</text>
+            <text class="team-role">客队</text>
           </view>
         </view>
-        <text class="separator">:</text>
-        <view class="stepper-group">
-          <view class="stepper-team"><image src="{{awayLogo}}" mode="aspectFit"></image><text>{{awayNameZh}}</text></view>
-          <view class="stepper">
-            <button data-side="away" data-delta="-1" bindtap="onScoreStep">−</button>
-            <text>{{awayScore}}</text>
-            <button data-side="away" data-delta="1" bindtap="onScoreStep">+</button>
-          </view>
+
+        <view wx:if="{{kickoffText || (match.prediction_deadline_at && canSubmit)}}" class="deadline-bar">
+          <text wx:if="{{kickoffText}}">开球 {{kickoffText}}</text>
+          <text wx:if="{{match.prediction_deadline_at && canSubmit}}" class="num">预测截止 {{deadlineText}}</text>
         </view>
       </view>
-      <view class="derived">即时判定：{{derivedResultText}}</view>
-      <view class="scoring-note">赛果命中 +3 分 · 精确比分 +12 分</view>
-      <button class="submit" bindtap="onSubmit" disabled="{{submitting}}" loading="{{submitting}}">
-        {{submitting ? '提交中…' : '提交预测'}}
-      </button>
-      <view class="submit-note">提交后无法修改</view>
-    </view>
 
-    <view wx:if="{{identityMissing}}" class="status-panel">
-      <text>{{submitDisabledReason}}</text>
-      <button bindtap="onSessionTap">登录</button>
-    </view>
-    <view wx:elif="{{userDeleted || (!canSubmit && submitDisabledReason)}}" class="status-panel">
-      <text>{{submitDisabledReason}}</text>
-    </view>
-    <view wx:if="{{formError && !identityMissing && !userDeleted && (canSubmit || !submitDisabledReason)}}" class="error-message">{{formError}}</view>
+      <!-- 分享卡跟单预填提示条 -->
+      <view wx:if="{{canSubmit && prefillBannerText}}" class="prefill-banner">
+        <text class="prefill-icon">✨</text>
+        <text class="prefill-text">{{prefillBannerText}}</text>
+      </view>
 
-    <view wx:if="{{crowdKind !== 'hidden' && crowdState !== 'idle'}}" class="crowd-card">
-      <view class="section-title">{{crowdTitle}}</view>
-      <view wx:if="{{crowdState === 'loading'}}" class="crowd-message">{{crowdLoadingText}}</view>
-      <view wx:elif="{{crowdKind === 'guest'}}" class="crowd-message crowd-action"><text>{{crowdMessage}}</text><button bindtap="onSessionTap">{{crowdLoginText}}</button></view>
-      <view wx:elif="{{crowdKind === 'locked' || crowdKind === 'insufficient'}}" class="crowd-message">{{crowdMessage}}</view>
-      <view wx:elif="{{crowdState === 'error'}}" class="crowd-message crowd-action"><text>{{crowdMessage}}</text><button bindtap="onCrowdRetry">{{crowdRetryText}}</button></view>
-      <view wx:elif="{{crowdKind === 'available'}}">
-        <view class="crowd-legend">
-          <view wx:for="{{crowdSegments}}" wx:key="key" class="crowd-item {{item.selected ? 'selected' : ''}} {{item.actual ? 'actual' : ''}}">
-            <view class="crowd-item-name"><text>{{item.name}}</text><text wx:if="{{item.selected}}" class="crowd-tag">{{crowdYourChoice}}</text><text wx:if="{{item.actual}}" class="crowd-tag actual-tag">{{crowdActualLabel}}</text></view>
-            <text class="crowd-percent">{{item.percent}}%</text>
+      <!-- 我的预测结果卡 -->
+      <view wx:if="{{myPrediction}}" class="glass-card strong prediction-result">
+        <view class="section-title">
+          <text>我的预测</text>
+          <text class="chip {{myPredictionChipClass}}">{{myPredictionChipText}}</text>
+        </view>
+        <view class="my-pred-box">
+          <view class="my-pred-left">
+            <view class="my-pred-score num">{{myPredictionScore}}</view>
+            <view class="my-pred-sub">预测{{myPrediction.derived_result === 'HOME' ? '主胜' : myPrediction.derived_result === 'AWAY' ? '客胜' : '平局'}}</view>
+          </view>
+          <view class="my-pred-right">
+            <view class="my-pred-points num">{{predictionPointsText}}</view>
+            <view class="my-pred-result">{{predictionResultText}}</view>
           </view>
         </view>
-        <view class="crowd-bar"><view wx:for="{{crowdSegments}}" wx:key="key" class="crowd-segment crowd-{{item.key}} {{item.selected ? 'selected' : ''}} {{item.actual ? 'actual' : ''}}" style="width: {{item.width}}"></view></view>
-        <view wx:if="{{crowdComparisonText}}" class="crowd-comparison">{{crowdComparisonText}}</view>
-        <view class="crowd-footer">{{crowdFooter}}</view>
+        <view wx:if="{{submittedText}}" class="submitted-at num">提交于 {{submittedText}}</view>
+      </view>
+
+      <!-- 预测比分步进器卡片 -->
+      <view wx:if="{{canSubmit}}" class="glass-card strong prediction-form">
+        <view class="section-title">
+          <text>预测比分</text>
+          <text class="chip chip-brand">90 分钟及补时</text>
+        </view>
+        <view class="steppers">
+          <view class="stepper-group">
+            <view class="stepper-team">
+              <image class="stepper-team-logo" src="{{homeLogo}}" mode="aspectFit" />
+              <text class="stepper-team-name">{{homeNameZh}}</text>
+            </view>
+            <view class="stepper-ctrl">
+              <button class="step-btn" data-side="home" data-delta="-1" bindtap="onScoreStep" disabled="{{submitting}}">−</button>
+              <text class="step-val num">{{homeScore}}</text>
+              <button class="step-btn" data-side="home" data-delta="1" bindtap="onScoreStep" disabled="{{submitting}}">+</button>
+            </view>
+          </view>
+          <text class="stepper-sep">:</text>
+          <view class="stepper-group">
+            <view class="stepper-team">
+              <image class="stepper-team-logo" src="{{awayLogo}}" mode="aspectFit" />
+              <text class="stepper-team-name">{{awayNameZh}}</text>
+            </view>
+            <view class="stepper-ctrl">
+              <button class="step-btn" data-side="away" data-delta="-1" bindtap="onScoreStep" disabled="{{submitting}}">−</button>
+              <text class="step-val num">{{awayScore}}</text>
+              <button class="step-btn" data-side="away" data-delta="1" bindtap="onScoreStep" disabled="{{submitting}}">+</button>
+            </view>
+          </view>
+        </view>
+        <view class="derived-row">即时判定：{{derivedResultText}}</view>
+        <view class="scoring-note">赛果命中 +3 分 · 精确比分 +12 分</view>
+        <button class="btn btn-primary btn-block submit" bindtap="onSubmit" disabled="{{submitting}}" loading="{{submitting}}">
+          {{submitting ? '提交中…' : '提交预测'}}
+        </button>
+        <view class="submit-note">提交后无法修改</view>
+      </view>
+
+      <view wx:if="{{identityMissing}}" class="glass-card strong status-panel">
+        <text class="status-text">{{submitDisabledReason}}</text>
+        <button class="btn btn-ghost status-action" bindtap="onSessionTap">登录</button>
+      </view>
+      <view wx:elif="{{userDeleted || (!canSubmit && submitDisabledReason)}}" class="glass-card strong status-panel">
+        <text class="status-text">{{submitDisabledReason}}</text>
+      </view>
+      <view wx:if="{{formError && !identityMissing && !userDeleted && (canSubmit || !submitDisabledReason)}}" class="error-message">{{formError}}</view>
+
+      <!-- 大家怎么选 -->
+      <view wx:if="{{crowdKind !== 'hidden' && crowdState !== 'idle'}}" class="glass-card strong crowd-card">
+        <view class="section-title">
+          <text>{{crowdTitle}}</text>
+          <text wx:if="{{crowdKind === 'available'}}" class="chip chip-done">已截止 · 5% 圆整</text>
+        </view>
+        <view wx:if="{{crowdState === 'loading'}}" class="crowd-message">{{crowdLoadingText}}</view>
+        <view wx:elif="{{crowdKind === 'guest'}}" class="crowd-message crowd-action">
+          <text>{{crowdMessage}}</text>
+          <button class="btn btn-ghost crowd-btn" bindtap="onSessionTap">{{crowdLoginText}}</button>
+        </view>
+        <view wx:elif="{{crowdKind === 'locked' || crowdKind === 'insufficient'}}" class="crowd-message">{{crowdMessage}}</view>
+        <view wx:elif="{{crowdState === 'error'}}" class="crowd-message crowd-action">
+          <text>{{crowdMessage}}</text>
+          <button class="btn btn-ghost crowd-btn" bindtap="onCrowdRetry">{{crowdRetryText}}</button>
+        </view>
+        <view wx:elif="{{crowdKind === 'available'}}">
+          <view class="crowd-legend">
+            <view wx:for="{{crowdSegments}}" wx:key="key" class="crowd-item {{item.selected ? 'selected' : ''}} {{item.actual ? 'actual' : ''}}">
+              <view class="crowd-name-row">
+                <text>{{item.name}}</text>
+                <text wx:if="{{item.selected}}" class="crowd-tag">{{crowdYourChoice}}</text>
+                <text wx:if="{{item.actual}}" class="crowd-tag actual-tag">{{crowdActualLabel}}</text>
+              </view>
+              <text class="crowd-pct num">{{item.percent}}%</text>
+            </view>
+          </view>
+          <view class="crowd-bar">
+            <view wx:for="{{crowdSegments}}" wx:key="key" class="crowd-segment crowd-{{item.key}} {{item.selected ? 'selected' : ''}} {{item.actual ? 'actual' : ''}}" style="width: {{item.width}}"></view>
+          </view>
+          <view wx:if="{{crowdComparisonText}}" class="crowd-comparison">{{crowdComparisonText}}</view>
+          <view class="crowd-footer">{{crowdFooter}}</view>
+        </view>
       </view>
     </view>
   </view>

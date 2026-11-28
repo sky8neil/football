@@ -131,18 +131,9 @@ function shareCardData(overrides = {}) {
   };
 }
 
-function catalogItems() {
-  return [
-    { league_id: "premier_league", season_id: "2026_2027", season_label: "2026/27", round_ids: ["12", "01"] },
-    { league_id: "premier_league", season_id: "2025_2026", season_label: "2025/26", round_ids: ["01"] },
-    { league_id: "la_liga", season_id: "2026_2027", season_label: "2026/27", round_ids: ["03"] },
-  ];
-}
-
 function loadPage({
   getMyShareCard,
   getShareCardForUser,
-  listLeagueSeasons,
   listTeams,
   stored,
   pages,
@@ -156,10 +147,6 @@ function loadPage({
   const getShareCardForUserFn = getShareCardForUser || vi.fn(async () => ({
     statusCode: 200,
     data: shareCardData({ user_id: SHARER_ID, display_name: "Sharer" }),
-  }));
-  const listLeagueSeasonsFn = listLeagueSeasons || vi.fn(async () => ({
-    statusCode: 200,
-    data: { items: catalogItems() },
   }));
   const listTeamsFn = listTeams || vi.fn(async () => ({
     statusCode: 200,
@@ -196,7 +183,6 @@ function loadPage({
     if (id === "../../services/share-card.js") {
       return { getMyShareCard: getMyShareCardFn, getShareCardForUser: getShareCardForUserFn };
     }
-    if (id === "../../services/league-seasons.js") return { listLeagueSeasons: listLeagueSeasonsFn };
     if (id === "../../services/teams.js") return teamsService;
     if (id === "../../utils/match-presentation.js") return matchPresentation;
     if (id === "../../utils/team-presentation.js") return teamPresentation;
@@ -209,7 +195,6 @@ function loadPage({
     page: instantiate(config),
     getMyShareCard: getMyShareCardFn,
     getShareCardForUser: getShareCardForUserFn,
-    listLeagueSeasons: listLeagueSeasonsFn,
     listTeams: listTeamsFn,
     teamsService,
     ...wxStub,
@@ -266,6 +251,12 @@ describe("share-card page", () => {
     expect(wxml).not.toContain("home-pitch-bg.webp");
     expect(wxml).not.toContain("pendingCount");
     expect(wxml).not.toContain("没有结算");
+    expect(wxml).not.toContain("filter-row");
+    expect(wxml).not.toContain("now-tag");
+    expect(wxml).not.toContain("点击未开赛场次一键跟单");
+    expect(wxml).not.toContain("page-subtitle");
+    expect(wxml).toContain("poster-top");
+    expect(wxml).toContain("match-row");
     expect(wxml).toContain("{{card.careerPoints}}");
     const fullSummaryBlock = wxml.match(/<block wx:if="\{\{card\.showFullSummary\}\}">[\s\S]*?<\/block>/);
     expect(fullSummaryBlock).not.toBeNull();
@@ -364,7 +355,7 @@ describe("share-card page", () => {
     await page.onLoad({ user_id: SHARER_ID, ...QUERY });
     expect(page.data.state).toBe("error");
     expect(page.data.errorKind).toBe("userUnavailable");
-    expect(page.data.errorMessage).toBe("这位用户已注销");
+    expect(page.data.errorMessage).toBe("该用户暂不可用");
     expect(page.data.card).toBeNull();
   });
 
@@ -514,24 +505,38 @@ describe("share-card page", () => {
     expect(page.data.sharerId).toBe(SHARER_ID);
   });
 
-  it("resets the selected round and returns to picker after changing league", async () => {
+  it("[CR50-01] stays in picker state without calling listLeagueSeasons when round_id is missing, and enters card state when entered with full params", async () => {
+    const source = readFileSync(PAGE_JS, "utf8");
+    expect(source).not.toContain("listLeagueSeasons");
+    expect(source).not.toContain("league-seasons");
+
     const { page, getMyShareCard } = loadPage();
-    await page.onLoad({});
+    expect(page.loadCatalog).toBeUndefined();
+    expect(page.buildPickerState).toBeUndefined();
+    expect(page.onLeagueChange).toBeUndefined();
+    expect(page.onSeasonChange).toBeUndefined();
+    expect(page.onRoundChange).toBeUndefined();
+    expect(page.onReselect).toBeUndefined();
+    expect(page.onCatalogRetry).toBeUndefined();
+
+    await page.onLoad({ league_id: "premier_league", season_id: "2026_2027" });
     expect(page.data.state).toBe("picker");
+    expect(page.data.selectedLeagueId).toBe("premier_league");
+    expect(page.data.selectedSeasonId).toBe("2026_2027");
+    expect(page.data.selectedRoundId).toBeNull();
     expect(getMyShareCard).toHaveBeenCalledTimes(0);
-    page.onLeagueChange({ detail: { value: "1" } });
-    page.onSeasonChange({ detail: { value: "1" } });
-    await page.onRoundChange({ detail: { value: "1" } });
+
+    await page.onLoad({ league_id: "premier_league", season_id: "2026_2027", round_id: "1" });
     expect(page.data.selectedLeagueId).toBe("premier_league");
     expect(page.data.selectedSeasonId).toBe("2026_2027");
     expect(page.data.selectedRoundId).toBe("01");
     expect(page.data.state).toBe("card");
-    page.onLeagueChange({ detail: { value: "2" } });
-    expect(page.data.selectedRoundId).toBeNull();
-    expect(page.data.roundIndex).toBe(0);
-    expect(page.data.seasonIndex).toBe(0);
-    expect(page.data.state).toBe("picker");
-    expect(page.data.card).toBeNull();
+    expect(getMyShareCard).toHaveBeenCalledTimes(1);
+    expect(getMyShareCard).toHaveBeenLastCalledWith({
+      leagueId: "premier_league",
+      seasonId: "2026_2027",
+      roundId: "01",
+    });
   });
 
   it("hides the share menu and does not share empty identity params before a card is ready", async () => {
@@ -564,7 +569,7 @@ describe("share-card page", () => {
     expect(share.path).not.toContain("league_id=la_liga");
   });
 
-  it("hides the share menu again after a failed load and after changing filters", async () => {
+  it("hides the share menu again after a failed load or incomplete params", async () => {
     const getMyShareCard = vi.fn(async () => ({
       statusCode: 500,
       code: "INTERNAL",
@@ -578,7 +583,7 @@ describe("share-card page", () => {
     const loaded = loadPage();
     await loaded.page.onLoad({ ...QUERY });
     expect(loaded.shareMenus.at(-1)[0]).toBe("showShareMenu");
-    loaded.page.onLeagueChange({ detail: { value: "2" } });
+    await loaded.page.onLoad({ league_id: "premier_league", season_id: "2026_2027" });
     expect(loaded.page.data.state).toBe("picker");
     expect(loaded.shareMenus.at(-1)).toEqual(["hideShareMenu", ["shareAppMessage", "shareTimeline"]]);
   });
@@ -616,42 +621,59 @@ describe("share-card page", () => {
     expect(page.data.state).toBe("card");
   });
 
-  it("onReselect after userUnavailable resets receiver mode to preview and clears sharerId", async () => {
-    const getShareCardForUser = vi.fn(async () => ({
-      statusCode: 409,
-      code: "USER_DELETED",
-      message: "用户已注销",
+  it("[CR50-01] removes the dead reselect button and routes badParams, roundNotFound, and userUnavailable back to my-predictions", async () => {
+    const wxml = readFileSync(join(HERE, "share-card.wxml"), "utf8");
+    expect(wxml).not.toContain("onReselect");
+    expect(wxml).not.toContain("重新选择");
+    expect(wxml).toContain("errorKind === 'userUnavailable' || errorKind === 'roundNotFound' || errorKind === 'badParams'");
+
+    const getMyShareCard = vi.fn(async () => ({
+      statusCode: 422,
+      code: "VALIDATION_ERROR",
+      message: "invalid params",
     }));
-    const { page, getMyShareCard, getShareCardForUser: getForUser } = loadPage({ getShareCardForUser });
-    await page.onLoad({ user_id: SHARER_ID, ...QUERY });
-    expect(page.data.errorKind).toBe("userUnavailable");
-    page.onReselect();
-    expect(page.data.state).toBe("picker");
-    expect(page.data.mode).toBe("preview");
-    expect(page.data.sharerId).toBeNull();
-    await page.onRoundChange({ detail: { value: "1" } });
-    expect(getForUser).toHaveBeenCalledTimes(1);
-    expect(getMyShareCard).toHaveBeenCalledTimes(1);
+    const badParamsCase = loadPage({
+      getMyShareCard,
+      pages: [
+        { route: "pages/my-predictions/my-predictions" },
+        { route: "pages/share-card/share-card" },
+      ],
+    });
+    await badParamsCase.page.onLoad({ ...QUERY });
+    expect(badParamsCase.page.data.state).toBe("error");
+    expect(badParamsCase.page.data.errorKind).toBe("badParams");
+    badParamsCase.page.onBackToPredictions();
+    expect(badParamsCase.navs).toContainEqual(["navigateBack", 1]);
   });
 
-  it("resets roundIndex when reselecting so the same round can be picked again", async () => {
-    const { page } = loadPage();
-    await page.onLoad({});
-    page.setData({
-      roundIndex: 1,
-      selectedRoundId: "01",
-      selectedLeagueId: "premier_league",
-      selectedSeasonId: "2026_2027",
-      state: "card",
+  it("[CR50-01] receiver login round-trip preserves sharerId, shareToken, and selected round context", async () => {
+    const getShareCardForUser = vi.fn(async () => ({
+      statusCode: 401,
+      code: "UNAUTHORIZED",
+    }));
+    const { page, getShareCardForUser: getForUser, store } = loadPage({ getShareCardForUser });
+    await page.onLoad({ user_id: SHARER_ID, ...QUERY, share_token: "tok-roundtrip" });
+    expect(page.data.errorKind).toBe("unauthorized");
+    expect(page.data.shareToken).toBe("tok-roundtrip");
+
+    page.onLoginTap();
+    getForUser.mockResolvedValueOnce({
+      statusCode: 200,
+      data: shareCardData({ user_id: SHARER_ID, display_name: "Sharer", share_token: "tok-roundtrip" }),
     });
+    store.set(AUTH_SESSION_STORAGE_KEY, ACTIVE_SESSION);
+    await page.onShow();
 
-    page.onReselect();
-
-    expect(page.data.roundIndex).toBe(0);
-    expect(page.data.selectedRoundId).toBeNull();
-    expect(page.data.selectedLeagueId).toBe("premier_league");
-    expect(page.data.selectedSeasonId).toBe("2026_2027");
-    expect(page.data.state).toBe("picker");
+    expect(getForUser).toHaveBeenLastCalledWith(SHARER_ID, {
+      leagueId: "premier_league",
+      seasonId: "2026_2027",
+      roundId: "12",
+      shareToken: "tok-roundtrip",
+    });
+    expect(page.data.state).toBe("card");
+    expect(page.data.mode).toBe("receiver");
+    expect(page.data.sharerId).toBe(SHARER_ID);
+    expect(page.data.shareToken).toBe("tok-roundtrip");
   });
 
   it("formats generated_at in UTC+8 regardless of device timezone", async () => {
@@ -814,7 +836,7 @@ describe("share-card page", () => {
 
     await page.onLoad({ user_id: SHARER_ID, ...QUERY });
     expect(page.data.state).toBe("card");
-    expect(page.data.card.displayName).toBe("已注销用户");
+    expect(page.data.card.displayName).toBe("历史用户");
     expect(page.data.card.isDeleted).toBe(true);
     expect(page.data.card.hasFavoriteTeam).toBe(false);
     expect(page.onShareAppMessage().path).not.toContain("share_token=");

@@ -59,7 +59,7 @@ function applyErrorState(page, result) {
     page.setData({
       ...clearIdentityPatch(page),
       state: "userDeleted",
-      errorMessage: result.message || "账号已注销",
+      errorMessage: result.message || "当前账号不可用",
     });
     return true;
   }

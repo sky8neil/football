@@ -32,11 +32,29 @@ const SCORE_CAPTION = {
 
 const REASON_TEXT = {
   AUTH_REQUIRED: "登录后可提交预测",
-  USER_DELETED: "账号已注销",
+  USER_DELETED: "当前不可预测",
   ALREADY_SUBMITTED: "已提交",
   KICKOFF_UNCONFIRMED: "开球未确认",
   NOT_SCHEDULED: "当前赛程不可预测",
   CLOSED: "预测已截止",
+};
+
+const LEAGUE_NAMES = {
+  premier_league: "英超",
+  la_liga: "西甲",
+  serie_a: "意甲",
+  bundesliga: "德甲",
+  ligue_1: "法甲",
+  chinese_super_league: "中超",
+};
+
+const LEAGUE_LOGOS = {
+  premier_league: "/assets/logos/leagues/premier_league.png",
+  la_liga: "/assets/logos/leagues/la_liga.png",
+  serie_a: "/assets/logos/leagues/serie_a.png",
+  bundesliga: "/assets/logos/leagues/bundesliga.png",
+  ligue_1: "/assets/logos/leagues/ligue_1.png",
+  chinese_super_league: "/assets/logos/leagues/chinese_super_league.png",
 };
 
 const STATUS_TEXT = {
@@ -47,6 +65,17 @@ const STATUS_TEXT = {
   cancelled: "取消",
   abandoned: "腰斩",
 };
+
+function statusChipClass(status) {
+  if (status === "scheduled") return "chip-brand";
+  if (status === "live" || status === "postponed") return "chip-live";
+  return "chip-done";
+}
+
+function extractKickoffTime(kickoffText) {
+  const match = String(kickoffText || "").match(/(\d{2}:\d{2})$/);
+  return match ? match[1] : "";
+}
 
 function parseScore(raw) {
   if (typeof raw !== "string") {
@@ -140,6 +169,16 @@ Page({
     roundText: "",
     deadlineText: "",
     statusText: "",
+    statusChipClass: "chip-brand",
+    leagueName: "",
+    leagueLogo: "",
+    leagueRoundText: "",
+    isDarkScoreBug: false,
+    scoreBugSubText: "开球时间",
+    prefillBannerText: "",
+    myPredictionChipText: "已锁定",
+    myPredictionChipClass: "chip-hit",
+    submittedText: "",
     homeLogo: "",
     awayLogo: "",
     homeNameZh: "",
@@ -171,6 +210,8 @@ Page({
   prefillScores: null,
   prefillApplied: false,
   hasUserEditedScore: false,
+  unloaded: false,
+  unsubscribeAuthRestored: null,
 
   rememberLoginGeneration() {
     const generation = currentLoginGeneration();
@@ -187,6 +228,7 @@ Page({
         homeScore: 0,
         awayScore: 0,
         derivedResultText: derivedResult(0, 0),
+        prefillBannerText: "",
         myPrediction: null,
         myPredictionScore: "",
         myMatchScoreText: "",
@@ -214,6 +256,7 @@ Page({
 
   handleStaleLoginGeneration(loginGeneration) {
     if (loginGeneration === currentLoginGeneration()) return null;
+    if (this.unloaded) return Promise.resolve();
     if (this.loginGeneration !== currentLoginGeneration()) {
       if (this.data.matchId) return this.loadDetail();
       this.rememberLoginGeneration();
@@ -227,13 +270,35 @@ Page({
       ? String(query.id)
       : (query && query.match_id ? String(query.match_id) : "");
     const matchId = rawId.trim();
+    this.unloaded = false;
     this.hasShown = false;
     this.prefillScores = parsePrefillPair(query);
     this.prefillApplied = false;
     this.hasUserEditedScore = false;
+    if (typeof this.unsubscribeAuthRestored === "function") {
+      this.unsubscribeAuthRestored();
+      this.unsubscribeAuthRestored = null;
+    }
+    if (authService && typeof authService.onAuthRestored === "function") {
+      this.unsubscribeAuthRestored = authService.onAuthRestored(() => {
+        if (!this.unloaded && this.data.matchId && !this.data.submitting) {
+          return this.loadDetail();
+        }
+      });
+    }
     this.rememberLoginGeneration();
     this.setData({ matchId });
     this.loadDetail();
+  },
+
+  onUnload() {
+    this.unloaded = true;
+    if (typeof this.unsubscribeAuthRestored === "function") {
+      this.unsubscribeAuthRestored();
+      this.unsubscribeAuthRestored = null;
+    }
+    this.detailRequestSerial += 1;
+    this.crowdRequestSerial += 1;
   },
 
   onShow() {
@@ -261,13 +326,14 @@ Page({
   },
 
   loadDetail() {
+    if (this.unloaded) return Promise.resolve();
     if (!this.data.matchId) {
       this.setData({ state: "error", errorMessage: "缺少比赛 id" });
       return Promise.resolve();
     }
+    const loginGeneration = this.rememberLoginGeneration();
     const serial = ++this.detailRequestSerial;
     const matchId = this.data.matchId;
-    const loginGeneration = this.rememberLoginGeneration();
     this.setData({ state: "loading", errorMessage: "" });
     let pending;
     try {
@@ -276,11 +342,13 @@ Page({
       pending = Promise.reject(error);
     }
     return pending.then((result) => {
+      if (this.unloaded) return;
       if (serial !== this.detailRequestSerial || matchId !== this.data.matchId) return;
       const stale = this.handleStaleLoginGeneration(loginGeneration);
       if (stale) return stale;
       this.applyDetailResult(result);
     }).catch((error) => {
+      if (this.unloaded) return;
       if (serial !== this.detailRequestSerial || matchId !== this.data.matchId) return;
       const stale = this.handleStaleLoginGeneration(loginGeneration);
       if (stale) return stale;
@@ -334,11 +402,52 @@ Page({
     const homePresented = presentTeam(match.home_team, match.league_id);
     const awayPresented = presentTeam(match.away_team, match.league_id);
     const scoreCaption = SCORE_CAPTION[match.match_status] || "开球时间";
+    const kickoffText = formatKickoff(match.kickoff_at);
+    const roundText = formatRound(match.round_id);
+    const leagueName = LEAGUE_NAMES[match.league_id] || "";
+    const leagueLogo = LEAGUE_LOGOS[match.league_id] || "";
+    const leagueRoundText = leagueName && roundText
+      ? `${leagueName} · ${roundText}`
+      : (leagueName || roundText);
+    const hasRegularScore =
+      match.regular_home_score !== null &&
+      match.regular_home_score !== undefined &&
+      match.regular_away_score !== null &&
+      match.regular_away_score !== undefined;
+    const isDarkScoreBug =
+      match.match_status === "live" ||
+      match.match_status === "finished" ||
+      hasRegularScore;
+    const scoreBugSubText = match.match_status === "scheduled"
+      ? (extractKickoffTime(kickoffText) || scoreCaption)
+      : scoreCaption;
+    const myPredictionChipText = myPrediction
+      ? (cancelled
+        ? "不计分"
+        : myPrediction.exact_hit === true
+          ? "精确命中"
+          : myPrediction.wdl_hit === true
+            ? "赛果命中"
+            : myPrediction.match_score === null
+              ? "已锁定"
+              : "未命中")
+      : "";
+    const myPredictionChipClass = myPrediction
+      ? (cancelled
+        ? "chip-done"
+        : myPrediction.exact_hit === true
+          ? "chip-brand"
+          : myPrediction.wdl_hit === true || myPrediction.match_score === null
+            ? "chip-hit"
+            : "chip-done")
+      : "chip-hit";
     let nextHomeScore = this.data.homeScore;
     let nextAwayScore = this.data.awayScore;
+    let nextPrefillBannerText = canSubmit ? this.data.prefillBannerText : "";
     if (canSubmit && this.prefillScores && !this.prefillApplied && !this.hasUserEditedScore) {
       nextHomeScore = this.prefillScores.homeScore;
       nextAwayScore = this.prefillScores.awayScore;
+      nextPrefillBannerText = `已为你预填分享卡预测 ${nextHomeScore} : ${nextAwayScore}，可调整后提交`;
       this.prefillApplied = true;
       this.prefillScores = null;
     }
@@ -347,7 +456,16 @@ Page({
       match,
       regularScoreText: formatRegularScore(match),
       scoreCaption,
+      scoreBugSubText,
+      isDarkScoreBug,
+      leagueName,
+      leagueLogo,
+      leagueRoundText,
+      statusChipClass: statusChipClass(match.match_status),
+      prefillBannerText: nextPrefillBannerText,
       myPrediction,
+      myPredictionChipText,
+      myPredictionChipClass,
       // 同 deadlineText：submitted_at 是云端 ISO 字符串，必须格式化后再插值。
       submittedText: myPrediction ? formatKickoff(myPrediction.submitted_at) : "",
       myPredictionScore: myPrediction
@@ -383,8 +501,8 @@ Page({
       awayNameZh: awayPresented.nameZh,
       homeMissing: homePresented.missing,
       awayMissing: awayPresented.missing,
-      kickoffText: formatKickoff(match.kickoff_at),
-      roundText: formatRound(match.round_id),
+      kickoffText,
+      roundText,
       // 截止时间必须格式化后再上屏：云端返回的是 ISO 字符串，
       // 直接在 WXML 里插值会把 2026-11-06T19:50:00.000Z 原样显示给用户。
       deadlineText: formatKickoff(match.prediction_deadline_at),
@@ -397,8 +515,9 @@ Page({
   },
 
   loadCrowd(match) {
-    const serial = ++this.crowdRequestSerial;
+    if (this.unloaded) return;
     const loginGeneration = this.rememberLoginGeneration();
+    const serial = ++this.crowdRequestSerial;
     const plan = crowdPlan({ match, identityMissing: this.data.identityMissing });
     if (plan === "hidden") {
       this.setData({ crowdState: "ready", crowdKind: "hidden", crowdSegments: [], crowdComparisonText: "" });
@@ -420,6 +539,7 @@ Page({
       pending = Promise.reject(error);
     }
     pending.then((response) => {
+      if (this.unloaded) return;
       if (serial !== this.crowdRequestSerial || this.data.matchId !== match.match_id) return;
       const stale = this.handleStaleLoginGeneration(loginGeneration);
       if (stale) return stale;
@@ -429,6 +549,25 @@ Page({
       }
       if (response.statusCode === 401 && response.code === "UNAUTHORIZED") {
         this.setData({ identityMissing: true, crowdState: "ready", crowdKind: "guest", crowdMessage: COPY.guest, crowdSegments: [], crowdComparisonText: "" });
+        return;
+      }
+      if (response.statusCode === 409 && response.code === "USER_DELETED") {
+        const nextMatch = this.data.match
+          ? Object.assign({}, this.data.match, { can_predict: false, can_predict_reason: "USER_DELETED" })
+          : this.data.match;
+        this.setData({
+          match: nextMatch,
+          canSubmit: false,
+          identityMissing: false,
+          userDeleted: true,
+          submitDisabledReason: REASON_TEXT.USER_DELETED,
+          crowdState: "idle",
+          crowdKind: "hidden",
+          crowdMessage: "",
+          crowdSegments: [],
+          crowdComparisonText: "",
+          crowdFooter: "",
+        });
         return;
       }
       if (response.statusCode !== 200) {
@@ -445,6 +584,7 @@ Page({
         crowdFooter: card.footer || "",
       });
     }).catch(() => {
+      if (this.unloaded) return;
       if (serial !== this.crowdRequestSerial || this.data.matchId !== match.match_id) return;
       const stale = this.handleStaleLoginGeneration(loginGeneration);
       if (stale) return stale;
@@ -457,6 +597,7 @@ Page({
   },
 
   onScoreStep(event) {
+    if (this.data.submitting) return;
     const side = event.currentTarget.dataset.side;
     const delta = Number(event.currentTarget.dataset.delta);
     if ((side !== "home" && side !== "away") || !Number.isFinite(delta)) return;
@@ -534,11 +675,13 @@ Page({
       pending = Promise.reject(error);
     }
     return pending.then((result) => {
+      if (this.unloaded) return;
       if (matchId !== this.data.matchId) return;
       const stale = this.handleStaleLoginGeneration(loginGeneration);
       if (stale) return stale;
       this.applySubmitResult(result);
     }).catch((error) => {
+      if (this.unloaded) return;
       if (matchId !== this.data.matchId) return;
       const stale = this.handleStaleLoginGeneration(loginGeneration);
       if (stale) return stale;
@@ -562,7 +705,7 @@ Page({
       this.idempotencyKey = null;
       this.lastPayload = null;
       markMyPredictionsDirty();
-      this.setData({ submitting: false, canSubmit: false, formError: "" });
+      this.setData({ submitting: false, canSubmit: false, prefillBannerText: "", formError: "" });
       this.loadDetail();
       return;
     }
@@ -577,12 +720,24 @@ Page({
       return;
     }
     if (result.statusCode === 409 && result.code === "USER_DELETED") {
+      this.crowdRequestSerial += 1;
+      const nextMatch = this.data.match
+        ? Object.assign({}, this.data.match, { can_predict: false, can_predict_reason: "USER_DELETED" })
+        : this.data.match;
       this.setData({
+        match: nextMatch,
         submitting: false,
         canSubmit: false,
+        identityMissing: false,
         userDeleted: true,
         submitDisabledReason: REASON_TEXT.USER_DELETED,
         formError: "",
+        crowdState: "idle",
+        crowdKind: "hidden",
+        crowdMessage: "",
+        crowdSegments: [],
+        crowdComparisonText: "",
+        crowdFooter: "",
       });
       return;
     }

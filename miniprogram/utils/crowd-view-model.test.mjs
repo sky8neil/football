@@ -120,4 +120,15 @@ describe("crowd view model", () => {
     expect(copy.COPY.retry).toBeTruthy();
     expect(copy.COPY.yourChoice).toBeTruthy();
   });
+
+  it("[CR50-16] returns hidden for USER_DELETED regardless of match status or close state", () => {
+    for (const overrides of [
+      { match_status: "scheduled", can_predict_reason: "USER_DELETED", is_prediction_closed: false },
+      { match_status: "scheduled", can_predict_reason: "USER_DELETED", is_prediction_closed: true },
+      { match_status: "live", can_predict_reason: "USER_DELETED", is_prediction_closed: true },
+      { match_status: "finished", can_predict_reason: "USER_DELETED", is_prediction_closed: true },
+    ]) {
+      expect(vm.crowdPlan({ match: match(overrides), identityMissing: false })).toBe("hidden");
+    }
+  });
 });

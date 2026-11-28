@@ -100,7 +100,7 @@ function applyAuthOrDeletedState(page, result) {
   if (result.statusCode === 409 && result.code === "USER_DELETED") {
     page.setData({
       state: "userDeleted",
-      errorMessage: result.message || "账号已注销",
+      errorMessage: result.message || "当前账号不可用",
       nickname: "",
       avatarText: "球",
       currentUserId: "",
@@ -184,22 +184,49 @@ Page({
     this.currentSeasonRanked = false;
     this.setData({
       scope: "global",
+      scopeSheetOpen: false,
       groupId: null,
       board: "week",
+      availableBoards: ["week", "career", "strength"],
+      showCareerBoard: true,
+      showStrengthBoard: true,
+      showSeasonBoard: false,
       selectedLevelSeasonId: null,
       selectedPeriodKey: null,
+      weekOptions: [],
+      weekOptionLabels: [],
+      selectedWeekIndex: 0,
+      availableLevelSeasons: [],
+      seasonOptionLabels: [],
+      selectedSeasonLabel: "",
+      selectedSeasonIndex: 0,
+      currentLevelSeasonId: null,
+      showHistorySeasonEntry: false,
+      showGroupScope: true,
       groups: [],
       groupNames: [],
       selectedGroupIndex: 0,
+      view: {},
+      items: [],
+      listItems: [],
+      podiumItems: [],
+      entryCount: 0,
+      me: null,
       nickname: "",
       avatarText: "球",
       currentUserId: "",
+      errorMessage: "",
+      showSwitchToGlobal: false,
+      hasMore: false,
+      nextCursor: null,
+      loadingMore: false,
     });
   },
 
   onShow() {
     const tabBar = this.getTabBar && this.getTabBar();
     if (tabBar) tabBar.setData({ selected: 1 });
+    this.setData({ scopeSheetOpen: false });
     const generation = currentLoginGeneration();
     if (generation !== this.loginGeneration) {
       this.loginGeneration = generation;
@@ -249,6 +276,8 @@ Page({
   loadFirstPage() {
     const requestSerial = (this.requestSerial || 0) + 1;
     this.requestSerial = requestSerial;
+    const generation = currentLoginGeneration();
+    const isCurrent = () => this.requestSerial === requestSerial && currentLoginGeneration() === generation;
     this.setData({
       state: "loading",
       items: [],
@@ -260,7 +289,7 @@ Page({
       loadingMore: false,
     });
     return getMyProfile().then((profileResult) => {
-      if (this.requestSerial !== requestSerial) return;
+      if (!isCurrent()) return;
       if (applyAuthOrDeletedState(this, profileResult)) {
         return;
       }
@@ -275,12 +304,12 @@ Page({
       const profile = profileResult.data || {};
       this.setData({ nickname: profile.nickname, avatarText: Array.from(profile.nickname || "球")[0], currentUserId: profile.user_id });
       return Promise.all([listMyGroups({}), getMyLevels(), this.fetchRankings(true)]).then((results) => {
-        if (this.requestSerial !== requestSerial) return;
+        if (!isCurrent()) return;
         const groupsResult = results[0];
         const levelsResult = results[1];
         const rankingsResult = results[2];
         if (this.isGroupBoardUnavailable(rankingsResult)) {
-          return this.recoverInvalidGroup(requestSerial);
+          return this.recoverInvalidGroup(requestSerial, generation);
         }
         if (
           applyAuthOrDeletedState(this, groupsResult)
@@ -330,18 +359,20 @@ Page({
             return;
           }
           const group = groupItems[0];
+          this.userSelectedWeek = false;
           return new Promise((resolve) => {
             this.setData({
               groups: groupItems,
               groupNames: groupItems.map((item) => item.display_name),
               selectedGroupIndex: 0,
               groupId: group.group_id,
+              selectedPeriodKey: null,
             }, () => {
-              if (this.requestSerial !== requestSerial) {
+              if (!isCurrent()) {
                 resolve();
                 return;
               }
-              resolve(this.fetchRankings(true).then((result) => this.applyListResult(result, true, requestSerial)));
+              resolve(this.fetchRankings(true).then((result) => this.applyListResult(result, true, requestSerial, generation)));
             });
           });
         }
@@ -351,16 +382,16 @@ Page({
             groupNames: groupItems.map((item) => item.display_name),
             selectedGroupIndex: selectedGroupIndex < 0 ? 0 : selectedGroupIndex,
           }, () => {
-            if (this.requestSerial !== requestSerial) {
+            if (!isCurrent()) {
               resolve();
               return;
             }
-            resolve(this.applyListResult(rankingsResult, true, requestSerial));
+            resolve(this.applyListResult(rankingsResult, true, requestSerial, generation));
           });
         });
       });
     }).catch(() => {
-      if (this.requestSerial !== requestSerial) return;
+      if (!isCurrent()) return;
       this.setData({
         state: "error",
         errorMessage: "暂时无法读取排行榜数据，请稍后重试",
@@ -427,11 +458,13 @@ Page({
     });
   },
 
-  recoverInvalidGroup(requestSerial) {
-    if (requestSerial !== undefined && this.requestSerial !== requestSerial) return;
+  recoverInvalidGroup(requestSerial, generation) {
+    const isCurrent = () => (requestSerial === undefined || this.requestSerial === requestSerial)
+      && (generation === undefined || currentLoginGeneration() === generation);
+    if (!isCurrent()) return;
     this.enterGroupInvalidState(this.data.groups);
     return listMyGroups({}).then((groupsResult) => {
-      if (requestSerial !== undefined && this.requestSerial !== requestSerial) return;
+      if (!isCurrent()) return;
       if (groupsResult.statusCode !== 200) return;
       const groupItems = this.excludeInvalidGroups(
         groupsResult.data && Array.isArray(groupsResult.data.items)
@@ -449,9 +482,10 @@ Page({
   queueLoadFirstPage(patch) {
     const requestSerial = (this.requestSerial || 0) + 1;
     this.requestSerial = requestSerial;
+    const generation = currentLoginGeneration();
     return new Promise((resolve) => {
       this.setData(patch, () => {
-        if (this.requestSerial !== requestSerial) {
+        if (this.requestSerial !== requestSerial || currentLoginGeneration() !== generation) {
           resolve();
           return;
         }
@@ -521,7 +555,13 @@ Page({
     if (!group) return;
     this.forgetInvalidGroup(group.group_id);
     this.explicitTargetSeasonId = null;
-    return this.queueLoadFirstPage({ selectedGroupIndex: index, scope: "group", groupId: group.group_id });
+    const groupChanged = this.data.scope !== "group" || this.data.groupId !== group.group_id;
+    const patch = { selectedGroupIndex: index, scope: "group", groupId: group.group_id };
+    if (groupChanged) {
+      this.userSelectedWeek = false;
+      patch.selectedPeriodKey = null;
+    }
+    return this.queueLoadFirstPage(patch);
   },
 
   onWeekChange(event) {
@@ -594,6 +634,7 @@ Page({
   },
 
   onInviteTap() {
+    this.setData({ scopeSheetOpen: false });
     if (this.data.scope === "group" && this.data.groupId) {
       wx.navigateTo({ url: `/pages/groups/detail?group_id=${encodeURIComponent(this.data.groupId)}` });
       return;
@@ -605,11 +646,13 @@ Page({
     wx.switchTab({ url: "/pages/matches/matches" });
   },
 
-  applyListResult(result, replace, requestSerial) {
-    if (requestSerial !== undefined && this.requestSerial !== requestSerial) return;
+  applyListResult(result, replace, requestSerial, generation) {
+    const isCurrent = () => (requestSerial === undefined || this.requestSerial === requestSerial)
+      && (generation === undefined || currentLoginGeneration() === generation);
+    if (!isCurrent()) return;
     if (!result || result.skipped) return;
     if (this.isGroupBoardUnavailable(result)) {
-      return this.recoverInvalidGroup(requestSerial);
+      return this.recoverInvalidGroup(requestSerial, generation);
     }
     if (applyAuthOrDeletedState(this, result)) {
       return;
@@ -673,7 +716,7 @@ Page({
         showStrengthBoard: availableBoards.indexOf("strength") !== -1,
         showSeasonBoard: availableBoards.indexOf("season") !== -1,
       }, () => {
-        if (requestSerial !== undefined && this.requestSerial !== requestSerial) return;
+        if (!isCurrent()) return;
         this.loadFirstPage();
       });
       return;
@@ -719,7 +762,7 @@ Page({
         scope: "global",
         groupId: null,
       }, () => {
-        if (requestSerial !== undefined && this.requestSerial !== requestSerial) return;
+        if (!isCurrent()) return;
         this.loadFirstPage();
       });
       return;
@@ -802,10 +845,11 @@ Page({
     }
     this.setData({ loadingMore: true, errorMessage: "" });
     const requestSerial = this.requestSerial;
+    const generation = currentLoginGeneration();
     return this.fetchRankings(false, this.data.nextCursor).then((result) => {
-      return this.applyListResult(result, false, requestSerial);
+      return this.applyListResult(result, false, requestSerial, generation);
     }).catch(() => {
-      if (this.requestSerial !== requestSerial) return;
+      if (this.requestSerial !== requestSerial || currentLoginGeneration() !== generation) return;
       this.setData({
         loadingMore: false,
         errorMessage: "暂时无法读取排行榜数据，请稍后重试",

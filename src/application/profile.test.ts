@@ -62,6 +62,7 @@ describe("ProfileQueryService", () => {
       user_id: user.user_id,
       nickname: "Sky",
       favorite_team_id: user.favorite_team_id,
+      gender: null,
       career_points: 428,
       career_valid_predictions: 76,
       career_exact_hits: 8,
@@ -69,6 +70,21 @@ describe("ProfileQueryService", () => {
       career_best_level: 6,
       season_level: 1,
       previous_season: null,
+    });
+  });
+
+  it("私有资料与公开资料正确返回已设置的 gender", async () => {
+    const repo = new InMemoryRepository();
+    const user = makeUser({ gender: "female" });
+    await repo.users.insert(user);
+
+    await expect(new ProfileQueryService(repo).getMyProfile(user.user_id, NOW)).resolves.toMatchObject({
+      user_id: user.user_id,
+      gender: "female",
+    });
+    await expect(new ProfileQueryService(repo).getPublicProfile(user.user_id, NOW)).resolves.toMatchObject({
+      user_id: user.user_id,
+      gender: "female",
     });
   });
 
@@ -147,6 +163,7 @@ describe("ProfileQueryService", () => {
       user_id: user.user_id,
       display_name: "Sky",
       favorite_team_id: user.favorite_team_id,
+      gender: null,
       career_points: 428,
       career_valid_predictions: 76,
       career_exact_hits: 8,
@@ -156,12 +173,13 @@ describe("ProfileQueryService", () => {
     });
   });
 
-  it("deleted 用户使用固定展示名并清空主队，但保留历史战绩", async () => {
+  it("deleted 用户使用固定展示名并清空主队和性别，但保留历史战绩", async () => {
     const repo = new InMemoryRepository();
     const user = makeUser({
       status: "deleted",
       nickname: null,
       favorite_team_id: null,
+      gender: "male",
       deleted_at: NOW,
     });
     await repo.users.insert(user);
@@ -170,6 +188,7 @@ describe("ProfileQueryService", () => {
       user_id: user.user_id,
       display_name: "已注销用户",
       favorite_team_id: null,
+      gender: null,
       career_points: 428,
       career_valid_predictions: 76,
       career_exact_hits: 8,

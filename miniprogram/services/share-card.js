@@ -60,7 +60,7 @@ function getShareCardForUser(userId, { leagueId, seasonId, roundId, shareToken }
   }
   return request({
     method: "GET",
-    path: "/v1/share-card/" + userId,
+    path: "/v1/share-card/" + encodeURIComponent(userId),
     query: shareCardQuery({ leagueId, seasonId, roundId, shareToken }),
     auth: "optional",
   });

@@ -55,6 +55,7 @@ Page({
 
   requestSerial: 0,
   loginGeneration: null,
+  confirmingAction: false,
 
   onLoad(options) {
     const groupId = options && typeof options.group_id === "string" ? options.group_id : "";
@@ -62,6 +63,7 @@ Page({
     const ownedCount = Number(options && options.owned_count) || 1;
     this.groupId = groupId;
     this.loginGeneration = currentLoginGeneration();
+    this.confirmingAction = false;
     this.setData({
       isCreationSuccess,
       title: isCreationSuccess ? COPY.groupCreateSuccess : COPY.groupDetailTitle,
@@ -76,6 +78,7 @@ Page({
     const generationChanged = this.loginGeneration !== null && generation !== this.loginGeneration;
     this.loginGeneration = generation;
     if (generationChanged) {
+      this.confirmingAction = false;
       this.setData({ group: null, loadingAction: false, errorMessage: "" });
       return this.loadGroup();
     }
@@ -116,7 +119,7 @@ Page({
           state: "userDeleted",
           group: null,
           loadingAction: false,
-          errorMessage: result.message || "该账号已被注销",
+          errorMessage: result.message || "当前账号不可用",
         });
         return;
       }
@@ -179,20 +182,28 @@ Page({
   },
 
   confirmAction(content, action) {
-    if (this.data.loadingAction || !this.groupId) return;
+    if (this.confirmingAction || this.data.loadingAction || !this.groupId) return;
     const generation = currentLoginGeneration();
+    this.confirmingAction = true;
     wx.showModal({
       title: this.data.title,
       content,
       success: (result) => {
-        if (!result.confirm) return;
         if (currentLoginGeneration() !== generation) return;
+        if (!result || !result.confirm) {
+          this.confirmingAction = false;
+          return;
+        }
+        if (this.data.loadingAction) {
+          this.confirmingAction = false;
+          return;
+        }
         this.setData({ loadingAction: true, errorMessage: "" });
         return action(this.groupId).then((response) => {
           if (currentLoginGeneration() !== generation) {
-            this.setData({ loadingAction: false });
             return;
           }
+          this.confirmingAction = false;
           if (response.statusCode === 204) {
             this.setData({ loadingAction: false });
             wx.navigateBack({
@@ -217,7 +228,7 @@ Page({
               state: "userDeleted",
               group: null,
               loadingAction: false,
-              errorMessage: response.message || "该账号已被注销",
+              errorMessage: response.message || "当前账号不可用",
             });
             return;
           }
@@ -226,11 +237,21 @@ Page({
             errorMessage: response.message || COPY.groupActionFailed,
           });
         }).catch(() => {
+          if (currentLoginGeneration() !== generation) {
+            return;
+          }
+          this.confirmingAction = false;
           this.setData({
             loadingAction: false,
             errorMessage: COPY.groupActionFailed,
           });
         });
+      },
+      fail: () => {
+        if (currentLoginGeneration() !== generation) {
+          return;
+        }
+        this.confirmingAction = false;
       },
     });
   },

@@ -24,6 +24,7 @@ function loadCommonJs(file, requires) {
 function loadPage({ detail, crowd, submit, getLoginGeneration } = {}) {
   const pageConfig = {};
   let loginGeneration = 0;
+  const authRestoredListeners = new Set();
   Object.defineProperty(globalThis, "Page", {
     value: (config) => Object.assign(pageConfig, config),
     configurable: true,
@@ -65,7 +66,13 @@ function loadPage({ detail, crowd, submit, getLoginGeneration } = {}) {
   loadCommonJs(join(HERE, "match-detail.js"), {
     "../../services/matches.js": { getMatchDetail, getMatchCrowd },
     "../../services/predictions.js": { createUuidV4: () => `uuid-${++keyCounter}`, submitPrediction },
-    "../../services/auth.js": { getLoginGeneration: getLoginGeneration || (() => loginGeneration) },
+    "../../services/auth.js": {
+      getLoginGeneration: getLoginGeneration || (() => loginGeneration),
+      onAuthRestored(listener) {
+        authRestoredListeners.add(listener);
+        return () => authRestoredListeners.delete(listener);
+      },
+    },
     "../../utils/team-presentation.js": {
       presentTeam: (team) => ({
         teamId: team && team.team_id,
@@ -89,6 +96,9 @@ function loadPage({ detail, crowd, submit, getLoginGeneration } = {}) {
     getMatchCrowd,
     getMatchDetail,
     submitPrediction,
+    triggerAuthRestored() {
+      for (const listener of [...authRestoredListeners]) listener({ statusCode: 200 });
+    },
     bumpLoginGeneration() {
       loginGeneration += 1;
     },
@@ -113,7 +123,17 @@ describe("match detail copy-bet prefill (Q-PLAN-3)", () => {
     expect(page.data.homeScore).toBe(2);
     expect(page.data.awayScore).toBe(1);
     expect(page.data.derivedResultText).toBe("主胜");
+    expect(page.data.prefillBannerText).toBe("已为你预填分享卡预测 2 : 1，可调整后提交");
     expect(submitPrediction).not.toHaveBeenCalled();
+
+    const wxml = readFileSync(join(HERE, "match-detail.wxml"), "utf8");
+    const wxss = readFileSync(join(HERE, "match-detail.wxss"), "utf8");
+    expect(wxml).toContain("/assets/images/baseline-pitch.webp");
+    expect(wxml).toContain("prefill-banner");
+    expect(wxml).toContain("{{prefillBannerText}}");
+    expect(wxml).toContain("score-bug");
+    expect(wxss).toContain("var(--surface-solid)");
+    expect(wxss).toContain("var(--surface-solid-dark)");
 
     // User can still confirm and submit
     await page.onSubmit();
@@ -124,6 +144,7 @@ describe("match detail copy-bet prefill (Q-PLAN-3)", () => {
         awayScore: 1,
       }),
     );
+    expect(page.data.prefillBannerText).toBe("");
   });
 
   it("supports boundary values 0 and 20 and preserves id param compatibility", async () => {
@@ -152,6 +173,7 @@ describe("match detail copy-bet prefill (Q-PLAN-3)", () => {
     expect(page.data.homeScore).toBe(0);
     expect(page.data.awayScore).toBe(0);
     expect(page.data.derivedResultText).toBe("平局");
+    expect(page.data.prefillBannerText).toBe("");
     expect(page.data.formError).toBe("");
   });
 
@@ -184,6 +206,7 @@ describe("match detail copy-bet prefill (Q-PLAN-3)", () => {
     expect(alreadySubmitted.page.data.canSubmit).toBe(false);
     expect(alreadySubmitted.page.data.homeScore).toBe(0);
     expect(alreadySubmitted.page.data.awayScore).toBe(0);
+    expect(alreadySubmitted.page.data.prefillBannerText).toBe("");
     expect(alreadySubmitted.page.data.myPredictionScore).toBe("0 - 0");
 
     const closed = loadPage({
@@ -226,6 +249,7 @@ describe("match detail copy-bet prefill (Q-PLAN-3)", () => {
     await page.onShow();
     expect(page.data.homeScore).toBe(0);
     expect(page.data.awayScore).toBe(0);
+    expect(page.data.prefillBannerText).toBe("");
     expect(page.prefillScores).toBeNull();
   });
 
@@ -266,5 +290,101 @@ describe("match detail copy-bet prefill (Q-PLAN-3)", () => {
 
     expect(page.data.homeScore).toBe(0);
     expect(page.data.awayScore).toBe(0);
+  });
+
+  it("[CR50-04] applies share-card prefill once after cold-start onAuthRestored and never overwrites user edits", async () => {
+    const getMatchDetail = vi.fn()
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        data: {
+          match_id: "match-1",
+          match_status: "scheduled",
+          can_predict: false,
+          can_predict_reason: "AUTH_REQUIRED",
+          my_prediction: null,
+          home_team: {},
+          away_team: {},
+        },
+      })
+      .mockResolvedValue({
+        statusCode: 200,
+        data: {
+          match_id: "match-1",
+          match_status: "scheduled",
+          can_predict: true,
+          can_predict_reason: null,
+          my_prediction: null,
+          home_team: {},
+          away_team: {},
+        },
+      });
+    const { page, triggerAuthRestored } = loadPage({ detail: getMatchDetail });
+
+    await page.onLoad({ match_id: "match-1", prefill_home: "2", prefill_away: "1" });
+    await vi.waitFor(() => expect(page.data.state).toBe("ready"));
+    expect(page.data.canSubmit).toBe(false);
+    expect(page.data.homeScore).toBe(0);
+    expect(page.data.awayScore).toBe(0);
+
+    // Auth restores -> reload -> prefill applied once
+    triggerAuthRestored();
+    await vi.waitFor(() => expect(page.data.canSubmit).toBe(true));
+    expect(page.data.homeScore).toBe(2);
+    expect(page.data.awayScore).toBe(1);
+    expect(page.data.prefillBannerText).toBe("已为你预填分享卡预测 2 : 1，可调整后提交");
+
+    // User edits score -> subsequent auth restored / reload must NOT overwrite user's edited score
+    page.onScoreStep({ currentTarget: { dataset: { side: "home", delta: 1 } } });
+    expect(page.data.homeScore).toBe(3);
+    expect(page.data.awayScore).toBe(1);
+
+    triggerAuthRestored();
+    await vi.waitFor(() => expect(getMatchDetail).toHaveBeenCalledTimes(3));
+    expect(page.data.homeScore).toBe(3);
+    expect(page.data.awayScore).toBe(1);
+  });
+
+  it("[CR50-17] disables score steppers while submitting, restores after failure, and preserves 0..20 bounds", async () => {
+    const wxml = readFileSync(join(HERE, "match-detail.wxml"), "utf8");
+    const stepButtons = wxml.match(/<button[^>]*class="step-btn"[^>]*>/g) || [];
+    expect(stepButtons).toHaveLength(4);
+    for (const btn of stepButtons) {
+      expect(btn).toContain('disabled="{{submitting}}"');
+    }
+
+    let resolveSubmit;
+    const submitPrediction = vi.fn(() => new Promise((r) => { resolveSubmit = r; }));
+    const { page } = loadPage({ submit: submitPrediction });
+    await page.onLoad({ match_id: "match-1", prefill_home: "2", prefill_away: "1" });
+    await vi.waitFor(() => expect(page.data.state).toBe("ready"));
+    expect(page.hasUserEditedScore).toBe(false);
+
+    // Start in-flight submission
+    const pendingSubmit = page.onSubmit();
+    expect(page.data.submitting).toBe(true);
+
+    // Stepping while submitting must be ignored
+    page.onScoreStep({ currentTarget: { dataset: { side: "home", delta: 1 } } });
+    page.onScoreStep({ currentTarget: { dataset: { side: "away", delta: 2 } } });
+    expect(page.data.homeScore).toBe(2);
+    expect(page.data.awayScore).toBe(1);
+    expect(page.data.derivedResultText).toBe("主胜");
+    expect(page.hasUserEditedScore).toBe(false);
+
+    // Submission fails -> stepper works again and respects 0..20 bounds
+    resolveSubmit({ statusCode: 500, code: "INTERNAL", message: "请重试" });
+    await pendingSubmit;
+    expect(page.data.submitting).toBe(false);
+
+    page.onScoreStep({ currentTarget: { dataset: { side: "away", delta: 1 } } });
+    expect(page.data.awayScore).toBe(2);
+    expect(page.data.derivedResultText).toBe("平局");
+    expect(page.hasUserEditedScore).toBe(true);
+
+    page.setData({ homeScore: 0, awayScore: 20 });
+    page.onScoreStep({ currentTarget: { dataset: { side: "home", delta: -1 } } });
+    page.onScoreStep({ currentTarget: { dataset: { side: "away", delta: 1 } } });
+    expect(page.data.homeScore).toBe(0);
+    expect(page.data.awayScore).toBe(20);
   });
 });

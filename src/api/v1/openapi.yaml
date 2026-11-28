@@ -2846,7 +2846,7 @@ components:
     PublicProfileData:
       type: object
       additionalProperties: false
-      required: [user_id, display_name, favorite_team_id, career_points, career_valid_predictions, career_exact_hits, career_level, career_best_level, season_level]
+      required: [user_id, display_name, favorite_team_id, gender, career_points, career_valid_predictions, career_exact_hits, career_level, career_best_level, season_level]
       properties:
         user_id:
           type: string
@@ -2854,9 +2854,11 @@ components:
         display_name:
           type: string
         favorite_team_id:
-          type: string
+          type: [string, 'null']
           format: uuid
-          nullable: true
+        gender:
+          type: [string, 'null']
+          enum: [male, female, undisclosed, null]
         career_points:
           type: integer
           minimum: 0
@@ -2889,7 +2891,7 @@ components:
     MyProfileData:
       type: object
       additionalProperties: false
-      required: [user_id, nickname, favorite_team_id, career_points, career_valid_predictions, career_exact_hits, career_level, career_best_level, season_level, previous_season]
+      required: [user_id, nickname, favorite_team_id, gender, career_points, career_valid_predictions, career_exact_hits, career_level, career_best_level, season_level, previous_season]
       properties:
         user_id:
           type: string
@@ -2897,9 +2899,11 @@ components:
         nickname:
           type: string
         favorite_team_id:
-          type: string
+          type: [string, 'null']
           format: uuid
-          nullable: true
+        gender:
+          type: [string, 'null']
+          enum: [male, female, undisclosed, null]
         career_points:
           type: integer
           minimum: 0
@@ -2922,8 +2926,7 @@ components:
           minimum: 1
           maximum: 6
         previous_season:
-          type: object
-          nullable: true
+          type: [object, 'null']
           additionalProperties: false
           required: [level_season_id, points, valid_predictions, exact_hits, best_level]
           properties:
@@ -2960,9 +2963,11 @@ components:
           minLength: 1
           description: 按 Unicode grapheme 计数，长度为 1..32。
         favorite_team_id:
-          type: string
+          type: [string, 'null']
           format: uuid
-          nullable: true
+        gender:
+          type: [string, 'null']
+          enum: [male, female, undisclosed, null]
     CareerLevelData:
       type: object
       additionalProperties: false

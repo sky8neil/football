@@ -1,30 +1,152 @@
-<view class="settings-page">
-  <image class="pitch" src="/assets/images/baseline-pitch.webp" mode="aspectFill" />
-  <view class="content">
-    <view class="title">个人资料设置</view><view class="subtitle">让球友认识你，也为你的主队助威。</view>
-    <view wx:if="{{loading}}" class="card">正在加载个人资料…</view>
-    <view wx:elif="{{errorKind === 'unauthorized'}}" class="card"><text>{{errorMessage}}</text><button class="auth-action" bindtap="onLoginTap">去登录</button></view>
-    <view wx:elif="{{errorKind === 'userDeleted'}}" class="card"><text>{{errorMessage}}</text></view>
-    <view wx:elif="{{errorMessage}}" class="card"><text>{{errorMessage}}</text><button bindtap="loadProfile">重新加载</button></view>
+<view class="page settings-page">
+  <image class="stadium-background" src="/assets/images/baseline-pitch.webp" mode="aspectFill" />
+  <view class="stadium-overlay"></view>
+
+  <view class="secondary-content">
+    <view class="page-header">
+      <view class="page-title">个人资料</view>
+    </view>
+
+    <view wx:if="{{loading}}" class="glass-card strong state-panel">
+      <view class="state-desc">正在加载个人资料…</view>
+    </view>
+
+    <view wx:elif="{{errorKind === 'unauthorized'}}" class="glass-card strong state-panel">
+      <view class="state-icon">👤</view>
+      <view class="state-title">请先登录</view>
+      <view class="state-desc">{{errorMessage || '登录后即可修改昵称、设置主队与管理账号。'}}</view>
+      <button class="btn btn-primary" bindtap="onLoginTap">去登录</button>
+    </view>
+
+    <view wx:elif="{{errorKind === 'userDeleted'}}" class="glass-card strong state-panel">
+      <view class="state-icon is-danger">!</view>
+      <view class="state-title">当前账号不可用</view>
+      <view class="state-desc">{{errorMessage}}</view>
+    </view>
+
+    <view wx:elif="{{errorMessage}}" class="glass-card strong state-panel">
+      <view class="state-icon is-danger">!</view>
+      <view class="state-title">加载失败</view>
+      <view class="state-desc">{{errorMessage}}</view>
+      <button class="btn btn-ghost" bindtap="loadProfile">重新加载</button>
+    </view>
+
     <block wx:else>
-      <view class="card"><text class="label">昵称</text><input type="text" value="{{nickname}}" bindinput="onNicknameInput" disabled="{{saving}}" placeholder="请输入昵称" /></view>
-      <view class="card"><button class="team-toggle" bindtap="onTeamToggle"><text class="label">我的主队</text><text>{{favoriteTeamName}} {{showTeams ? '⌃' : '⌄'}}</text></button>
-        <view wx:if="{{showTeams}}" class="team-picker"><input value="{{search}}" bindinput="onSearch" placeholder="搜索球队名称" />
-          <button class="team-row {{!favoriteTeamId ? 'selected' : ''}}" bindtap="onTeamPick"><text>暂不设置主队</text><text wx:if="{{!favoriteTeamId}}">✓</text></button>
-          <view wx:for="{{visibleGroups}}" wx:key="league_id" class="league-group">
-            <text class="league-heading">{{item.leagueName}}</text>
-            <button wx:for="{{item.teams}}" wx:for-item="team" wx:key="team_id" class="team-row {{favoriteTeamId === team.team_id ? 'selected' : ''}}" data-id="{{team.team_id}}" bindtap="onTeamPick"><image src="{{team.logo}}" mode="aspectFit" /><view class="team-copy"><text class="team-name">{{team.nameZh}}</text><text class="team-en">{{team.name}}</text></view><text wx:if="{{favoriteTeamId === team.team_id}}">✓</text></button>
-          </view>
-          <text wx:if="{{!teamsLoading && !visibleGroups.length && !teamsError}}" class="hint">暂未找到球队</text>
-          <text wx:if="{{teamsLoading}}" class="hint">正在加载球队…</text>
-          <button wx:if="{{teamsError}}" class="more" bindtap="loadTeams">{{teamsError}} · 重试</button>
-          <text class="hint">选择后点击保存生效。</text>
+      <view class="glass-card strong form-card">
+        <view class="field-label">
+          <text>昵称</text>
+          <text class="field-hint">1–32 字，展示于榜单与分享卡</text>
+        </view>
+        <input class="text-input" type="text" value="{{nickname}}" maxlength="32" bindinput="onNicknameInput" disabled="{{saving}}" placeholder="请输入昵称" />
+      </view>
+
+      <view class="glass-card strong form-card">
+        <view class="field-label">
+          <text>性别</text>
+        </view>
+        <view class="gender-group">
+          <button class="gender-option {{gender === 'male' ? 'selected' : ''}}" data-gender="male" bindtap="onGenderPick">
+            <text class="gender-symbol male">♂</text>
+            <text>男</text>
+          </button>
+          <button class="gender-option {{gender === 'female' ? 'selected' : ''}}" data-gender="female" bindtap="onGenderPick">
+            <text class="gender-symbol female">♀</text>
+            <text>女</text>
+          </button>
+          <button class="gender-option {{gender === 'undisclosed' ? 'selected' : ''}}" data-gender="undisclosed" bindtap="onGenderPick">
+            <view class="secret-icon">
+              <view class="secret-slash"></view>
+            </view>
+            <text>不想透露</text>
+          </button>
         </view>
       </view>
+
+      <view class="glass-card strong form-card">
+        <view class="field-label">
+          <text>我的主队</text>
+          <text class="field-hint">支持五大联赛和中超全部球队</text>
+        </view>
+        <button class="team-trigger" bindtap="onTeamToggle">
+          <view class="team-selected-preview">
+            <image class="team-selected-logo" src="{{favoriteTeamLogo}}" mode="aspectFit" binderror="onSelectedTeamLogoError" />
+            <view class="team-selected-copy">
+              <text class="team-selected-name">{{favoriteTeamName}}</text>
+              <text class="team-selected-sub">{{favoriteTeamSub}}</text>
+            </view>
+          </view>
+          <text class="team-action-hint">更换 ›</text>
+        </button>
+
+        <view wx:if="{{isFavoriteTeamInactive}}" class="inactive-tip">
+          当前主队（{{favoriteTeamName}}）已不在本赛季活跃名单中，你的历史选择仍会正常展示；如需更换可点击上方重新选择。
+        </view>
+      </view>
+
       <view wx:if="{{saveErrorMessage}}" class="save-error">{{saveErrorMessage}}</view>
-      <button class="save" bindtap="onSave" loading="{{saving}}" disabled="{{saving || deleting}}">保存</button>
-      <button class="delete-account" bindtap="onDeleteAccount" loading="{{deleting}}" disabled="{{deleting || saving}}">注销账号</button>
+
+      <view class="action-stack">
+        <button class="btn btn-primary btn-block" bindtap="onSave" loading="{{saving}}" disabled="{{saving}}">保存修改</button>
+        <button wx:if="{{showLogout}}" class="btn btn-ghost btn-block" bindtap="onLogout">退出登录</button>
+      </view>
     </block>
-    <button wx:if="{{showLogout}}" class="logout" bindtap="onLogout">退出登录</button>
+  </view>
+
+  <view wx:if="{{showTeams && !loading && !errorKind && !errorMessage}}" class="sheet-backdrop" bindtap="onCloseTeamSheet">
+    <view class="team-sheet" catchtap="onStopPropagation">
+      <view class="sheet-header">
+        <text class="sheet-title">选择我的主队</text>
+        <button class="sheet-close" bindtap="onCloseTeamSheet" aria-label="关闭">×</button>
+      </view>
+
+      <view class="sheet-controls">
+        <input class="search-input" type="text" value="{{search}}" bindinput="onSearch" placeholder="搜索中文名或英文队名（全六联赛）…" />
+        <scroll-view class="league-tabs" scroll-x="true" enhanced="true" show-scrollbar="false">
+          <view class="league-tabs-inner">
+            <button
+              wx:for="{{leagues}}"
+              wx:key="id"
+              class="league-tab {{!search && activeLeagueId === item.id ? 'active' : ''}}"
+              data-league="{{item.id}}"
+              bindtap="onLeagueTabTap"
+            >
+              <image class="league-tab-logo" src="{{item.logo}}" mode="aspectFit" />
+              <text>{{item.name}}</text>
+            </button>
+          </view>
+        </scroll-view>
+      </view>
+
+      <scroll-view class="sheet-scroll" scroll-y="true">
+        <view wx:if="{{teamsLoading}}" class="empty-search">正在加载球队…</view>
+        <view wx:elif="{{teamsError}}" class="empty-search">
+          <view>{{teamsError}}</view>
+          <button class="btn btn-ghost retry-teams-btn" bindtap="loadTeams">重试</button>
+        </view>
+        <view wx:elif="{{filteredTeams.length}}" class="team-grid">
+          <button
+            wx:for="{{filteredTeams}}"
+            wx:for-item="team"
+            wx:key="team_id"
+            class="team-tile {{favoriteTeamId === team.team_id ? 'selected' : ''}}"
+            data-id="{{team.team_id}}"
+            bindtap="onTeamPick"
+          >
+            <image class="team-tile-logo" src="{{team.logo}}" mode="aspectFit" lazy-load="true" />
+            <view class="tile-copy">
+              <text class="tile-zh">{{team.nameZh}}</text>
+              <text class="tile-sub">{{team.subText}}</text>
+            </view>
+            <text wx:if="{{favoriteTeamId === team.team_id}}" class="tile-check">✓</text>
+          </button>
+        </view>
+        <view wx:else class="empty-search">未找到匹配的球队，试试其他关键词</view>
+      </scroll-view>
+
+      <view class="sheet-footer">
+        <button class="clear-team-btn" bindtap="onTeamPick">暂不设置主队</button>
+        <text class="sheet-count">{{sheetCountText}}</text>
+      </view>
+    </view>
   </view>
 </view>

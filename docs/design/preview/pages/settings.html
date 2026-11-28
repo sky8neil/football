@@ -1,0 +1,687 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>设置与注销页 · UI 预览</title>
+  <link rel="stylesheet" href="./_shared.css">
+  <style>
+    .field-label {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--text-secondary);
+      margin-bottom: 8px;
+    }
+    .field-hint {
+      font-size: 11px;
+      font-weight: 400;
+      color: var(--text-muted);
+    }
+    .text-input {
+      width: 100%;
+      height: 42px;
+      padding: 0 12px;
+      border-radius: var(--radius-md);
+      border: 1px solid var(--border-subtle);
+      background: rgba(255, 255, 255, 0.88);
+      color: var(--text-primary);
+      font-size: 14px;
+      font-weight: 600;
+      outline: none;
+    }
+    .text-input:focus {
+      border-color: var(--color-brand-primary-pressed);
+      box-shadow: 0 0 0 3px rgba(126, 213, 111, 0.24);
+    }
+
+    /* 性别三选一 */
+    .gender-group {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .gender-option {
+      height: 40px;
+      padding: 0 8px;
+      border-radius: var(--radius-md);
+      border: 1px solid var(--border-subtle);
+      background: rgba(255, 255, 255, 0.84);
+      color: var(--text-primary);
+      font-size: 13px;
+      font-weight: 650;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
+    }
+    .gender-option.selected {
+      background: var(--color-brand-soft);
+      border-color: var(--color-brand-primary-pressed);
+      color: var(--text-positive);
+      box-shadow: 0 2px 8px rgba(47, 138, 58, 0.14);
+    }
+    .gender-icon {
+      width: 15px;
+      height: 15px;
+      flex: none;
+      display: inline-block;
+    }
+    .gender-icon.male { color: #2563eb; }
+    .gender-icon.female { color: #e11d48; }
+    .gender-icon.secret { color: #dc2626; }
+
+    /* 主队选择入口行（收起态，不平铺展开） */
+    .team-trigger {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 11px 12px;
+      border-radius: var(--radius-md);
+      border: 1px solid var(--border-subtle);
+      background: rgba(255, 255, 255, 0.86);
+      cursor: pointer;
+      text-align: left;
+    }
+    .team-selected-preview {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+    }
+    .team-selected-preview img {
+      width: 28px;
+      height: 28px;
+      object-fit: contain;
+      flex: none;
+    }
+    .team-selected-copy {
+      min-width: 0;
+    }
+    .team-selected-name {
+      display: block;
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--text-primary);
+    }
+    .team-selected-sub {
+      display: block;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+    .team-action-hint {
+      font-size: 12px;
+      font-weight: 650;
+      color: var(--color-brand-primary-pressed);
+      flex: none;
+    }
+    .inactive-tip {
+      margin-top: 8px;
+      padding: 8px 10px;
+      border-radius: var(--radius-xs);
+      background: var(--color-state-done-soft);
+      font-size: 11px;
+      color: var(--text-secondary);
+      line-height: 1.5;
+    }
+
+    .action-stack {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-bottom: 18px;
+    }
+
+    /* 危险操作隔离区 */
+    .danger-card {
+      background: rgba(255, 250, 249, 0.78);
+      border: 1px solid rgba(254, 205, 202, 0.9);
+      border-radius: var(--radius-card);
+      padding: 14px 16px;
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+    }
+    .danger-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--red-600);
+      margin: 0 0 4px;
+    }
+    .danger-desc {
+      font-size: 11px;
+      color: var(--text-secondary);
+      line-height: 1.55;
+      margin: 0 0 12px;
+    }
+
+    /* 底部抽屉：按联赛分 Tab + 搜索 + 双列网格选主队 */
+    .sheet-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 70;
+      background: rgba(15, 23, 42, 0.46);
+      display: flex;
+      align-items: flex-end;
+      justify-content: center;
+    }
+    .team-sheet {
+      width: 100%;
+      max-height: 82vh;
+      background: #f6fbf5;
+      border-radius: 20px 20px 0 0;
+      box-shadow: 0 -12px 40px rgba(14, 45, 32, 0.22);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .sheet-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 16px 10px;
+      background: #ffffff;
+      border-bottom: 1px solid rgba(22, 48, 36, 0.06);
+    }
+    .sheet-title {
+      margin: 0;
+      font-size: 15px;
+      font-weight: 750;
+      color: var(--text-primary);
+    }
+    .sheet-close {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      border: 0;
+      background: var(--slate-200);
+      color: var(--text-secondary);
+      font-size: 16px;
+      line-height: 1;
+      cursor: pointer;
+    }
+
+    .sheet-controls {
+      padding: 10px 14px 8px;
+      background: #ffffff;
+      border-bottom: 1px solid rgba(22, 48, 36, 0.08);
+    }
+    .search-input {
+      width: 100%;
+      height: 36px;
+      padding: 0 12px;
+      border-radius: var(--radius-pill);
+      border: 1px solid var(--border-subtle);
+      background: #f4f9f3;
+      font-size: 13px;
+      color: var(--text-primary);
+      outline: none;
+    }
+    .search-input:focus {
+      background: #ffffff;
+      border-color: var(--color-brand-primary-pressed);
+    }
+
+    .league-tabs {
+      display: flex;
+      gap: 6px;
+      margin-top: 10px;
+      overflow-x: auto;
+      scrollbar-width: none;
+      padding-bottom: 2px;
+    }
+    .league-tabs::-webkit-scrollbar { display: none; }
+    .league-tab {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      height: 30px;
+      padding: 0 10px;
+      border-radius: var(--radius-pill);
+      border: 1px solid var(--border-subtle);
+      background: #ffffff;
+      color: var(--text-secondary);
+      font-size: 12px;
+      font-weight: 600;
+      white-space: nowrap;
+      cursor: pointer;
+      flex: none;
+    }
+    .league-tab img {
+      width: 15px;
+      height: 15px;
+      object-fit: contain;
+    }
+    .league-tab.active {
+      background: var(--color-brand-soft);
+      border-color: rgba(47, 138, 58, 0.42);
+      color: var(--text-positive);
+      font-weight: 700;
+    }
+
+    .sheet-scroll {
+      flex: 1;
+      overflow-y: auto;
+      padding: 12px 14px 16px;
+    }
+    .team-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .team-tile {
+      position: relative;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 10px;
+      border-radius: var(--radius-lg);
+      border: 1px solid rgba(22, 48, 36, 0.08);
+      background: #ffffff;
+      text-align: left;
+      cursor: pointer;
+      min-width: 0;
+    }
+    .team-tile.selected {
+      background: var(--color-brand-soft);
+      border-color: var(--color-brand-primary-pressed);
+    }
+    .team-tile img {
+      width: 26px;
+      height: 26px;
+      object-fit: contain;
+      flex: none;
+    }
+    .tile-copy {
+      flex: 1;
+      min-width: 0;
+    }
+    .tile-zh {
+      display: block;
+      font-size: 13px;
+      font-weight: 650;
+      color: var(--text-primary);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .tile-sub {
+      display: block;
+      font-size: 10px;
+      color: var(--text-muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .tile-check {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--color-brand-primary-pressed);
+      flex: none;
+    }
+    .empty-search {
+      text-align: center;
+      padding: 28px 12px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .sheet-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 10px 14px 14px;
+      background: #ffffff;
+      border-top: 1px solid rgba(22, 48, 36, 0.08);
+    }
+    .clear-team-btn {
+      height: 36px;
+      padding: 0 12px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border-subtle);
+      background: #ffffff;
+      color: var(--text-secondary);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .sheet-count {
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    /* 注销二次确认弹窗 */
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 80;
+      background: rgba(15, 23, 42, 0.52);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+    .modal-box {
+      width: 100%;
+      max-width: 310px;
+      background: #ffffff;
+      border-radius: 16px;
+      overflow: hidden;
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.25);
+    }
+    .modal-body {
+      padding: 22px 20px 18px;
+      text-align: center;
+    }
+    .modal-title {
+      margin: 0 0 10px;
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--text-primary);
+    }
+    .modal-text {
+      margin: 0;
+      font-size: 13px;
+      color: var(--text-secondary);
+      line-height: 1.65;
+    }
+    .modal-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      border-top: 1px solid #e5e7eb;
+    }
+    .modal-btn {
+      height: 46px;
+      border: 0;
+      background: #ffffff;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .modal-btn + .modal-btn {
+      border-left: 1px solid #e5e7eb;
+    }
+    .modal-btn.cancel { color: var(--text-secondary); }
+    .modal-btn.confirm-danger { color: var(--red-600); font-weight: 700; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <img class="stadium-bg" src="/assets/images/baseline-pitch.webp" alt="">
+    <div class="stadium-overlay"></div>
+
+    <div class="content">
+      <div class="preview-state-bar">
+        <span class="preview-state-label">状态</span>
+        <button type="button" class="state-pill active" data-state="edit">个人资料</button>
+        <button type="button" class="state-pill" data-state="picker">选主队抽屉</button>
+        <button type="button" class="state-pill" data-state="inactive-team">停用主队</button>
+        <button type="button" class="state-pill" data-state="unauthorized">未登录</button>
+      </div>
+
+      <header class="page-header">
+        <h1 class="page-title">个人资料</h1>
+      </header>
+
+      <!-- 主表单 -->
+      <section data-panel="form">
+        <div class="glass-card strong">
+          <div class="field-label">
+            <span>昵称</span>
+            <span class="field-hint">2–12 字，展示于榜单与分享卡</span>
+          </div>
+          <input class="text-input" type="text" value="北伦敦预言家" maxlength="12">
+        </div>
+
+        <div class="glass-card strong">
+          <div class="field-label">
+            <span>性别</span>
+          </div>
+          <div class="gender-group" role="radiogroup" aria-label="性别">
+            <button type="button" class="gender-option selected" data-gender="male" aria-checked="true">
+              <svg class="gender-icon male" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="10" cy="14" r="5"></circle>
+                <path d="M19 5l-5.4 5.4"></path>
+                <path d="M15 5h4v4"></path>
+              </svg>
+              <span>男</span>
+            </button>
+            <button type="button" class="gender-option" data-gender="female" aria-checked="false">
+              <svg class="gender-icon female" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="12" cy="9" r="5"></circle>
+                <path d="M12 14v7"></path>
+                <path d="M9 18h6"></path>
+              </svg>
+              <span>女</span>
+            </button>
+            <button type="button" class="gender-option" data-gender="secret" aria-checked="false">
+              <svg class="gender-icon secret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="9"></circle>
+                <path d="M5.6 5.6l12.8 12.8"></path>
+              </svg>
+              <span>不想透露</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="glass-card strong">
+          <div class="field-label">
+            <span>我的主队</span>
+            <span class="field-hint">支持五大联赛和中超全部球队</span>
+          </div>
+
+          <button type="button" class="team-trigger" id="open-team-sheet">
+            <span class="team-selected-preview">
+              <img id="selected-logo" src="/assets/logos/teams/premier-league/arsenal.png" alt="">
+              <span class="team-selected-copy">
+                <span id="selected-name" class="team-selected-name">阿森纳</span>
+                <span id="selected-sub" class="team-selected-sub">英超 · Arsenal FC</span>
+              </span>
+            </span>
+            <span class="team-action-hint">更换 ›</span>
+          </button>
+
+          <div id="inactive-notice" class="inactive-tip hidden">
+            当前主队（升班马竞技）已不在本赛季活跃名单中，你的历史选择仍会正常展示；如需更换可点击上方重新选择。
+          </div>
+        </div>
+
+        <div class="action-stack">
+          <button type="button" class="btn btn-primary btn-block">保存修改</button>
+          <button type="button" class="btn btn-ghost btn-block">退出登录</button>
+        </div>
+      </section>
+
+      <!-- 未登录 -->
+      <section data-panel="unauthorized" class="hidden">
+        <div class="glass-card strong state-panel">
+          <div class="state-icon">👤</div>
+          <h2 class="state-title">请先登录</h2>
+          <p class="state-desc">登录后即可修改昵称、设置主队与管理账号。</p>
+          <button type="button" class="btn btn-primary" style="min-width:148px;">去登录</button>
+        </div>
+      </section>
+    </div>
+
+    <!-- 选主队底部抽屉（按联赛切 Tab + 实时搜索 + 双列网格） -->
+    <div id="team-sheet-backdrop" class="sheet-backdrop hidden">
+      <div class="team-sheet" role="dialog" aria-label="选择我的主队">
+        <div class="sheet-header">
+          <h3 class="sheet-title">选择我的主队</h3>
+          <button type="button" class="sheet-close" id="close-team-sheet" aria-label="关闭">×</button>
+        </div>
+
+        <div class="sheet-controls">
+          <input id="team-search-input" class="search-input" type="text" placeholder="搜索中文名或英文队名（全六联赛）…">
+          <div id="league-tabs" class="league-tabs"></div>
+        </div>
+
+        <div class="sheet-scroll">
+          <div id="team-grid" class="team-grid"></div>
+          <div id="empty-search" class="empty-search hidden">未找到匹配的球队，试试其他关键词</div>
+        </div>
+
+        <div class="sheet-footer">
+          <button type="button" class="clear-team-btn" id="clear-team-btn">暂不设置主队</button>
+          <span id="sheet-count" class="sheet-count">共 20 支球队</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="./teams-data.js"></script>
+  <script>
+    const LEAGUES = [
+      { id: "premier_league", name: "英超", logo: "/assets/logos/leagues/premier_league.png" },
+      { id: "la_liga", name: "西甲", logo: "/assets/logos/leagues/la_liga.png" },
+      { id: "serie_a", name: "意甲", logo: "/assets/logos/leagues/serie_a.png" },
+      { id: "bundesliga", name: "德甲", logo: "/assets/logos/leagues/bundesliga.png" },
+      { id: "ligue_1", name: "法甲", logo: "/assets/logos/leagues/ligue_1.png" },
+      { id: "chinese_super_league", name: "中超", logo: "/assets/logos/leagues/chinese_super_league.png" }
+    ];
+    const LEAGUE_NAME_MAP = Object.fromEntries(LEAGUES.map((l) => [l.id, l.name]));
+    const ALL_TEAMS = (window.PREVIEW_TEAMS || []).map((t) => ({
+      ...t,
+      logo: String(t.logo || "").replace(/^\.\.\/\.\.\//, "/")
+    }));
+
+    let selectedTeamId = "f490a3bf-b29f-42ce-a5bc-3cb67ad2baee"; // 阿森纳
+    let activeLeagueId = "premier_league";
+    let searchQuery = "";
+
+    const pills = document.querySelectorAll(".state-pill");
+    const formPanel = document.querySelector('[data-panel="form"]');
+    const unauthPanel = document.querySelector('[data-panel="unauthorized"]');
+    const inactiveNotice = document.getElementById("inactive-notice");
+    const selectedName = document.getElementById("selected-name");
+    const selectedSub = document.getElementById("selected-sub");
+    const selectedLogo = document.getElementById("selected-logo");
+    const sheetBackdrop = document.getElementById("team-sheet-backdrop");
+    const leagueTabsEl = document.getElementById("league-tabs");
+    const teamGridEl = document.getElementById("team-grid");
+    const emptySearchEl = document.getElementById("empty-search");
+    const sheetCountEl = document.getElementById("sheet-count");
+    const searchInput = document.getElementById("team-search-input");
+
+    function updateSelectedDisplay() {
+      const team = ALL_TEAMS.find((t) => t.id === selectedTeamId);
+      if (!team) {
+        selectedLogo.src = "/assets/logos/placeholders/team-placeholder.png";
+        selectedName.textContent = "暂未设置主队";
+        selectedSub.textContent = "点击右侧选择你支持的球队";
+        return;
+      }
+      selectedLogo.src = team.logo;
+      selectedName.textContent = team.name_zh;
+      selectedSub.textContent = `${LEAGUE_NAME_MAP[team.league_id] || ""} · ${team.name_en}`;
+    }
+
+    function renderLeagueTabs() {
+      leagueTabsEl.innerHTML = "";
+      for (const league of LEAGUES) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "league-tab" + (!searchQuery && activeLeagueId === league.id ? " active" : "");
+        btn.innerHTML = `<img src="${league.logo}" alt=""><span>${league.name}</span>`;
+        btn.addEventListener("click", () => {
+          searchQuery = "";
+          searchInput.value = "";
+          activeLeagueId = league.id;
+          renderLeagueTabs();
+          renderTeamGrid();
+        });
+        leagueTabsEl.appendChild(btn);
+      }
+    }
+
+    function renderTeamGrid() {
+      const q = searchQuery.trim().toLowerCase();
+      const list = q
+        ? ALL_TEAMS.filter((t) => t.name_zh.toLowerCase().includes(q) || t.name_en.toLowerCase().includes(q))
+        : ALL_TEAMS.filter((t) => t.league_id === activeLeagueId);
+
+      teamGridEl.innerHTML = "";
+      emptySearchEl.classList.toggle("hidden", list.length > 0);
+      sheetCountEl.textContent = q
+        ? `搜索结果 ${list.length} 支`
+        : `${LEAGUE_NAME_MAP[activeLeagueId]}共 ${list.length} 支球队`;
+
+      for (const team of list) {
+        const tile = document.createElement("button");
+        tile.type = "button";
+        const isSel = team.id === selectedTeamId;
+        tile.className = "team-tile" + (isSel ? " selected" : "");
+        tile.innerHTML = `
+          <img src="${team.logo}" alt="" loading="lazy">
+          <span class="tile-copy">
+            <span class="tile-zh">${team.name_zh}</span>
+            <span class="tile-sub">${q ? (LEAGUE_NAME_MAP[team.league_id] + " · ") : ""}${team.name_en}</span>
+          </span>
+          ${isSel ? '<span class="tile-check">✓</span>' : ""}
+        `;
+        tile.addEventListener("click", () => {
+          selectedTeamId = team.id;
+          updateSelectedDisplay();
+          setState("edit");
+        });
+        teamGridEl.appendChild(tile);
+      }
+    }
+
+    function setState(state) {
+      pills.forEach((p) => p.classList.toggle("active", p.dataset.state === state));
+      formPanel.classList.toggle("hidden", state === "unauthorized");
+      unauthPanel.classList.toggle("hidden", state !== "unauthorized");
+      inactiveNotice.classList.toggle("hidden", state !== "inactive-team");
+      sheetBackdrop.classList.toggle("hidden", state !== "picker");
+
+      if (state === "inactive-team") {
+        selectedLogo.src = "/assets/logos/placeholders/team-placeholder.png";
+        selectedName.textContent = "升班马竞技（已停用）";
+        selectedSub.textContent = "历史已选主队 · 仍正常展示";
+      } else {
+        updateSelectedDisplay();
+      }
+      if (state === "picker") {
+        renderLeagueTabs();
+        renderTeamGrid();
+      }
+    }
+
+    pills.forEach((p) => p.addEventListener("click", () => setState(p.dataset.state)));
+    document.getElementById("open-team-sheet").addEventListener("click", () => setState("picker"));
+    document.getElementById("close-team-sheet").addEventListener("click", () => setState("edit"));
+    sheetBackdrop.addEventListener("click", (e) => {
+      if (e.target === sheetBackdrop) setState("edit");
+    });
+    document.getElementById("clear-team-btn").addEventListener("click", () => {
+      selectedTeamId = null;
+      updateSelectedDisplay();
+      setState("edit");
+    });
+    searchInput.addEventListener("input", (e) => {
+      searchQuery = e.target.value;
+      renderLeagueTabs();
+      renderTeamGrid();
+    });
+
+    document.querySelectorAll(".gender-option").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll(".gender-option").forEach((item) => {
+          const active = item === btn;
+          item.classList.toggle("selected", active);
+          item.setAttribute("aria-checked", String(active));
+        });
+      });
+    });
+
+    updateSelectedDisplay();
+  </script>
+</body>
+</html>

@@ -254,6 +254,7 @@ function makeUser(userId = USER_ID): User {
     unionid: null,
     nickname: `user-${userId.slice(-1)}`,
     favorite_team_id: null,
+    gender: null,
     status: "active",
     career_points: 0,
     career_valid_predictions: 0,
@@ -1004,6 +1005,26 @@ describe("CloudBaseAppRepository", () => {
       team_id: "t-legacy",
       name_zh: "升班马联",
       logo_url: "https://cdn.example.com/t-legacy.png",
+    });
+  });
+
+  it("users backward-decodes legacy documents without gender and supports patchFields", async () => {
+    const db = new MemoryCloudBaseDb();
+    const repo = createCloudBaseRepository(db);
+    const userCol = cloudBaseCollectionName(CONFIG.resource_namespace, "users");
+    const legacyUser = makeUser("u-legacy");
+    const { gender: _omitted, ...legacyWithoutGender } = legacyUser;
+    db.seed(userCol, "u-legacy", { _id: "u-legacy", ...legacyWithoutGender });
+
+    expect(await repo.users.findById("u-legacy")).toMatchObject({
+      user_id: "u-legacy",
+      gender: null,
+    });
+
+    await repo.users.patchFields!("u-legacy", { gender: "undisclosed", updated_at: NOW });
+    expect(await repo.users.findById("u-legacy")).toMatchObject({
+      user_id: "u-legacy",
+      gender: "undisclosed",
     });
   });
 

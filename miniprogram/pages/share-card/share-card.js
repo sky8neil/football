@@ -1,6 +1,5 @@
 const config = require("../../config.js");
 const { getMyShareCard, getShareCardForUser } = require("../../services/share-card.js");
-const { listLeagueSeasons } = require("../../services/league-seasons.js");
 const {
   isPlaceholderLogo,
   resolveFavoriteTeamSync,
@@ -21,10 +20,8 @@ const LEAGUE_NAMES = {
   chinese_super_league: "中超",
 };
 
-const LEAGUE_PLACEHOLDER = "选择联赛";
-const SEASON_PLACEHOLDER = "选择赛季";
-const ROUND_PLACEHOLDER = "选择轮次";
-const DELETED_DISPLAY_NAME = "已注销用户";
+const DELETED_API_DISPLAY_NAME = "\u5df2\u6ce8\u9500\u7528\u6237";
+const HISTORICAL_DISPLAY_NAME = "历史用户";
 const FULL_SUMMARY_SETTLED_THRESHOLD = 3;
 
 function readQueryValue(value) {
@@ -46,16 +43,6 @@ function normalizeRoundId(value) {
   if (!text) return null;
   if (/^\d+$/.test(text)) return String(Number(text)).padStart(2, "0");
   return text;
-}
-
-function sortedRounds(roundIds) {
-  if (!Array.isArray(roundIds)) return [];
-  return roundIds.slice().sort((left, right) => {
-    const leftNumber = Number(left);
-    const rightNumber = Number(right);
-    if (Number.isFinite(leftNumber) && Number.isFinite(rightNumber)) return leftNumber - rightNumber;
-    return String(left).localeCompare(String(right));
-  });
 }
 
 function pad2(value) {
@@ -109,46 +96,84 @@ function presentMatchItem(item, leagueId) {
   let statusText = "待开赛";
   let statusClass = "pending";
   let pointsText = "";
+  let headChipText = "待开赛";
+  let headChipClass = "chip-done";
+  let footChipText = "查看详情";
+  let footChipClass = "chip-done";
+  let rowClass = "";
 
   if (canFollow) {
     statusText = "未开赛 · 可跟单";
     statusClass = "open";
+    headChipText = "未开赛";
+    headChipClass = "chip-brand";
+    rowClass = "is-open";
   } else if (row.match_status === "scheduled") {
     statusText = "已截止 · 未开赛";
     statusClass = "closed";
     pointsText = "待结算";
+    headChipText = "已截止";
+    headChipClass = "chip-done";
+    footChipText = "待结算";
   } else if (row.match_status === "live") {
     statusText = "进行中 · 未完赛";
     statusClass = "live";
     pointsText = "未完赛";
+    headChipText = "未完赛";
+    headChipClass = "chip-live";
+    footChipText = "等待完场";
+    rowClass = "is-live";
   } else if (row.match_status === "postponed") {
     statusText = "比赛延期 · 未完赛";
     statusClass = "postponed";
     pointsText = "未完赛";
+    headChipText = "比赛延期";
+    headChipClass = "chip-live";
+    footChipText = "未完赛";
+    rowClass = "is-live";
   } else if (row.match_status === "abandoned") {
     statusText = "比赛腰斩 · 不计分";
     statusClass = "voided";
     pointsText = "不计分";
+    headChipText = "比赛腰斩";
+    headChipClass = "chip-done";
+    footChipText = "不计分";
   } else if (cancelled) {
     statusText = "比赛取消 · 不计分";
     statusClass = "voided";
     pointsText = "不计分";
+    headChipText = "比赛取消";
+    headChipClass = "chip-done";
+    footChipText = "不计分";
   } else if (settled) {
+    headChipText = "";
+    headChipClass = "";
     if (row.exact_hit === true) {
       statusText = "已结算 · 精确命中";
       statusClass = "exact";
+      footChipText = `精确命中 +${row.match_score} 分`;
+      footChipClass = "chip-brand";
+      rowClass = "is-hit";
     } else if (row.wdl_hit === true) {
       statusText = "已结算 · 胜平负命中";
       statusClass = "hit";
+      footChipText = `赛果命中 +${row.match_score} 分`;
+      footChipClass = "chip-hit";
+      rowClass = "is-hit";
     } else {
       statusText = "已结算 · 未命中";
       statusClass = "miss";
+      footChipText = `未命中 +${row.match_score} 分`;
+      footChipClass = "chip-done";
     }
     pointsText = `+${row.match_score}`;
   } else {
     statusText = "已完场 · 待结算";
     statusClass = "pending";
     pointsText = "待结算";
+    headChipText = "待结算";
+    headChipClass = "chip-done";
+    footChipText = "待结算";
   }
 
   return {
@@ -162,11 +187,17 @@ function presentMatchItem(item, leagueId) {
     predHomeScore: validPred ? predHome : null,
     predAwayScore: validPred ? predAway : null,
     actualText,
+    actualLabel: row.match_status === "live" ? "实时" : "实际",
     statusText,
     statusClass,
+    headChipText,
+    headChipClass,
+    footChipText,
+    footChipClass,
+    rowClass,
     pointsText,
     canFollow,
-    followText: "去预测 / 跟一单",
+    followText: "跟一单 →",
     detailText: "查看详情",
   };
 }
@@ -175,26 +206,36 @@ function presentCard(data) {
   const payload = data || {};
   const settledCount = Number(payload.round_predictions) || 0;
   const showFullSummary = settledCount > FULL_SUMMARY_SETTLED_THRESHOLD;
-  const displayName = payload.display_name || "预言家";
-  const isDeleted = displayName === DELETED_DISPLAY_NAME;
+  const rawDisplayName = payload.display_name || "预言家";
+  const isDeleted = rawDisplayName === DELETED_API_DISPLAY_NAME;
+  const displayName = isDeleted ? HISTORICAL_DISPLAY_NAME : rawDisplayName;
   const favoriteTeam = resolveFavoriteTeam(payload.favorite_team_id || null, isDeleted);
   const rawMatches = Array.isArray(payload.matches) ? payload.matches : [];
+  const leagueName = LEAGUE_NAMES[payload.league_id] || payload.league_id;
+  const roundText = formatRound(payload.round_id);
+  const numericRoundScore = Number(payload.round_score);
+  const roundScoreText = Number.isFinite(numericRoundScore)
+    ? (numericRoundScore > 0 ? `+${numericRoundScore}` : String(numericRoundScore))
+    : "0";
   return {
     displayName,
     isDeleted,
     ...favoriteTeam,
-    leagueName: LEAGUE_NAMES[payload.league_id] || payload.league_id,
+    leagueName,
     leagueId: payload.league_id,
     seasonId: payload.season_id,
     roundId: payload.round_id,
     seasonLabel: payload.season_label,
-    roundText: formatRound(payload.round_id),
+    roundText,
     settledCount,
     showFullSummary,
     cardTitle: showFullSummary ? "本轮战绩" : "本轮晒预测",
+    pageTitle: isDeleted ? "历史战绩单" : (showFullSummary ? "本轮战绩单" : "本轮预测单"),
+    kickerText: `${leagueName} · ${roundText}${showFullSummary ? "战绩" : "预测"}`,
     wdlHits: payload.round_wdl_hits,
     exactHits: payload.round_exact_hits,
     roundScore: payload.round_score,
+    roundScoreText,
     careerPoints: payload.career_points,
     seasonLevel: payload.season_level,
     levelSeasonText: String(payload.level_season_id || "").replace(/_/g, "/"),
@@ -263,20 +304,9 @@ Page({
     card: null,
     errorKind: "",
     errorMessage: "",
-    leagues: [],
-    seasonsByLeague: {},
-    roundsBySeason: {},
-    leagueOptions: [LEAGUE_PLACEHOLDER],
-    seasonOptions: [SEASON_PLACEHOLDER],
-    roundOptions: [ROUND_PLACEHOLDER],
-    leagueIndex: 0,
-    seasonIndex: 0,
-    roundIndex: 0,
     selectedLeagueId: null,
     selectedSeasonId: null,
     selectedRoundId: null,
-    catalogReady: false,
-    catalogError: "",
   },
 
   requestSerial: 0,
@@ -307,9 +337,8 @@ Page({
       errorMessage: "",
     });
     this.syncShareMenu();
-    const catalogPromise = this.loadCatalog();
     if (hasAll) return this.loadCard();
-    return catalogPromise;
+    return Promise.resolve();
   },
 
   onShow() {
@@ -327,89 +356,6 @@ Page({
       selectedRoundId: context.roundId,
     });
     return this.loadCard();
-  },
-
-  loadCatalog() {
-    return listLeagueSeasons().then((result) => {
-      if (!result || result.statusCode !== 200) {
-        this.setData({ catalogError: "筛选选项加载失败", catalogReady: false });
-        return;
-      }
-      const items = result.data && Array.isArray(result.data.items) ? result.data.items : [];
-      const leagues = [];
-      const seasonsByLeague = {};
-      const roundsBySeason = {};
-      const seen = new Set();
-      for (const item of items) {
-        const leagueId = item.league_id;
-        if (!seen.has(leagueId)) {
-          seen.add(leagueId);
-          leagues.push({
-            id: leagueId,
-            name: LEAGUE_NAMES[leagueId] || leagueId,
-          });
-        }
-        if (!seasonsByLeague[leagueId]) seasonsByLeague[leagueId] = [];
-        seasonsByLeague[leagueId].push({
-          id: item.season_id,
-          label: item.season_label,
-        });
-        roundsBySeason[leagueId + "|" + item.season_id] = sortedRounds(item.round_ids);
-      }
-      const picker = this.buildPickerState(leagues, seasonsByLeague, roundsBySeason);
-      this.setData({
-        leagues,
-        seasonsByLeague,
-        roundsBySeason,
-        catalogReady: true,
-        catalogError: "",
-        ...picker,
-      });
-    }).catch(() => {
-      this.setData({ catalogError: "筛选选项加载失败", catalogReady: false });
-    });
-  },
-
-  buildPickerState(leagues, seasonsByLeague, roundsBySeason) {
-    const leagueId = this.data.selectedLeagueId;
-    const seasonId = this.data.selectedSeasonId;
-    const roundId = this.data.selectedRoundId;
-    let leagueIndex = 0;
-    let seasonIndex = 0;
-    let roundIndex = 0;
-    let seasonOptions = [SEASON_PLACEHOLDER];
-    let roundOptions = [ROUND_PLACEHOLDER];
-    if (leagueId) {
-      const leagueOffset = leagues.findIndex((league) => league.id === leagueId);
-      if (leagueOffset >= 0) {
-        leagueIndex = leagueOffset + 1;
-        const seasons = seasonsByLeague[leagueId] || [];
-        seasonOptions = [SEASON_PLACEHOLDER, ...seasons.map((season) => season.label)];
-        if (seasonId) {
-          const seasonOffset = seasons.findIndex((season) => season.id === seasonId);
-          if (seasonOffset >= 0) {
-            seasonIndex = seasonOffset + 1;
-            const rounds = roundsBySeason[leagueId + "|" + seasonId] || [];
-            roundOptions = [ROUND_PLACEHOLDER, ...rounds.map((round) => formatRound(round))];
-            if (roundId) {
-              const normalized = normalizeRoundId(roundId);
-              const roundOffset = rounds.findIndex((round) => {
-                return normalizeRoundId(round) === normalized || String(round) === String(roundId);
-              });
-              if (roundOffset >= 0) roundIndex = roundOffset + 1;
-            }
-          }
-        }
-      }
-    }
-    return {
-      leagueIndex,
-      seasonIndex,
-      roundIndex,
-      leagueOptions: [LEAGUE_PLACEHOLDER, ...leagues.map((league) => league.name)],
-      seasonOptions,
-      roundOptions,
-    };
   },
 
   requestCard() {
@@ -549,10 +495,10 @@ Page({
       return { errorKind: "roundNotFound", errorMessage: "这个轮次还没有接入，换个轮次看看" };
     }
     if (statusCode === 404 && code === "USER_NOT_FOUND") {
-      return { errorKind: "userUnavailable", errorMessage: "这位用户不存在或已注销" };
+      return { errorKind: "userUnavailable", errorMessage: "该用户暂不可用" };
     }
     if (statusCode === 409 && code === "USER_DELETED") {
-      return { errorKind: "userUnavailable", errorMessage: "这位用户已注销" };
+      return { errorKind: "userUnavailable", errorMessage: "该用户暂不可用" };
     }
     if (statusCode === 422) {
       return { errorKind: "badParams", errorMessage: "筛选条件不正确，请重新选择" };
@@ -566,105 +512,6 @@ Page({
       };
     }
     return { errorKind: "failed", errorMessage: message || "成绩单读取失败" };
-  },
-
-  onLeagueChange(event) {
-    this.requestSerial += 1;
-    const index = Number(event.detail.value);
-    if (index === 0) {
-      this.setData({
-        leagueIndex: 0,
-        selectedLeagueId: null,
-        seasonIndex: 0,
-        selectedSeasonId: null,
-        roundIndex: 0,
-        selectedRoundId: null,
-        seasonOptions: [SEASON_PLACEHOLDER],
-        roundOptions: [ROUND_PLACEHOLDER],
-        state: "picker",
-        card: null,
-        errorKind: "",
-        errorMessage: "",
-      });
-      this.syncShareMenu();
-      return;
-    }
-    const league = this.data.leagues[index - 1];
-    const seasons = (league && this.data.seasonsByLeague[league.id]) || [];
-    this.setData({
-      leagueIndex: index,
-      selectedLeagueId: league ? league.id : null,
-      seasonIndex: 0,
-      selectedSeasonId: null,
-      roundIndex: 0,
-      selectedRoundId: null,
-      seasonOptions: [SEASON_PLACEHOLDER, ...seasons.map((season) => season.label)],
-      roundOptions: [ROUND_PLACEHOLDER],
-      state: "picker",
-      card: null,
-      errorKind: "",
-      errorMessage: "",
-    });
-    this.syncShareMenu();
-  },
-
-  onSeasonChange(event) {
-    this.requestSerial += 1;
-    const index = Number(event.detail.value);
-    if (index === 0) {
-      this.setData({
-        seasonIndex: 0,
-        selectedSeasonId: null,
-        roundIndex: 0,
-        selectedRoundId: null,
-        roundOptions: [ROUND_PLACEHOLDER],
-        state: "picker",
-        card: null,
-        errorKind: "",
-        errorMessage: "",
-      });
-      this.syncShareMenu();
-      return;
-    }
-    const seasons = this.data.seasonsByLeague[this.data.selectedLeagueId] || [];
-    const season = seasons[index - 1];
-    const rounds = (season && this.data.roundsBySeason[this.data.selectedLeagueId + "|" + season.id]) || [];
-    this.setData({
-      seasonIndex: index,
-      selectedSeasonId: season ? season.id : null,
-      roundIndex: 0,
-      selectedRoundId: null,
-      roundOptions: [ROUND_PLACEHOLDER, ...rounds.map((round) => formatRound(round))],
-      state: "picker",
-      card: null,
-      errorKind: "",
-      errorMessage: "",
-    });
-    this.syncShareMenu();
-  },
-
-  onRoundChange(event) {
-    const index = Number(event.detail.value);
-    if (index === 0) {
-      this.requestSerial += 1;
-      this.setData({
-        roundIndex: 0,
-        selectedRoundId: null,
-        state: "picker",
-        card: null,
-        errorKind: "",
-        errorMessage: "",
-      });
-      this.syncShareMenu();
-      return;
-    }
-    const rounds = this.data.roundsBySeason[this.data.selectedLeagueId + "|" + this.data.selectedSeasonId] || [];
-    const roundId = normalizeRoundId(rounds[index - 1]);
-    this.setData({
-      roundIndex: index,
-      selectedRoundId: roundId,
-    });
-    if (roundId) return this.loadCard();
   },
 
   onShareAppMessage() {
@@ -755,25 +602,5 @@ Page({
   onRetry() {
     if (this.data.errorKind === "rateLimited") return;
     return this.loadCard();
-  },
-
-  onReselect() {
-    this.requestSerial += 1;
-    const resetReceiver = this.data.mode === "receiver" || this.data.errorKind === "userUnavailable";
-    this.setData({
-      state: "picker",
-      card: null,
-      selectedRoundId: null,
-      roundIndex: 0,
-      errorKind: "",
-      errorMessage: "",
-      ...(resetReceiver ? { mode: "preview", sharerId: null, shareToken: null } : {}),
-    });
-    this.syncShareMenu();
-  },
-
-  onCatalogRetry() {
-    this.setData({ catalogError: "" });
-    return this.loadCatalog();
   },
 });

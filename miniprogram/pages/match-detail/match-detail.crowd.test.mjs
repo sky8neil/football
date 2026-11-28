@@ -21,6 +21,7 @@ function loadCommonJs(file, requires) {
 function loadPage({ detail, crowd, submit, getLoginGeneration } = {}) {
   const pageConfig = {};
   let loginGeneration = 0;
+  const authRestoredListeners = new Set();
   Object.defineProperty(globalThis, "Page", { value: (config) => Object.assign(pageConfig, config), configurable: true });
   const getMatchCrowd = vi.fn(crowd || (async () => ({ statusCode: 200, data: { status: "available", distribution: { home: 50, draw: 25, away: 25 }, granularity: 5, min_predictions: 20 } })));
   const getMatchDetail = vi.fn(detail || (async () => ({ statusCode: 200, data: {
@@ -36,7 +37,13 @@ function loadPage({ detail, crowd, submit, getLoginGeneration } = {}) {
   loadCommonJs(join(HERE, "match-detail.js"), {
     "../../services/matches.js": { getMatchDetail, getMatchCrowd },
     "../../services/predictions.js": { createUuidV4: () => `uuid-${++keyCounter}`, submitPrediction },
-    "../../services/auth.js": { getLoginGeneration: getLoginGeneration || (() => loginGeneration) },
+    "../../services/auth.js": {
+      getLoginGeneration: getLoginGeneration || (() => loginGeneration),
+      onAuthRestored(listener) {
+        authRestoredListeners.add(listener);
+        return () => authRestoredListeners.delete(listener);
+      },
+    },
     "../../utils/logo-registry.js": { getTeamLogo: () => "" },
     "../../utils/team-presentation.js": {
       presentTeam: (team) => ({
@@ -59,6 +66,10 @@ function loadPage({ detail, crowd, submit, getLoginGeneration } = {}) {
     getMatchCrowd,
     getMatchDetail,
     submitPrediction,
+    authRestoredListeners,
+    triggerAuthRestored() {
+      for (const listener of [...authRestoredListeners]) listener({ statusCode: 200 });
+    },
     bumpLoginGeneration() { loginGeneration += 1; },
   };
 }
@@ -295,5 +306,371 @@ describe("match detail crowd card", () => {
 
     const wxml = readFileSync(join(HERE, "match-detail.wxml"), "utf8");
     expect(wxml).toContain("!identityMissing && !userDeleted && (canSubmit || !submitDisabledReason)");
+  });
+
+  it("[CR50-04] reloads from anonymous guest state on onAuthRestored and ignores late anonymous response", async () => {
+    let resolveAnon;
+    let resolveAuthed;
+    const getMatchDetail = vi.fn()
+      .mockImplementationOnce(() => new Promise((r) => { resolveAnon = r; }))
+      .mockImplementationOnce(() => new Promise((r) => { resolveAuthed = r; }));
+    const { page, triggerAuthRestored } = loadPage({ detail: getMatchDetail });
+
+    page.onLoad({ id: "match-1" });
+    expect(getMatchDetail).toHaveBeenCalledTimes(1);
+
+    // Auth restores while anonymous request is still in flight
+    triggerAuthRestored();
+    expect(getMatchDetail).toHaveBeenCalledTimes(2);
+
+    // Logged-in response returns first
+    resolveAuthed({
+      statusCode: 200,
+      data: {
+        match_id: "match-1",
+        match_status: "scheduled",
+        can_predict: true,
+        can_predict_reason: null,
+        my_prediction: null,
+        home_team: {},
+        away_team: {},
+      },
+    });
+    await vi.waitFor(() => expect(page.data.state).toBe("ready"));
+    expect(page.data.canSubmit).toBe(true);
+    expect(page.data.identityMissing).toBe(false);
+
+    // Late anonymous response arrives after logged-in response — must NOT overwrite
+    resolveAnon({
+      statusCode: 200,
+      data: {
+        match_id: "match-1",
+        match_status: "scheduled",
+        can_predict: false,
+        can_predict_reason: "AUTH_REQUIRED",
+        my_prediction: null,
+        home_team: {},
+        away_team: {},
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(page.data.canSubmit).toBe(true);
+    expect(page.data.identityMissing).toBe(false);
+  });
+
+  it("[CR50-04] reloads cold-start anonymous guest detail when onAuthRestored fires after guest render", async () => {
+    const getMatchDetail = vi.fn()
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        data: {
+          match_id: "match-1",
+          match_status: "scheduled",
+          can_predict: false,
+          can_predict_reason: "AUTH_REQUIRED",
+          my_prediction: null,
+          home_team: {},
+          away_team: {},
+        },
+      })
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        data: {
+          match_id: "match-1",
+          match_status: "scheduled",
+          can_predict: true,
+          can_predict_reason: null,
+          my_prediction: null,
+          home_team: {},
+          away_team: {},
+        },
+      });
+    const { page, triggerAuthRestored } = loadPage({ detail: getMatchDetail });
+
+    page.onLoad({ id: "match-1" });
+    await vi.waitFor(() => expect(page.data.state).toBe("ready"));
+    expect(page.data.identityMissing).toBe(true);
+    expect(page.data.canSubmit).toBe(false);
+
+    triggerAuthRestored();
+    await vi.waitFor(() => expect(page.data.canSubmit).toBe(true));
+    expect(page.data.identityMissing).toBe(false);
+    expect(getMatchDetail).toHaveBeenCalledTimes(2);
+  });
+
+  it("[CR50-04] unsubscribes onAuthRestored and invalidates in-flight detail/crowd/submit callbacks on onUnload", async () => {
+    let resolveSecondDetail;
+    let resolveCrowd;
+    let resolveSubmit;
+    const getMatchDetail = vi.fn()
+      .mockResolvedValueOnce({
+        statusCode: 200,
+        data: {
+          match_id: "match-1",
+          match_status: "scheduled",
+          can_predict: true,
+          can_predict_reason: null,
+          my_prediction: null,
+          home_team: {},
+          away_team: {},
+        },
+      })
+      .mockImplementationOnce(() => new Promise((r) => { resolveSecondDetail = r; }));
+    const getMatchCrowd = vi.fn(() => new Promise((r) => { resolveCrowd = r; }));
+    const submitPrediction = vi.fn(() => new Promise((r) => { resolveSubmit = r; }));
+    const { page, triggerAuthRestored, authRestoredListeners } = loadPage({
+      detail: getMatchDetail,
+      crowd: getMatchCrowd,
+      submit: submitPrediction,
+    });
+
+    page.onLoad({ id: "match-1" });
+    await vi.waitFor(() => expect(page.data.state).toBe("ready"));
+    expect(authRestoredListeners.size).toBe(1);
+
+    // Trigger reload via onAuthRestored, plus an in-flight crowd request, then immediately unload
+    triggerAuthRestored();
+    expect(getMatchDetail).toHaveBeenCalledTimes(2);
+
+    page.loadCrowd({ match_id: "match-1", match_status: "live", can_predict_reason: "CLOSED" });
+    expect(getMatchCrowd).toHaveBeenCalledTimes(1);
+
+    const setDataSpy = vi.spyOn(page, "setData");
+    page.onUnload();
+    expect(page.unloaded).toBe(true);
+    expect(page.unsubscribeAuthRestored).toBeNull();
+    expect(authRestoredListeners.size).toBe(0);
+
+    // Subsequent onAuthRestored must not fire loadDetail
+    triggerAuthRestored();
+    expect(getMatchDetail).toHaveBeenCalledTimes(2);
+
+    // Resolving in-flight detail & crowd after unload must not call setData or issue /crowd
+    resolveSecondDetail({
+      statusCode: 200,
+      data: {
+        match_id: "match-1",
+        match_status: "live",
+        can_predict: false,
+        can_predict_reason: "CLOSED",
+        my_prediction: null,
+        home_team: {},
+        away_team: {},
+      },
+    });
+    resolveCrowd({
+      statusCode: 200,
+      data: { status: "available", distribution: { home: 50, draw: 25, away: 25 }, granularity: 5, min_predictions: 20 },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(setDataSpy).not.toHaveBeenCalled();
+    expect(getMatchCrowd).toHaveBeenCalledTimes(1);
+
+    // Also verify in-flight submit resolution after unload does not call setData
+    const { page: submitPage } = loadPage({
+      detail: async () => ({
+        statusCode: 200,
+        data: {
+          match_id: "match-1",
+          match_status: "scheduled",
+          can_predict: true,
+          can_predict_reason: null,
+          my_prediction: null,
+          home_team: {},
+          away_team: {},
+        },
+      }),
+      submit: submitPrediction,
+    });
+    submitPage.onLoad({ id: "match-1" });
+    await vi.waitFor(() => expect(submitPage.data.canSubmit).toBe(true));
+    const submitPromise = submitPage.onSubmit();
+    const submitSetDataSpy = vi.spyOn(submitPage, "setData");
+    submitPage.onUnload();
+    resolveSubmit({ statusCode: 201 });
+    await submitPromise;
+    expect(submitSetDataSpy).not.toHaveBeenCalled();
+  });
+
+  it("[CR50-18] enters ready instead of sticking in loading when loginGeneration changes mid-request before next onShow", async () => {
+    let resolveOld;
+    let resolveNew;
+    const getMatchDetail = vi.fn()
+      .mockImplementationOnce(() => new Promise((r) => { resolveOld = r; }))
+      .mockImplementationOnce(() => new Promise((r) => { resolveNew = r; }));
+    const { page, bumpLoginGeneration } = loadPage({ detail: getMatchDetail });
+
+    page.onLoad({ id: "match-1" });
+    expect(page.data.state).toBe("loading");
+    expect(getMatchDetail).toHaveBeenCalledTimes(1);
+
+    // loginGeneration changes while old detail request is still in flight (before any onShow)
+    bumpLoginGeneration();
+
+    // Old response arrives -> handleStaleLoginGeneration triggers loadDetail()
+    resolveOld({
+      statusCode: 200,
+      data: {
+        match_id: "match-1",
+        match_status: "scheduled",
+        can_predict: false,
+        can_predict_reason: "AUTH_REQUIRED",
+        my_prediction: null,
+        home_team: {},
+        away_team: {},
+      },
+    });
+    await vi.waitFor(() => expect(getMatchDetail).toHaveBeenCalledTimes(2));
+
+    // New request succeeds -> must NOT be discarded as stale; page must enter ready
+    resolveNew({
+      statusCode: 200,
+      data: {
+        match_id: "match-1",
+        match_status: "scheduled",
+        can_predict: true,
+        can_predict_reason: null,
+        my_prediction: null,
+        home_team: {},
+        away_team: {},
+      },
+    });
+    await vi.waitFor(() => expect(page.data.state).toBe("ready"));
+    expect(page.data.canSubmit).toBe(true);
+    expect(page.data.identityMissing).toBe(false);
+  });
+
+  it("[CR50-16] hides crowd consistently across detail reason, crowd 409, and submit 409 USER_DELETED and ignores late crowd", async () => {
+    // 1) Detail reason === USER_DELETED
+    const detailDeleted = loadPage({
+      detail: async () => ({
+        statusCode: 200,
+        data: {
+          match_id: "match-1",
+          match_status: "live",
+          can_predict: false,
+          can_predict_reason: "USER_DELETED",
+          is_prediction_closed: true,
+          my_prediction: null,
+          home_team: {},
+          away_team: {},
+        },
+      }),
+    });
+    detailDeleted.page.onLoad({ id: "match-1" });
+    await vi.waitFor(() => expect(detailDeleted.page.data.state).toBe("ready"));
+    expect(detailDeleted.page.data.userDeleted).toBe(true);
+    expect(detailDeleted.page.data.canSubmit).toBe(false);
+    expect(detailDeleted.page.data.submitDisabledReason).toBe("当前不可预测");
+    expect(detailDeleted.page.data.crowdKind).toBe("hidden");
+    expect(detailDeleted.getMatchCrowd).not.toHaveBeenCalled();
+
+    // 2) loadCrowd receives 409 USER_DELETED
+    const crowdDeleted = loadPage({
+      detail: async () => ({
+        statusCode: 200,
+        data: {
+          match_id: "match-1",
+          match_status: "live",
+          can_predict: false,
+          can_predict_reason: "CLOSED",
+          my_prediction: null,
+          home_team: {},
+          away_team: {},
+        },
+      }),
+      crowd: async () => ({ statusCode: 409, code: "USER_DELETED", message: "账号已注销" }),
+    });
+    crowdDeleted.page.onLoad({ id: "match-1" });
+    await vi.waitFor(() => expect(crowdDeleted.page.data.userDeleted).toBe(true));
+    expect(crowdDeleted.page.data.crowdKind).toBe("hidden");
+    expect(crowdDeleted.page.data.crowdState).toBe("idle");
+    expect(crowdDeleted.page.data.canSubmit).toBe(false);
+    expect(crowdDeleted.page.data.submitDisabledReason).toBe("当前不可预测");
+    expect(crowdDeleted.page.data.match.can_predict_reason).toBe("USER_DELETED");
+
+    // 3) submitPrediction receives 409 USER_DELETED while an in-flight crowd request is pending
+    let resolveLateCrowd;
+    const submitDeleted = loadPage({
+      detail: async () => ({
+        statusCode: 200,
+        data: {
+          match_id: "match-1",
+          match_status: "scheduled",
+          can_predict: true,
+          can_predict_reason: null,
+          my_prediction: null,
+          home_team: {},
+          away_team: {},
+        },
+      }),
+      crowd: () => new Promise((r) => { resolveLateCrowd = r; }),
+      submit: async () => ({ statusCode: 409, code: "USER_DELETED", message: "账号已注销" }),
+    });
+    submitDeleted.page.onLoad({ id: "match-1" });
+    await vi.waitFor(() => expect(submitDeleted.page.data.canSubmit).toBe(true));
+    // Start an in-flight crowd request before submit completes
+    submitDeleted.page.loadCrowd({
+      match_id: "match-1",
+      match_status: "live",
+      can_predict_reason: "CLOSED",
+      is_prediction_closed: true,
+    });
+    expect(submitDeleted.getMatchCrowd).toHaveBeenCalledTimes(1);
+    const serialBeforeSubmit = submitDeleted.page.crowdRequestSerial;
+
+    await submitDeleted.page.onSubmit();
+    expect(submitDeleted.page.crowdRequestSerial).toBe(serialBeforeSubmit + 1);
+    expect(submitDeleted.page.data.userDeleted).toBe(true);
+    expect(submitDeleted.page.data.canSubmit).toBe(false);
+    expect(submitDeleted.page.data.submitDisabledReason).toBe("当前不可预测");
+    expect(submitDeleted.page.data.crowdKind).toBe("hidden");
+    expect(submitDeleted.page.data.crowdState).toBe("idle");
+    expect(submitDeleted.page.data.match.can_predict_reason).toBe("USER_DELETED");
+
+    // Late crowd 200 arrives — must be discarded and NOT overwrite hidden state
+    resolveLateCrowd({
+      statusCode: 200,
+      data: { status: "available", distribution: { home: 60, draw: 20, away: 20 }, granularity: 5, min_predictions: 20 },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(submitDeleted.page.data.crowdKind).toBe("hidden");
+    expect(submitDeleted.page.data.crowdState).toBe("idle");
+
+    // 4) Ordinary 500 retry and idempotent 200 replay remain unaffected
+    const retryPage = loadPage({
+      detail: async () => ({
+        statusCode: 200,
+        data: {
+          match_id: "match-1",
+          match_status: "scheduled",
+          can_predict: true,
+          can_predict_reason: null,
+          my_prediction: null,
+          home_team: {},
+          away_team: {},
+        },
+      }),
+      submit: vi.fn()
+        .mockResolvedValueOnce({ statusCode: 500, code: "INTERNAL", message: "server error" })
+        .mockResolvedValueOnce({ statusCode: 200 }),
+    });
+    retryPage.page.onLoad({ id: "match-1" });
+    await vi.waitFor(() => expect(retryPage.page.data.canSubmit).toBe(true));
+    retryPage.page.setData({ homeScore: 2, awayScore: 1 });
+    await retryPage.page.onSubmit();
+    expect(retryPage.page.data.submitting).toBe(false);
+    expect(retryPage.page.data.formError).toBe("server error");
+    const retryKey = retryPage.page.idempotencyKey;
+    expect(retryKey).toBeTruthy();
+
+    await retryPage.page.onSubmit();
+    expect(retryPage.submitPrediction).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ idempotencyKey: retryKey, homeScore: 2, awayScore: 1 }),
+    );
+    expect(retryPage.page.data.formError).toBe("");
   });
 });

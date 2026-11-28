@@ -70,6 +70,7 @@ export async function migrateDeletedOpenidMappings(
         unionid: null,
         nickname: null,
         favorite_team_id: null,
+        gender: null,
         updated_at: serverNow,
       });
       result.migrated += 1;

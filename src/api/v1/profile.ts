@@ -5,9 +5,10 @@ import type {
   ProfileQueryService,
   PublicProfileData,
 } from "../../application/profile.js";
-import type {
-  ProfileMutationService,
-  ProfilePatch,
+import {
+  validateGender,
+  type ProfileMutationService,
+  type ProfilePatch,
 } from "../../application/profile-mutation.js";
 import { assertUnknownFields } from "./validation.js";
 import {
@@ -73,7 +74,7 @@ export interface PatchMyProfileSuccessResponse {
   };
 }
 
-const PROFILE_PATCH_FIELDS = new Set(["nickname", "favorite_team_id"]);
+const PROFILE_PATCH_FIELDS = new Set(["nickname", "favorite_team_id", "gender"]);
 
 function requireAuthenticatedUserId(value: unknown): string {
   if (typeof value !== "string" || value.length === 0) {
@@ -115,6 +116,9 @@ export function validateProfilePatch(input: unknown): ProfilePatch {
     throw validationError("favorite_team_id 必须为 UUID v4 或 null", {
       field: "favorite_team_id",
     });
+  }
+  if (Object.prototype.hasOwnProperty.call(payload, "gender")) {
+    validateGender(payload.gender);
   }
   return payload as ProfilePatch;
 }

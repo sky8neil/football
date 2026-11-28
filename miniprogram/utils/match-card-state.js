@@ -1,6 +1,6 @@
 const REASON_TEXT = {
   AUTH_REQUIRED: "需登录后预测",
-  USER_DELETED: "账号已注销",
+  USER_DELETED: "当前不可预测",
   KICKOFF_UNCONFIRMED: "开球未确认",
   NOT_SCHEDULED: "非可预测赛程",
   CLOSED: "预测已关闭",
@@ -11,6 +11,19 @@ const CLOSED_STATUSES = {
   cancelled: "取消",
   abandoned: "腰斩",
 };
+
+function hasPredScores(submitted) {
+  if (!submitted || typeof submitted !== "object") return false;
+  const home = submitted.pred_home_score !== undefined ? submitted.pred_home_score : submitted.home;
+  const away = submitted.pred_away_score !== undefined ? submitted.pred_away_score : submitted.away;
+  return home != null && away != null;
+}
+
+function isPendingSyncSubmitted(item, submitted) {
+  if (submitted && submitted.pendingSync === true) return true;
+  if (!hasPredScores(submitted) && item && item.can_predict_reason === "ALREADY_SUBMITTED") return true;
+  return false;
+}
 
 function predPair(submitted) {
   const home = submitted.pred_home_score !== undefined ? submitted.pred_home_score : submitted.home;
@@ -33,12 +46,13 @@ function finishedScoreSub(match, submitted) {
   return "";
 }
 
-function buildPredText(submitted, showPredict) {
-  if (submitted) {
+function buildPredText(submitted, showPredict, pendingSync) {
+  if (hasPredScores(submitted)) {
     const pair = predPair(submitted);
     if (submitted.match_score != null) return `我的预测 ${pair} · 得分 +${submitted.match_score}`;
     return `已提交 ${pair} · 不可修改`;
   }
+  if (pendingSync) return "已提交 · 比分同步中";
   if (showPredict) return "";
   return "未预测";
 }
@@ -47,7 +61,9 @@ function buildCardState(item, submitted) {
   const match = item || {};
   const reason = match.can_predict_reason;
   const displayTime = match.display_time || "";
-  const hasSubmitted = submitted != null;
+  const pendingSync = isPendingSyncSubmitted(match, submitted);
+  const hasSubmitted = hasPredScores(submitted) || pendingSync;
+  const effectiveSubmitted = hasSubmitted ? (submitted || { pendingSync: true }) : null;
   let cardClass = "is-closed";
   let stateClass = "closed";
   let stateText = "未开赛";
@@ -65,7 +81,7 @@ function buildCardState(item, submitted) {
     cardClass = "is-done";
     stateClass = "done";
     stateText = "已结束";
-    scoreSub = finishedScoreSub(match, hasSubmitted ? submitted : null);
+    scoreSub = finishedScoreSub(match, effectiveSubmitted);
   } else if (CLOSED_STATUSES[match.match_status]) {
     cardClass = "is-closed";
     stateClass = "closed";
@@ -98,7 +114,7 @@ function buildCardState(item, submitted) {
     stateClass,
     stateText,
     scoreSub,
-    predText: buildPredText(hasSubmitted ? submitted : null, showPredict),
+    predText: buildPredText(effectiveSubmitted, showPredict, pendingSync),
     chipText,
     chipClass,
     showPredict,

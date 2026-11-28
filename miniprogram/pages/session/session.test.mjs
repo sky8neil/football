@@ -462,3 +462,155 @@ describe("会话页：隐私授权", () => {
     if (originalWx) setGlobal("wx", originalWx.value);
   });
 });
+
+describe("[CR50-15] 会话页：卸载后全回调守卫与隐私 resolve", () => {
+  function loadDeferredSessionPage({ initSessionImpl, deferredPrivacy = false, returnTo = "" } = {}) {
+    const storage = new Map();
+    const writes = [];
+    const navs = [];
+    const setDataCalls = [];
+    const privacy = {
+      offCalls: [],
+      handler: null,
+      triggerGetSuccess: null,
+    };
+    const navFailHooks = {};
+
+    const wxStub = {
+      getStorageSync: (key) => storage.get(key),
+      setStorageSync: (key, value) => {
+        storage.set(key, value);
+        writes.push([key, value]);
+      },
+      removeStorageSync: (key) => storage.delete(key),
+      switchTab: (opts) => {
+        navs.push(["switchTab", opts.url]);
+        navFailHooks.switchTab = opts.fail;
+      },
+      reLaunch: (opts) => {
+        navs.push(["reLaunch", opts.url]);
+        navFailHooks.reLaunch = opts.fail;
+      },
+      navigateBack: (opts) => {
+        navs.push(["navigateBack", opts.delta]);
+        navFailHooks.navigateBack = opts.fail;
+      },
+      getPrivacySetting: (opts) => {
+        if (deferredPrivacy) {
+          privacy.triggerGetSuccess = (res) => opts && typeof opts.success === "function" && opts.success(res);
+        } else if (opts && typeof opts.success === "function") {
+          opts.success({ needAuthorization: false });
+        }
+      },
+      onNeedPrivacyAuthorization: (handler) => {
+        privacy.handler = handler;
+      },
+      offNeedPrivacyAuthorization: (handler) => {
+        privacy.offCalls.push(handler);
+      },
+    };
+    setGlobal("wx", wxStub);
+
+    const nicknameUtil = loadModule(NICKNAME_JS, () => {
+      throw new Error("unexpected require");
+    });
+    let config;
+    setGlobal("Page", (value) => {
+      config = value;
+    });
+    loadModule(SESSION_JS, (id) => {
+      if (id === "../../services/session.js") return { initSession: initSessionImpl };
+      if (id === "../../utils/nickname.js") return nicknameUtil;
+      throw new Error(`Unexpected require: ${id}`);
+    });
+
+    const page = Object.assign({}, config, {
+      data: JSON.parse(JSON.stringify(config.data || {})),
+      setData(patch) {
+        setDataCalls.push(patch);
+        Object.assign(this.data, patch);
+      },
+    });
+    page.onLoad(returnTo ? { return_to: returnTo } : {});
+    return { page, writes, navs, setDataCalls, privacy, navFailHooks };
+  }
+
+  it.each([
+    { label: "200", result: { statusCode: 200, data: { nickname: "Sky" } }, expectStore: true },
+    { label: "201", result: { statusCode: 201, data: { nickname: "Sky" } }, expectStore: true },
+    { label: "非 2xx (500)", result: { statusCode: 500, code: "INTERNAL", message: "boom" }, expectStore: false },
+    { label: "异常空响应", result: null, expectStore: false },
+  ])("onUnload 后 $label 返回不执行 setData 与页面导航", async ({ result, expectStore }) => {
+    let resolveSubmit;
+    const { page, writes, navs, setDataCalls } = loadDeferredSessionPage({
+      initSessionImpl: () => new Promise((resolve) => { resolveSubmit = resolve; }),
+    });
+    page.setData({ nickname: "Sky" });
+    const pending = page.onSubmit();
+    const setDataCountBeforeUnload = setDataCalls.length;
+
+    page.onUnload();
+    resolveSubmit(result);
+    await pending;
+
+    expect(setDataCalls.length).toBe(setDataCountBeforeUnload);
+    expect(navs).toEqual([]);
+    if (expectStore) {
+      expect(writes).toContainEqual(["nickname", "Sky"]);
+    } else {
+      expect(writes).toEqual([]);
+    }
+  });
+
+  it("onUnload 后 initSession reject 不执行 setData 与页面导航", async () => {
+    let rejectSubmit;
+    const { page, navs, setDataCalls } = loadDeferredSessionPage({
+      initSessionImpl: () => new Promise((_, reject) => { rejectSubmit = reject; }),
+    });
+    page.setData({ nickname: "Sky" });
+    const pending = page.onSubmit();
+    const setDataCountBeforeUnload = setDataCalls.length;
+
+    page.onUnload();
+    rejectSubmit(new Error("network down"));
+    await pending;
+
+    expect(setDataCalls.length).toBe(setDataCountBeforeUnload);
+    expect(navs).toEqual([]);
+  });
+
+  it("onUnload 后导航 fail 回调不执行 setData 或兜底 switchTab", async () => {
+    const { page, navs, setDataCalls, navFailHooks } = loadDeferredSessionPage({
+      initSessionImpl: () => Promise.resolve({ statusCode: 201, data: { nickname: "Sky" } }),
+      returnTo: "match-detail",
+    });
+    page.setData({ nickname: "Sky" });
+    await page.onSubmit();
+    expect(navs).toEqual([["navigateBack", 1]]);
+    const setDataCountBeforeUnload = setDataCalls.length;
+
+    page.onUnload();
+    navFailHooks.navigateBack();
+    expect(navs).toEqual([["navigateBack", 1]]);
+    expect(setDataCalls.length).toBe(setDataCountBeforeUnload);
+  });
+
+  it("迟到的 getPrivacySetting.success 在 onUnload 后不打开隐私卡，且 _privacyResolve 仅触发一次 disagree", () => {
+    const { page, setDataCalls, privacy } = loadDeferredSessionPage({
+      initSessionImpl: () => Promise.resolve({ statusCode: 201, data: { nickname: "Sky" } }),
+      deferredPrivacy: true,
+    });
+    const resolved = [];
+    privacy.handler((payload) => resolved.push(payload));
+    const setDataCountBeforeUnload = setDataCalls.length;
+
+    page.onUnload();
+    page.onUnload();
+    expect(resolved).toEqual([{ event: "disagree" }]);
+    expect(page._privacyResolve).toBeNull();
+    expect(privacy.offCalls).toHaveLength(1);
+
+    privacy.triggerGetSuccess({ needAuthorization: true, privacyContractName: "《隐私指引》" });
+    expect(setDataCalls.length).toBe(setDataCountBeforeUnload);
+  });
+});

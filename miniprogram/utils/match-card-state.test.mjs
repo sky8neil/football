@@ -406,4 +406,38 @@ describe("buildCardState", () => {
       assertNoDuplication(state);
     }
   });
+
+  it("[CR50-05] models pending-sync submitted state explicitly without showing 未预测 or undefined", () => {
+    const fromMarker = buildCardState(
+      item({ can_predict: true, can_predict_reason: null }),
+      { pendingSync: true, loginGeneration: 0 },
+    );
+    expect(fromMarker).toMatchObject({
+      cardClass: "is-submitted",
+      stateClass: "lock",
+      stateText: "未开赛",
+      predText: "已提交 · 比分同步中",
+      chipText: "",
+      showPredict: false,
+    });
+    expect(fromMarker.predText).not.toContain("未预测");
+    expect(fromMarker.predText).not.toContain("undefined");
+    assertNoDuplication(fromMarker);
+
+    const fromReasonOnly = buildCardState(
+      item({ can_predict: false, can_predict_reason: "ALREADY_SUBMITTED" }),
+      null,
+    );
+    expect(fromReasonOnly).toMatchObject({
+      cardClass: "is-submitted",
+      stateClass: "lock",
+      stateText: "未开赛",
+      predText: "已提交 · 比分同步中",
+      chipText: "",
+      showPredict: false,
+    });
+    expect(fromReasonOnly.predText).not.toContain("未预测");
+    expect(fromReasonOnly.predText).not.toContain("undefined");
+    assertNoDuplication(fromReasonOnly);
+  });
 });

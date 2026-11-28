@@ -105,6 +105,13 @@ export const UserStatus = {
 } as const;
 export type UserStatus = (typeof UserStatus)[keyof typeof UserStatus];
 
+export const UserGender = {
+  Male: "male",
+  Female: "female",
+  Undisclosed: "undisclosed",
+} as const;
+export type UserGender = (typeof UserGender)[keyof typeof UserGender];
+
 export const TeamStatus = {
   Active: "active",
   Inactive: "inactive",

@@ -34,6 +34,7 @@ import { InMemoryRepository, type UnitOfWork } from "../infrastructure/repositor
 import { DailyConsistencyService, DAILY_CONSISTENCY_ANOMALY_MATCH_ID, DAILY_CONSISTENCY_MISMATCH_CODE } from "./daily-consistency-service.js";
 import { RepositoryDailyConsistencySnapshotSource } from "./daily-consistency-snapshot.js";
 import { ProfileMutationService } from "./profile-mutation.js";
+import { ProfileQueryService } from "./profile.js";
 import {
   SettlementItemApplicationService,
   rankingPeriodLockKey,
@@ -204,6 +205,48 @@ describe("ProfileMutationService.updateMyProfile", () => {
     });
   });
 
+  it("支持更新 gender 为 male / female / undisclosed / null，未传时保留原值，非法值返回 422", async () => {
+    const repo = new InMemoryRepository();
+    const user = makeUser();
+    await repo.users.insert(user);
+    const service = new ProfileMutationService(repo);
+
+    for (const gender of ["male", "female", "undisclosed"] as const) {
+      await expect(service.updateMyProfile(user.user_id, { gender }, NOW)).resolves.toMatchObject({
+        gender,
+      });
+      await expect(repo.users.findById(user.user_id)).resolves.toMatchObject({ gender });
+    }
+
+    // 未传 gender 时保持原有值不变
+    await expect(
+      service.updateMyProfile(user.user_id, { nickname: "KeepGender" }, NOW),
+    ).resolves.toMatchObject({
+      nickname: "KeepGender",
+      gender: "undisclosed",
+    });
+    await expect(repo.users.findById(user.user_id)).resolves.toMatchObject({
+      nickname: "KeepGender",
+      gender: "undisclosed",
+    });
+
+    // 允许显式清空为 null
+    await expect(service.updateMyProfile(user.user_id, { gender: null }, NOW)).resolves.toMatchObject({
+      gender: null,
+    });
+    await expect(repo.users.findById(user.user_id)).resolves.toMatchObject({ gender: null });
+
+    // 非法值拒绝并返回 VALIDATION_ERROR
+    for (const invalid of ["", "other", "MALE", 1, true, undefined]) {
+      await expect(
+        service.updateMyProfile(user.user_id, { gender: invalid }, NOW),
+      ).rejects.toMatchObject({
+        code: "VALIDATION_ERROR",
+        details: { field: "gender" },
+      });
+    }
+  });
+
   it("已注销用户不能更新资料", async () => {
     const repo = new InMemoryRepository();
     const user = makeUser({ status: UserStatus.Deleted, nickname: null });
@@ -230,9 +273,9 @@ describe("ProfileMutationService.deleteMyProfile", () => {
     await expect(repo.users.findById(user.user_id)).resolves.toEqual(user);
   });
 
-  it("将 active 用户写成规范定义的注销墓碑并保留 user_id", async () => {
+  it("将 active 用户写成规范定义的注销墓碑并保留 user_id，同时清空 gender", async () => {
     const repo = new InMemoryRepository();
-    const user = makeUser();
+    const user = makeUser({ gender: "male" });
     await repo.users.insert(user);
 
     await expect(
@@ -245,9 +288,16 @@ describe("ProfileMutationService.deleteMyProfile", () => {
       unionid: null,
       nickname: null,
       favorite_team_id: null,
+      gender: null,
       status: UserStatus.Deleted,
       deleted_at: NOW,
       updated_at: NOW,
+    });
+    await expect(new ProfileQueryService(repo).getPublicProfile(user.user_id, NOW)).resolves.toMatchObject({
+      user_id: user.user_id,
+      display_name: "已注销用户",
+      favorite_team_id: null,
+      gender: null,
     });
     await expect(repo.users.findByOpenid(user.openid)).resolves.toBeNull();
   });
@@ -754,7 +804,7 @@ describe("ProfileMutationService A-S4-01", () => {
 
     expect(writeTransactions(log)).toEqual([[
       `users.findByIdForUpdate|${user.user_id}`,
-      `users.patchFields|${user.user_id}|deleted_at,favorite_team_id,nickname,openid,status,unionid,updated_at`,
+      `users.patchFields|${user.user_id}|deleted_at,favorite_team_id,gender,nickname,openid,status,unionid,updated_at`,
       "stats.findByUserAndSeasonForUpdate|2025_2026",
       "stats.findByUserAndSeasonForUpdate|2026_2027",
       "stats.patchFields|2026_2027|is_level_frozen,updated_at",

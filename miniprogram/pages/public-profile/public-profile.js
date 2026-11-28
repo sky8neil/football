@@ -9,7 +9,8 @@ const { presentTeam } = require("../../utils/team-presentation.js");
 const { PLACEHOLDER } = require("../../utils/logo-registry.js");
 
 const LEVEL_NAMES = ["", "青训新人", "潜力新星", "崭露头角", "坐稳主力", "球队核心", "顶级球星"];
-const DELETED_DISPLAY_NAME = "已注销用户";
+const DELETED_API_DISPLAY_NAME = "\u5df2\u6ce8\u9500\u7528\u6237";
+const HISTORICAL_DISPLAY_NAME = "历史用户";
 
 function resolveFavoriteTeam(favoriteTeamId) {
   const { needsRemoteLookup: _needsRemoteLookup, ...team } = resolveFavoriteTeamSync(favoriteTeamId, {
@@ -24,6 +25,12 @@ function levelName(level) {
   return LEVEL_NAMES[level] || LEVEL_NAMES[1];
 }
 
+function normalizePublicGender(value, isDeleted) {
+  if (isDeleted) return "";
+  if (value === "male" || value === "female") return value;
+  return "";
+}
+
 Page({
   data: {
     state: "loading",
@@ -31,6 +38,7 @@ Page({
     displayName: "",
     avatarInitial: "球",
     isDeleted: false,
+    gender: "",
     favoriteTeamId: null,
     favoriteTeamText: "未设置",
     favoriteTeamLogo: PLACEHOLDER,
@@ -138,11 +146,13 @@ Page({
         return;
       }
       const profile = result.data;
-      const displayName = typeof profile.display_name === "string" && profile.display_name
+      const rawDisplayName = typeof profile.display_name === "string" && profile.display_name
         ? profile.display_name
         : "预言家";
-      const isDeleted = displayName === DELETED_DISPLAY_NAME;
+      const isDeleted = rawDisplayName === DELETED_API_DISPLAY_NAME;
+      const displayName = isDeleted ? HISTORICAL_DISPLAY_NAME : rawDisplayName;
       const avatarInitial = Array.from(displayName)[0] || "球";
+      const gender = normalizePublicGender(profile.gender, isDeleted);
       const careerLevel = Number(profile.career_level) || 1;
       const careerBestLevel = Number(profile.career_best_level) || careerLevel;
       const seasonLevel = Number(profile.season_level) || 1;
@@ -156,6 +166,7 @@ Page({
         displayName,
         avatarInitial,
         isDeleted,
+        gender,
         ...team,
         careerPoints: String(profile.career_points ?? 0),
         careerValidPredictions: String(profile.career_valid_predictions ?? 0),

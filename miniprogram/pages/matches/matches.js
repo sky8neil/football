@@ -122,12 +122,29 @@ function hasUsablePrediction(prediction) {
   return home != null && away != null;
 }
 
+function isPendingSyncRecord(prediction) {
+  return Boolean(prediction && typeof prediction === "object" && prediction.pendingSync === true);
+}
+
+function matchesLoginGeneration(record, loginGeneration) {
+  if (!record || typeof record !== "object") return true;
+  const recordGen = typeof record.loginGeneration === "number"
+    ? record.loginGeneration
+    : (typeof record.generation === "number" ? record.generation : undefined);
+  return recordGen === undefined || recordGen === loginGeneration;
+}
+
 function resolveSubmitted(item, localSubmitted, loginGeneration) {
   if (hasUsablePrediction(item && item.my_prediction)) return item.my_prediction;
   if (item && item.can_predict_reason === "AUTH_REQUIRED") return null;
-  if (!hasUsablePrediction(localSubmitted)) return null;
-  if (typeof localSubmitted.generation === "number" && localSubmitted.generation !== loginGeneration) return null;
-  return localSubmitted;
+  if (localSubmitted && matchesLoginGeneration(localSubmitted, loginGeneration)) {
+    if (hasUsablePrediction(localSubmitted)) return localSubmitted;
+    if (isPendingSyncRecord(localSubmitted)) return localSubmitted;
+  }
+  if (item && item.can_predict_reason === "ALREADY_SUBMITTED") {
+    return { pendingSync: true, loginGeneration };
+  }
+  return null;
 }
 
 function listCounts(items) {
@@ -513,6 +530,9 @@ Page({
     const kick = beijingParts(item.kickoff_at);
     const key = scope(this.data.selectedLeague, this.data.selectedDate, item.match_id);
     let draft = this.drafts[key] || { home: 0, away: 0 };
+    if (hasUsablePrediction(item && item.my_prediction) && isPendingSyncRecord(this.submittedMap[key])) {
+      delete this.submittedMap[key];
+    }
     const submitted = resolveSubmitted(item, this.submittedMap[key], loginGeneration);
     const cardState = buildCardState(item, submitted);
     const hasScore = item.regular_home_score !== null && item.regular_home_score !== undefined && item.regular_away_score !== null && item.regular_away_score !== undefined;
@@ -666,6 +686,7 @@ Page({
       }
       if (result.statusCode === 409 && result.code === "PREDICTION_ALREADY_SUBMITTED") {
         this.clearSubmitError(key);
+        this.submittedMap[key] = { pendingSync: true, loginGeneration };
         this.uiStates[key] = "submitted_locked";
         delete this.drafts[key];
         delete this.idempotencyKeys[key];

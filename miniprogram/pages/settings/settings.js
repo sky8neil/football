@@ -1,5 +1,5 @@
 const config = require("../../config.js");
-const { getMyProfile, updateMyProfile, deleteMyProfile } = require("../../services/profile.js");
+const { getMyProfile, updateMyProfile } = require("../../services/profile.js");
 const { listTeams, resolveFavoriteTeamRemote } = require("../../services/teams.js");
 const { storeNickname, clearNickname } = require("../../utils/nickname.js");
 const { presentTeam } = require("../../utils/team-presentation.js");
@@ -7,15 +7,27 @@ const { findTeam, TEAM_REGISTRY } = require("../../utils/team-registry.js");
 const authService = require("../../services/auth.js");
 const { clearAuth } = authService;
 
-const LEAGUE_ORDER = ["premier_league", "la_liga", "serie_a", "bundesliga", "ligue_1", "chinese_super_league"];
-const LEAGUE_NAMES = {
-  premier_league: "英超",
-  la_liga: "西甲",
-  serie_a: "意甲",
-  bundesliga: "德甲",
-  ligue_1: "法甲",
-  chinese_super_league: "中超",
-};
+const TEAM_PLACEHOLDER = "/assets/logos/placeholders/team-placeholder.png";
+const LEAGUES = [
+  { id: "premier_league", name: "英超", logo: "/assets/logos/leagues/premier_league.png" },
+  { id: "la_liga", name: "西甲", logo: "/assets/logos/leagues/la_liga.png" },
+  { id: "serie_a", name: "意甲", logo: "/assets/logos/leagues/serie_a.png" },
+  { id: "bundesliga", name: "德甲", logo: "/assets/logos/leagues/bundesliga.png" },
+  { id: "ligue_1", name: "法甲", logo: "/assets/logos/leagues/ligue_1.png" },
+  { id: "chinese_super_league", name: "中超", logo: "/assets/logos/leagues/chinese_super_league.png" },
+];
+const LEAGUE_ORDER = LEAGUES.map((league) => league.id);
+const LEAGUE_NAMES = LEAGUES.reduce((acc, league) => {
+  acc[league.id] = league.name;
+  return acc;
+}, {});
+
+function normalizeGender(value) {
+  if (value === "male" || value === "female" || value === "undisclosed") {
+    return value;
+  }
+  return "undisclosed";
+}
 
 function isHttpTransport() {
   return (config.transport || "http") === "http";
@@ -97,17 +109,50 @@ function groupTeams(teams) {
 }
 
 Page({
-  data: { loading: true, saving: false, deleting: false, saveErrorMessage: "", errorMessage: "", errorKind: "", nickname: "", originalNickname: "", favoriteTeamId: null, originalTeamId: null, favoriteTeamName: "未设置", showTeams: false, teams: [], visibleGroups: [], search: "", teamsLoading: false, teamsError: "", showLogout: isHttpTransport() },
+  data: {
+    loading: true,
+    saving: false,
+    saveErrorMessage: "",
+    errorMessage: "",
+    errorKind: "",
+    nickname: "",
+    originalNickname: "",
+    gender: "undisclosed",
+    originalGender: "undisclosed",
+    favoriteTeamId: null,
+    originalTeamId: null,
+    favoriteTeamName: "暂未设置主队",
+    favoriteTeamSub: "点击右侧选择你支持的球队",
+    favoriteTeamLogo: TEAM_PLACEHOLDER,
+    isFavoriteTeamInactive: false,
+    showTeams: false,
+    leagues: LEAGUES,
+    activeLeagueId: LEAGUE_ORDER[0],
+    teams: [],
+    visibleGroups: [],
+    filteredTeams: [],
+    sheetCountText: "",
+    search: "",
+    teamsLoading: false,
+    teamsError: "",
+    showLogout: isHttpTransport(),
+  },
   profileRequestSerial: 0,
   favoriteTeamNameSerial: 0,
   teamsLoaded: false,
+  serverTeamsLoaded: false,
   loginGeneration: null,
+  pendingInitialTeamFocus: false,
+
   onLoad(query) {
     this.loginGeneration = currentLoginGeneration();
-    this.setData({ showTeams: !!(query && query.section === "team") });
+    const openTeam = !!(query && query.section === "team");
+    this.pendingInitialTeamFocus = openTeam;
+    this.setData({ showTeams: openTeam });
     this.loadProfile();
     this.loadTeams();
   },
+
   onShow() {
     const generation = currentLoginGeneration();
     const generationChanged = this.loginGeneration !== null && generation !== this.loginGeneration;
@@ -116,6 +161,7 @@ Page({
       return this.loadProfile();
     }
   },
+
   async loadProfile() {
     const requestSerial = (this.profileRequestSerial || 0) + 1;
     this.profileRequestSerial = requestSerial;
@@ -126,22 +172,28 @@ Page({
       const result = await getMyProfile();
       if (this.profileRequestSerial !== requestSerial || currentLoginGeneration() !== generation) return;
       if (result.statusCode === 401 && result.code === "UNAUTHORIZED") {
+        this.pendingInitialTeamFocus = false;
         this.setData({
+          showTeams: false,
           errorKind: "unauthorized",
           errorMessage: result.message || "请先登录后编辑个人资料",
         });
         return;
       }
       if (result.statusCode === 409 && result.code === "USER_DELETED") {
+        this.pendingInitialTeamFocus = false;
         clearLocalSessionAndCache();
         this.setData({
+          showTeams: false,
           errorKind: "userDeleted",
-          errorMessage: result.message || "该账号已被注销",
+          errorMessage: result.message || "当前账号不可用",
         });
         return;
       }
       if (result.statusCode !== 200) {
+        this.pendingInitialTeamFocus = false;
         this.setData({
+          showTeams: false,
           errorKind: "error",
           errorMessage: result.message || "个人资料加载失败，请重试",
         });
@@ -149,18 +201,24 @@ Page({
       }
       const profile = result.data || {};
       const id = profile.favorite_team_id || null;
+      const gender = normalizeGender(profile.gender);
       this.setData({
         errorKind: "",
         errorMessage: "",
         nickname: profile.nickname || "",
         originalNickname: profile.nickname || "",
+        gender,
+        originalGender: gender,
         favoriteTeamId: id,
         originalTeamId: id,
       });
       this.refreshTeamName();
+      this.applyInitialTeamFocusIfNeeded();
     } catch (_) {
       if (this.profileRequestSerial !== requestSerial || currentLoginGeneration() !== generation) return;
+      this.pendingInitialTeamFocus = false;
       this.setData({
+        showTeams: false,
         errorKind: "error",
         errorMessage: "个人资料加载失败，请重试",
       });
@@ -170,10 +228,16 @@ Page({
       }
     }
   },
+
   refreshTeamName() {
     const id = this.data.favoriteTeamId;
     if (!id) {
-      this.setData({ favoriteTeamName: "未设置" });
+      this.setData({
+        favoriteTeamName: "暂未设置主队",
+        favoriteTeamSub: "点击右侧选择你支持的球队",
+        favoriteTeamLogo: TEAM_PLACEHOLDER,
+        isFavoriteTeamInactive: false,
+      });
       return;
     }
     const loaded = Array.isArray(this.data.teams)
@@ -185,24 +249,59 @@ Page({
       : "";
     const registryName = (found && (found.name_zh || found.source_name)) || "";
     const cachedName = (typeof wx !== "undefined" && typeof wx.getStorageSync === "function" && wx.getStorageSync("team_name:" + id)) || "";
-    this.setData({ favoriteTeamName: loadedName || registryName || cachedName || "已选择球队" });
+    const cachedLogo = (typeof wx !== "undefined" && typeof wx.getStorageSync === "function" && wx.getStorageSync("team_logo:" + id)) || "";
+    const isInactive = Boolean(this.serverTeamsLoaded && !loaded);
+    let favoriteTeamLogo = TEAM_PLACEHOLDER;
+    let favoriteTeamSub = "已选择主队";
+    if (loaded) {
+      favoriteTeamLogo = loaded.logo || TEAM_PLACEHOLDER;
+      favoriteTeamSub = [LEAGUE_NAMES[loaded.league_id] || "", loaded.name || ""].filter(Boolean).join(" · ") || "已选择主队";
+    } else {
+      if (cachedLogo) {
+        favoriteTeamLogo = cachedLogo;
+      } else if (found) {
+        const presented = presentTeam(
+          { team_id: id, league_id: found.league_id, name: found.source_name, name_zh: found.name_zh },
+          found.league_id,
+        );
+        favoriteTeamLogo = (presented && presented.logo) || TEAM_PLACEHOLDER;
+      }
+      favoriteTeamSub = isInactive
+        ? "历史已选主队 · 仍正常展示"
+        : ([found && LEAGUE_NAMES[found.league_id], found && found.source_name].filter(Boolean).join(" · ") || "已选择主队");
+    }
+    this.setData({
+      favoriteTeamName: loadedName || registryName || cachedName || "已选择球队",
+      favoriteTeamSub,
+      favoriteTeamLogo,
+      isFavoriteTeamInactive: isInactive,
+    });
     if (!loadedName && !registryName && this.teamsLoaded && typeof resolveFavoriteTeamRemote === "function") {
       this.hydrateFavoriteTeamName(id);
     }
   },
+
   async hydrateFavoriteTeamName(teamId) {
     const serial = (this.favoriteTeamNameSerial || 0) + 1;
     this.favoriteTeamNameSerial = serial;
     try {
       const resolved = await resolveFavoriteTeamRemote(teamId, { presentTeam });
       if (this.favoriteTeamNameSerial !== serial || this.data.favoriteTeamId !== teamId) return;
+      const patch = {};
       if (resolved && resolved.favoriteTeamText) {
-        this.setData({ favoriteTeamName: resolved.favoriteTeamText });
+        patch.favoriteTeamName = resolved.favoriteTeamText;
+      }
+      if (resolved && resolved.favoriteTeamLogo) {
+        patch.favoriteTeamLogo = resolved.favoriteTeamLogo;
+      }
+      if (Object.keys(patch).length) {
+        this.setData(patch);
       }
     } catch (_error) {
       /* 远端解析失败时保留兜底名称 */
     }
   },
+
   async loadTeams() {
     if (this.data.teamsLoading) return;
     this.setData({ teamsLoading: true, teamsError: "" });
@@ -218,37 +317,139 @@ Page({
           /* 服务端拉取失败时静默降级到包内静态注册表，不阻塞页面 */
         }
       }
-      const teams = serverItems !== null ? mergeServerAndRegistryTeams(serverItems) : buildRegistryTeams();
+      const serverLoaded = serverItems !== null;
+      const teams = serverLoaded ? mergeServerAndRegistryTeams(serverItems) : buildRegistryTeams();
       this.teamsLoaded = true;
+      this.serverTeamsLoaded = serverLoaded;
       this.setData({ teams });
       this.filterTeams();
       this.refreshTeamName();
-    } catch (_) { this.setData({ teamsError: "球队加载失败，请重试" }); }
-    finally { this.setData({ teamsLoading: false }); }
+      this.applyInitialTeamFocusIfNeeded();
+    } catch (_) {
+      this.setData({ teamsError: "球队加载失败，请重试" });
+    } finally {
+      this.setData({ teamsLoading: false });
+    }
   },
-  onNicknameInput(event) { this.setData({ nickname: event.detail.value }); },
-  onTeamToggle() { this.setData({ showTeams: !this.data.showTeams }); },
-  onSearch(event) { this.setData({ search: event.detail.value }); this.filterTeams(); },
+
+  onNicknameInput(event) {
+    this.setData({ nickname: event.detail.value });
+  },
+
+  onGenderPick(event) {
+    if (this.data.saving || this.data.loading) return;
+    const value = event && event.currentTarget && event.currentTarget.dataset && event.currentTarget.dataset.gender;
+    if (value !== "male" && value !== "female" && value !== "undisclosed") return;
+    this.setData({ gender: value });
+  },
+
+  applyInitialTeamFocusIfNeeded() {
+    if (!this.pendingInitialTeamFocus || !this.data.showTeams || !this.data.favoriteTeamId) {
+      return;
+    }
+    const teams = Array.isArray(this.data.teams) ? this.data.teams : [];
+    const selected = teams.find((team) => team && team.team_id === this.data.favoriteTeamId);
+    if (!selected) return;
+    this.pendingInitialTeamFocus = false;
+    if (selected.league_id && LEAGUE_NAMES[selected.league_id]) {
+      if (this.data.activeLeagueId !== selected.league_id) {
+        this.setData({ activeLeagueId: selected.league_id });
+      }
+      this.filterTeams();
+    }
+  },
+
+  onTeamToggle() {
+    this.pendingInitialTeamFocus = false;
+    const nextOpen = !this.data.showTeams;
+    if (nextOpen && !this.data.search && this.data.favoriteTeamId && Array.isArray(this.data.teams)) {
+      const selected = this.data.teams.find((team) => team && team.team_id === this.data.favoriteTeamId);
+      if (selected && selected.league_id && LEAGUE_NAMES[selected.league_id]) {
+        this.setData({ activeLeagueId: selected.league_id });
+      }
+    }
+    this.setData({ showTeams: nextOpen });
+    if (nextOpen) {
+      this.filterTeams();
+    }
+  },
+
+  onCloseTeamSheet() {
+    this.pendingInitialTeamFocus = false;
+    if (!this.data.showTeams) return;
+    this.setData({ showTeams: false });
+  },
+
+  onStopPropagation() {},
+
+  onLeagueTabTap(event) {
+    const leagueId = event && event.currentTarget && event.currentTarget.dataset && event.currentTarget.dataset.league;
+    if (!leagueId) return;
+    this.pendingInitialTeamFocus = false;
+    this.setData({ activeLeagueId: leagueId, search: "" });
+    this.filterTeams();
+  },
+
+  onSearch(event) {
+    this.pendingInitialTeamFocus = false;
+    this.setData({ search: event && event.detail ? event.detail.value : "" });
+    this.filterTeams();
+  },
+
   filterTeams() {
-    const query = this.data.search.trim().toLowerCase();
-    const teams = this.data.teams.filter((team) => {
-      const name = (team.name || "").toLowerCase();
-      const nameZh = (team.nameZh || "").toLowerCase();
-      return name.includes(query) || nameZh.includes(query);
+    const query = (this.data.search || "").trim().toLowerCase();
+    const allTeams = Array.isArray(this.data.teams) ? this.data.teams : [];
+    const matchedAll = query
+      ? allTeams.filter((team) => {
+        const name = (team.name || "").toLowerCase();
+        const nameZh = (team.nameZh || "").toLowerCase();
+        return name.includes(query) || nameZh.includes(query);
+      })
+      : allTeams;
+    const activeLeagueId = this.data.activeLeagueId || LEAGUE_ORDER[0];
+    const filteredTeams = query
+      ? matchedAll.map((team) => ({
+        ...team,
+        subText: [LEAGUE_NAMES[team.league_id] || "", team.name || ""].filter(Boolean).join(" · "),
+      }))
+      : allTeams
+        .filter((team) => team.league_id === activeLeagueId)
+        .map((team) => ({
+          ...team,
+          subText: team.name || "",
+        }));
+    const sheetCountText = query
+      ? `搜索结果 ${filteredTeams.length} 支`
+      : `${LEAGUE_NAMES[activeLeagueId] || ""}共 ${filteredTeams.length} 支球队`;
+    this.setData({
+      visibleGroups: groupTeams(matchedAll),
+      filteredTeams,
+      sheetCountText,
     });
-    this.setData({ visibleGroups: groupTeams(teams) });
   },
+
   onTeamPick(event) {
-    if (this.data.saving || this.data.deleting || this.data.loading) return;
-    this.setData({ favoriteTeamId: event.currentTarget.dataset.id || null });
+    if (this.data.saving || this.data.loading) return;
+    this.pendingInitialTeamFocus = false;
+    const pickedId = (event && event.currentTarget && event.currentTarget.dataset && event.currentTarget.dataset.id) || null;
+    this.setData({ favoriteTeamId: pickedId, showTeams: false });
     this.refreshTeamName();
   },
+
+  onSelectedTeamLogoError() {
+    this.setData({ favoriteTeamLogo: TEAM_PLACEHOLDER });
+  },
+
   async onSave() {
-    if (this.data.saving || this.data.deleting || this.data.loading || this.data.errorMessage) return;
+    if (this.data.saving || this.data.loading || this.data.errorMessage) return;
     const nickname = this.data.nickname.trim();
-    if (!nickname) { wx.showToast({ title: "请输入昵称", icon: "none" }); return; }
+    if (!nickname) {
+      wx.showToast({ title: "请输入昵称", icon: "none" });
+      return;
+    }
     const patch = {};
     if (nickname !== this.data.originalNickname) patch.nickname = nickname;
+    if (this.data.gender !== this.data.originalGender) patch.gender = this.data.gender;
     if (this.data.favoriteTeamId !== this.data.originalTeamId) patch.favorite_team_id = this.data.favoriteTeamId;
     if (!Object.keys(patch).length) {
       wx.navigateBack({ fail: () => { wx.switchTab({ url: "/pages/profile/profile" }); } });
@@ -269,7 +470,7 @@ Page({
         clearLocalSessionAndCache();
         this.setData({
           errorKind: "userDeleted",
-          errorMessage: result.message || "该账号已被注销",
+          errorMessage: result.message || "当前账号不可用",
           saveErrorMessage: "",
         });
         return;
@@ -280,7 +481,7 @@ Page({
         console.warn("[profile-save]", { statusCode: result.statusCode, code: result.code, request_id: result.request_id });
         return;
       }
-      storeNickname(result.data && result.data.nickname || nickname);
+      storeNickname((result.data && result.data.nickname) || nickname);
       if (this.data.favoriteTeamId && typeof wx !== "undefined" && typeof wx.setStorageSync === "function") {
         const picked = Array.isArray(this.data.teams)
           ? this.data.teams.find((team) => team && team.team_id === this.data.favoriteTeamId)
@@ -294,74 +495,18 @@ Page({
       wx.showToast({ title: "已保存", icon: "success" });
       wx.navigateBack({ fail: () => { wx.switchTab({ url: "/pages/profile/profile" }); } });
     } catch (error) {
-      const message = error && (error.errMsg || error.message) || "保存失败，请稍后重试";
+      const message = (error && (error.errMsg || error.message)) || "保存失败，请稍后重试";
       this.setData({ saveErrorMessage: message });
       console.warn("[profile-save]", message);
+    } finally {
+      this.setData({ saving: false });
     }
-    finally { this.setData({ saving: false }); }
   },
+
   onLoginTap() {
     wx.navigateTo({ url: "/pages/session/session?return_to=settings" });
   },
-  onDeleteAccount() {
-    if (this.data.deleting || this.data.saving) return;
-    wx.showModal({
-      title: "确认注销账号？",
-      content: "账号注销后不可恢复，将退出你加入和创建的所有群组，并使当前登录立即失效。确定继续注销吗？",
-      confirmText: "确认注销",
-      cancelText: "取消",
-      confirmColor: "#9b392c",
-      success: (res) => {
-        if (!res || !res.confirm) return;
-        return this.performDeleteAccount();
-      },
-    });
-  },
-  async performDeleteAccount() {
-    if (this.data.deleting) return;
-    this.setData({ deleting: true, saveErrorMessage: "" });
-    try {
-      const result = await deleteMyProfile();
-      if (result && result.statusCode === 204) {
-        clearLocalSessionAndCache();
-        this.setData({ deleting: false });
-        wx.reLaunch({
-          url: "/pages/session/session",
-          fail: () => {
-            this.setData({ deleting: false, saveErrorMessage: "页面跳转失败，请重新打开小程序" });
-          },
-        });
-        return;
-      }
-      if (result && result.statusCode === 401 && result.code === "UNAUTHORIZED") {
-        clearLocalSessionAndCache();
-        this.setData({
-          deleting: false,
-          errorKind: "unauthorized",
-          errorMessage: result.message || "登录已失效，请重新登录",
-          saveErrorMessage: "",
-        });
-        return;
-      }
-      if (result && result.statusCode === 409 && result.code === "USER_DELETED") {
-        clearLocalSessionAndCache();
-        this.setData({
-          deleting: false,
-          errorKind: "userDeleted",
-          errorMessage: result.message || "该账号已被注销",
-          saveErrorMessage: "",
-        });
-        return;
-      }
-      this.setData({
-        deleting: false,
-        saveErrorMessage: (result && result.message) || "注销失败，请稍后重试",
-      });
-    } catch (error) {
-      const message = (error && (error.errMsg || error.message)) || "注销失败，请稍后重试";
-      this.setData({ deleting: false, saveErrorMessage: message });
-    }
-  },
+
   onLogout() {
     if (!isHttpTransport()) return;
     wx.showModal({

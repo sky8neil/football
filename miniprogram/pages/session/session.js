@@ -65,6 +65,7 @@ Page({
   },
 
   onLoad(query) {
+    this._unloaded = false;
     const patch = {
       returnTo: query && RETURN_TARGETS.indexOf(query.return_to) !== -1
         ? query.return_to
@@ -96,6 +97,7 @@ Page({
     if (typeof wx.getPrivacySetting === "function") {
       wx.getPrivacySetting({
         success: (res) => {
+          if (this._unloaded) return;
           if (res && res.needAuthorization) {
             this.setData({
               showPrivacy: true,
@@ -110,6 +112,10 @@ Page({
     // 避免微信弹出样式不一致的系统弹窗。不响应时微信才会自己兜底。
     if (typeof wx.onNeedPrivacyAuthorization === "function" && !this._privacyHandler) {
       this._privacyHandler = (resolve) => {
+        if (this._unloaded) {
+          if (typeof resolve === "function") resolve({ event: "disagree" });
+          return;
+        }
         this._privacyResolve = resolve;
         this.setData({ showPrivacy: true });
       };
@@ -118,13 +124,18 @@ Page({
   },
 
   onUnload() {
+    this._unloaded = true;
+    const resolve = this._privacyResolve;
+    this._privacyResolve = null;
+    if (typeof resolve === "function") {
+      resolve({ event: "disagree" });
+    }
     // 不注销会在页面销毁后仍持有旧的 resolve，下一个页面触发隐私接口时
     // 微信拿到的是已经没人处理的回调。
     if (this._privacyHandler && typeof wx.offNeedPrivacyAuthorization === "function") {
       wx.offNeedPrivacyAuthorization(this._privacyHandler);
     }
     this._privacyHandler = null;
-    this._privacyResolve = null;
   },
 
   /** 同意/拒绝都必须 resolve，否则被挂起的隐私接口永远不会返回。 */
@@ -196,6 +207,7 @@ Page({
     }
     return pending.then((result) => {
       if (!result || typeof result !== "object") {
+        if (this._unloaded) return;
         this.setData({
           loading: false,
           errorMessage: "网络异常，请稍后重试",
@@ -210,13 +222,16 @@ Page({
         // 写入本地缓存，供首页第一行展示。
         const payload = result.data && typeof result.data === "object" ? result.data : {};
         storeNickname(payload.nickname);
+        if (this._unloaded) return;
         const onNavFail = () => {
+          if (this._unloaded) return;
           this.setData({ loading: false, canRetry: true });
         };
         if (RETURN_TARGETS.indexOf(this.data.returnTo) !== -1) {
           wx.navigateBack({
             delta: 1,
             fail: () => {
+              if (this._unloaded) return;
               wx.switchTab({ url: HOME_URL, fail: onNavFail });
             },
           });
@@ -234,6 +249,7 @@ Page({
         wx.switchTab({ url: HOME_URL, fail: onNavFail });
         return;
       }
+      if (this._unloaded) return;
       const unauthorized = result.statusCode === 401 && result.code === "UNAUTHORIZED";
       const rateLimited = result.statusCode === 429 && result.code === "RATE_LIMITED";
       this.setData({
@@ -247,6 +263,7 @@ Page({
         canRetry: true,
       });
     }).catch((error) => {
+      if (this._unloaded) return;
       this.setData({
         loading: false,
         errorMessage: (error && error.message) || "网络异常，请稍后重试",

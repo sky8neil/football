@@ -144,24 +144,36 @@ describe("personal profile settings", () => {
     expect(page.data.favoriteTeamName).toBe("阿森纳");
     expect(page.data.visibleGroups.some((group) => group.teams.some((team) => team.team_id === "arsenal-id"))).toBe(true);
   });
-  it("renders grouped bilingual team rows keyed by team_id", () => {
+  it("renders personal profile layout with gender selector, compact team trigger, and bottom drawer without account deletion or raw svg", () => {
     const wxml = readFileSync(new URL("./settings.wxml", import.meta.url), "utf8");
-    expect(wxml).toContain('wx:for="{{visibleGroups}}"');
-    expect(wxml).toContain('wx:key="league_id"');
-    expect(wxml).toContain("{{item.leagueName}}");
-    expect(wxml).toContain('wx:for="{{item.teams}}"');
+    expect(wxml).toContain("个人资料");
+    expect(wxml).not.toContain("让球友认识你，也为你的主队助威。");
+    expect(wxml).not.toContain("注销账号");
+    expect(wxml).not.toContain("onDeleteAccount");
+    expect(wxml).not.toMatch(/<svg[\s>]/i);
+    expect(wxml).toContain("支持五大联赛和中超全部球队");
+    expect(wxml).toContain("更换 ›");
+    expect(wxml).toContain('data-gender="male"');
+    expect(wxml).toContain('data-gender="female"');
+    expect(wxml).toContain('data-gender="undisclosed"');
+    expect(wxml).toContain("不想透露");
+    expect(wxml).toContain('wx:for="{{leagues}}"');
+    expect(wxml).toContain('wx:for="{{filteredTeams}}"');
     expect(wxml).toContain('wx:for-item="team"');
     expect(wxml).toContain('wx:key="team_id"');
     expect(wxml).toContain('data-id="{{team.team_id}}"');
     expect(wxml).toContain("{{team.nameZh}}");
-    expect(wxml).toContain("{{team.name}}");
+    expect(wxml).toContain("{{team.subText}}");
+    expect(wxml).toContain("暂不设置主队");
     expect(wxml).not.toContain("加载更多球队");
     expect(wxml).not.toContain("球队来自当前赛事");
   });
-  it("styles league groups with existing design tokens", () => {
+  it("styles gender options and team drawer with existing design tokens in rpx", () => {
     const wxss = readFileSync(new URL("./settings.wxss", import.meta.url), "utf8");
-    expect(wxss).toMatch(/\.league-heading\s*\{[^}]*var\(--/);
-    expect(wxss).toMatch(/\.team-en\s*\{[^}]*var\(--/);
+    expect(wxss).toMatch(/\.gender-option\s*\{[^}]*var\(--/);
+    expect(wxss).toMatch(/\.team-tile\s*\{[^}]*var\(--/);
+    expect(wxss).toMatch(/\.secret-icon\s*\{/);
+    expect(wxss).toMatch(/\.secret-slash\s*\{/);
   });
   it("saves only changed fields and returns to the profile after success", async () => {
     const { page, updateMyProfile, storeNickname, wx } = load();
@@ -242,71 +254,78 @@ describe("personal profile settings", () => {
     expect(wx.reLaunch).not.toHaveBeenCalled();
   });
 
-  it("[A-S6-02] confirms account deletion, prevents double submit, clears caches, and reLaunches to session", async () => {
-    const wxml = readFileSync(new URL("./settings.wxml", import.meta.url), "utf8");
-    expect(wxml).toContain('bindtap="onDeleteAccount"');
-    expect(wxml).toContain("注销账号");
-
-    let finishDelete;
-    const { page, deleteMyProfile, clearAuth, clearNickname, wx } = load();
-    deleteMyProfile.mockImplementationOnce(() => new Promise((resolve) => { finishDelete = resolve; }));
+  it("initializes gender from GET /v1/profile/me and saves gender changes to updateMyProfile", async () => {
+    const { page, updateMyProfile, wx } = load({
+      profile: { nickname: "球友", favorite_team_id: null, gender: "male" },
+    });
     await page.loadProfile();
+    expect(page.data.gender).toBe("male");
+    expect(page.data.originalGender).toBe("male");
 
-    wx.showModal.mockImplementationOnce((options) => options.success({ confirm: false }));
-    page.onDeleteAccount();
-    expect(wx.showModal).toHaveBeenCalledWith(expect.objectContaining({
-      title: "确认注销账号？",
-      content: expect.stringContaining("不可恢复"),
-    }));
-    expect(deleteMyProfile).not.toHaveBeenCalled();
+    page.onGenderPick({ currentTarget: { dataset: { gender: "female" } } });
+    expect(page.data.gender).toBe("female");
+    await page.onSave();
+    expect(updateMyProfile).toHaveBeenCalledWith({ gender: "female" });
+    expect(wx.navigateBack).toHaveBeenCalledOnce();
 
-    let modalPromise;
-    wx.showModal.mockImplementationOnce((options) => { modalPromise = options.success({ confirm: true }); });
-    page.onDeleteAccount();
-    expect(page.data.deleting).toBe(true);
-    expect(deleteMyProfile).toHaveBeenCalledTimes(1);
+    // Unset gender defaults to undisclosed and does not trigger patch if unchanged
+    const unset = load({ profile: { nickname: "球友", favorite_team_id: null } });
+    await unset.page.loadProfile();
+    expect(unset.page.data.gender).toBe("undisclosed");
+    unset.page.onGenderPick({ currentTarget: { dataset: { gender: "undisclosed" } } });
+    await unset.page.onSave();
+    expect(unset.updateMyProfile).not.toHaveBeenCalled();
 
-    // Re-entrancy guard while deleting is true
-    page.onDeleteAccount();
-    expect(wx.showModal).toHaveBeenCalledTimes(2);
-
-    finishDelete({ statusCode: 204 });
-    await modalPromise;
-    expect(page.data.deleting).toBe(false);
-    expect(clearAuth).toHaveBeenCalledTimes(1);
-    expect(clearNickname).toHaveBeenCalledTimes(1);
-    expect(wx.removeStorageSync).toHaveBeenCalledWith("pending_ranking_group_id");
-    expect(wx.removeStorageSync).toHaveBeenCalledWith("pending_ranking_target");
-    expect(wx.removeStorageSync).toHaveBeenCalledWith("pending_group_invite_code");
-    expect(wx.removeStorageSync).toHaveBeenCalledWith("my_predictions_dirty");
-    expect(wx.reLaunch).toHaveBeenCalledWith(expect.objectContaining({ url: "/pages/session/session" }));
+    // Switching from female to undisclosed sends explicit undisclosed
+    const clearGender = load({ profile: { nickname: "球友", favorite_team_id: null, gender: "female" } });
+    await clearGender.page.loadProfile();
+    clearGender.page.onGenderPick({ currentTarget: { dataset: { gender: "undisclosed" } } });
+    await clearGender.page.onSave();
+    expect(clearGender.updateMyProfile).toHaveBeenCalledWith({ gender: "undisclosed" });
   });
 
-  it("[A-S6-02] resets deleting on rejection, reLaunch fail, or 401/409 during deleteMyProfile", async () => {
-    const { page, deleteMyProfile, clearAuth, wx } = load();
+  it("supports bottom drawer league tab switching, cross-league search, and closing on pick or clear", async () => {
+    const { page } = load();
     await page.loadProfile();
+    await page.loadTeams();
 
-    deleteMyProfile.mockRejectedValueOnce(new Error("network"));
-    await page.performDeleteAccount();
-    expect(page.data.deleting).toBe(false);
-    expect(page.data.saveErrorMessage).toBe("network");
+    expect(page.data.showTeams).toBe(false);
+    page.onTeamToggle();
+    expect(page.data.showTeams).toBe(true);
+    expect(page.data.activeLeagueId).toBe("premier_league");
+    expect(page.data.filteredTeams.map((t) => t.team_id)).toEqual(["arsenal-id", "chelsea-id"]);
+    expect(page.data.sheetCountText).toBe("英超共 2 支球队");
 
-    deleteMyProfile.mockResolvedValueOnce({ statusCode: 401, code: "UNAUTHORIZED", message: "请先登录" });
-    await page.performDeleteAccount();
-    expect(page.data.deleting).toBe(false);
-    expect(page.data.errorKind).toBe("unauthorized");
-    expect(clearAuth).toHaveBeenCalledTimes(1);
+    // Switch to Bundesliga tab
+    page.onLeagueTabTap({ currentTarget: { dataset: { league: "bundesliga" } } });
+    expect(page.data.activeLeagueId).toBe("bundesliga");
+    expect(page.data.filteredTeams.map((t) => t.team_id)).toEqual(["bayern-id"]);
+    expect(page.data.sheetCountText).toBe("德甲共 1 支球队");
 
-    deleteMyProfile.mockResolvedValueOnce({ statusCode: 409, code: "USER_DELETED", message: "已注销" });
-    await page.performDeleteAccount();
-    expect(page.data.deleting).toBe(false);
-    expect(page.data.errorKind).toBe("userDeleted");
+    // Cross-league search finds Premier League team while Bundesliga tab was active
+    page.onSearch({ detail: { value: "阿森" } });
+    expect(page.data.filteredTeams.map((t) => t.team_id)).toEqual(["arsenal-id"]);
+    expect(page.data.filteredTeams[0].subText).toBe("英超 · Arsenal FC");
+    expect(page.data.sheetCountText).toBe("搜索结果 1 支");
 
-    wx.reLaunch.mockImplementationOnce((options) => options.fail());
-    deleteMyProfile.mockResolvedValueOnce({ statusCode: 204 });
-    await page.performDeleteAccount();
-    expect(page.data.deleting).toBe(false);
-    expect(page.data.saveErrorMessage).toContain("跳转失败");
+    // Switching league tab clears search
+    page.onLeagueTabTap({ currentTarget: { dataset: { league: "premier_league" } } });
+    expect(page.data.search).toBe("");
+    expect(page.data.filteredTeams.map((t) => t.team_id)).toEqual(["arsenal-id", "chelsea-id"]);
+
+    // Picking a team selects it and closes drawer
+    page.onTeamPick({ currentTarget: { dataset: { id: "arsenal-id" } } });
+    expect(page.data.favoriteTeamId).toBe("arsenal-id");
+    expect(page.data.favoriteTeamName).toBe("阿森纳");
+    expect(page.data.showTeams).toBe(false);
+
+    // Clearing team resets to placeholder and closes drawer
+    page.onTeamToggle();
+    expect(page.data.showTeams).toBe(true);
+    page.onTeamPick({ currentTarget: { dataset: {} } });
+    expect(page.data.favoriteTeamId).toBe(null);
+    expect(page.data.favoriteTeamName).toBe("暂未设置主队");
+    expect(page.data.showTeams).toBe(false);
   });
 
   it("[A-S6-05][A-S6-08] distinguishes 401 vs 409 USER_DELETED in loadProfile/onSave and guards loadProfile with requestSerial", async () => {
@@ -545,8 +564,202 @@ describe("personal profile settings", () => {
     expect(resolveFavoriteTeamRemote).toHaveBeenCalledWith(inactiveId, expect.any(Object));
     expect(page.data.favoriteTeamId).toBe(inactiveId);
     expect(page.data.favoriteTeamName).toBe("已停用老牌队");
+    expect(page.data.favoriteTeamLogo).toBe("https://cdn.example.com/relegated.png");
+    expect(page.data.isFavoriteTeamInactive).toBe(true);
     expect(page.data.teams.map((t) => t.team_id)).toEqual(["arsenal-id"]);
     expect(page.data.teams.some((t) => t.team_id === inactiveId)).toBe(false);
+    expect(page.data.filteredTeams.map((t) => t.team_id)).toEqual(["arsenal-id"]);
     expect(page.data.visibleGroups.flatMap((g) => g.teams.map((t) => t.team_id))).toEqual(["arsenal-id"]);
+  });
+
+  it("[CR50-03] guards team drawer during loading/error states and resets showTeams on 401, 409, non-200, and reject", async () => {
+    const wxml = readFileSync(new URL("./settings.wxml", import.meta.url), "utf8");
+    expect(wxml).toContain('wx:if="{{showTeams && !loading && !errorKind && !errorMessage}}"');
+
+    const scenarios = [
+      { kind: "unauthorized", result: { statusCode: 401, code: "UNAUTHORIZED", message: "请先登录" } },
+      { kind: "userDeleted", result: { statusCode: 409, code: "USER_DELETED", message: "账号已注销" } },
+      { kind: "error", result: { statusCode: 500, code: "INTERNAL", message: "服务异常" } },
+      { kind: "reject", reject: new Error("network down") },
+    ];
+
+    for (const scenario of scenarios) {
+      let finishProfile;
+      let rejectProfile;
+      const { page, getMyProfile } = load();
+      getMyProfile.mockImplementationOnce(() => new Promise((resolve, reject) => {
+        finishProfile = resolve;
+        rejectProfile = reject;
+      }));
+
+      page.onLoad({ section: "team" });
+      expect(page.data.showTeams).toBe(true);
+      expect(page.data.loading).toBe(true);
+
+      if (scenario.reject) {
+        rejectProfile(scenario.reject);
+      } else {
+        finishProfile(scenario.result);
+      }
+      await vi.waitFor(() => expect(page.data.loading).toBe(false));
+      expect(page.data.showTeams).toBe(false);
+      expect(page.pendingInitialTeamFocus).toBe(false);
+      expect(page.data.errorKind).toBe(scenario.kind === "reject" ? "error" : scenario.kind);
+    }
+  });
+
+  it("[CR50-03] focuses favorite team league once for ?section=team regardless of profile/teams arrival order and never overrides user tab choice", async () => {
+    const laLigaId = "real-madrid-id";
+    const teamPayload = {
+      statusCode: 200,
+      data: {
+        items: [
+          { team_id: "arsenal-id", league_id: "premier_league", name: "Arsenal FC", name_zh: "阿森纳", logo_url: null },
+          { team_id: laLigaId, league_id: "la_liga", name: "Real Madrid CF", name_zh: "皇家马德里", logo_url: null },
+          { team_id: "bayern-id", league_id: "bundesliga", name: "FC Bayern München", name_zh: "拜仁慕尼黑", logo_url: null },
+        ],
+      },
+    };
+
+    // Order 1: loadProfile resolves first, loadTeams resolves second
+    {
+      let finishProfile;
+      let finishTeams;
+      const listTeams = vi.fn(() => new Promise((resolve) => { finishTeams = resolve; }));
+      const { page, getMyProfile } = load({ listTeams });
+      getMyProfile.mockImplementationOnce(() => new Promise((resolve) => { finishProfile = resolve; }));
+
+      page.onLoad({ section: "team" });
+      finishProfile({ statusCode: 200, data: { nickname: "球友", favorite_team_id: laLigaId } });
+      await vi.waitFor(() => expect(page.data.loading).toBe(false));
+      expect(page.data.showTeams).toBe(true);
+      expect(page.data.activeLeagueId).toBe("premier_league");
+
+      finishTeams(teamPayload);
+      await vi.waitFor(() => expect(page.data.teamsLoading).toBe(false));
+      expect(page.data.activeLeagueId).toBe("la_liga");
+      expect(page.data.filteredTeams.map((t) => t.team_id)).toEqual([laLigaId]);
+      expect(page.pendingInitialTeamFocus).toBe(false);
+    }
+
+    // Order 2: loadTeams resolves first, loadProfile resolves second
+    {
+      let finishProfile;
+      let finishTeams;
+      const listTeams = vi.fn(() => new Promise((resolve) => { finishTeams = resolve; }));
+      const { page, getMyProfile } = load({ listTeams });
+      getMyProfile.mockImplementationOnce(() => new Promise((resolve) => { finishProfile = resolve; }));
+
+      page.onLoad({ section: "team" });
+      finishTeams(teamPayload);
+      await vi.waitFor(() => expect(page.data.teamsLoading).toBe(false));
+      expect(page.data.activeLeagueId).toBe("premier_league");
+
+      finishProfile({ statusCode: 200, data: { nickname: "球友", favorite_team_id: laLigaId } });
+      await vi.waitFor(() => expect(page.data.loading).toBe(false));
+      expect(page.data.activeLeagueId).toBe("la_liga");
+      expect(page.data.filteredTeams.map((t) => t.team_id)).toEqual([laLigaId]);
+      expect(page.pendingInitialTeamFocus).toBe(false);
+    }
+
+    // User switches to Bundesliga while loadTeams is still in flight -> late loadTeams must NOT overwrite back to la_liga
+    {
+      let finishProfile;
+      let finishTeams;
+      const listTeams = vi.fn(() => new Promise((resolve) => { finishTeams = resolve; }));
+      const { page, getMyProfile } = load({ listTeams });
+      getMyProfile.mockImplementationOnce(() => new Promise((resolve) => { finishProfile = resolve; }));
+
+      page.onLoad({ section: "team" });
+      finishProfile({ statusCode: 200, data: { nickname: "球友", favorite_team_id: laLigaId } });
+      await vi.waitFor(() => expect(page.data.loading).toBe(false));
+      expect(page.data.showTeams).toBe(true);
+
+      page.onLeagueTabTap({ currentTarget: { dataset: { league: "bundesliga" } } });
+      expect(page.data.activeLeagueId).toBe("bundesliga");
+      expect(page.pendingInitialTeamFocus).toBe(false);
+
+      finishTeams(teamPayload);
+      await vi.waitFor(() => expect(page.data.teamsLoading).toBe(false));
+      expect(page.data.activeLeagueId).toBe("bundesliga");
+      expect(page.data.filteredTeams.map((t) => t.team_id)).toEqual(["bayern-id"]);
+    }
+  });
+
+  it("[CR50-06] does not mark out-of-bundle active favorite team inactive on static fallback, and treats 200 [] as authoritative empty", async () => {
+    const promotedId = "00000000-0000-4000-8000-000000000777";
+
+    // Network rejection / non-200 / invalid items -> fallback to static registry, serverTeamsLoaded stays false
+    for (const setup of [
+      () => vi.fn().mockRejectedValueOnce(new Error("network down")),
+      () => vi.fn().mockResolvedValueOnce({ statusCode: 503, code: "UNAVAILABLE" }),
+      () => vi.fn().mockResolvedValueOnce({ statusCode: 200, data: { items: null } }),
+    ]) {
+      const listTeams = setup();
+      const { page } = load({
+        profile: { nickname: "球友", favorite_team_id: promotedId },
+        listTeams,
+      });
+
+      await page.loadProfile();
+      await page.loadTeams();
+
+      expect(page.serverTeamsLoaded).toBe(false);
+      expect(page.data.isFavoriteTeamInactive).toBe(false);
+      expect(page.data.favoriteTeamSub).toBe("已选择主队");
+      expect(page.data.teams.map((t) => t.team_id)).toEqual(["arsenal-id", "chelsea-id", "bayern-id"]);
+    }
+
+    // 200 [] -> authoritative empty server result, no static backfill, favorite team marked inactive
+    const emptyListTeams = vi.fn().mockResolvedValueOnce({ statusCode: 200, data: { items: [] } });
+    const { page: emptyPage } = load({
+      profile: { nickname: "球友", favorite_team_id: promotedId },
+      listTeams: emptyListTeams,
+    });
+
+    await emptyPage.loadProfile();
+    await emptyPage.loadTeams();
+
+    expect(emptyPage.serverTeamsLoaded).toBe(true);
+    expect(emptyPage.data.teams).toEqual([]);
+    expect(emptyPage.data.visibleGroups).toEqual([]);
+    expect(emptyPage.data.isFavoriteTeamInactive).toBe(true);
+    expect(emptyPage.data.favoriteTeamSub).toBe("历史已选主队 · 仍正常展示");
+  });
+
+  it("[CR50-07] aligns nickname maxlength and hint to 1-32 chars, saves 1/13/32-char names, and surfaces server rejection", async () => {
+    // Note: WeChat native <input maxlength="32"> counting for combined Emoji must be verified on real device/DevTools.
+    const wxml = readFileSync(new URL("./settings.wxml", import.meta.url), "utf8");
+    expect(wxml).toContain("1–32 字，展示于榜单与分享卡");
+    expect(wxml).toContain('maxlength="32"');
+    expect(wxml).not.toContain("2–12 字");
+    expect(wxml).not.toContain('maxlength="12"');
+
+    for (const validName of ["A", "十三字昵称测试一二三四五六", "a".repeat(32)]) {
+      const { page, updateMyProfile, storeNickname, wx } = load();
+      updateMyProfile.mockResolvedValueOnce({ statusCode: 200, data: { nickname: validName } });
+      await page.loadProfile();
+      page.onNicknameInput({ detail: { value: validName } });
+      await page.onSave();
+      expect(updateMyProfile).toHaveBeenCalledWith({ nickname: validName });
+      expect(storeNickname).toHaveBeenCalledWith(validName);
+      expect(wx.navigateBack).toHaveBeenCalledOnce();
+    }
+
+    const overlongName = "a".repeat(33);
+    const { page, updateMyProfile, wx } = load();
+    updateMyProfile.mockResolvedValueOnce({
+      statusCode: 422,
+      code: "VALIDATION_ERROR",
+      message: "昵称长度需在 1–32 字之间",
+    });
+    await page.loadProfile();
+    page.onNicknameInput({ detail: { value: overlongName } });
+    await page.onSave();
+    expect(updateMyProfile).toHaveBeenCalledWith({ nickname: overlongName });
+    expect(page.data.saveErrorMessage).toBe("昵称长度需在 1–32 字之间");
+    expect(page.data.saving).toBe(false);
+    expect(page.data.nickname).toBe(overlongName);
+    expect(wx.navigateBack).not.toHaveBeenCalled();
   });
 });

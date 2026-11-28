@@ -257,4 +257,76 @@ describe("unlocks empty state (UI-02)", () => {
     await page.onShow();
     expect(calls).toBe(4);
   });
+
+  it("[CR50-02] renders stadium background and unlocked milestone summary without locked checklist or raw svg", async () => {
+    const wxml = readFileSync(UNLOCKS_WXML, "utf8");
+    expect(wxml).toContain("/assets/images/baseline-pitch.webp");
+    expect(wxml).toContain("dark-hero");
+    expect(wxml).toContain("unlock-card");
+    expect(wxml).toContain("已记录");
+    expect(wxml).toContain("{{unlockedCount}}");
+    expect(wxml).toContain("项里程碑");
+    expect(wxml).not.toContain("is-locked");
+    expect(wxml).not.toContain("lockedItems");
+    expect(wxml).not.toContain("totalCount");
+    expect(wxml).not.toContain("未达成");
+    expect(wxml).not.toMatch(/<svg[\s>]/i);
+
+    const { page } = loadUnlocksPage({
+      unlocksResult: {
+        statusCode: 200,
+        data: {
+          unlocked: [
+            {
+              unlock_code: "profile_card_style_1",
+              threshold_points: 30,
+              unlocked_at: "2026-11-06T19:50:00.000Z",
+            },
+          ],
+        },
+      },
+      profileResult: { statusCode: 200, data: { career_points: 50 } },
+    });
+    await page.onLoad();
+    expect(page.data.state).toBe("list");
+    expect(page.data.unlockedCount).toBe(1);
+    expect(page.data.items).toHaveLength(1);
+    expect(page.data).not.toHaveProperty("lockedItems");
+    expect(page.data).not.toHaveProperty("totalCount");
+  });
+
+  it("[CR50-02] displays non-hardcoded unlock_code verbatim and falls back to 0 when career_points is missing", async () => {
+    const { page } = loadUnlocksPage({
+      unlocksResult: {
+        statusCode: 200,
+        data: {
+          unlocked: [
+            {
+              unlock_code: "profile_card_style_1",
+              threshold_points: 30,
+              unlocked_at: "2026-11-06T19:50:00.000Z",
+            },
+            {
+              unlock_code: "season_honor_2027",
+              threshold_points: 500,
+              unlocked_at: "2026-11-07T02:00:00.000Z",
+            },
+          ],
+        },
+      },
+      profileResult: { statusCode: 200, data: {} },
+    });
+    await page.onLoad();
+    expect(page.data.state).toBe("list");
+    expect(page.data.unlockedCount).toBe(2);
+    expect(page.data.items[0].progressText).toBe("0/30");
+    expect(page.data.items[0].progressText).not.toContain("undefined");
+    expect(page.data.items[1]).toMatchObject({
+      unlock_code: "season_honor_2027",
+      label: "season_honor_2027",
+      mapped: false,
+      threshold_points: 500,
+      progressText: "0/500",
+    });
+  });
 });

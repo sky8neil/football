@@ -1251,4 +1251,147 @@ describe("ranking invalid group recovery", () => {
     page.flushSetData();
     await vi.waitFor(() => expect(services.rankings.listRankings).toHaveBeenCalledTimes(2));
   });
+
+  it("[CR50-09] clears historical week when invalid group A retries and auto-selects remaining group B", async () => {
+    const groupA = { group_id: "group-a", display_name: "群 A", member_count: 3 };
+    const groupB = { group_id: "group-b", display_name: "群 B", member_count: 4 };
+    const listMyGroups = vi.fn()
+      .mockResolvedValueOnce({ statusCode: 200, data: { items: [groupA, groupB] } })
+      .mockResolvedValueOnce({ statusCode: 200, data: { items: [groupA, groupB] } })
+      .mockResolvedValueOnce({ statusCode: 200, data: { items: [groupA, groupB] } })
+      .mockResolvedValueOnce({ statusCode: 200, data: { items: [groupB] } })
+      .mockResolvedValueOnce({ statusCode: 200, data: { items: [groupB] } });
+    const listRankings = vi.fn(async (query) => rankingPayload({
+      current_period_key: "2026-W48",
+      period_key: query.periodKey || "2026-W48",
+      first_period_key: "2026-W46",
+    }));
+    const { page } = loadPage({
+      groups: { listMyGroups },
+      rankings: { listRankings },
+    });
+
+    await page.onShow();
+    await page.onGroupChange({ detail: { value: "0" } });
+    await page.onWeekChange({ detail: { value: "1" } });
+    expect(page.data.groupId).toBe("group-a");
+    expect(page.data.selectedPeriodKey).toBe("2026-W47");
+    expect(page.userSelectedWeek).toBe(true);
+
+    // Group A becomes invalid on next load
+    await page.loadFirstPage();
+    expect(page.data.state).toBe("error");
+    expect(page.data.groupId).toBeNull();
+
+    listRankings.mockClear();
+    await page.onRetry();
+    expect(page.data.state).toBe("list");
+    expect(page.data.groupId).toBe("group-b");
+    expect(page.userSelectedWeek).toBe(false);
+    expect(listRankings).toHaveBeenCalledWith(expect.objectContaining({
+      scope: "group",
+      groupId: "group-b",
+      periodKey: null,
+    }));
+  });
+
+  it("[CR50-11] closes scopeSheetOpen on onInviteTap and keeps it closed after returning via pending_ranking_group_id", async () => {
+    const navs = [];
+    const storage = new Map();
+    let definition;
+    const services = {
+      rankings: { listRankings: vi.fn(async () => rankingPayload()) },
+      profile: { getMyProfile: vi.fn(async () => ({ statusCode: 200, data: { user_id: "u1", nickname: "测试" } })) },
+      levels: { getMyLevels: vi.fn(async () => ({ statusCode: 200, data: { season: { valid_predictions: 4 } } })) },
+      groups: { listMyGroups: vi.fn(async () => ({ statusCode: 200, data: { items: [{ group_id: "group-joined", display_name: "新群", member_count: 2 }] } })) },
+    };
+    const dependencies = {
+      "../../services/rankings.js": services.rankings,
+      "../../services/profile.js": services.profile,
+      "../../services/levels.js": services.levels,
+      "../../services/groups.js": services.groups,
+      "../../utils/rankings-view-model.js": viewModel,
+      "../../utils/ui-layout.js": { headerHeight: () => 88 },
+      "../../utils/rankings-copy.js": copy,
+      "../../utils/level-season.js": loadCommonJs(LEVEL_SEASON),
+      "../../services/auth.js": { getLoginGeneration: () => 0 },
+    };
+    runInNewContext(readFileSync(PAGE, "utf8"), {
+      Page: (value) => { definition = value; },
+      require: (name) => dependencies[name],
+      wx: {
+        navigateTo: (options) => navs.push(options.url),
+        getStorageSync: (key) => storage.get(key),
+        setStorageSync: (key, value) => { storage.set(key, value); },
+        removeStorageSync: (key) => { storage.delete(key); },
+      },
+    });
+    const page = {
+      ...definition,
+      data: structuredClone(definition.data),
+      setData(patch, cb) { Object.assign(this.data, patch); if (cb) cb(); },
+    };
+    page.onLoad();
+    page.onScopeSheet();
+    expect(page.data.scopeSheetOpen).toBe(true);
+
+    page.onInviteTap();
+    expect(page.data.scopeSheetOpen).toBe(false);
+    expect(navs).toEqual(["/pages/groups/groups"]);
+
+    // Even if sheet were left open before onShow, returning with pending_ranking_group_id keeps it closed
+    page.setData({ scopeSheetOpen: true });
+    storage.set("pending_ranking_group_id", "group-joined");
+    page.onShow();
+    await vi.waitFor(() => expect(page.data.state).toBe("list"));
+    expect(page.data.scopeSheetOpen).toBe(false);
+    expect(page.data.scope).toBe("group");
+    expect(page.data.groupId).toBe("group-joined");
+  });
+
+  it("[CR50-12] falls back to 我的群 on top chip and avoids false checked state in scope sheet for invalid groups", async () => {
+    const wxml = readFileSync(WXML, "utf8");
+    expect(wxml).toContain("{{scope === 'group' ? (groupId && groupNames[selectedGroupIndex] ? groupNames[selectedGroupIndex] : '我的群') : '全站'}}");
+    expect(wxml).toContain("class=\"scope-opt {{scope === 'group' && groupId === item.group_id ? 'checked' : ''}}\"");
+    expect(wxml).toContain("{{scope === 'group' && groupId === item.group_id ? '✓' : ''}}");
+
+    const topChipText = (data) => (
+      data.scope === "group"
+        ? (data.groupId && data.groupNames[data.selectedGroupIndex] ? data.groupNames[data.selectedGroupIndex] : "我的群")
+        : "全站"
+    );
+    const checkedGroupIds = (data) => data.groups
+      .filter((item) => data.scope === "group" && data.groupId === item.group_id)
+      .map((item) => item.group_id);
+
+    // Case 1: invalid group with no remaining groups
+    const emptyCase = loadPage({
+      groups: { listMyGroups: vi.fn(async () => ({ statusCode: 200, data: { items: [] } })) },
+    });
+    emptyCase.page.setData({ scope: "group", groupId: "group-gone" });
+    await emptyCase.page.loadFirstPage();
+    expect(emptyCase.page.data.state).toBe("error");
+    expect(emptyCase.page.data.groupId).toBeNull();
+    expect(topChipText(emptyCase.page.data)).toBe("我的群");
+    expect(checkedGroupIds(emptyCase.page.data)).toEqual([]);
+
+    // Case 2: invalid group A with remaining group B
+    const remaining = [{ group_id: "group-b", display_name: "群 B", member_count: 5 }];
+    const remainCase = loadPage({
+      groups: { listMyGroups: vi.fn(async () => ({ statusCode: 200, data: { items: remaining } })) },
+    });
+    remainCase.page.setData({ scope: "group", groupId: "group-a", selectedGroupIndex: 0 });
+    await remainCase.page.loadFirstPage();
+    expect(remainCase.page.data.state).toBe("error");
+    expect(remainCase.page.data.groupId).toBeNull();
+    expect(topChipText(remainCase.page.data)).toBe("我的群");
+    expect(checkedGroupIds(remainCase.page.data)).toEqual([]);
+
+    // Re-picking group B restores top chip label and checked highlight
+    await remainCase.page.onGroupChange({ detail: { value: "0" } });
+    expect(remainCase.page.data.state).toBe("list");
+    expect(remainCase.page.data.groupId).toBe("group-b");
+    expect(topChipText(remainCase.page.data)).toBe("群 B");
+    expect(checkedGroupIds(remainCase.page.data)).toEqual(["group-b"]);
+  });
 });

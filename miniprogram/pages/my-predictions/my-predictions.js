@@ -48,6 +48,63 @@ function resolveHistoryTeam(teamObj, teamId) {
 }
 
 const MY_PREDICTIONS_DIRTY_KEY = "my_predictions_dirty";
+const SHARE_LEAGUE_PLACEHOLDER = "选择联赛";
+const SHARE_SEASON_PLACEHOLDER = "选择赛季";
+const SHARE_ROUND_PLACEHOLDER = "选择轮次";
+
+function normalizeRoundId(value) {
+  if (value === null || value === undefined) return null;
+  const text = String(value).trim();
+  if (!text) return null;
+  if (/^\d+$/.test(text)) return String(Number(text)).padStart(2, "0");
+  return text;
+}
+
+function sortedRounds(roundIds) {
+  if (!Array.isArray(roundIds)) return [];
+  const seen = new Set();
+  const deduped = [];
+  for (const roundId of roundIds) {
+    const normalized = normalizeRoundId(roundId);
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    deduped.push(normalized);
+  }
+  return deduped.sort((left, right) => {
+    const leftNumber = Number(left);
+    const rightNumber = Number(right);
+    if (Number.isFinite(leftNumber) && Number.isFinite(rightNumber)) return leftNumber - rightNumber;
+    return String(left).localeCompare(String(right));
+  });
+}
+
+function buildShareRoundChoices(items, seasonsByLeague) {
+  if (!Array.isArray(items) || items.length === 0) return [];
+  const seen = new Set();
+  const choices = [];
+  for (const item of items) {
+    const leagueId = item && item.league_id ? String(item.league_id).trim() : "";
+    const seasonId = item && item.season_id ? String(item.season_id).trim() : "";
+    const roundId = normalizeRoundId(item && item.round_id);
+    if (!leagueId || !seasonId || !roundId) continue;
+    const key = `${leagueId}|${seasonId}|${roundId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const leagueName = LEAGUE_NAMES[leagueId] || leagueId;
+    const seasons = (seasonsByLeague && seasonsByLeague[leagueId]) || [];
+    const matchedSeason = seasons.find((season) => season && season.id === seasonId);
+    const seasonLabel = (matchedSeason && matchedSeason.label) || seasonId.replace(/_/g, "/");
+    const roundText = formatRound(roundId) || roundId;
+    choices.push({
+      key,
+      leagueId,
+      seasonId,
+      roundId,
+      label: `${leagueName} · ${seasonLabel} · ${roundText}`,
+    });
+  }
+  return choices;
+}
 
 function hasPredictionsDirty() {
   try {
@@ -118,6 +175,7 @@ Page({
     endText: COPY.predictionsEnd,
     leagues: [],
     seasonsByLeague: {},
+    roundsBySeason: {},
     leagueOptions: ["全部联赛"],
     seasonOptions: ["全部赛季"],
     leagueIndex: 0,
@@ -126,6 +184,17 @@ Page({
     selectedSeasonId: null,
     filterReady: false,
     filterError: "",
+    showShareSheet: false,
+    shareLeagueOptions: [SHARE_LEAGUE_PLACEHOLDER],
+    shareSeasonOptions: [SHARE_SEASON_PLACEHOLDER],
+    shareRoundOptions: [SHARE_ROUND_PLACEHOLDER],
+    shareLeagueIndex: 0,
+    shareSeasonIndex: 0,
+    shareRoundIndex: 0,
+    shareLeagueId: null,
+    shareSeasonId: null,
+    shareRoundId: null,
+    shareRoundChoices: [],
   },
 
   requestSerial: 0,
@@ -200,6 +269,14 @@ Page({
       selectedLeagueId: null,
       selectedSeasonId: null,
       seasonOptions: ["全部赛季"],
+      showShareSheet: false,
+      shareLeagueIndex: 0,
+      shareSeasonIndex: 0,
+      shareRoundIndex: 0,
+      shareLeagueId: null,
+      shareSeasonId: null,
+      shareRoundId: null,
+      shareRoundChoices: [],
     });
   },
 
@@ -215,6 +292,7 @@ Page({
       const items = result.data && Array.isArray(result.data.items) ? result.data.items : [];
       const leagues = [];
       const seasonsByLeague = {};
+      const roundsBySeason = {};
       const seen = new Set();
       for (const item of items) {
         const leagueId = item.league_id;
@@ -230,19 +308,68 @@ Page({
           id: item.season_id,
           label: item.season_label,
         });
+        roundsBySeason[leagueId + "|" + item.season_id] = sortedRounds(item.round_ids);
       }
+      const shareState = this.buildSharePickerState(
+        leagues,
+        seasonsByLeague,
+        roundsBySeason,
+        this.data.shareLeagueId,
+        this.data.shareSeasonId,
+      );
       this.setData({
         leagues,
         seasonsByLeague,
+        roundsBySeason,
         leagueOptions: ["全部联赛", ...leagues.map((league) => league.name)],
         seasonOptions: ["全部赛季"],
         filterReady: true,
         filterError: "",
+        shareRoundChoices: buildShareRoundChoices(this.data.items, seasonsByLeague),
+        ...shareState,
       });
     }).catch(() => {
       if (serial !== this.filterRequestSerial) return;
       this.setData({ filterError: "筛选选项加载失败" });
     });
+  },
+
+  buildSharePickerState(leagues, seasonsByLeague, roundsBySeason, leagueId, seasonId) {
+    let shareLeagueIndex = 0;
+    let shareSeasonIndex = 0;
+    let shareLeagueId = null;
+    let shareSeasonId = null;
+    let shareSeasonOptions = [SHARE_SEASON_PLACEHOLDER];
+    let shareRoundOptions = [SHARE_ROUND_PLACEHOLDER];
+    if (leagueId) {
+      const leagueOffset = leagues.findIndex((league) => league.id === leagueId);
+      if (leagueOffset >= 0) {
+        shareLeagueIndex = leagueOffset + 1;
+        shareLeagueId = leagueId;
+        const seasons = seasonsByLeague[leagueId] || [];
+        shareSeasonOptions = [SHARE_SEASON_PLACEHOLDER, ...seasons.map((season) => season.label)];
+        if (seasonId) {
+          const seasonOffset = seasons.findIndex((season) => season.id === seasonId);
+          if (seasonOffset >= 0) {
+            shareSeasonIndex = seasonOffset + 1;
+            shareSeasonId = seasonId;
+            const rounds = roundsBySeason[leagueId + "|" + seasonId] || [];
+            shareRoundOptions = [SHARE_ROUND_PLACEHOLDER, ...rounds.map((round) => formatRound(round))];
+          }
+        }
+      }
+    }
+    return {
+      shareLeagueOptions: [SHARE_LEAGUE_PLACEHOLDER, ...leagues.map((league) => league.name)],
+      shareSeasonOptions,
+      shareRoundOptions,
+      shareLeagueIndex,
+      shareSeasonIndex,
+      shareRoundIndex: 0,
+      shareLeagueId,
+      shareSeasonId,
+      shareRoundId: null,
+    };
   },
 
   loadFirstPage() {
@@ -272,7 +399,7 @@ Page({
       return Promise.resolve();
     }
     if (result.statusCode === 409 && result.code === "USER_DELETED") {
-      this.setData({ state: "userDeleted", errorMessage: result.message || "账号已注销", loadingMore: false });
+      this.setData({ state: "userDeleted", errorMessage: result.message || "当前账号不可用", loadingMore: false });
       return Promise.resolve();
     }
     if (result.statusCode === 404 && result.code === "USER_NOT_FOUND") {
@@ -373,15 +500,120 @@ Page({
   },
 
   onShareCardTap() {
-    const params = [];
-    if (this.data.selectedLeagueId) {
-      params.push("league_id=" + encodeURIComponent(this.data.selectedLeagueId));
+    const pickerState = this.buildSharePickerState(
+      this.data.leagues || [],
+      this.data.seasonsByLeague || {},
+      this.data.roundsBySeason || {},
+      this.data.selectedLeagueId,
+      this.data.selectedSeasonId,
+    );
+    this.setData({
+      showShareSheet: true,
+      shareRoundChoices: buildShareRoundChoices(this.data.items, this.data.seasonsByLeague),
+      ...pickerState,
+    });
+  },
+
+  onCloseShareSheet() {
+    if (!this.data.showShareSheet) return;
+    this.setData({ showShareSheet: false });
+  },
+
+  onStopPropagation() {},
+
+  onShareLeagueChange(event) {
+    const index = Number(event.detail.value);
+    if (index === 0) {
+      this.setData({
+        shareLeagueIndex: 0,
+        shareLeagueId: null,
+        shareSeasonIndex: 0,
+        shareSeasonId: null,
+        shareRoundIndex: 0,
+        shareRoundId: null,
+        shareSeasonOptions: [SHARE_SEASON_PLACEHOLDER],
+        shareRoundOptions: [SHARE_ROUND_PLACEHOLDER],
+      });
+      return;
     }
-    if (this.data.selectedSeasonId) {
-      params.push("season_id=" + encodeURIComponent(this.data.selectedSeasonId));
+    const league = (this.data.leagues || [])[index - 1];
+    const seasons = (league && this.data.seasonsByLeague[league.id]) || [];
+    this.setData({
+      shareLeagueIndex: index,
+      shareLeagueId: league ? league.id : null,
+      shareSeasonIndex: 0,
+      shareSeasonId: null,
+      shareRoundIndex: 0,
+      shareRoundId: null,
+      shareSeasonOptions: [SHARE_SEASON_PLACEHOLDER, ...seasons.map((season) => season.label)],
+      shareRoundOptions: [SHARE_ROUND_PLACEHOLDER],
+    });
+  },
+
+  onShareSeasonChange(event) {
+    const index = Number(event.detail.value);
+    if (index === 0) {
+      this.setData({
+        shareSeasonIndex: 0,
+        shareSeasonId: null,
+        shareRoundIndex: 0,
+        shareRoundId: null,
+        shareRoundOptions: [SHARE_ROUND_PLACEHOLDER],
+      });
+      return;
     }
-    const query = params.length ? "?" + params.join("&") : "";
-    wx.navigateTo({ url: "/pages/share-card/share-card" + query });
+    const seasons = (this.data.seasonsByLeague && this.data.seasonsByLeague[this.data.shareLeagueId]) || [];
+    const season = seasons[index - 1];
+    const rounds = (season && this.data.roundsBySeason && this.data.roundsBySeason[this.data.shareLeagueId + "|" + season.id]) || [];
+    this.setData({
+      shareSeasonIndex: index,
+      shareSeasonId: season ? season.id : null,
+      shareRoundIndex: 0,
+      shareRoundId: null,
+      shareRoundOptions: [SHARE_ROUND_PLACEHOLDER, ...rounds.map((round) => formatRound(round))],
+    });
+  },
+
+  onShareRoundChange(event) {
+    const index = Number(event.detail.value);
+    if (index === 0) {
+      this.setData({
+        shareRoundIndex: 0,
+        shareRoundId: null,
+      });
+      return;
+    }
+    const rounds = (this.data.roundsBySeason && this.data.roundsBySeason[this.data.shareLeagueId + "|" + this.data.shareSeasonId]) || [];
+    const roundId = normalizeRoundId(rounds[index - 1]);
+    this.setData({
+      shareRoundIndex: index,
+      shareRoundId: roundId,
+    });
+  },
+
+  navigateToShareCard(leagueId, seasonId, roundId) {
+    const normalizedRound = normalizeRoundId(roundId);
+    if (!leagueId || !seasonId || !normalizedRound) return;
+    const query = [
+      "league_id=" + encodeURIComponent(leagueId),
+      "season_id=" + encodeURIComponent(seasonId),
+      "round_id=" + encodeURIComponent(normalizedRound),
+    ].join("&");
+    this.setData({ showShareSheet: false });
+    wx.navigateTo({ url: "/pages/share-card/share-card?" + query });
+  },
+
+  onShareConfirm() {
+    this.navigateToShareCard(
+      this.data.shareLeagueId,
+      this.data.shareSeasonId,
+      this.data.shareRoundId,
+    );
+  },
+
+  onShareChoiceTap(event) {
+    const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {};
+    this.navigateToShareCard(dataset.leagueId, dataset.seasonId, dataset.roundId);
   },
 
   onMore() {

@@ -5,7 +5,9 @@ const RESULT_KEYS = ["home", "draw", "away"];
 const RESULT_CODES = { HOME: "home", DRAW: "draw", AWAY: "away" };
 
 function crowdPlan({ match, identityMissing }) {
-  if (!match || TERMINAL_STATUSES.includes(match.match_status)) return "hidden";
+  if (!match || TERMINAL_STATUSES.includes(match.match_status) || match.can_predict_reason === "USER_DELETED") {
+    return "hidden";
+  }
   if (identityMissing) return "guest";
   if (match.is_prediction_closed === true) return "fetch";
   if (

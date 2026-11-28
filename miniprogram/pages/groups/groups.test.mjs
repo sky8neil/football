@@ -829,4 +829,136 @@ describe("groups list lock and request ordering", () => {
     expect(page.data.state).toBe("ready");
     expect(page.data.groups.map((item) => item.group_id)).toEqual(["fresh-1"]);
   });
+
+  it("[CR50-13] disables join input while loading and computes canConfirm dynamically on every recovery/error branch", async () => {
+    const wxml = readFileSync(join(HERE, "join.wxml"), "utf8");
+    expect(wxml).toMatch(/<input[^>]*disabled="\{\{loading\}\}"/);
+
+    // 1) joinGroup non-200 error & network rejection with mutated invalid inviteCode
+    installWx();
+    const errDeferred = deferred();
+    const rejDeferred = deferred();
+    const { config: c1 } = loadPage("join", {
+      joinGroup: vi.fn()
+        .mockImplementationOnce(() => errDeferred.promise)
+        .mockImplementationOnce(() => rejDeferred.promise),
+    });
+    const p1 = instantiate(c1);
+    p1.onLoad({ code: "ABCDEFGH" });
+    p1.onConfirm();
+    p1.setData({ inviteCode: "BAD" });
+    errDeferred.resolve({ statusCode: 404, code: "GROUP_NOT_FOUND" });
+    await flush();
+    expect(p1.data.loading).toBe(false);
+    expect(p1.data.canConfirm).toBe(false);
+
+    p1.setInviteCode("ABCDEFGH", "");
+    p1.onConfirm();
+    p1.setData({ inviteCode: "123" });
+    rejDeferred.reject(new Error("network"));
+    await flush();
+    expect(p1.data.loading).toBe(false);
+    expect(p1.data.canConfirm).toBe(false);
+
+    // 2) failRecovery (GROUP_ALREADY_MEMBER -> listMyGroups 500) & openExistingGroup !match
+    const listDeferred = deferred();
+    const { config: c2 } = loadPage("join", {
+      joinGroup: vi.fn(async () => ({ statusCode: 409, code: "GROUP_ALREADY_MEMBER" })),
+      listMyGroups: vi.fn()
+        .mockImplementationOnce(() => listDeferred.promise)
+        .mockResolvedValueOnce({ statusCode: 200, data: { items: [{ group_id: "g1" }] } }),
+      getGroup: vi.fn(async () => ({ statusCode: 200, data: { group_id: "g1", invite_code: "ZZZZZZZZ" } })),
+    });
+    const p2 = instantiate(c2);
+    p2.onLoad({ code: "ABCDEFGH" });
+    p2.onConfirm();
+    await flush();
+    p2.setData({ inviteCode: "SHORT" });
+    listDeferred.resolve({ statusCode: 500, message: "读取失败" });
+    await flush();
+    expect(p2.data.state).toBe("error");
+    expect(p2.data.canConfirm).toBe(false);
+
+    p2.setInviteCode("ABCDEFGH", "");
+    p2.onConfirm();
+    p2.setData({ inviteCode: "SHORT" });
+    await flush();
+    await flush();
+    expect(p2.data.state).toBe("ready");
+    expect(p2.data.canConfirm).toBe(false);
+
+    // 3) openGroup switchTab fail
+    installWx();
+    globalThis.wx.switchTab = (options) => { if (options.fail) options.fail(); };
+    const { config: c3 } = loadPage("join");
+    const p3 = instantiate(c3);
+    p3.onLoad({ code: "ABCDEFGH" });
+    p3.setData({ inviteCode: "INVALID" });
+    p3.openGroup("group-1");
+    expect(p3.data.state).toBe("error");
+    expect(p3.data.canConfirm).toBe(false);
+  });
+
+  it("[CR50-14] keeps account B createGroup lock/error/navigation untouched when stale account A resolves or rejects", async () => {
+    const wxStub = installWx();
+    let generation = 0;
+    const reqA1 = deferred();
+    const reqB1 = deferred();
+    const reqA2 = deferred();
+    const reqB2 = deferred();
+    const createGroup = vi.fn()
+      .mockImplementationOnce(() => reqA1.promise)
+      .mockImplementationOnce(() => reqB1.promise)
+      .mockImplementationOnce(() => reqA2.promise)
+      .mockImplementationOnce(() => reqB2.promise);
+    const listMyGroups = vi.fn(async () => ({ statusCode: 200, data: { items: [] } }));
+    const COPY = loadCommonJs(COPY_PATH, () => { throw new Error("COPY has no dependencies"); });
+    const config = capturePage(join(HERE, "groups.js"), {
+      "../../services/groups.js": { listMyGroups, createGroup },
+      "../../utils/rankings-copy.js": COPY,
+      "../../services/auth.js": { getLoginGeneration: () => generation },
+    });
+    const page = instantiate(config);
+
+    // Case 1: Account A resolves while Account B has an in-flight createGroup
+    await page.onShow();
+    const pA1 = page.onCreateTap();
+    expect(page.data.loadingAction).toBe(true);
+
+    generation = 1;
+    await page.onShow();
+    const pB1 = page.onCreateTap();
+    expect(page.data.loadingAction).toBe(true);
+
+    reqA1.resolve({ statusCode: 201, data: { group_id: "group-a", invite_code: "AAAAAAAA" } });
+    await pA1;
+    expect(page.data.loadingAction).toBe(true);
+    expect(page.data.errorMessage).toBe("");
+    expect(wxStub.navs).toEqual([]);
+
+    reqB1.resolve({ statusCode: 201, data: { group_id: "group-b", invite_code: "BBBBBBBB" } });
+    await pB1;
+    expect(page.data.loadingAction).toBe(false);
+    expect(wxStub.navs).toEqual([["navigateTo", "/pages/groups/detail?group_id=group-b&created=1&owned_count=1"]]);
+
+    // Case 2: Account A rejects while Account B has an in-flight createGroup
+    const pA2 = page.onCreateTap();
+    expect(page.data.loadingAction).toBe(true);
+
+    generation = 2;
+    await page.onShow();
+    const pB2 = page.onCreateTap();
+    expect(page.data.loadingAction).toBe(true);
+
+    reqA2.reject(new Error("stale network failure"));
+    await pA2;
+    expect(page.data.loadingAction).toBe(true);
+    expect(page.data.errorMessage).toBe("");
+
+    reqB2.resolve({ statusCode: 201, data: { group_id: "group-c", invite_code: "CCCCCCCC" } });
+    await pB2;
+    expect(page.data.loadingAction).toBe(false);
+    expect(wxStub.navs).toHaveLength(2);
+    expect(wxStub.navs[1]).toEqual(["navigateTo", "/pages/groups/detail?group_id=group-c&created=1&owned_count=1"]);
+  });
 });

@@ -1,0 +1,320 @@
+/* ============================================================================
+   赛事预言家 · 预览台共享设计令牌（1:1 对齐 design-tokens.wxss + baseline-v041.wxss）
+   比例：@375px 基准下 2rpx = 1px
+   ============================================================================ */
+:root {
+  /* Primitive */
+  --green-100: #d5ead4;
+  --green-300: #9ee48a;
+  --green-400: #7ed56f;
+  --green-500: #62c453;
+  --green-700: #2f8a3a;
+  --green-800: #1a5c26;
+  --green-900: #163024;
+
+  --mint-50: #f4fbf0;
+  --mint-100: #e8f8df;
+  --mint-300: #dcead9;
+
+  --teal-50: #e8fbf8;
+  --teal-500: #3aa37a;
+  --teal-700: #0b7f70;
+
+  --orange-50: #fff1e8;
+  --orange-500: #f08a3c;
+
+  --red-50: #fef3f2;
+  --red-200: #fecdca;
+  --red-500: #c05621;
+  --red-600: #b42318;
+
+  --navy-700: #1f4d36;
+  --navy-900: #0e2d20;
+  --slate-200: #f3f6fb;
+  --neutral-700: #718096;
+  --white: #ffffff;
+
+  --ink-700: #42564a;
+  --ink-600: #52665b;
+
+  /* Semantic */
+  --text-primary: var(--green-900);
+  --text-secondary: var(--ink-700);
+  --text-muted: var(--ink-600);
+  --text-on-brand: var(--green-900);
+  --text-positive: var(--green-800);
+  --text-danger: var(--red-500);
+
+  --color-brand-primary: var(--green-400);
+  --color-brand-primary-pressed: var(--green-700);
+  --color-brand-soft: var(--mint-100);
+
+  --color-state-live: var(--orange-500);
+  --color-state-live-soft: var(--orange-50);
+  --color-state-done: var(--neutral-700);
+  --color-state-done-soft: var(--slate-200);
+  --color-state-success: var(--teal-500);
+  --color-state-locked: var(--teal-700);
+  --color-state-hit-soft: var(--teal-50);
+
+  --surface-canvas: var(--green-100);
+  --surface-card: rgba(255, 255, 255, 0.68);
+  --surface-card-strong: rgba(255, 255, 255, 0.78);
+  --surface-ghost: rgba(255, 255, 255, 0.74);
+  --surface-solid: linear-gradient(180deg, var(--mint-50), var(--mint-100));
+  --surface-solid-dark: linear-gradient(180deg, var(--navy-700), var(--navy-900));
+  --surface-dark-hero: radial-gradient(ellipse at top right, rgba(185, 240, 143, 0.22), transparent 58%), linear-gradient(135deg, #1f4d36, #0e2d20);
+
+  --border-subtle: var(--mint-300);
+  --border-glass-strong: rgba(255, 255, 255, 0.88);
+  --border-dark-hero: rgba(185, 240, 143, 0.22);
+
+  --shadow-card: 0 8px 24px rgba(23, 60, 35, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.65);
+  --shadow-floating: 0 8px 16px rgba(63, 138, 72, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.45);
+  --shadow-dark: 0 10px 28px rgba(14, 45, 32, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  --shadow-bug: 0 2px 6px rgba(31, 84, 45, 0.08);
+
+  --cta-background: linear-gradient(180deg, var(--green-300), var(--green-500));
+  --secondary-overlay: linear-gradient(180deg, rgba(255, 255, 255, 0.16), rgba(244, 248, 244, 0.50));
+  --secondary-accent: #b9f08f;
+
+  --radius-xs: 8px;
+  --radius-sm: 9px;
+  --radius-md: 10px;
+  --radius-lg: 12px;
+  --radius-xl: 14px;
+  --radius-card: 16px;
+  --radius-pill: 999px;
+
+  --font-cn: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
+  background: var(--surface-canvas);
+  color: var(--text-primary);
+  font-family: var(--font-cn);
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+.num {
+  font-variant-numeric: tabular-nums;
+}
+
+/* 球场固定底图 + 蒙层（与 matches / profile / rankings 完全一致） */
+.page {
+  position: relative;
+  min-height: 100vh;
+  padding: 12px 16px 36px;
+}
+
+.stadium-bg {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100vh;
+  object-fit: cover;
+  z-index: 0;
+  pointer-events: none;
+}
+
+.stadium-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--secondary-overlay);
+  z-index: 0;
+  pointer-events: none;
+}
+
+.content {
+  position: relative;
+  z-index: 1;
+}
+
+/* 预览台状态切换胶囊（仅用于 HTML 评审，转写小程序时移除） */
+.preview-state-bar {
+  position: sticky;
+  top: 8px;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  margin-bottom: 14px;
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.84);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.preview-state-bar::-webkit-scrollbar { display: none; }
+.preview-state-label {
+  font-size: 10px;
+  color: #94a3b8;
+  white-space: nowrap;
+  padding: 0 4px;
+  font-weight: 600;
+}
+.state-pill {
+  border: 0;
+  border-radius: 8px;
+  padding: 5px 9px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #cbd5e1;
+  background: rgba(255, 255, 255, 0.08);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s;
+}
+.state-pill.active {
+  background: #7ed56f;
+  color: #163024;
+}
+
+/* 通用玻璃卡片 */
+.glass-card {
+  background: var(--surface-card);
+  border: 1px solid var(--border-glass-strong);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  padding: 16px;
+  margin-bottom: 12px;
+}
+
+.glass-card.strong {
+  background: var(--surface-card-strong);
+}
+
+.dark-hero {
+  background: var(--surface-dark-hero);
+  border: 1px solid var(--border-dark-hero);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-dark);
+  color: var(--white);
+  padding: 18px 16px;
+  margin-bottom: 12px;
+}
+
+/* 顶栏标题区 */
+.page-header {
+  margin-bottom: 14px;
+}
+.page-title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text-primary);
+}
+.page-subtitle {
+  margin: 3px 0 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+/* 通用按钮 */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 0;
+  border-radius: var(--radius-md);
+  font-family: var(--font-cn);
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform 0.12s ease, opacity 0.12s ease;
+}
+.btn:active { transform: scale(0.98); }
+.btn-block { width: 100%; }
+
+.btn-primary {
+  height: 40px;
+  padding: 0 18px;
+  background: var(--cta-background);
+  color: var(--text-on-brand);
+  box-shadow: var(--shadow-floating);
+}
+.btn-ghost {
+  height: 36px;
+  padding: 0 16px;
+  background: var(--surface-ghost);
+  border: 1px solid var(--border-glass-strong);
+  color: var(--text-primary);
+  font-weight: 600;
+  font-size: 13px;
+}
+.btn-danger-outline {
+  height: 38px;
+  padding: 0 16px;
+  background: rgba(254, 243, 242, 0.88);
+  border: 1px solid var(--red-200);
+  color: var(--red-600);
+  font-weight: 600;
+  font-size: 13px;
+}
+
+/* 通用状态卡 */
+.state-panel {
+  text-align: center;
+  padding: 32px 20px;
+}
+.state-icon {
+  width: 52px;
+  height: 52px;
+  margin: 0 auto 12px;
+  border-radius: 16px;
+  background: var(--color-brand-soft);
+  color: var(--text-positive);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  font-weight: 700;
+}
+.state-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin: 0 0 6px;
+}
+.state-desc {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.65;
+  margin: 0 0 18px;
+}
+
+/* 状态标签 */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: var(--radius-xs);
+  font-size: 11px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+.chip-brand { background: var(--color-brand-soft); color: var(--color-brand-primary-pressed); }
+.chip-live { background: var(--color-state-live-soft); color: var(--color-state-live); }
+.chip-done { background: var(--color-state-done-soft); color: var(--text-secondary); }
+.chip-hit { background: var(--color-state-hit-soft); color: var(--color-state-locked); }
+.chip-danger { background: var(--red-50); color: var(--red-600); }
+
+.hidden { display: none !important; }

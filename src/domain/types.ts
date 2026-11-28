@@ -31,6 +31,7 @@ import type {
   SyncJobStatus,
   SyncJobType,
   TeamStatus,
+  UserGender,
   UserStatus,
 } from "./enums.js";
 
@@ -122,6 +123,7 @@ export interface User extends BaseDoc {
   unionid: string | null;
   nickname: string | null;
   favorite_team_id: string | null;
+  gender?: UserGender | null;
   status: UserStatus;
   career_points: number;
   career_valid_predictions: number;

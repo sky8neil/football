@@ -1,81 +1,111 @@
 <view class="page">
-  <image class="pitch" src="/assets/images/baseline-pitch.webp" mode="aspectFill" />
-  <view class="content">
-    <view wx:if="{{state === 'loading'}}" class="card state-card">正在加载主页…</view>
+  <image class="stadium-background" src="/assets/images/baseline-pitch.webp" mode="aspectFill" />
+  <view class="stadium-overlay"></view>
 
-    <view wx:elif="{{state === 'notFound'}}" class="card state-card">
+  <view class="secondary-content">
+    <view wx:if="{{state === 'loading'}}" class="glass-card strong state-panel loading">
+      <view class="state-desc">正在加载主页…</view>
+    </view>
+
+    <view wx:elif="{{state === 'notFound'}}" class="glass-card strong state-panel">
+      <view class="state-icon is-muted">?</view>
       <view class="state-title">用户不存在</view>
-      <view class="state-message">{{errorMessage}}</view>
-      <button class="action-btn" bindtap="onBackTap">返回</button>
+      <view class="state-desc">{{errorMessage || '未找到该预言家主页，可能链接已失效。'}}</view>
+      <button class="btn btn-ghost" bindtap="onBackTap">返回</button>
     </view>
 
-    <view wx:elif="{{state === 'validationError'}}" class="card state-card">
+    <view wx:elif="{{state === 'validationError'}}" class="glass-card strong state-panel">
+      <view class="state-icon is-muted">!</view>
       <view class="state-title">无法打开主页</view>
-      <view class="state-message">{{errorMessage}}</view>
-      <button class="action-btn" bindtap="onBackTap">返回</button>
+      <view class="state-desc">{{errorMessage}}</view>
+      <button class="btn btn-ghost" bindtap="onBackTap">返回</button>
     </view>
 
-    <view wx:elif="{{state === 'rateLimited'}}" class="card state-card">
+    <view wx:elif="{{state === 'rateLimited'}}" class="glass-card strong state-panel">
+      <view class="state-icon is-muted">!</view>
       <view class="state-title">请求过于频繁</view>
-      <view class="state-message">{{errorMessage}}</view>
-      <button class="action-btn" bindtap="onBackTap">返回</button>
+      <view class="state-desc">{{errorMessage}}</view>
+      <button class="btn btn-ghost" bindtap="onBackTap">返回</button>
     </view>
 
-    <view wx:elif="{{state === 'unauthorized'}}" class="card state-card">
+    <view wx:elif="{{state === 'unauthorized'}}" class="glass-card strong state-panel">
+      <view class="state-icon">🔒</view>
       <view class="state-title">请先登录</view>
-      <view class="state-message">{{errorMessage}}</view>
-      <button class="action-btn primary" bindtap="onLoginTap">去登录</button>
+      <view class="state-desc">{{errorMessage}}</view>
+      <button class="btn btn-primary" bindtap="onLoginTap">去登录</button>
     </view>
 
-    <view wx:elif="{{state === 'error'}}" class="card state-card">
+    <view wx:elif="{{state === 'error'}}" class="glass-card strong state-panel">
+      <view class="state-icon is-danger">!</view>
       <view class="state-title">加载失败</view>
-      <view class="state-message">{{errorMessage}}</view>
-      <button class="action-btn primary" bindtap="onRetry">重试</button>
+      <view class="state-desc">{{errorMessage}}</view>
+      <button class="btn btn-primary" bindtap="onRetry">重试</button>
     </view>
 
     <block wx:elif="{{state === 'ready'}}">
-      <view class="card identity-card">
-        <view class="avatar">{{avatarInitial}}</view>
-        <view class="identity-copy">
-          <view class="name-row">
-            <text class="display-name">{{displayName}}</text>
-            <text class="level-badge">Lv.{{careerLevel}} {{careerLevelName}}</text>
+      <view class="glass-card strong profile-hero">
+        <view class="hero-core">
+          <view class="emblem-ring {{isDeleted ? 'deleted' : ''}}">
+            <view class="emblem-inner {{isDeleted ? 'is-deleted' : ''}}">
+              <image wx:if="{{!isDeleted && hasFavoriteTeam}}" class="emblem-logo" src="{{favoriteTeamLogo}}" mode="aspectFit" binderror="onTeamLogoError" />
+              <text wx:else>{{avatarInitial}}</text>
+            </view>
           </view>
-          <view wx:if="{{isDeleted}}" class="deleted-note">该账号已注销，仅保留历史公开统计</view>
-          <view wx:else class="team-row">
-            <image wx:if="{{hasFavoriteTeam}}" class="team-logo" src="{{favoriteTeamLogo}}" mode="aspectFit" binderror="onTeamLogoError" />
-            <text class="team-name">主队 · {{favoriteTeamText}}</text>
+          <view class="identity-copy">
+            <view class="name-row">
+              <text class="display-name">{{displayName}}</text>
+              <text class="chip {{isDeleted ? 'chip-done' : 'chip-brand'}}">Lv.{{careerLevel}}</text>
+              <view wx:if="{{!isDeleted && gender === 'male'}}" class="gender-badge is-male" aria-label="男">♂</view>
+              <view wx:elif="{{!isDeleted && gender === 'female'}}" class="gender-badge is-female" aria-label="女">♀</view>
+            </view>
+            <view wx:if="{{isDeleted}}" class="deleted-banner">仅保留历史公开统计。</view>
+            <block wx:else>
+              <view class="title-sub">{{careerLevelName}}</view>
+              <view class="team-pill">
+                <image wx:if="{{hasFavoriteTeam}}" class="team-pill-logo" src="{{favoriteTeamLogo}}" mode="aspectFit" binderror="onTeamLogoError" />
+                <text>主队 · {{favoriteTeamText}}</text>
+              </view>
+            </block>
           </view>
         </view>
       </view>
 
-      <view class="card stats-card">
-        <view class="section-title">生涯战绩</view>
-        <view class="metrics">
-          <view class="metric">
-            <text class="metric-value num">{{careerPoints}}</text>
+      <view wx:if="{{!isDeleted}}" class="dark-hero season-card">
+        <view class="season-copy">
+          <view class="season-eyebrow">当前等级赛季</view>
+          <view class="season-level">Lv.{{seasonLevel}} {{seasonLevelName}}</view>
+        </view>
+        <text class="season-badge">当前赛季</text>
+      </view>
+
+      <view class="glass-card strong stats-card">
+        <view class="section-head">
+          <text class="section-title">{{isDeleted ? '历史生涯战绩' : '生涯战绩'}}</text>
+          <text class="chip {{isDeleted ? 'chip-done' : 'chip-hit'}}">{{isDeleted ? '已冻结' : '永久累计'}}</text>
+        </view>
+        <view class="metrics-grid">
+          <view class="metric-box">
+            <text class="metric-val {{isDeleted ? '' : 'positive'}} num">{{careerPoints}}</text>
             <text class="metric-label">生涯积分</text>
           </view>
-          <view class="metric">
-            <text class="metric-value num">{{careerValidPredictions}}</text>
+          <view class="metric-box">
+            <text class="metric-val num">{{careerValidPredictions}}</text>
             <text class="metric-label">有效预测</text>
           </view>
-          <view class="metric">
-            <text class="metric-value num">{{careerExactHits}}</text>
+          <view class="metric-box">
+            <text class="metric-val num">{{careerExactHits}}</text>
             <text class="metric-label">精确命中</text>
           </view>
         </view>
-        <view class="level-summary">
-          <text>当前生涯等级：Lv.{{careerLevel}} {{careerLevelName}}</text>
-          <text>历史最高等级：Lv.{{careerBestLevel}} {{careerBestLevelName}}</text>
-        </view>
-      </view>
-
-      <view class="card stats-card">
-        <view class="section-title">当前赛季</view>
-        <view class="season-row">
-          <text class="season-label">当前赛季等级</text>
-          <text class="season-value">Lv.{{seasonLevel}} {{seasonLevelName}}</text>
+        <view class="level-rows">
+          <view class="kv-row">
+            <text class="kv-label">当前生涯等级</text>
+            <text class="kv-val">Lv.{{careerLevel}} {{careerLevelName}}</text>
+          </view>
+          <view class="kv-row">
+            <text class="kv-label">历史最高等级</text>
+            <text class="kv-val">Lv.{{careerBestLevel}} {{careerBestLevelName}}</text>
+          </view>
         </view>
       </view>
 

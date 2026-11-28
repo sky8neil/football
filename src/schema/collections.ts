@@ -94,6 +94,7 @@ export const COLLECTION_DEFINITIONS: readonly CollectionDef[] = [
       unionid: { type: "string", nullable: true },
       nickname: { type: "string", nullable: true },
       favorite_team_id: { type: "string", nullable: true, note: "UUID" },
+      gender: { type: "string", nullable: true, enum: ["male", "female", "undisclosed"] },
       status: { type: "string", required: true, enum: ["active", "deleted"] },
       career_points: { type: "int", required: true, min: 0, default: 0 },
       career_valid_predictions: { type: "int", required: true, min: 0, default: 0 },

@@ -221,6 +221,66 @@ describe("ranking week options from first_period_key", () => {
       periodKey: null,
     }));
   });
+
+  it("[CR50-09] resets selected week on global->group A and group A->group B, while preserving explicit week within the same group", async () => {
+    const groups = [
+      { group_id: "group-a", display_name: "群 A", member_count: 3 },
+      { group_id: "group-b", display_name: "群 B", member_count: 4 },
+    ];
+    const listRankings = vi.fn(async (query) => weekResult({
+      period_key: query.periodKey || "2026-W48",
+      current_period_key: "2026-W48",
+      first_period_key: "2026-W46",
+    }));
+    const page = loadPage({
+      rankings: { listRankings },
+      groups: { listMyGroups: vi.fn(async () => ({ statusCode: 200, data: { items: groups } })) },
+    });
+    page.onLoad();
+    await page.onShow();
+
+    // Select a historical week in global scope
+    await page.onWeekChange({ detail: { value: "1" } });
+    expect(page.data.selectedPeriodKey).toBe("2026-W47");
+    expect(page.userSelectedWeek).toBe(true);
+
+    // Global -> Group A via onGroupChange / scope pick must reset periodKey
+    await page.onGroupChange({ detail: { value: "0" } });
+    expect(page.userSelectedWeek).toBe(false);
+    expect(listRankings).toHaveBeenLastCalledWith(expect.objectContaining({
+      scope: "group",
+      groupId: "group-a",
+      periodKey: null,
+    }));
+
+    // Explicitly choose historical week inside Group A
+    await page.onWeekChange({ detail: { value: "2" } });
+    expect(page.userSelectedWeek).toBe(true);
+    expect(page.data.selectedPeriodKey).toBe("2026-W46");
+    expect(listRankings).toHaveBeenLastCalledWith(expect.objectContaining({
+      scope: "group",
+      groupId: "group-a",
+      periodKey: "2026-W46",
+    }));
+
+    // Re-picking the same valid Group A keeps the explicitly selected historical week
+    await page.onGroupChange({ detail: { value: "0" } });
+    expect(page.userSelectedWeek).toBe(true);
+    expect(listRankings).toHaveBeenLastCalledWith(expect.objectContaining({
+      scope: "group",
+      groupId: "group-a",
+      periodKey: "2026-W46",
+    }));
+
+    // Group A -> Group B must reset periodKey
+    await page.onGroupChange({ detail: { value: "1" } });
+    expect(page.userSelectedWeek).toBe(false);
+    expect(listRankings).toHaveBeenLastCalledWith(expect.objectContaining({
+      scope: "group",
+      groupId: "group-b",
+      periodKey: null,
+    }));
+  });
 });
 
 describe("ranking login generation reset", () => {

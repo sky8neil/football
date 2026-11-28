@@ -69,10 +69,10 @@ describe("S7 OpenAPI baseline", () => {
     expect(shareCard).toContain("name: round_id");
 
     expect(specification).toMatch(
-      /    MyProfileData:[\s\S]*?required: \[user_id, nickname, favorite_team_id, career_points, career_valid_predictions, career_exact_hits, career_level, career_best_level, season_level, previous_season\]/,
+      /    MyProfileData:[\s\S]*?required: \[user_id, nickname, favorite_team_id, gender, career_points, career_valid_predictions, career_exact_hits, career_level, career_best_level, season_level, previous_season\]/,
     );
     expect(specification).toMatch(
-      /    PublicProfileData:[\s\S]*?required: \[user_id, display_name, favorite_team_id, career_points, career_valid_predictions, career_exact_hits, career_level, career_best_level, season_level\]/,
+      /    PublicProfileData:[\s\S]*?required: \[user_id, display_name, favorite_team_id, gender, career_points, career_valid_predictions, career_exact_hits, career_level, career_best_level, season_level\]/,
     );
     expect(specification).toMatch(/    MatchListItem:[\s\S]*?league_id:/);
     expect(specification).toMatch(/    PredictionHistoryItem:[\s\S]*?league_id:/);
@@ -156,5 +156,58 @@ describe("S7 OpenAPI baseline", () => {
 
     expect(raw).toContain("no_eligible_season");
     expect(raw).toContain("season_not_completed");
+  });
+
+  it("validates nullable enum gender on MyProfileData, PublicProfileData, and ProfilePatchRequest", async () => {
+    const raw = await readFile(new URL("./openapi.yaml", import.meta.url), "utf8");
+    const spec = YAML.parse(raw) as { components: { schemas: Record<string, unknown> } };
+    const ajv = new Ajv({ nullable: false, allErrors: true });
+    ajv.addSchema({ $id: "https://football.local/openapi.json", components: spec.components });
+    const validateMyProfile = ajv.compile({
+      $ref: "https://football.local/openapi.json#/components/schemas/MyProfileData",
+    });
+    const validatePublicProfile = ajv.compile({
+      $ref: "https://football.local/openapi.json#/components/schemas/PublicProfileData",
+    });
+    const validateProfilePatch = ajv.compile({
+      $ref: "https://football.local/openapi.json#/components/schemas/ProfilePatchRequest",
+    });
+
+    const baseMyProfile = {
+      user_id: "00000000-0000-4000-8000-000000000010",
+      nickname: "Sky",
+      favorite_team_id: null,
+      career_points: 12,
+      career_valid_predictions: 1,
+      career_exact_hits: 1,
+      career_level: 1,
+      career_best_level: 1,
+      season_level: 1,
+      previous_season: null,
+    };
+    const basePublicProfile = {
+      user_id: "00000000-0000-4000-8000-000000000010",
+      display_name: "Sky",
+      favorite_team_id: null,
+      career_points: 12,
+      career_valid_predictions: 1,
+      career_exact_hits: 1,
+      career_level: 1,
+      career_best_level: 1,
+      season_level: 1,
+    };
+
+    for (const gender of ["male", "female", "undisclosed", null] as const) {
+      expect(validateMyProfile({ ...baseMyProfile, gender })).toBe(true);
+      expect(validatePublicProfile({ ...basePublicProfile, gender })).toBe(true);
+      expect(validateProfilePatch({ gender })).toBe(true);
+    }
+
+    expect(validateMyProfile(baseMyProfile)).toBe(false);
+    expect(validatePublicProfile(basePublicProfile)).toBe(false);
+    expect(validateMyProfile({ ...baseMyProfile, gender: "other" })).toBe(false);
+    expect(validatePublicProfile({ ...basePublicProfile, gender: 123 })).toBe(false);
+    expect(validateProfilePatch({ gender: "other" })).toBe(false);
+    expect(validateProfilePatch({ gender: "male", extra: 1 })).toBe(false);
   });
 });

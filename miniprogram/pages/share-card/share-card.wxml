@@ -2,140 +2,146 @@
   <image class="stadium-background" src="/assets/images/baseline-pitch.webp" mode="aspectFill" />
   <view class="stadium-overlay"></view>
   <view class="secondary-content">
-    <view class="page-title">{{state === 'card' && card ? card.cardTitle : '预测分享卡'}}</view>
-    <view class="page-subtitle">{{state === 'card' && card ? (card.showFullSummary ? '本轮预测战绩汇总' : '看看我本轮的预测选择') : '分享你某一轮的预测与战绩'}}</view>
-
-    <view wx:if="{{catalogError}}" class="filter-error">
-      <text>{{catalogError}}</text>
-      <button class="ghost-button" bindtap="onCatalogRetry">重试</button>
+    <view class="page-header">
+      <view class="page-title">{{state === 'card' && card ? card.pageTitle : '预测分享卡'}}</view>
     </view>
 
-    <view wx:if="{{catalogReady && leagues.length > 0}}" class="filter-row">
-      <picker range="{{leagueOptions}}" value="{{leagueIndex}}" bindchange="onLeagueChange">
-        <view class="filter-chip">{{leagueOptions[leagueIndex]}}</view>
-      </picker>
-      <picker range="{{seasonOptions}}" value="{{seasonIndex}}" bindchange="onSeasonChange" disabled="{{leagueIndex === 0}}">
-        <view class="filter-chip {{leagueIndex === 0 ? 'disabled' : ''}}">{{seasonOptions[seasonIndex]}}</view>
-      </picker>
-      <picker range="{{roundOptions}}" value="{{roundIndex}}" bindchange="onRoundChange" disabled="{{seasonIndex === 0}}">
-        <view class="filter-chip {{seasonIndex === 0 ? 'disabled' : ''}}">{{roundOptions[roundIndex]}}</view>
-      </picker>
+    <view wx:if="{{state === 'picker'}}" class="glass-card strong state-panel picker-panel">
+      <view class="state-title">未指定轮次</view>
+      <view class="state-desc">请从「我的预测」中选择对应轮次后再生成分享卡。</view>
+      <button class="btn btn-ghost" bindtap="onBackToPredictions">返回我的预测</button>
     </view>
 
-    <view wx:if="{{state === 'picker'}}" class="state-panel picker-panel">
-      <text>请选择联赛、赛季和轮次</text>
-    </view>
+    <view wx:elif="{{state === 'loading'}}" class="glass-card loading"></view>
 
-    <view wx:elif="{{state === 'loading'}}" class="loading"></view>
-
-    <view wx:elif="{{state === 'error'}}" class="state-panel">
-      <text>{{errorMessage}}</text>
-      <button wx:if="{{errorKind === 'network' || errorKind === 'failed'}}" bindtap="onRetry">重试</button>
-      <button wx:if="{{errorKind === 'unauthorized'}}" bindtap="onLoginTap">去登录</button>
-      <button wx:if="{{errorKind === 'userUnavailable' || errorKind === 'roundNotFound'}}" bindtap="onBackToPredictions">返回我的预测</button>
-      <button wx:if="{{errorKind === 'userUnavailable' || errorKind === 'roundNotFound' || errorKind === 'badParams'}}" bindtap="onReselect">重新选择</button>
-    </view>
-
-    <view wx:elif="{{state === 'card' && card}}" class="share-card glass-card">
-      <view class="card-mode-row">
-        <text class="card-mode-title">{{card.cardTitle}}</text>
-        <text class="now-tag">Lv.{{card.seasonLevel}}</text>
-      </view>
-      <view class="identity-row">
-        <text class="display-name">{{card.displayName}}</text>
-      </view>
-      <view wx:if="{{card.isDeleted}}" class="deleted-note">该账号已注销，仅保留历史公开统计</view>
-      <view wx:elif="{{card.hasFavoriteTeam}}" class="favorite-team-row">
-        <image class="team-crest-mini" src="{{card.favoriteTeamLogo}}" mode="aspectFit" />
-        <text>主队 · {{card.favoriteTeamText}}</text>
-      </view>
-      <view class="card-meta">{{card.leagueName}} · {{card.seasonLabel}} · {{card.roundText}}</view>
-
-      <block wx:if="{{card.showFullSummary}}">
-        <view class="score-block">
-          <text class="round-score">{{card.roundScore}}</text>
-          <text class="score-label">本轮积分</text>
-        </view>
-
-        <view class="stats-row">
-          <view class="stat">
-            <text class="stat-value">{{card.settledCount}}</text>
-            <text class="stat-label">已结算</text>
-          </view>
-          <view class="stat">
-            <text class="stat-value">{{card.wdlHits}}</text>
-            <text class="stat-label">胜平负命中</text>
-          </view>
-          <view class="stat">
-            <text class="stat-value">{{card.exactHits}}</text>
-            <text class="stat-label">精确命中</text>
-          </view>
-        </view>
+    <view wx:elif="{{state === 'error'}}" class="glass-card strong state-panel">
+      <block wx:if="{{errorKind === 'rateLimited'}}">
+        <view class="state-icon state-icon-live">⏳</view>
+        <view class="state-title">访问过于频繁</view>
+        <view class="state-desc">{{errorMessage || '分享卡读取较频繁，请稍等几秒后再试。'}}</view>
       </block>
+      <block wx:else>
+        <view class="state-desc">{{errorMessage}}</view>
+      </block>
+      <button wx:if="{{errorKind === 'network' || errorKind === 'failed'}}" class="btn btn-ghost state-btn" bindtap="onRetry">重试</button>
+      <button wx:if="{{errorKind === 'unauthorized'}}" class="btn btn-primary state-btn" bindtap="onLoginTap">去登录</button>
+      <button wx:if="{{errorKind === 'userUnavailable' || errorKind === 'roundNotFound' || errorKind === 'badParams'}}" class="btn btn-ghost state-btn" bindtap="onBackToPredictions">返回我的预测</button>
+    </view>
 
-      <view class="current-row">
-        <view class="current-item">
-          <text>等级 Lv.{{card.seasonLevel}}</text>
-          <text class="now-tag">当前</text>
+    <view wx:elif="{{state === 'card' && card}}" class="card-panel">
+      <view class="poster-top">
+        <view class="poster-top-bar">
+          <text class="poster-kicker">{{card.kickerText}}</text>
+          <text wx:if="{{card.seasonLabel}}" class="poster-round-pill">{{card.seasonLabel}}</text>
         </view>
-        <view class="current-item">
-          <text>生涯积分 {{card.careerPoints}}</text>
-          <text class="now-tag">当前</text>
+
+        <view class="poster-user">
+          <view class="poster-user-info">
+            <view class="poster-name">{{card.displayName}}</view>
+            <view wx:if="{{card.isDeleted}}" class="poster-team poster-deleted-note">
+              <text>仅保留历史公开统计</text>
+            </view>
+            <view wx:elif="{{card.hasFavoriteTeam}}" class="poster-team">
+              <image class="poster-team-logo" src="{{card.favoriteTeamLogo}}" mode="aspectFit" />
+              <text>主队 · {{card.favoriteTeamText}}</text>
+            </view>
+          </view>
+        </view>
+
+        <block wx:if="{{card.showFullSummary}}">
+          <view class="poster-score-hero">
+            <view class="big-score">
+              <text class="big-score-num num">{{card.roundScoreText}}</text>
+              <text class="big-score-label">本轮积分</text>
+            </view>
+            <view class="mini-stats">
+              <view class="mini-stat">
+                <text class="mini-stat-val num">{{card.settledCount}}</text>
+                <text class="mini-stat-label">已结算</text>
+              </view>
+              <view class="mini-stat">
+                <text class="mini-stat-val num">{{card.wdlHits}}</text>
+                <text class="mini-stat-label">胜平负命中</text>
+              </view>
+              <view class="mini-stat">
+                <text class="mini-stat-val num">{{card.exactHits}}</text>
+                <text class="mini-stat-label">精确命中</text>
+              </view>
+            </view>
+          </view>
+        </block>
+
+        <view class="poster-identity-strip">
+          <view class="identity-metric">
+            <text>赛季等级 </text>
+            <text class="identity-metric-strong">Lv.{{card.seasonLevel}}</text>
+          </view>
+          <view class="identity-metric">
+            <text>生涯积分 </text>
+            <text class="identity-metric-strong num">{{card.careerPoints}}</text>
+          </view>
         </view>
       </view>
-      <view class="level-season">等级赛季 {{card.levelSeasonText}}</view>
 
-      <view class="matches-section">
-        <view class="matches-heading">单场预测明细</view>
-        <view wx:if="{{card.matches.length === 0}}" class="empty-matches">本轮暂无可展示的单场预测明细</view>
+      <view class="poster-body">
+        <view class="section-head">
+          <text class="section-title">单场预测明细</text>
+        </view>
+
+        <view wx:if="{{card.matches.length === 0}}" class="match-row empty-matches">
+          <text>本轮暂无可展示的单场预测明细</text>
+        </view>
+
         <view
           wx:for="{{card.matches}}"
           wx:key="matchId"
-          class="match-item"
+          class="match-row {{item.rowClass}}"
           data-match-id="{{item.matchId}}"
           data-can-follow="{{item.canFollow}}"
           data-prefill-home="{{item.predHomeScore}}"
           data-prefill-away="{{item.predAwayScore}}"
           bindtap="onMatchTap"
         >
-          <view class="match-item-head">
-            <text class="match-kickoff">{{item.kickoffText}}</text>
-            <text class="match-status {{item.statusClass}}">{{item.statusText}}</text>
+          <view class="match-row-head">
+            <text class="match-kickoff num">{{item.kickoffText}}</text>
+            <text wx:if="{{item.headChipText}}" class="chip {{item.headChipClass}}">{{item.headChipText}}</text>
           </view>
-          <view class="match-teams-row">
-            <view class="match-team">
-              <image class="team-crest" src="{{item.homeLogo}}" mode="aspectFit" />
-              <text class="team-name">{{item.homeNameZh}}</text>
+
+          <view class="match-teams">
+            <view class="m-team">
+              <image class="m-team-logo" src="{{item.homeLogo}}" mode="aspectFit" />
+              <text class="m-team-name">{{item.homeNameZh}}</text>
             </view>
-            <text class="match-vs">vs</text>
-            <view class="match-team away">
-              <image class="team-crest" src="{{item.awayLogo}}" mode="aspectFit" />
-              <text class="team-name">{{item.awayNameZh}}</text>
+            <text class="m-vs">VS</text>
+            <view class="m-team away">
+              <text class="m-team-name">{{item.awayNameZh}}</text>
+              <image class="m-team-logo" src="{{item.awayLogo}}" mode="aspectFit" />
             </view>
           </view>
-          <view class="match-item-foot">
-            <view class="match-scores">
-              <text class="pred-score">预测 {{item.predictionText}}</text>
-              <text wx:if="{{item.actualText}}" class="actual-score">实际 {{item.actualText}}</text>
+
+          <view class="match-row-foot">
+            <view class="score-pair">
+              <text class="pred-badge num">预测 {{item.predictionText}}</text>
+              <text wx:if="{{item.actualText}}" class="actual-badge num">{{item.actualLabel}} {{item.actualText}}</text>
             </view>
             <button
               wx:if="{{item.canFollow}}"
-              class="follow-button"
+              class="follow-btn"
               data-match-id="{{item.matchId}}"
               data-prefill-home="{{item.predHomeScore}}"
               data-prefill-away="{{item.predAwayScore}}"
               catchtap="onFollowTap"
             >{{item.followText}}</button>
-            <text wx:else class="match-points">{{item.pointsText || item.detailText}}</text>
+            <text wx:else class="chip {{item.footChipClass}} num">{{item.footChipText}}</text>
           </view>
         </view>
+
+        <view class="poster-foot">
+          <view wx:if="{{card.generatedAtText}}" class="generated-time">数据读取于 {{card.generatedAtText}}</view>
+          <button class="btn btn-primary btn-block share-button" open-type="share">{{card.showFullSummary ? '分享战绩单' : '晒出我的预测'}}</button>
+          <button class="btn btn-ghost btn-block back-button" bindtap="onBackToPredictions">返回我的预测</button>
+        </view>
       </view>
-
-      <view class="generated">数据读取于 {{card.generatedAtText}}</view>
-
-      <button class="share-button" open-type="share">{{card.showFullSummary ? '分享战绩单' : '晒出我的预测'}}</button>
     </view>
-
-    <button class="back-button" bindtap="onBackToPredictions">返回我的预测</button>
   </view>
 </view>

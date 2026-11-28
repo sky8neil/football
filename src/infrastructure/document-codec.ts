@@ -96,7 +96,8 @@ export function decodeDocument(collection: string, document: CloudBaseDocument):
     (paths === undefined || paths.length === 0) &&
     logical !== "matches" &&
     logical !== "predictions" &&
-    logical !== "teams"
+    logical !== "teams" &&
+    logical !== "users"
   ) {
     return document;
   }
@@ -109,6 +110,8 @@ export function decodeDocument(collection: string, document: CloudBaseDocument):
   } else if (logical === "teams") {
     if (decoded.name_zh === undefined) decoded.name_zh = null;
     if (decoded.logo_url === undefined) decoded.logo_url = null;
+  } else if (logical === "users") {
+    if (decoded.gender === undefined) decoded.gender = null;
   }
   for (const path of paths ?? []) {
     const current = getAt(decoded, path);

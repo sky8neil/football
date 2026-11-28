@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>待设计占位页</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      background: #0f172a url("/assets/images/baseline-pitch.webp") center/cover no-repeat;
+      font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+      color: #0f172a;
+    }
+    .card {
+      width: 100%;
+      padding: 24px 20px;
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.88);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(255, 255, 255, 0.9);
+      text-align: center;
+      box-shadow: 0 12px 30px rgba(15, 23, 42, 0.18);
+    }
+    .tag {
+      display: inline-block;
+      padding: 3px 10px;
+      border-radius: 999px;
+      background: #fef3c7;
+      color: #b45309;
+      font-size: 12px;
+      font-weight: 600;
+      margin-bottom: 10px;
+    }
+    h1 { margin: 0 0 8px; font-size: 18px; }
+    p { margin: 0; font-size: 13px; color: #475569; line-height: 1.6; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="tag">待设计 · HTML 预览占位</div>
+    <h1 id="title">页面预览占位</h1>
+    <p>确认开始设计本页后，将在此处直接更新静态 HTML/CSS 供你刷新审核；定稿后再转写为微信小程序 WXML/WXSS。</p>
+  </div>
+  <script>
+    const names = {
+      "unlocks.html": "解锁记录页（unlocks）",
+      "settings.html": "设置与注销页（settings）",
+      "share-card.html": "分享卡页（share-card）",
+      "public-profile.html": "他人公开主页（public-profile）",
+      "match-detail.html": "比赛详情页（match-detail）",
+      "matches.html": "赛程首页（matches）",
+      "profile.html": "个人中心页（profile）",
+      "rankings.html": "排行榜页（rankings）"
+    };
+    const file = location.pathname.split("/").pop();
+    if (names[file]) document.getElementById("title").textContent = names[file];
+  </script>
+</body>
+</html>

@@ -10,7 +10,9 @@ let origin: string;
 async function readProfile() {
   const response = await fetch(origin + "/v1/profile/me");
   expect(response.status).toBe(200);
-  return (await response.json() as { data: { nickname: string; favorite_team_id: string | null } }).data;
+  return (await response.json() as {
+    data: { user_id: string; nickname: string; favorite_team_id: string | null; gender: string | null };
+  }).data;
 }
 
 beforeAll(async () => {
@@ -77,5 +79,40 @@ describe("profile updates over real HTTP", () => {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ favorite_team_id: "invalid" }),
     });
     expect(response.status).toBe(422);
+  });
+  it("supports updating and reading gender via PATCH, POST, GET /v1/profile/me, and GET /v1/profiles/:user_id", async () => {
+    const initial = await readProfile();
+    expect(initial.gender).toBeNull();
+
+    const patchRes = await fetch(origin + "/v1/profile/me", {
+      method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ gender: "female" }),
+    });
+    expect(patchRes.status).toBe(200);
+    expect((await patchRes.json() as { data: { gender: string | null } }).data.gender).toBe("female");
+
+    // Public profile reflects gender
+    const pubRes = await fetch(origin + `/v1/profiles/${initial.user_id}`);
+    expect(pubRes.status).toBe(200);
+    expect((await pubRes.json() as { data: { gender: string | null } }).data.gender).toBe("female");
+
+    // Updating nickname without gender preserves existing gender
+    const keepRes = await fetch(origin + "/v1/profile/me", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ nickname: "保留性别球友" }),
+    });
+    expect(keepRes.status).toBe(200);
+    expect((await keepRes.json() as { data: { gender: string | null } }).data.gender).toBe("female");
+
+    // Clearing gender to null via POST alias
+    const clearRes = await fetch(origin + "/v1/profile/me", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ gender: null }),
+    });
+    expect(clearRes.status).toBe(200);
+    expect((await clearRes.json() as { data: { gender: string | null } }).data.gender).toBeNull();
+
+    // Invalid gender returns 422
+    const invalidRes = await fetch(origin + "/v1/profile/me", {
+      method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ gender: "invalid" }),
+    });
+    expect(invalidRes.status).toBe(422);
   });
 });

@@ -38,7 +38,7 @@ function applyErrorState(page, result) {
   if (result.statusCode === 409 && result.code === "USER_DELETED") {
     page.setData({
       state: "userDeleted",
-      errorMessage: result.message || "账号已注销",
+      errorMessage: result.message || "当前账号不可用",
     });
     return true;
   }
@@ -92,6 +92,7 @@ function presentUnlock(item, careerPoints) {
   const mapped = Object.prototype.hasOwnProperty.call(UNLOCK_LABELS, code);
   const threshold = item && item.threshold_points !== undefined ? item.threshold_points : "";
   const unlockedAt = item && item.unlocked_at !== undefined ? item.unlocked_at : "";
+  const safeCareerPoints = careerPoints ?? 0;
   return {
     unlock_code: code,
     label: mapped ? UNLOCK_LABELS[code] : code,
@@ -99,7 +100,7 @@ function presentUnlock(item, careerPoints) {
     threshold_points: threshold,
     unlocked_at: unlockedAt,
     unlockedText: formatShanghaiDate(unlockedAt),
-    progressText: String(careerPoints) + "/" + String(threshold),
+    progressText: String(safeCareerPoints) + "/" + String(threshold),
   };
 }
 
@@ -108,6 +109,7 @@ Page({
     state: "loading",
     errorMessage: "",
     items: [],
+    unlockedCount: 0,
   },
 
   requestSerial: 0,
@@ -137,6 +139,7 @@ Page({
       state: "loading",
       errorMessage: "",
       items: [],
+      unlockedCount: 0,
     });
     return Promise.all([getMyUnlocks(), getMyProfile()]).then((results) => {
       if (!isCurrent()) return;
@@ -156,6 +159,7 @@ Page({
       this.setData({
         state: items.length === 0 ? "empty" : "list",
         items: items,
+        unlockedCount: items.length,
         errorMessage: "",
       });
     }).catch(() => {

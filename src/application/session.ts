@@ -93,6 +93,7 @@ function buildUser(openid: string, nickname: string, now: Date): User {
     unionid: null,
     nickname,
     favorite_team_id: null,
+    gender: null,
     status: UserStatus.Active,
     career_points: 0,
     career_valid_predictions: 0,

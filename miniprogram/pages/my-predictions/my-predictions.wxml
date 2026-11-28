@@ -72,5 +72,51 @@
     <view wx:if="{{!hasMore && !errorMessage}}" class="history-end">{{endText}}</view>
   </view>
   </view>
+  <view wx:if="{{showShareSheet}}" class="share-sheet-backdrop" bindtap="onCloseShareSheet">
+    <view class="share-sheet" catchtap="onStopPropagation">
+      <view class="share-sheet-header">
+        <text class="share-sheet-title">选择要分享的轮次</text>
+        <button class="share-sheet-close" bindtap="onCloseShareSheet" aria-label="关闭">×</button>
+      </view>
+      <view wx:if="{{shareRoundChoices.length > 0}}" class="share-sheet-section">
+        <view class="share-sheet-label">已有预测记录的轮次</view>
+        <view class="share-choice-list">
+          <button
+            wx:for="{{shareRoundChoices}}"
+            wx:for-item="choice"
+            wx:key="key"
+            class="share-choice-chip"
+            data-league-id="{{choice.leagueId}}"
+            data-season-id="{{choice.seasonId}}"
+            data-round-id="{{choice.roundId}}"
+            bindtap="onShareChoiceTap"
+          >{{choice.label}}</button>
+        </view>
+      </view>
+      <view wx:if="{{filterReady && leagues.length > 0}}" class="share-sheet-section">
+        <view class="share-sheet-label">按联赛 / 赛季 / 轮次选择</view>
+        <view class="share-picker-row">
+          <picker range="{{shareLeagueOptions}}" value="{{shareLeagueIndex}}" bindchange="onShareLeagueChange">
+            <view class="filter-chip">{{shareLeagueOptions[shareLeagueIndex]}}</view>
+          </picker>
+          <picker range="{{shareSeasonOptions}}" value="{{shareSeasonIndex}}" bindchange="onShareSeasonChange" disabled="{{shareLeagueIndex === 0}}">
+            <view class="filter-chip {{shareLeagueIndex === 0 ? 'disabled' : ''}}">{{shareSeasonOptions[shareSeasonIndex]}}</view>
+          </picker>
+          <picker range="{{shareRoundOptions}}" value="{{shareRoundIndex}}" bindchange="onShareRoundChange" disabled="{{shareSeasonIndex === 0}}">
+            <view class="filter-chip {{shareSeasonIndex === 0 ? 'disabled' : ''}}">{{shareRoundOptions[shareRoundIndex]}}</view>
+          </picker>
+        </view>
+        <button
+          class="share-confirm-btn"
+          bindtap="onShareConfirm"
+          disabled="{{!shareLeagueId || !shareSeasonId || !shareRoundId}}"
+        >生成分享卡</button>
+      </view>
+      <view wx:elif="{{shareRoundChoices.length === 0}}" class="share-sheet-empty">
+        <text>{{filterError || '请先加载联赛与轮次选项后再选择分享轮次'}}</text>
+        <button wx:if="{{filterError}}" class="share-retry-btn" bindtap="onFilterRetry">重试加载选项</button>
+      </view>
+    </view>
+  </view>
 </view>
 <app-tab-bar active-index="2" />

@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>分享卡页 · UI 预览</title>
+  <link rel="stylesheet" href="./_shared.css">
+  <style>
+    /* 分享海报顶部卡（独立圆角深绿卡，下方赛程直接铺在球场底图上以呈现与首页一致的毛玻璃半透明感） */
+    .poster-top {
+      background: var(--surface-dark-hero);
+      color: #ffffff;
+      padding: 18px 16px 16px;
+      border-radius: var(--radius-card);
+      border: 1px solid rgba(185, 240, 143, 0.22);
+      box-shadow: var(--shadow-dark);
+      margin-bottom: 14px;
+    }
+    .poster-top-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .poster-kicker {
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--secondary-accent);
+      letter-spacing: 0.04em;
+    }
+    .poster-round-pill {
+      padding: 3px 9px;
+      border-radius: var(--radius-pill);
+      background: rgba(255, 255, 255, 0.12);
+      font-size: 11px;
+      color: rgba(255, 255, 255, 0.9);
+      font-weight: 600;
+    }
+    .poster-user {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .poster-name {
+      font-size: 20px;
+      font-weight: 750;
+      letter-spacing: -0.01em;
+    }
+    .poster-team {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      margin-top: 4px;
+      font-size: 12px;
+      color: rgba(255, 255, 255, 0.8);
+    }
+    .poster-team img {
+      width: 16px;
+      height: 16px;
+      object-fit: contain;
+    }
+    .poster-score-hero {
+      margin: 16px 0 12px;
+      padding: 14px 12px;
+      border-radius: var(--radius-lg);
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(185, 240, 143, 0.2);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .big-score {
+      display: flex;
+      flex-direction: column;
+    }
+    .big-score-num {
+      font-size: 34px;
+      font-weight: 800;
+      line-height: 1;
+      color: var(--secondary-accent);
+    }
+    .big-score-label {
+      margin-top: 4px;
+      font-size: 11px;
+      color: rgba(255, 255, 255, 0.76);
+    }
+    .mini-stats {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+      text-align: center;
+    }
+    .mini-stat-val {
+      display: block;
+      font-size: 17px;
+      font-weight: 750;
+      color: #ffffff;
+      line-height: 1.1;
+    }
+    .mini-stat-label {
+      display: block;
+      margin-top: 3px;
+      font-size: 10px;
+      color: rgba(255, 255, 255, 0.72);
+    }
+
+    .poster-identity-strip {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-top: 12px;
+      padding-top: 10px;
+      border-top: 1px solid rgba(255, 255, 255, 0.12);
+      font-size: 12px;
+      color: rgba(255, 255, 255, 0.88);
+    }
+
+    /* 单场预测明细区：与首页 matches 一致的雾白半透明玻璃卡（54%/58% + 18px blur + 左侧状态竖条） */
+    .poster-body {
+      padding: 0;
+    }
+    .section-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin: 0 2px 10px;
+    }
+    .section-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--text-primary);
+    }
+
+    .match-row {
+      position: relative;
+      padding: 12px 12px 12px 15px;
+      border-radius: var(--radius-card);
+      background: rgba(255, 255, 255, 0.54);
+      border: 1px solid rgba(255, 255, 255, 0.88);
+      box-shadow: 0 12px 30px rgba(23, 60, 35, 0.10), inset 0 1px 0 rgba(255, 255, 255, 0.60);
+      backdrop-filter: blur(18px);
+      -webkit-backdrop-filter: blur(18px);
+      margin-bottom: 10px;
+      overflow: hidden;
+    }
+    .match-row.is-open {
+      background: rgba(255, 255, 255, 0.58);
+    }
+    .match-row::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 12px;
+      bottom: 12px;
+      width: 3px;
+      border-radius: 99px;
+      background: var(--color-state-done);
+    }
+    .match-row.is-open::before { background: var(--color-brand-primary); }
+    .match-row.is-live::before { background: var(--color-state-live); }
+    .match-row.is-hit::before { background: var(--color-state-success); }
+    .match-row-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+    .match-teams {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 9px;
+    }
+    .m-team {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+    }
+    .m-team.away {
+      justify-content: flex-end;
+      text-align: right;
+    }
+    .m-team img {
+      width: 22px;
+      height: 22px;
+      object-fit: contain;
+      flex: none;
+    }
+    .m-team span {
+      font-size: 13px;
+      font-weight: 650;
+      color: var(--text-primary);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .m-vs {
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--text-muted);
+    }
+    .match-row-foot {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding-top: 8px;
+      border-top: 1px solid rgba(22, 48, 36, 0.06);
+    }
+    .score-pair {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+    }
+    .pred-badge {
+      font-weight: 700;
+      color: var(--text-primary);
+    }
+    .actual-badge {
+      color: var(--text-secondary);
+    }
+    .follow-btn {
+      height: 28px;
+      padding: 0 11px;
+      border: 0;
+      border-radius: var(--radius-xs);
+      background: var(--cta-background);
+      color: var(--text-on-brand);
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .poster-foot {
+      margin-top: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .generated-time {
+      text-align: center;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <img class="stadium-bg" src="/assets/images/baseline-pitch.webp" alt="">
+    <div class="stadium-overlay"></div>
+
+    <div class="content">
+      <div class="preview-state-bar">
+        <span class="preview-state-label">状态</span>
+        <button type="button" class="state-pill active" data-state="full">&gt;3场完整战绩</button>
+        <button type="button" class="state-pill" data-state="picks">≤3场晒预测</button>
+        <button type="button" class="state-pill" data-state="deleted">已注销脱敏</button>
+        <button type="button" class="state-pill" data-state="rateLimited">429限流</button>
+      </div>
+
+      <header class="page-header">
+        <h1 class="page-title" id="top-title">本轮战绩单</h1>
+      </header>
+
+      <!-- 主卡 -->
+      <section id="card-panel">
+        <div class="poster-top">
+            <div class="poster-top-bar">
+              <span class="poster-kicker" id="card-kicker">英超 · 第 14 轮战绩</span>
+              <span class="poster-round-pill">2026–2027</span>
+            </div>
+
+            <div class="poster-user">
+              <div>
+                <div class="poster-name" id="card-user-name">北伦敦预言家</div>
+                <div class="poster-team" id="card-fav-team">
+                  <img src="/assets/logos/teams/premier-league/arsenal.png" alt="">
+                  <span>主队 · 阿森纳</span>
+                </div>
+                <div class="poster-team hidden" id="card-deleted-note" style="color:rgba(255,255,255,0.65);">
+                  该账号已注销，仅保留历史公开统计
+                </div>
+              </div>
+            </div>
+
+            <!-- 仅 >3 场展示完整汇总 -->
+            <div class="poster-score-hero" id="full-summary-block">
+              <div class="big-score">
+                <span class="big-score-num num">+27</span>
+                <span class="big-score-label">本轮积分</span>
+              </div>
+              <div class="mini-stats">
+                <div>
+                  <span class="mini-stat-val num">5</span>
+                  <span class="mini-stat-label">已结算</span>
+                </div>
+                <div>
+                  <span class="mini-stat-val num">4</span>
+                  <span class="mini-stat-label">胜平负命中</span>
+                </div>
+                <div>
+                  <span class="mini-stat-val num">2</span>
+                  <span class="mini-stat-label">精确命中</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- 两种场次模式均保留等级与生涯积分 -->
+            <div class="poster-identity-strip">
+              <span>赛季等级 <strong>Lv.4</strong></span>
+              <span>生涯积分 <strong class="num">246</strong></span>
+            </div>
+          </div>
+
+          <div class="poster-body">
+            <div class="section-head">
+              <span class="section-title">单场预测明细</span>
+            </div>
+
+            <!-- 场次 1：未开赛可跟单 -->
+            <article class="match-row is-open">
+              <div class="match-row-head">
+                <span class="num">11-28 20:30</span>
+                <span class="chip chip-brand">未开赛</span>
+              </div>
+              <div class="match-teams">
+                <div class="m-team">
+                  <img src="/assets/logos/teams/premier-league/arsenal.png" alt="">
+                  <span>阿森纳</span>
+                </div>
+                <span class="m-vs">VS</span>
+                <div class="m-team away">
+                  <span>切尔西</span>
+                  <img src="/assets/logos/teams/premier-league/chelsea.png" alt="">
+                </div>
+              </div>
+              <div class="match-row-foot">
+                <div class="score-pair">
+                  <span class="pred-badge num">预测 2:1</span>
+                </div>
+                <button type="button" class="follow-btn">跟一单 →</button>
+              </div>
+            </article>
+
+            <!-- 场次 2：进行中 -->
+            <article class="match-row is-live">
+              <div class="match-row-head">
+                <span class="num">11-28 03:00</span>
+                <span class="chip chip-live">未完赛</span>
+              </div>
+              <div class="match-teams">
+                <div class="m-team">
+                  <img src="/assets/logos/teams/premier-league/aston-villa.png" alt="">
+                  <span>阿斯顿维拉</span>
+                </div>
+                <span class="m-vs">VS</span>
+                <div class="m-team away">
+                  <span>布莱顿</span>
+                  <img src="/assets/logos/teams/premier-league/brighton.png" alt="">
+                </div>
+              </div>
+              <div class="match-row-foot">
+                <div class="score-pair">
+                  <span class="pred-badge num">预测 1:1</span>
+                  <span class="actual-badge num">实时 1:0</span>
+                </div>
+                <span class="chip chip-done">等待完场</span>
+              </div>
+            </article>
+
+            <!-- 场次 3：已结算精确命中（已结算不标状态） -->
+            <article class="match-row is-hit">
+              <div class="match-row-head">
+                <span class="num">11-27 23:00</span>
+              </div>
+              <div class="match-teams">
+                <div class="m-team">
+                  <img src="/assets/logos/teams/premier-league/brentford.png" alt="">
+                  <span>布伦特福德</span>
+                </div>
+                <span class="m-vs">VS</span>
+                <div class="m-team away">
+                  <span>富勒姆</span>
+                  <img src="/assets/logos/teams/premier-league/fulham.png" alt="">
+                </div>
+              </div>
+              <div class="match-row-foot">
+                <div class="score-pair">
+                  <span class="pred-badge num">预测 2:0</span>
+                  <span class="actual-badge num">实际 2:0</span>
+                </div>
+                <span class="chip chip-brand num">精确命中 +12 分</span>
+              </div>
+            </article>
+
+            <!-- 场次 4：已结算胜平负命中 -->
+            <article class="match-row is-hit">
+              <div class="match-row-head">
+                <span class="num">11-27 20:30</span>
+              </div>
+              <div class="match-teams">
+                <div class="m-team">
+                  <img src="/assets/logos/teams/premier-league/crystal-palace.png" alt="">
+                  <span>水晶宫</span>
+                </div>
+                <span class="m-vs">VS</span>
+                <div class="m-team away">
+                  <span>埃弗顿</span>
+                  <img src="/assets/logos/teams/premier-league/everton.png" alt="">
+                </div>
+              </div>
+              <div class="match-row-foot">
+                <div class="score-pair">
+                  <span class="pred-badge num">预测 1:0</span>
+                  <span class="actual-badge num">实际 2:1</span>
+                </div>
+                <span class="chip chip-hit num">赛果命中 +3 分</span>
+              </div>
+            </article>
+
+            <div class="poster-foot">
+              <div class="generated-time">数据读取于 2026-11-26 14:55</div>
+              <button type="button" class="btn btn-primary btn-block" id="share-cta">分享战绩单</button>
+              <button type="button" class="btn btn-ghost btn-block">返回我的预测</button>
+            </div>
+          </div>
+      </section>
+
+      <!-- 429 限流态 -->
+      <section id="rate-panel" class="hidden">
+        <div class="glass-card strong state-panel">
+          <div class="state-icon" style="background:var(--color-state-live-soft);color:var(--color-state-live);">⏳</div>
+          <h2 class="state-title">访问过于频繁</h2>
+          <p class="state-desc">分享卡读取较频繁，请稍等几秒后再试。</p>
+          <button type="button" class="btn btn-ghost" style="min-width:128px;">重试</button>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <script>
+    const pills = document.querySelectorAll(".state-pill");
+    const cardPanel = document.getElementById("card-panel");
+    const ratePanel = document.getElementById("rate-panel");
+    const fullSummary = document.getElementById("full-summary-block");
+    const cardKicker = document.getElementById("card-kicker");
+    const cardUserName = document.getElementById("card-user-name");
+    const cardFavTeam = document.getElementById("card-fav-team");
+    const cardDeletedNote = document.getElementById("card-deleted-note");
+    const shareCta = document.getElementById("share-cta");
+    const topTitle = document.getElementById("top-title");
+
+    function setState(state) {
+      pills.forEach((p) => p.classList.toggle("active", p.dataset.state === state));
+      const isRate = state === "rateLimited";
+      cardPanel.classList.toggle("hidden", isRate);
+      ratePanel.classList.toggle("hidden", !isRate);
+
+      if (state === "full") {
+        topTitle.textContent = "本轮战绩单";
+        cardKicker.textContent = "英超 · 第 14 轮战绩";
+        cardUserName.textContent = "北伦敦预言家";
+        cardFavTeam.classList.remove("hidden");
+        cardDeletedNote.classList.add("hidden");
+        fullSummary.classList.remove("hidden");
+        shareCta.textContent = "分享战绩单";
+      } else if (state === "picks") {
+        topTitle.textContent = "本轮预测单";
+        cardKicker.textContent = "英超 · 第 14 轮预测";
+        cardUserName.textContent = "北伦敦预言家";
+        cardFavTeam.classList.remove("hidden");
+        cardDeletedNote.classList.add("hidden");
+        fullSummary.classList.add("hidden");
+        shareCta.textContent = "晒出我的预测";
+      } else if (state === "deleted") {
+        topTitle.textContent = "历史战绩单";
+        cardKicker.textContent = "英超 · 第 14 轮战绩";
+        cardUserName.textContent = "已注销用户";
+        cardFavTeam.classList.add("hidden");
+        cardDeletedNote.classList.remove("hidden");
+        fullSummary.classList.remove("hidden");
+        shareCta.textContent = "分享战绩单";
+      }
+    }
+
+    pills.forEach((p) => p.addEventListener("click", () => setState(p.dataset.state)));
+  </script>
+</body>
+</html>
