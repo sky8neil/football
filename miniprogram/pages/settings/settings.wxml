@@ -3,10 +3,6 @@
   <view class="stadium-overlay"></view>
 
   <view class="secondary-content">
-    <view class="page-header">
-      <view class="page-title">个人资料</view>
-    </view>
-
     <view wx:if="{{loading}}" class="glass-card strong state-panel">
       <view class="state-desc">正在加载个人资料…</view>
     </view>
@@ -100,7 +96,7 @@
       </view>
 
       <view class="sheet-controls">
-        <input class="search-input" type="text" value="{{search}}" bindinput="onSearch" placeholder="搜索中文名或英文队名（全六联赛）…" />
+        <input class="search-input" type="text" value="{{search}}" bindinput="onSearch" placeholder="搜索中文名或英文队名（五大联赛和中超）…" />
         <scroll-view class="league-tabs" scroll-x="true" enhanced="true" show-scrollbar="false">
           <view class="league-tabs-inner">
             <button

@@ -2,7 +2,6 @@
   <image class="stadium-background" src="/assets/images/home-pitch-bg.webp" mode="aspectFill" />
   <view class="stadium-overlay"></view>
   <view class="secondary-content">
-  <view class="page-title">我的预测记录</view>
   <view class="page-subtitle">按比赛周分组，最新的排在前</view>
   <view wx:if="{{filterReady && leagues.length > 0}}" class="filter-row">
     <picker range="{{leagueOptions}}" value="{{leagueIndex}}" bindchange="onLeagueChange">
@@ -16,7 +15,10 @@
     <text>{{filterError}}</text>
     <button bindtap="onFilterRetry">重试</button>
   </view>
-  <button wx:if="{{state === 'list' || state === 'empty'}}" class="share-entry" bindtap="onShareCardTap">分享轮次成绩</button>
+  <button wx:if="{{state === 'list' || state === 'empty'}}" class="share-entry" bindtap="onShareCardTap">
+    <text>分享轮次成绩</text>
+    <text class="share-entry-arrow">›</text>
+  </button>
   <view wx:if="{{state === 'loading'}}" class="loading"></view>
   <view wx:elif="{{state === 'unauthorized'}}" class="state-panel">
     <text>登录后查看你的预测</text>

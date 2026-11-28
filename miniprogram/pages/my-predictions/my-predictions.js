@@ -93,7 +93,8 @@ function buildShareRoundChoices(items, seasonsByLeague) {
     const leagueName = LEAGUE_NAMES[leagueId] || leagueId;
     const seasons = (seasonsByLeague && seasonsByLeague[leagueId]) || [];
     const matchedSeason = seasons.find((season) => season && season.id === seasonId);
-    const seasonLabel = (matchedSeason && matchedSeason.label) || seasonId.replace(/_/g, "/");
+    const rawSeasonLabel = (matchedSeason && matchedSeason.label) || seasonId.replace(/_/g, "—");
+    const seasonLabel = String(rawSeasonLabel).replace(/(\d{4})\/(\d{4})/, "$1—$2");
     const roundText = formatRound(roundId) || roundId;
     choices.push({
       key,

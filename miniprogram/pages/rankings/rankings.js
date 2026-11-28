@@ -791,8 +791,7 @@ Page({
     const ranked = me && me.status === "ranked";
     const rankLabel = ranked ? (me.rank != null && me.rank <= 20 ? "第 " + me.rank + " 名" : me.top_percent != null ? "前 " + me.top_percent + "%" : "已入榜") : "暂无排名";
     const standingValue = ranked ? presentItem(payload.me, this.data.board).mainValue : "—";
-    const standingLabel = this.data.board === "strength" && ranked
-      ? rankLabel + " · 共 " + payload.entry_count + " 人" : rankLabel;
+    const standingLabel = rankLabel;
     const standingStatus = view.standingStatus;
     const seasonOptionLabels = availableLevelSeasons.map((seasonId) => formatLevelSeasonLabel(seasonId));
     const selectedSeasonLabel = formatLevelSeasonLabel(selectedLevelSeasonId);

@@ -3,11 +3,6 @@
   <view class="stadium-overlay"></view>
 
   <view class="secondary-content">
-    <view class="page-header">
-      <view class="page-title">解锁记录</view>
-      <view class="page-subtitle">生涯累计积分达标后自动记录，永不回收。</view>
-    </view>
-
     <view wx:if="{{state === 'loading'}}" class="glass-card strong state-panel loading">
       <view class="state-desc">正在加载解锁记录…</view>
     </view>
@@ -92,10 +87,9 @@
           <view class="unlock-body">
             <view class="unlock-head">
               <text class="unlock-name">{{item.label}}</text>
-              <text class="chip chip-hit">已解锁</text>
             </view>
-            <view class="unlock-meta">解锁门槛：生涯累计 {{item.threshold_points}} 分 · 进度 {{item.progressText}}</view>
-            <view wx:if="{{item.unlockedText}}" class="unlock-time">记录于 {{item.unlockedText}}</view>
+            <view class="unlock-meta">解锁门槛：生涯累计 {{item.threshold_points}} 分</view>
+            <view wx:if="{{item.unlockedText}}" class="unlock-time">解锁日期 {{item.unlockedText}}</view>
           </view>
         </view>
       </view>

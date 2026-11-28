@@ -116,7 +116,7 @@
         <text class="status-text">{{submitDisabledReason}}</text>
         <button class="btn btn-ghost status-action" bindtap="onSessionTap">登录</button>
       </view>
-      <view wx:elif="{{userDeleted || (!canSubmit && submitDisabledReason)}}" class="glass-card strong status-panel">
+      <view wx:elif="{{userDeleted || (!canSubmit && submitDisabledReason && !myPrediction)}}" class="glass-card strong status-panel">
         <text class="status-text">{{submitDisabledReason}}</text>
       </view>
       <view wx:if="{{formError && !identityMissing && !userDeleted && (canSubmit || !submitDisabledReason)}}" class="error-message">{{formError}}</view>

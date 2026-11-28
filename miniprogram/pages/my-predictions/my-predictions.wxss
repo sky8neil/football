@@ -195,13 +195,23 @@
 }
 
 .share-entry {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   margin: 0 0 var(--space-6);
-  padding: var(--space-3) var(--space-4);
-  color: var(--text-primary);
+  padding: var(--space-3) var(--space-5);
+  color: var(--text-positive);
   background: var(--surface-ghost);
+  border: var(--border-hairline) solid rgba(47, 138, 58, 0.24);
   border-radius: var(--radius-card);
-  font-size: var(--font-22);
+  font-size: var(--font-24);
+  font-weight: 600;
   line-height: 1.6;
+}
+
+.share-entry-arrow {
+  font-size: 28rpx;
+  line-height: 1;
 }
 
 .share-sheet-backdrop {
@@ -297,7 +307,9 @@
 }
 
 .share-confirm-btn[disabled] {
-  opacity: 0.5;
+  background: #e6efe8;
+  color: #7c8b81;
+  box-shadow: none;
 }
 
 .share-sheet-empty {

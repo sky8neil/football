@@ -198,10 +198,12 @@ describe("unlocks empty state (UI-02)", () => {
     expect(emptyBlock).toContain("解锁按生涯积分达标后自动记录；已解锁记录不会因赛果修正而回收。");
     expect(emptyBlock).toContain('bindtap="onGoPredict"');
     expect(emptyBlock).toContain("去预测");
+    expect(wxml).not.toContain('class="page-header"');
+    expect(wxml).not.toContain("已解锁</text>");
+    expect(wxml).not.toMatch(/\{\{item\.progressText\}\}/);
     expect(wxml).toMatch(/\{\{item\.label\}\}/);
     expect(wxml).toMatch(/\{\{item\.threshold_points\}\}/);
-    expect(wxml).toMatch(/\{\{item\.unlockedText\}\}/);
-    expect(wxml).toMatch(/\{\{item\.progressText\}\}/);
+    expect(wxml).toMatch(/解锁日期 \{\{item\.unlockedText\}\}/);
   });
 
   it("[A-S6-06][A-S6-08] uses Chinese 重试, adds 去登录 for unauthorized, guards requestSerial, and refreshes on onShow", async () => {
